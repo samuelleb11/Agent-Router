@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use axum::body::Body;
-use axum::extract::{ConnectInfo, State};
+use axum::extract::State;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Request, Response, StatusCode, Uri};
 use axum::response::IntoResponse;
 use futures_util::StreamExt;
@@ -26,7 +26,6 @@ use crate::capture::{CaptureEvent, Decoder, RateLimit, StoredBody};
 use crate::config::Config;
 use crate::credentials::{token_kind, Credential};
 use crate::db::now_ms;
-use crate::guard;
 
 /// Headers that must not be forwarded across a proxy hop (RFC 9110 §7.6.1),
 /// plus `host`, which is rewritten to the upstream authority.
@@ -128,21 +127,10 @@ impl AppState {
     }
 }
 
-pub async fn handle(
-    State(state): State<Arc<AppState>>,
-    ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
-    req: Request<Body>,
-) -> Response<Body> {
-    // Layers 2 and 3 of the access guards; see `guard`. Refused before the request
-    // touches the credential or the network.
-    if let Err(why) = guard::check_peer(peer) {
-        tracing::warn!(%peer, "refused: {why}");
-        return (StatusCode::FORBIDDEN, format!("agent-router: {why}\n")).into_response();
-    }
-    if let Err(why) = guard::check_host(req.headers()) {
-        tracing::warn!(%peer, "refused: {why}");
-        return (StatusCode::FORBIDDEN, format!("agent-router: {why}\n")).into_response();
-    }
+// Access layers 1-3 (loopback bind, peer, Host) are applied to every route by
+// `guard::layer`. Layer 4 — path shape and credential presence — lives in `forward`,
+// since it is specific to proxying.
+pub async fn handle(State(state): State<Arc<AppState>>, req: Request<Body>) -> Response<Body> {
     match forward(state, req).await {
         Ok(resp) => resp,
         Err(err) => {

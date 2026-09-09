@@ -86,8 +86,8 @@ Claude Code (VSCode ext / CLI)
 |  capture/   parse SSE usage -> SQLite          |
 |  transcript/ fs watcher over ~/.claude/projects|
 |  join/      request-id correlation + backfill  |
-|  api/       read endpoints for the dashboard   |
-|  ui/        embedded SPA (rust-embed)          |
+|  api/       read endpoints + the embedded UI   |
+|  guard/     loopback, peer and Host checks     |
 +------------------------------------------------+
   |  Authorization: Bearer <active account token>
   v
@@ -194,7 +194,7 @@ the project straight back to talking to Anthropic directly.
 | --- | --- |
 | 1 | ✅ **Done.** Proxy listener, credential swap, byte-faithful streaming, path/credential guards. Verified end to end from `test-project`: subscription OAuth works over a custom base URL, and `x-claude-code-session-id` gives exact session attribution for free. |
 | 2 | ✅ **Done.** Capture tee, SQLite schema, SSE usage parsing through gzip, context composition, tool attribution, quota headroom, session→project resolution. Verified against a live tool-using session. |
-| 3 | Multi-account: OAuth PKCE flow, Keychain storage, refresh, live switching. |
-| 4 | Embedded web dashboard: accounts, projects, the switch, and the token breakdowns. |
+| 3 | Multi-account: OAuth PKCE flow, Keychain storage, refresh, live switching, and the accounts page in the UI. |
+| 4 | ✅ **Done.** Embedded read-only dashboard: quota, projects, sessions, context composition, thread split, tools, requests. A single HTML file compiled into the binary — no build step and no node toolchain, which keeps the "one static binary" promise intact. Account management joins it in Phase 3. |
 
 Each phase after the first is useful on its own.

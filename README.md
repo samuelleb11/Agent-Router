@@ -10,10 +10,9 @@ A local proxy that sits between Claude Code and Anthropic, so you can
 Everything is local: one Rust binary, one SQLite file, no cloud, no telemetry, and a
 socket that only ever listens on loopback.
 
-> **Status:** Phases 1–2 are done — the proxy captures and attributes real traffic.
-> Multi-account switching (Phase 3) and the web UI (Phase 4) are not built yet, so
-> today it routes through the account Claude Code is already logged into and you read
-> the data with SQL. See [ARCHITECTURE.md](ARCHITECTURE.md).
+> **Status:** the proxy, the capture pipeline and the dashboard are done. Multi-account
+> switching is not — today it routes through the account Claude Code is already logged
+> into. See [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Use it
 
@@ -57,15 +56,19 @@ and the VSCode extension read it.
 **4. Use Claude Code normally.** Nothing else changes. Delete the settings file and
 the project goes straight back to talking to Anthropic directly.
 
-**5. Read the data.**
+**5. Open the dashboard** at <http://127.0.0.1:8787>.
+
+Quota headroom, tokens per project and per session, cache hit rate, the main-thread /
+subagent split, which tools produce the most output, and what filled each context
+window. Click a project to filter to it, click a session to drill into its requests.
+It refreshes every five seconds and is served from the same binary — no build step, no
+node toolchain, no network.
+
+For anything the dashboard does not answer, the store is plain SQLite:
 
 ```sh
 sqlite3 ~/.agent-router/agent-router.db < queries.sql
 ```
-
-[`queries.sql`](queries.sql) answers the usual questions: tokens per project, tokens
-per session, cache hit rate, which tools produce the most output, what filled the
-context window, and how much of your 5-hour and weekly quota is gone.
 
 ## What it records
 
@@ -121,7 +124,8 @@ bodies may contain your source code — the database is local and gitignored.
 * **One account.** It borrows whichever account Claude Code is logged into, re-reading
   the Keychain as the token nears expiry. Router-owned accounts and the switch are
   Phase 3.
-* **No UI.** Phase 4. Use `queries.sql` in the meantime.
+* **The dashboard is read-only.** Account management and the switch land with
+  multi-account support.
 * **No cost figures.** `usage.cost` is nullable and unset — there is no pricing table
   yet, and on a subscription the quota utilization the router already records is the
   more meaningful number.

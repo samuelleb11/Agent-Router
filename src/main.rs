@@ -5,6 +5,7 @@
 //! See ARCHITECTURE.md.
 
 mod analyze;
+mod api;
 mod capture;
 mod config;
 mod db;
@@ -49,6 +50,7 @@ async fn main() -> anyhow::Result<()> {
             tracing::info!("  expires:      in {mins} min");
         }
     }
+    tracing::info!("  dashboard:    http://{bind}");
     tracing::info!("point a project at it with .claude/settings.local.json:");
     tracing::info!("  {{ \"env\": {{ \"ANTHROPIC_BASE_URL\": \"http://{bind}\" }} }}");
 
@@ -61,8 +63,16 @@ async fn main() -> anyhow::Result<()> {
     let state = proxy::AppState::new(config, credential, capture)?;
     tracing::info!("the credential is re-read from the Keychain as it nears expiry");
     let app = Router::new()
+        .route("/", get(api::index))
+        .route("/favicon.svg", get(api::favicon))
+        .route("/api/summary", get(api::summary))
+        .route("/api/projects", get(api::projects))
+        .route("/api/sessions", get(api::sessions))
+        .route("/api/requests", get(api::requests))
+        .route("/api/tools", get(api::tools))
         .route("/_router/health", get(|| async { "ok" }))
         .fallback(any(proxy::handle))
+        .layer(axum::middleware::from_fn(guard::layer))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(bind)

@@ -15,7 +15,10 @@
 
 use std::net::{IpAddr, SocketAddr};
 
-use axum::http::HeaderMap;
+use axum::extract::{ConnectInfo, Request};
+use axum::http::{HeaderMap, StatusCode};
+use axum::middleware::Next;
+use axum::response::{IntoResponse, Response};
 
 /// Hosts a legitimate local agent will address us by.
 ///
@@ -58,6 +61,25 @@ pub fn check_host(headers: &HeaderMap) -> Result<(), &'static str> {
         Some(_) => Err("Host header is not a loopback address"),
         None => Err("no Host header"),
     }
+}
+
+/// Applied to every route, not just the proxy: `/api` serves captured request
+/// bodies, which contain the user's source code, so it needs the same protection
+/// as the credential itself.
+pub async fn layer(
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    req: Request,
+    next: Next,
+) -> Response {
+    if let Err(why) = check_peer(peer) {
+        tracing::warn!(%peer, "refused: {why}");
+        return (StatusCode::FORBIDDEN, format!("agent-router: {why}\n")).into_response();
+    }
+    if let Err(why) = check_host(req.headers()) {
+        tracing::warn!(%peer, "refused: {why}");
+        return (StatusCode::FORBIDDEN, format!("agent-router: {why}\n")).into_response();
+    }
+    next.run(req).await
 }
 
 #[cfg(test)]

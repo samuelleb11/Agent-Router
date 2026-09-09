@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Router</title>
+<link rel="icon" href="/favicon.svg">
+<style>
+:root {
+  --bg:#f7f7f8; --panel:#fff; --ink:#18181b; --muted:#71717a; --line:#e4e4e7;
+  --accent:#4f46e5; --ok:#15803d; --warn:#b45309; --bad:#b91c1c;
+  --c1:#4f46e5; --c2:#0891b2; --c3:#ca8a04; --c4:#db2777;
+  --radius:10px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg:#0d0d10; --panel:#17171b; --ink:#f4f4f5; --muted:#a1a1aa; --line:#2a2a31;
+    --accent:#818cf8; --ok:#4ade80; --warn:#fbbf24; --bad:#f87171;
+    --c1:#818cf8; --c2:#22d3ee; --c3:#fbbf24; --c4:#f472b6;
+  }
+}
+* { box-sizing:border-box; }
+body {
+  margin:0; background:var(--bg); color:var(--ink);
+  font:14px/1.5 ui-sans-serif,-apple-system,"SF Pro Text",Inter,system-ui,sans-serif;
+}
+.wrap { max-width:1180px; margin:0 auto; padding:24px 16px 64px; }
+header { display:flex; flex-wrap:wrap; gap:12px; align-items:baseline; margin-bottom:20px; }
+h1 { font-size:19px; margin:0; letter-spacing:-.01em; }
+h2 { font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted);
+     margin:28px 0 10px; font-weight:600; }
+.chip { font-size:12px; padding:3px 9px; border-radius:999px; background:var(--panel);
+        border:1px solid var(--line); color:var(--muted); }
+.chip.live::before { content:"●"; color:var(--ok); margin-right:5px; font-size:9px;
+        vertical-align:1px; }
+.panel { background:var(--panel); border:1px solid var(--line); border-radius:var(--radius);
+         padding:16px; }
+.grid { display:grid; gap:12px; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); }
+.tile .k { font-size:12px; color:var(--muted); }
+.tile .v { font-size:23px; font-weight:600; letter-spacing:-.02em; margin-top:2px;
+           font-variant-numeric:tabular-nums; }
+.tile .s { font-size:11px; color:var(--muted); margin-top:2px; }
+.quota { display:grid; gap:14px; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); }
+.bar { height:9px; border-radius:99px; background:var(--line); overflow:hidden; margin-top:7px; }
+.bar > i { display:block; height:100%; border-radius:99px; background:var(--accent);
+           transition:width .4s ease; }
+.row { display:flex; justify-content:space-between; gap:10px; font-size:12px; }
+.row .muted { color:var(--muted); }
+.stack { display:flex; height:30px; border-radius:7px; overflow:hidden; border:1px solid var(--line); }
+.stack > span { display:block; transition:width .4s ease; }
+.legend { display:flex; flex-wrap:wrap; gap:14px; margin-top:11px; font-size:12px; }
+.legend i { width:9px; height:9px; border-radius:2px; display:inline-block; margin-right:6px; }
+.legend b { font-variant-numeric:tabular-nums; }
+.tablewrap { overflow-x:auto; }
+table { width:100%; border-collapse:collapse; font-size:13px; }
+th { text-align:left; font-weight:600; color:var(--muted); font-size:11px;
+     text-transform:uppercase; letter-spacing:.04em; padding:7px 10px;
+     border-bottom:1px solid var(--line); white-space:nowrap; }
+td { padding:8px 10px; border-bottom:1px solid var(--line); white-space:nowrap; }
+tr:last-child td { border-bottom:0; }
+td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; }
+tbody tr.clickable { cursor:pointer; }
+tbody tr.clickable:hover { background:color-mix(in srgb, var(--accent) 8%, transparent); }
+tbody tr.on { background:color-mix(in srgb, var(--accent) 13%, transparent); }
+.path { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; }
+.tag { font-size:11px; padding:1px 7px; border-radius:999px; border:1px solid var(--line);
+       color:var(--muted); }
+.tag.sub { color:var(--c4); border-color:color-mix(in srgb, var(--c4) 40%, transparent); }
+.tag.err { color:var(--bad); border-color:color-mix(in srgb, var(--bad) 40%, transparent); }
+.empty { color:var(--muted); padding:22px; text-align:center; font-size:13px; }
+button.link { background:none; border:0; color:var(--accent); cursor:pointer; font:inherit;
+              padding:0; text-decoration:underline; }
+.note { color:var(--muted); font-size:12px; margin-top:9px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Agent Router</h1>
+    <span class="chip live" id="acct">connecting…</span>
+    <span class="chip" id="scope">all projects</span>
+    <span style="flex:1"></span>
+    <button class="link" id="reset" hidden>clear filter</button>
+  </header>
+
+  <section class="panel quota" id="quota"></section>
+
+  <h2>Totals</h2>
+  <section class="grid" id="tiles"></section>
+
+  <h2>Where the context goes</h2>
+  <section class="panel">
+    <div class="stack" id="ctxbar"></div>
+    <div class="legend" id="ctxleg"></div>
+    <p class="note">Totals are exact. The split apportions the API's exact prompt-token
+      count by character share — there is no local tokenizer for current Claude models,
+      so treat component ratios as reliable and absolutes as approximate.</p>
+  </section>
+
+  <h2>Main thread vs subagents</h2>
+  <section class="panel"><div class="tablewrap"><table id="threads"></table></div></section>
+
+  <h2>Projects</h2>
+  <section class="panel"><div class="tablewrap"><table id="projects"></table></div></section>
+
+  <h2>Sessions</h2>
+  <section class="panel"><div class="tablewrap"><table id="sessions"></table></div></section>
+
+  <h2>Tools</h2>
+  <section class="grid" style="grid-template-columns:repeat(auto-fit,minmax(300px,1fr))">
+    <div class="panel"><div class="tablewrap"><table id="toolsout"></table></div></div>
+    <div class="panel"><div class="tablewrap"><table id="toolsin"></table></div></div>
+  </section>
+
+  <h2>Requests</h2>
+  <section class="panel"><div class="tablewrap"><table id="requests"></table></div></section>
+</div>
+
+<script>
+const state = { project:null, session:null };
+const CTX_COLORS = { tools:'--c1', system:'--c2', history:'--c3', tool_results:'--c4' };
+
+const n  = v => v == null ? '—' : Number(v).toLocaleString();
+const k  = v => { v = Number(v||0);
+  if (v >= 1e9) return (v/1e9).toFixed(2)+'B';
+  if (v >= 1e6) return (v/1e6).toFixed(2)+'M';
+  if (v >= 1e3) return (v/1e3).toFixed(1)+'k';
+  return String(v); };
+const pct  = (a,b) => !b ? '—' : (100*a/b).toFixed(1)+'%';
+const when = ms => ms ? new Date(Number(ms)).toLocaleString(undefined,
+  {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'}) : '—';
+const rel  = s => { if (!s) return '—';
+  const d = Number(s)*1000 - Date.now();
+  if (d <= 0) return 'now';
+  const m = Math.round(d/60000);
+  return m < 60 ? `in ${m}m` : `in ${Math.floor(m/60)}h ${m%60}m`; };
+const esc  = t => String(t ?? '').replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+
+const get = async (path, params={}) => {
+  const q = new URLSearchParams(Object.entries(params).filter(([,v]) => v));
+  const r = await fetch(path + (q.toString() ? '?'+q : ''));
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+};
+
+function table(el, cols, data, opts={}) {
+  if (!data || !data.length) { el.innerHTML =
+    `<tbody><tr><td class="empty">${opts.empty || 'Nothing recorded yet.'}</td></tr></tbody>`; return; }
+  const head = cols.map(c => `<th class="${c.num?'num':''}">${c.label}</th>`).join('');
+  const body = data.map((row,i) => {
+    const on  = opts.isOn && opts.isOn(row) ? ' on' : '';
+    const cls = opts.onClick ? ` class="clickable${on}"` : (on ? ' class="on"' : '');
+    const tds = cols.map(c =>
+      `<td class="${c.num?'num':''}${c.cls?' '+c.cls:''}">${c.get(row)}</td>`).join('');
+    return `<tr${cls} data-i="${i}">${tds}</tr>`;
+  }).join('');
+  el.innerHTML = `<thead><tr>${head}</tr></thead><tbody>${body}</tbody>`;
+  if (opts.onClick) el.querySelectorAll('tbody tr').forEach(tr =>
+    tr.onclick = () => opts.onClick(data[Number(tr.dataset.i)]));
+}
+
+function renderQuota(q, acct) {
+  document.getElementById('acct').textContent = acct
+    ? `${acct.label}${acct.subscription_type ? ' · '+acct.subscription_type : ''}`
+    : 'no account recorded';
+  const el = document.getElementById('quota');
+  if (!q) { el.innerHTML = '<div class="empty">No quota headers seen yet.</div>'; return; }
+  const one = (label, util, reset) => {
+    const p = Math.min(100, (Number(util)||0)*100);
+    const col = p >= 90 ? 'var(--bad)' : p >= 70 ? 'var(--warn)' : 'var(--accent)';
+    return `<div>
+      <div class="row"><span>${label}</span>
+        <span class="muted">${p.toFixed(0)}% · resets ${rel(reset)}</span></div>
+      <div class="bar"><i style="width:${p}%;background:${col}"></i></div></div>`;
+  };
+  el.innerHTML = one('5-hour quota', q.rl_5h_utilization, q.rl_5h_reset)
+               + one('7-day quota',  q.rl_7d_utilization, q.rl_7d_reset)
+               + `<div><div class="row"><span>Status</span>
+                    <span class="muted">${esc(q.rl_status||'—')}</span></div>
+                  <div class="row"><span class="muted">as of</span>
+                    <span class="muted">${when(q.started_at)}</span></div></div>`;
+}
+
+function renderTiles(t) {
+  const prompt = Number(t.prompt_tokens||0), cached = Number(t.cache_read_tokens||0);
+  const tiles = [
+    ['Requests',      n(t.requests),      `${n(t.sessions)} sessions · ${n(t.projects)} projects`],
+    ['Prompt tokens', k(prompt),          'everything the model read'],
+    ['Output tokens', k(t.output_tokens), `${k(t.thinking_tokens)} thinking`],
+    ['Cache reads',   k(cached),          `${pct(cached, prompt)} of prompt served from cache`],
+    ['Cache writes',  k(t.cache_write_tokens), 'tokens written to cache'],
+  ];
+  document.getElementById('tiles').innerHTML = tiles.map(([kk,v,s]) =>
+    `<div class="panel tile"><div class="k">${kk}</div><div class="v">${v}</div>
+     <div class="s">${s}</div></div>`).join('');
+}
+
+function renderContext(rows) {
+  const bar = document.getElementById('ctxbar'), leg = document.getElementById('ctxleg');
+  const total = rows.reduce((a,r) => a + Number(r.est_tokens||0), 0);
+  if (!total) { bar.innerHTML = ''; leg.innerHTML = '<span class="muted">No requests yet.</span>'; return; }
+  bar.innerHTML = rows.map(r =>
+    `<span style="width:${100*r.est_tokens/total}%;background:var(${CTX_COLORS[r.component]||'--muted'})"
+       title="${esc(r.component)}"></span>`).join('');
+  leg.innerHTML = rows.map(r =>
+    `<span><i style="background:var(${CTX_COLORS[r.component]||'--muted'})"></i>${esc(r.component)}
+     <b>${(100*r.est_tokens/total).toFixed(1)}%</b>
+     <span class="muted">${k(r.est_tokens)}</span></span>`).join('');
+}
+
+async function refresh() {
+  const s = await get('/api/summary');
+  renderQuota(s.quota, s.account);
+  renderTiles(s.totals || {});
+  renderContext(s.context || []);
+
+  table(document.getElementById('threads'), [
+    { label:'Thread',  get:r => r.thread === 'subagent'
+        ? '<span class="tag sub">subagent</span>' : '<span class="tag">main</span>' },
+    { label:'Requests',      num:true, get:r => n(r.requests) },
+    { label:'Prompt tokens', num:true, get:r => k(r.prompt_tokens) },
+    { label:'Output tokens', num:true, get:r => k(r.output_tokens) },
+    { label:'Share of prompt', num:true, get:r => {
+        const tot = (s.threads||[]).reduce((a,x) => a+Number(x.prompt_tokens||0), 0);
+        return pct(Number(r.prompt_tokens||0), tot); } },
+  ], s.threads, { empty:'No traffic recorded yet.' });
+
+  table(document.getElementById('projects'), [
+    { label:'Project', cls:'path', get:r => esc(r.project || '(unresolved)') },
+    { label:'Sessions', num:true, get:r => n(r.sessions) },
+    { label:'Requests', num:true, get:r => n(r.requests) },
+    { label:'Prompt',   num:true, get:r => k(r.prompt_tokens) },
+    { label:'Output',   num:true, get:r => k(r.output_tokens) },
+    { label:'Cached',   num:true, get:r => pct(r.cache_read_tokens, r.prompt_tokens) },
+    { label:'Subagent', num:true, get:r => pct(r.subagent_tokens, r.prompt_tokens) },
+    { label:'Last seen', num:true, get:r => when(r.last_seen) },
+  ], await get('/api/projects'), {
+    empty:'No projects yet — point one at the router and run Claude Code.',
+    isOn: r => r.project === state.project,
+    onClick: r => { state.project = state.project === r.project ? null : r.project;
+                    state.session = null; refresh(); },
+  });
+
+  const sessions = await get('/api/sessions', { project: state.project });
+  table(document.getElementById('sessions'), [
+    { label:'Session', cls:'path', get:r => esc(String(r.id).slice(0,8)) },
+    { label:'Project', cls:'path', get:r => esc(r.project || '—') },
+    { label:'Branch',  get:r => esc(r.git_branch || '—') },
+    { label:'Requests', num:true, get:r => n(r.requests) },
+    { label:'Prompt',   num:true, get:r => k(r.prompt_tokens) },
+    { label:'Output',   num:true, get:r => k(r.output_tokens) },
+    { label:'Subagents', num:true, get:r => n(r.subagents) },
+    { label:'Started',  num:true, get:r => when(r.started_at) },
+  ], sessions, {
+    empty:'No sessions for this filter.',
+    isOn: r => r.id === state.session,
+    onClick: r => { state.session = state.session === r.id ? null : r.id; refresh(); },
+  });
+
+  const tools = await get('/api/tools', { session: state.session });
+  table(document.getElementById('toolsout'), [
+    { label:'Tool → output', get:r => esc(r.name || '—') },
+    { label:'Results', num:true, get:r => n(r.results) },
+    { label:'Est. tokens', num:true, get:r => k(r.est_tokens) },
+    { label:'Errors', num:true, get:r => Number(r.errors)
+        ? `<span class="tag err">${n(r.errors)}</span>` : '0' },
+  ], tools.produced, { empty:'No tool results captured yet.' });
+
+  table(document.getElementById('toolsin'), [
+    { label:'Tool → calls', get:r => esc(r.name || '—') },
+    { label:'Calls', num:true, get:r => n(r.calls) },
+  ], tools.called, { empty:'No tool calls captured yet.' });
+
+  table(document.getElementById('requests'), [
+    { label:'When', get:r => when(r.started_at) },
+    { label:'Model', get:r => esc((r.model||'—').replace(/^claude-/,'')) },
+    { label:'Thread', get:r => Number(r.is_sidechain)
+        ? '<span class="tag sub">subagent</span>' : '' },
+    { label:'Status', get:r => Number(r.status) >= 400
+        ? `<span class="tag err">${r.status}</span>` : String(r.status ?? '—') },
+    { label:'Prompt', num:true, get:r => k(r.prompt_tokens) },
+    { label:'Cached', num:true, get:r => pct(r.cache_read_tokens, r.prompt_tokens) },
+    { label:'Output', num:true, get:r => k(r.output_tokens) },
+    { label:'TTFB',   num:true, get:r => r.ttfb_ms ? r.ttfb_ms+' ms' : '—' },
+    { label:'Total',  num:true, get:r => r.duration_ms ? r.duration_ms+' ms' : '—' },
+    { label:'Tools',  get:r => esc(r.tools || '') },
+    { label:'Stop',   get:r => esc(r.stop_reason || '—') },
+  ], await get('/api/requests', { session: state.session }),
+     { empty:'No requests for this filter.' });
+
+  const scope = document.getElementById('scope');
+  scope.textContent = state.session ? 'session ' + String(state.session).slice(0,8)
+                    : state.project ? state.project : 'all projects';
+  document.getElementById('reset').hidden = !state.project && !state.session;
+}
+
+document.getElementById('reset').onclick = () => {
+  state.project = null; state.session = null; refresh();
+};
+
+async function tick() {
+  try { await refresh(); }
+  catch (e) { document.getElementById('acct').textContent = 'router unreachable'; }
+  setTimeout(tick, 5000);
+}
+tick();
+</script>
+</body>
+</html>
