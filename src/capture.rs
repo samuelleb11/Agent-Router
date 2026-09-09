@@ -63,6 +63,10 @@ pub struct CaptureEvent {
     pub request_id: Option<String>,
     pub message_id: Option<String>,
     pub session_id: Option<String>,
+    /// Present only on subagent (Task tool) traffic — Claude Code labels it with
+    /// `x-claude-code-agent-id`, which the main thread does not send. This is what
+    /// separates subagent token burn from its parent session.
+    pub agent_id: Option<String>,
     pub account_id: String,
     pub entrypoint: Option<String>,
     pub model: Option<String>,

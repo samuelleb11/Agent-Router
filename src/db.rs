@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS requests (
   stop_reason       TEXT,
   service_tier      TEXT,
   is_sidechain      INTEGER,
+  agent_id          TEXT,
   error             TEXT,
   rl_status         TEXT,
   rl_5h_utilization REAL,
@@ -131,6 +132,8 @@ impl Db {
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.execute_batch(SCHEMA)?;
+        // Lightweight forward migration so an existing store upgrades in place.
+        ensure_column(&conn, "requests", "agent_id", "TEXT")?;
         Ok(Self { conn })
     }
 
@@ -181,8 +184,9 @@ impl Db {
                request_id, message_id, session_id, account_id, model, method, path,
                started_at, ttfb_ms, duration_ms, status, streaming, stop_reason,
                service_tier, error, rl_status, rl_5h_utilization, rl_7d_utilization,
-               rl_5h_reset, rl_7d_reset, request_bytes, response_bytes)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)
+               rl_5h_reset, rl_7d_reset, request_bytes, response_bytes,
+               agent_id, is_sidechain)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24)
              ON CONFLICT(request_id) DO NOTHING",
             params![
                 ev.request_id,
@@ -207,6 +211,8 @@ impl Db {
                 ev.rl.reset_7d,
                 ev.request_bytes,
                 ev.response_bytes,
+                ev.agent_id,
+                ev.agent_id.is_some() as i64,
             ],
         )?;
         let row_id = tx.last_insert_rowid();
@@ -288,6 +294,18 @@ impl Db {
         tx.commit()?;
         Ok(())
     }
+}
+
+/// Add a column if the table predates it. Cheap, idempotent, no migration table.
+fn ensure_column(conn: &Connection, table: &str, column: &str, ty: &str) -> Result<()> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let existing: Vec<String> = stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<std::result::Result<_, _>>()?;
+    if !existing.iter().any(|c| c == column) {
+        conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {ty}"))?;
+    }
+    Ok(())
 }
 
 fn context_components(s: &RequestShape) -> [(&'static str, i64); 4] {

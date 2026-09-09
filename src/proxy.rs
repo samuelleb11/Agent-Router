@@ -183,6 +183,8 @@ async fn forward(state: Arc<AppState>, req: Request<Body>) -> anyhow::Result<Res
     // Exact session identity, straight off the wire — Claude Code labels every request.
     let session_id = header_str(&parts.headers, "x-claude-code-session-id");
     let entrypoint = header_str(&parts.headers, "user-agent");
+    // Subagents carry this; the main thread does not.
+    let agent_id = header_str(&parts.headers, "x-claude-code-agent-id");
 
     // Claude Code sends a complete JSON body with a content-length, so collecting it
     // is effectively free and lets the capture task see what filled the context. The
@@ -231,6 +233,7 @@ async fn forward(state: Arc<AppState>, req: Request<Body>) -> anyhow::Result<Res
         ttfb_ms,
         request_id = request_id.as_deref().unwrap_or("-"),
         session = session_id.as_deref().unwrap_or("-"),
+        subagent = agent_id.is_some(),
         "proxied"
     );
     if resp_parts.status.is_client_error() || resp_parts.status.is_server_error() {
@@ -298,6 +301,7 @@ async fn forward(state: Arc<AppState>, req: Request<Body>) -> anyhow::Result<Res
             request_id,
             message_id: scanner.message_id.clone(),
             session_id,
+            agent_id,
             account_id: ACCOUNT_ID.to_string(),
             entrypoint,
             model: scanner

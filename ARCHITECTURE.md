@@ -35,6 +35,7 @@ from Claude Code 2.1.266:
 
 ```
 x-claude-code-session-id: 92807c6a-c3fd-46d6-a9a7-860f20d727c9
+x-claude-code-agent-id:   a9f0d533f6…            (subagent traffic only; absent on the main thread)
 authorization:            sk-ant-oat01-…            (subscription OAuth)
 anthropic-beta:           oauth-2025-04-20,interleaved-thinking-2025-05-14,…
 user-agent:               claude-cli/2.1.266 (external, claude-vscode, agent-sdk/0.3.267)
@@ -61,12 +62,13 @@ stream. Session attribution needs no correlation at all.
 `~/.claude/projects/<cwd-slug>/<uuid>.jsonl`, and its directory is the working directory.
 Resolved once per session and cached.
 
-**The transcript** is therefore *enrichment, not correlation*. It is the only source for the
-reconstructed message tree, per-tool results, `gitBranch`, and `isSidechain` — which separates
-subagent token burn from the main thread. It is joined on `requestId`, which equals the
-`request-id` response header the proxy already records. Because Claude Code flushes the
-transcript shortly after a response completes, this enrichment is eventually consistent — but
-nothing essential waits on it.
+Subagent traffic is separable from the wire too: Claude Code stamps `x-claude-code-agent-id`
+on Task-tool requests and omits it on the main thread. Measured on a single ordinary turn, a
+subagent accounted for **31% of the run's prompt tokens**, so this is not a rounding error.
+
+**The transcript** is therefore *enrichment only*, and nothing load-bearing depends on it. It
+remains the only source for the reconstructed message tree and per-message branch history, and
+it is joined on `requestId`, which equals the `request-id` response header the proxy records.
 
 ## Component overview
 
@@ -193,7 +195,6 @@ the project straight back to talking to Anthropic directly.
 | 1 | ✅ **Done.** Proxy listener, credential swap, byte-faithful streaming, path/credential guards. Verified end to end from `test-project`: subscription OAuth works over a custom base URL, and `x-claude-code-session-id` gives exact session attribution for free. |
 | 2 | ✅ **Done.** Capture tee, SQLite schema, SSE usage parsing through gzip, context composition, tool attribution, quota headroom, session→project resolution. Verified against a live tool-using session. |
 | 3 | Multi-account: OAuth PKCE flow, Keychain storage, refresh, live switching. |
-| 3b | Transcript enrichment: `isSidechain` per request, so subagent token burn separates from the main thread. Joined on `request-id`. |
 | 4 | Embedded web dashboard: accounts, projects, the switch, and the token breakdowns. |
 
 Each phase after the first is useful on its own.

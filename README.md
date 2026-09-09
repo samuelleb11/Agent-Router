@@ -125,8 +125,6 @@ bodies may contain your source code — the database is local and gitignored.
 * **No cost figures.** `usage.cost` is nullable and unset — there is no pricing table
   yet, and on a subscription the quota utilization the router already records is the
   more meaningful number.
-* **Subagent traffic is not separated.** `is_sidechain` needs the transcript join
-  (Phase 3b), so a subagent's tokens currently land in its parent session's totals.
 * **Context composition is an estimate.** Totals are exact; the split across system /
   tools / history / tool results apportions that exact total by character share,
   because there is no local tokenizer for current Claude models.
