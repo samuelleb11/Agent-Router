@@ -148,12 +148,12 @@ impl Decoder {
 }
 
 /// Start the capture task and return the sender the proxy tees into.
-pub fn spawn(db_path: PathBuf) -> mpsc::Sender<CaptureEvent> {
+pub fn spawn(db_path: PathBuf) -> (mpsc::Sender<CaptureEvent>, tokio::task::JoinHandle<()>) {
     // Bounded: a burst deeper than this is dropped rather than queued, so memory
     // cannot grow without limit and the hot path is never asked to wait.
     let (tx, mut rx) = mpsc::channel::<CaptureEvent>(256);
 
-    tokio::spawn(async move {
+    let task = tokio::spawn(async move {
         let mut db = match Db::open(&db_path) {
             Ok(db) => db,
             Err(err) => {
@@ -180,9 +180,12 @@ pub fn spawn(db_path: PathBuf) -> mpsc::Sender<CaptureEvent> {
                 tracing::warn!(error = %err, "could not record request");
             }
         }
+        // The channel closed, which happens only once every sender is gone — i.e.
+        // after the server has drained. Everything queued has now been written.
+        tracing::info!("capture drained");
     });
 
-    tx
+    (tx, task)
 }
 
 #[cfg(test)]

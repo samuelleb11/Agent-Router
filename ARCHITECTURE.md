@@ -26,6 +26,7 @@ the `Authorization` header.
 | Control surface | **Web UI only** | Accounts, login, the active-account switch and config are managed in the browser. No CLI beyond `agent-router serve` |
 | Credentials | Claude Code's own login flows; tokens in the macOS Keychain | Measured: `claude setup-token` and `claude auth login` emit nothing headlessly, even given a pty — they need a real terminal. So the router orchestrates around that one command rather than reimplementing an OAuth client against Anthropic's endpoints |
 | Account switch | Cached credential, dropped on switch | Takes effect on the next request, mid-session, with nothing restarted |
+| Restarts | `SO_REUSEPORT` + pid handover + drain | An upgrade never refuses a connection or cuts a stream |
 | Storage | One SQLite file (WAL), structure kept in full, content capped | Every aggregate stays derivable without gigabytes of file dumps on disk |
 | Cost/pricing | Config table, never hardcoded | Prices change |
 
@@ -178,6 +179,28 @@ the project straight back to talking to Anthropic directly.
 **Test project.** `/path/to/test-project` is the designated guinea pig. It has no
 `.claude/` directory yet; the settings file goes in during Phase 1, along with a
 `.claude/settings.local.json` entry in its `.gitignore`.
+
+## Restarting without dropping traffic
+
+Upgrading the router must not break sessions that are talking through it. Three pieces,
+in this order:
+
+1. **`SO_REUSEPORT`.** The incoming binary binds the port while the outgoing one is
+   still serving it, so the port is never unbound and no `connect()` is ever refused.
+2. **Handover.** The incoming binary reads the incumbent's pid from `/_router/health`
+   and sends it `SIGTERM`. A pid served by the live process beats a pidfile, which can
+   outlive whatever wrote it.
+3. **Drain.** On `SIGTERM` the outgoing binary stops accepting, lets its open requests
+   and SSE streams finish, waits for the capture queue to flush, then exits.
+
+**Ordering is the whole trick.** The replacement must reach its accept loop *before*
+signalling the incumbent. `SO_REUSEPORT` makes the kernel spread new connections across
+every socket bound to the port, so a process that has joined the group but is not yet
+accepting silently collects connections nobody reads. Signalling first and serving
+second — the obvious order — produced timeouts on ~6% of connections during a handover.
+Reversed, a probe every 20 ms across a live handover saw 575 successes and 0 failures,
+while a 58-second streaming response begun on the old instance completed intact and was
+recorded in full by it on the way out.
 
 ## Security
 

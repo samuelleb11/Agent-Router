@@ -106,6 +106,20 @@ router or of Claude Code. Tokens are held in the macOS Keychain, never in the da
 An isolated profile cannot disturb your main login: a fresh `CLAUDE_CONFIG_DIR` reports
 "not logged in" even with the default profile's `.claude.json` copied into it.
 
+## Upgrading without breaking sessions
+
+Build the new binary and just start it — no need to stop the old one:
+
+```sh
+cargo build --release && ./target/release/agent-router
+```
+
+The new instance binds the port alongside the old one, tells it to stand down, and the
+old one finishes the requests and streams it is already holding before exiting. Nothing
+is refused and no stream is cut, so a Claude Code session running through the router
+does not notice. Measured across a live handover: 575 consecutive probes with zero
+failures, and a 58-second streaming response begun on the old instance completed intact.
+
 ## Configuration
 
 | Variable | Default | Purpose |

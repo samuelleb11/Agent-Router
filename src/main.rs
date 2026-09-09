@@ -11,10 +11,12 @@ mod capture;
 mod config;
 mod db;
 mod guard;
+mod lifecycle;
 mod proxy;
 mod transcript;
 
-use anyhow::Context;
+use std::time::Duration;
+
 use axum::routing::{any, get, post};
 use axum::Router;
 
@@ -64,7 +66,11 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    let capture = capture::spawn(db_path.clone());
+    // Ask before binding: after our own bind, a health probe could be answered by
+    // this process and we would signal ourselves.
+    let incumbent = lifecycle::incumbent(bind);
+
+    let (capture, capture_task) = capture::spawn(db_path.clone());
     let state = proxy::AppState::new(config, capture)?;
 
     let app = Router::new()
@@ -79,23 +85,40 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/accounts/activate", post(api::accounts_activate))
         .route("/api/accounts/probe", post(api::accounts_probe))
         .route("/api/accounts/remove", post(api::accounts_remove))
-        .route("/_router/health", get(|| async { "ok" }))
+        .route("/_router/health", get(api::health))
         .fallback(any(proxy::handle))
         .layer(axum::middleware::from_fn(guard::layer))
-        .with_state(state);
+        .with_state(state.clone());
 
-    let listener = tokio::net::TcpListener::bind(bind)
-        .await
-        .with_context(|| format!("binding {bind} (is another agent-router running?)"))?;
+    // SO_REUSEPORT: the incumbent keeps serving until it has drained, so the port is
+    // never unbound and no agent sees a refused connection.
+    let listener = lifecycle::bind_reuseport(bind)?;
+    if let Some(pid) = incumbent {
+        // Signalled here, but only watched in the background: we must reach the accept
+        // loop below immediately, or connections the kernel steers to our socket sit
+        // unread while we wait.
+        if lifecycle::signal_incumbent(pid) {
+            lifecycle::watch_incumbent(pid);
+        }
+    }
 
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
-        .with_graceful_shutdown(async {
-            tokio::signal::ctrl_c().await.ok();
-            tracing::info!("shutting down");
-        })
-        .await?;
+    .with_graceful_shutdown(async {
+        let why = lifecycle::shutdown_signal().await;
+        tracing::info!("{why} received; draining in-flight requests");
+    })
+    .await?;
+
+    // Serving has stopped and every connection has finished. Dropping the last
+    // AppState closes the capture channel, which is what lets the capture task know
+    // it can stop; wait for it so nothing already queued is lost on the way out.
+    drop(state);
+    match tokio::time::timeout(Duration::from_secs(5), capture_task).await {
+        Ok(_) => tracing::info!("shutdown complete"),
+        Err(_) => tracing::warn!("capture did not drain within 5s; exiting anyway"),
+    }
     Ok(())
 }

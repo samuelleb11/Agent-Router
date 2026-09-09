@@ -36,6 +36,57 @@ pub async fn favicon() -> Response {
 pub struct Filter {
     pub project: Option<String>,
     pub session: Option<String>,
+    /// Lower bound on `requests.started_at`, in ms since the epoch. A time range the
+    /// dashboard applies to everything on the page at once.
+    pub since: Option<i64>,
+    /// The viewer's UTC offset in minutes (JavaScript's `-getTimezoneOffset()`), so
+    /// day-sized timeline buckets start at the viewer's midnight rather than UTC's.
+    pub tz: Option<i64>,
+}
+
+/// The scope predicate every read shares. Requests are joined to their session as
+/// `s` (LEFT, so a request whose transcript has not appeared yet still counts) and
+/// the parameters are always bound in this order: project, session, since.
+const SCOPE: &str = "(?1 IS NULL OR s.cwd = ?1)
+                     AND (?2 IS NULL OR r.session_id = ?2)
+                     AND (?3 IS NULL OR r.started_at >= ?3)";
+
+fn scope_params(f: &Filter) -> [&dyn rusqlite::ToSql; 3] {
+    [&f.project, &f.session, &f.since]
+}
+
+/// A percentile of a request column within the scope, by ORDER BY + OFFSET. SQLite
+/// has no percentile function, and the row counts here never justify pulling the
+/// whole column into memory.
+fn pctile(col: &str, pct: i64) -> String {
+    format!(
+        "(SELECT r.{col} FROM requests r LEFT JOIN sessions s ON s.id = r.session_id
+          WHERE r.{col} IS NOT NULL AND {SCOPE}
+          ORDER BY r.{col}
+          LIMIT 1 OFFSET (SELECT (count(*) * {pct}) / 100
+                          FROM requests r LEFT JOIN sessions s ON s.id = r.session_id
+                          WHERE r.{col} IS NOT NULL AND {SCOPE}))"
+    )
+}
+
+/// Timeline bucket width: the smallest step that keeps the span under ~72 bars, so a
+/// ten-minute session shows minutes and a month shows days.
+fn pick_bucket(span_ms: i64) -> i64 {
+    const STEPS: [i64; 8] = [
+        60_000,
+        300_000,
+        900_000,
+        1_800_000,
+        3_600_000,
+        3 * 3_600_000,
+        6 * 3_600_000,
+        86_400_000,
+    ];
+    STEPS
+        .iter()
+        .copied()
+        .find(|b| span_ms / b <= 72)
+        .unwrap_or(86_400_000)
 }
 
 type ApiResult = Result<Json<Value>, ApiError>;
@@ -100,134 +151,284 @@ fn one(conn: &Connection, sql: &str, params: &[&dyn rusqlite::ToSql]) -> anyhow:
         .unwrap_or(Value::Null))
 }
 
-/// Everything the dashboard header needs, in one round trip.
-pub async fn summary(State(state): State<Arc<AppState>>) -> ApiResult {
+/// Everything the dashboard shows above the lists, in one round trip, scoped by the
+/// same project / session / since filter as the lists so every figure on the page
+/// agrees with every other. Quota is the exception: it belongs to the account, not
+/// the project, so it always describes the active account.
+pub async fn summary(State(state): State<Arc<AppState>>, Query(f): Query<Filter>) -> ApiResult {
     let conn = open(&state)?;
+    let p = scope_params(&f);
     let totals = one(
         &conn,
-        "SELECT count(*) AS requests,
-                coalesce(sum(u.prompt_tokens),0)   AS prompt_tokens,
-                coalesce(sum(u.output_tokens),0)   AS output_tokens,
-                coalesce(sum(u.thinking_tokens),0) AS thinking_tokens,
-                coalesce(sum(u.cache_read_tokens),0) AS cache_read_tokens,
-                coalesce(sum(u.cache_creation_5m_tokens + u.cache_creation_1h_tokens),0) AS cache_write_tokens,
-                (SELECT count(*) FROM sessions) AS sessions,
-                (SELECT count(*) FROM projects) AS projects
-         FROM requests r LEFT JOIN usage u ON u.request_id = r.id",
-        &[],
+        &format!(
+            "SELECT count(*) AS requests,
+                    coalesce(sum(u.prompt_tokens),0)   AS prompt_tokens,
+                    coalesce(sum(u.input_tokens),0)    AS input_tokens,
+                    coalesce(sum(u.output_tokens),0)   AS output_tokens,
+                    coalesce(sum(u.thinking_tokens),0) AS thinking_tokens,
+                    coalesce(sum(u.cache_read_tokens),0) AS cache_read_tokens,
+                    coalesce(sum(u.cache_creation_5m_tokens),0) AS cache_write_5m_tokens,
+                    coalesce(sum(u.cache_creation_1h_tokens),0) AS cache_write_1h_tokens,
+                    coalesce(sum(u.cache_creation_5m_tokens + u.cache_creation_1h_tokens),0) AS cache_write_tokens,
+                    coalesce(sum(CASE WHEN r.status >= 400 OR r.error IS NOT NULL THEN 1 ELSE 0 END),0) AS errors,
+                    coalesce(sum(CASE WHEN coalesce(r.is_sidechain,0) = 1 THEN 1 ELSE 0 END),0) AS subagent_requests,
+                    count(DISTINCT r.session_id) AS sessions,
+                    count(DISTINCT s.cwd) AS projects,
+                    min(r.started_at) AS first_seen,
+                    max(r.started_at) AS last_seen
+             FROM requests r
+             LEFT JOIN usage u    ON u.request_id = r.id
+             LEFT JOIN sessions s ON s.id = r.session_id
+             WHERE {SCOPE}"
+        ),
+        &p,
     )?;
     let quota = one(
         &conn,
         "SELECT rl_status, rl_5h_utilization, rl_7d_utilization, rl_5h_reset, rl_7d_reset,
                 started_at
-         FROM requests WHERE rl_status IS NOT NULL ORDER BY started_at DESC LIMIT 1",
+         FROM requests
+         WHERE rl_status IS NOT NULL
+           AND account_id = (SELECT id FROM accounts WHERE active = 1 LIMIT 1)
+         ORDER BY started_at DESC LIMIT 1",
         &[],
     )?;
     let account = one(
         &conn,
-        "SELECT id, label, subscription_type FROM accounts WHERE active = 1 LIMIT 1",
+        "SELECT id, label, email, org_name, subscription_type
+         FROM accounts WHERE active = 1 LIMIT 1",
         &[],
     )?;
     let context = rows(
         &conn,
-        "SELECT component, sum(est_tokens) AS est_tokens, sum(char_count) AS chars
-         FROM context GROUP BY component ORDER BY est_tokens DESC",
-        &[],
+        &format!(
+            "SELECT c.component, sum(c.est_tokens) AS est_tokens, sum(c.char_count) AS chars
+             FROM context c
+             JOIN requests r       ON r.id = c.request_id
+             LEFT JOIN sessions s  ON s.id = r.session_id
+             WHERE {SCOPE}
+             GROUP BY c.component ORDER BY est_tokens DESC"
+        ),
+        &p,
     )?;
     let models = rows(
         &conn,
-        "SELECT r.model, count(*) AS requests,
-                sum(u.prompt_tokens) AS prompt_tokens,
-                sum(u.output_tokens) AS output_tokens,
-                sum(u.cache_read_tokens) AS cache_read_tokens
-         FROM requests r JOIN usage u ON u.request_id = r.id
-         WHERE r.model IS NOT NULL GROUP BY r.model ORDER BY prompt_tokens DESC",
-        &[],
+        &format!(
+            "SELECT r.model, count(*) AS requests,
+                    coalesce(sum(u.prompt_tokens),0)   AS prompt_tokens,
+                    coalesce(sum(u.output_tokens),0)   AS output_tokens,
+                    coalesce(sum(u.thinking_tokens),0) AS thinking_tokens,
+                    coalesce(sum(u.cache_read_tokens),0) AS cache_read_tokens,
+                    coalesce(sum(CASE WHEN r.status >= 400 OR r.error IS NOT NULL THEN 1 ELSE 0 END),0) AS errors
+             FROM requests r
+             LEFT JOIN usage u    ON u.request_id = r.id
+             LEFT JOIN sessions s ON s.id = r.session_id
+             WHERE r.model IS NOT NULL AND {SCOPE}
+             GROUP BY r.model ORDER BY prompt_tokens DESC"
+        ),
+        &p,
     )?;
+    // Rows captured before the agent_id migration have NULL there; the coalesce keeps
+    // them in the main-thread bucket instead of surfacing a third, nameless thread.
     let threads = rows(
         &conn,
-        "SELECT CASE WHEN coalesce(r.is_sidechain,0) = 1 THEN 'subagent' ELSE 'main' END AS thread,
-                count(*) AS requests, sum(u.prompt_tokens) AS prompt_tokens,
-                sum(u.output_tokens) AS output_tokens
-         FROM requests r JOIN usage u ON u.request_id = r.id
-         GROUP BY coalesce(r.is_sidechain,0) ORDER BY coalesce(r.is_sidechain,0)",
-        &[],
+        &format!(
+            "SELECT CASE WHEN coalesce(r.is_sidechain,0) = 1 THEN 'subagent' ELSE 'main' END AS thread,
+                    count(*) AS requests,
+                    coalesce(sum(u.prompt_tokens),0) AS prompt_tokens,
+                    coalesce(sum(u.output_tokens),0) AS output_tokens,
+                    count(DISTINCT r.agent_id) AS agents
+             FROM requests r
+             LEFT JOIN usage u    ON u.request_id = r.id
+             LEFT JOIN sessions s ON s.id = r.session_id
+             WHERE {SCOPE}
+             GROUP BY coalesce(r.is_sidechain,0) ORDER BY coalesce(r.is_sidechain,0)"
+        ),
+        &p,
     )?;
-    Ok(Json(
-        json!({ "totals": totals, "quota": quota, "account": account,
-                "context": context, "models": models, "threads": threads }),
-    ))
+    let latency = one(
+        &conn,
+        &format!(
+            "SELECT {} AS ttfb_p50, {} AS ttfb_p95, {} AS duration_p50, {} AS duration_p95,
+                    (SELECT max(r.duration_ms) FROM requests r
+                     LEFT JOIN sessions s ON s.id = r.session_id WHERE {SCOPE}) AS duration_max",
+            pctile("ttfb_ms", 50),
+            pctile("ttfb_ms", 95),
+            pctile("duration_ms", 50),
+            pctile("duration_ms", 95),
+        ),
+        &p,
+    )?;
+
+    // The timeline spans the requested range when one was given (so a quiet hour
+    // still shows as an hour of quiet), and the data's own span otherwise.
+    let bounds = one(
+        &conn,
+        &format!(
+            "SELECT min(r.started_at) AS lo, max(r.started_at) AS hi
+             FROM requests r LEFT JOIN sessions s ON s.id = r.session_id WHERE {SCOPE}"
+        ),
+        &p,
+    )?;
+    let lo = bounds.get("lo").and_then(Value::as_i64);
+    let hi = bounds.get("hi").and_then(Value::as_i64);
+    let tz_ms = f.tz.unwrap_or(0).clamp(-14 * 60, 14 * 60) * 60_000;
+    let range = match (lo, hi) {
+        (Some(lo), Some(hi)) => {
+            let start = f.since.map_or(lo, |s| s.min(lo));
+            let end = if f.since.is_some() { crate::db::now_ms().max(hi) } else { hi };
+            Some((start, end))
+        }
+        // No requests in the window: still hand back the window, so the chart can
+        // show an empty range rather than nothing at all.
+        _ => f.since.map(|s| (s, crate::db::now_ms().max(s + 1))),
+    };
+    let (timeline, quota_history, bucket) = match range {
+        Some((start, end)) => {
+            let bucket = pick_bucket(end - start);
+            let timeline = rows(
+                &conn,
+                &format!(
+                    "SELECT ((r.started_at + ?4) / ?5) * ?5 - ?4 AS t, r.model,
+                            count(*) AS requests,
+                            coalesce(sum(u.prompt_tokens),0) AS prompt_tokens,
+                            coalesce(sum(u.output_tokens),0) AS output_tokens,
+                            coalesce(sum(u.cache_read_tokens),0) AS cache_read_tokens,
+                            coalesce(sum(CASE WHEN coalesce(r.is_sidechain,0) = 1 THEN u.prompt_tokens ELSE 0 END),0) AS subagent_tokens,
+                            coalesce(sum(CASE WHEN r.status >= 400 OR r.error IS NOT NULL THEN 1 ELSE 0 END),0) AS errors
+                     FROM requests r
+                     LEFT JOIN usage u    ON u.request_id = r.id
+                     LEFT JOIN sessions s ON s.id = r.session_id
+                     WHERE {SCOPE}
+                     GROUP BY t, r.model ORDER BY t, r.model"
+                ),
+                &[&f.project, &f.session, &f.since, &tz_ms, &bucket],
+            )?;
+            // Quota history is the active account's, over the same buckets so the
+            // two charts share an axis. The worst reading in a bucket is the one
+            // that matters for headroom.
+            let quota_history = rows(
+                &conn,
+                "SELECT ((started_at + ?1) / ?2) * ?2 - ?1 AS t,
+                        max(rl_5h_utilization) AS rl_5h, max(rl_7d_utilization) AS rl_7d
+                 FROM requests
+                 WHERE rl_status IS NOT NULL
+                   AND started_at >= ?3 AND started_at <= ?4
+                   AND account_id = (SELECT id FROM accounts WHERE active = 1 LIMIT 1)
+                 GROUP BY t ORDER BY t",
+                &[&tz_ms, &bucket, &start, &end],
+            )?;
+            (timeline, quota_history, bucket)
+        }
+        None => (Value::Array(vec![]), Value::Array(vec![]), 0),
+    };
+    Ok(Json(json!({
+        "totals": totals, "quota": quota, "account": account, "context": context,
+        "models": models, "threads": threads, "latency": latency,
+        "timeline": {
+            "start": range.map(|r| r.0), "end": range.map(|r| r.1),
+            "bucket_ms": bucket, "rows": timeline,
+        },
+        "quota_history": quota_history,
+    })))
 }
 
-pub async fn projects(State(state): State<Arc<AppState>>) -> ApiResult {
+/// The project navigator. Never narrowed by project or session (it is how you pick
+/// one), but it does honour the time range.
+pub async fn projects(State(state): State<Arc<AppState>>, Query(f): Query<Filter>) -> ApiResult {
     let conn = open(&state)?;
     Ok(Json(rows(
         &conn,
         "SELECT s.cwd AS project,
                 count(DISTINCT s.id) AS sessions,
                 count(*)             AS requests,
-                sum(u.prompt_tokens) AS prompt_tokens,
-                sum(u.output_tokens) AS output_tokens,
-                sum(u.cache_read_tokens) AS cache_read_tokens,
-                sum(CASE WHEN coalesce(r.is_sidechain,0) = 1 THEN u.prompt_tokens ELSE 0 END) AS subagent_tokens,
+                coalesce(sum(u.prompt_tokens),0) AS prompt_tokens,
+                coalesce(sum(u.output_tokens),0) AS output_tokens,
+                coalesce(sum(u.cache_read_tokens),0) AS cache_read_tokens,
+                coalesce(sum(CASE WHEN coalesce(r.is_sidechain,0) = 1 THEN u.prompt_tokens ELSE 0 END),0) AS subagent_tokens,
+                coalesce(sum(CASE WHEN r.status >= 400 OR r.error IS NOT NULL THEN 1 ELSE 0 END),0) AS errors,
+                group_concat(DISTINCT r.model) AS models,
+                min(r.started_at)    AS first_seen,
                 max(r.started_at)    AS last_seen
          FROM requests r
-         JOIN usage u    ON u.request_id = r.id
-         JOIN sessions s ON s.id = r.session_id
+         LEFT JOIN usage u ON u.request_id = r.id
+         JOIN sessions s   ON s.id = r.session_id
+         WHERE (?1 IS NULL OR r.started_at >= ?1)
          GROUP BY s.cwd ORDER BY prompt_tokens DESC",
-        &[],
+        &[&f.since],
     )?))
 }
 
+/// The session navigator: narrowed by project and time range, never by session.
 pub async fn sessions(State(state): State<Arc<AppState>>, Query(f): Query<Filter>) -> ApiResult {
     let conn = open(&state)?;
-    let sql = "SELECT s.id, s.cwd AS project, s.git_branch, s.started_at, s.last_seen_at,
+    let sql = "SELECT s.id, s.cwd AS project, s.git_branch, s.entrypoint,
+                      s.started_at, s.last_seen_at,
                       count(*) AS requests,
-                      sum(u.prompt_tokens) AS prompt_tokens,
-                      sum(u.output_tokens) AS output_tokens,
-                      sum(u.cache_read_tokens) AS cache_read_tokens,
-                      sum(CASE WHEN coalesce(r.is_sidechain,0) = 1 THEN u.prompt_tokens ELSE 0 END) AS subagent_tokens,
-                      count(DISTINCT r.agent_id) AS subagents
+                      coalesce(sum(u.prompt_tokens),0) AS prompt_tokens,
+                      coalesce(sum(u.output_tokens),0) AS output_tokens,
+                      coalesce(sum(u.cache_read_tokens),0) AS cache_read_tokens,
+                      coalesce(sum(CASE WHEN coalesce(r.is_sidechain,0) = 1 THEN u.prompt_tokens ELSE 0 END),0) AS subagent_tokens,
+                      coalesce(sum(CASE WHEN r.status >= 400 OR r.error IS NOT NULL THEN 1 ELSE 0 END),0) AS errors,
+                      count(DISTINCT r.agent_id) AS subagents,
+                      group_concat(DISTINCT r.model) AS models,
+                      min(r.started_at) AS first_request_at,
+                      max(r.started_at) AS last_request_at
                FROM requests r
-               JOIN usage u    ON u.request_id = r.id
-               JOIN sessions s ON s.id = r.session_id
-               WHERE (?1 IS NULL OR s.cwd = ?1)
+               LEFT JOIN usage u ON u.request_id = r.id
+               JOIN sessions s   ON s.id = r.session_id
+               WHERE (?1 IS NULL OR s.cwd = ?1) AND (?2 IS NULL OR r.started_at >= ?2)
                GROUP BY s.id ORDER BY s.last_seen_at DESC LIMIT 200";
-    Ok(Json(rows(&conn, sql, &[&f.project])?))
+    Ok(Json(rows(&conn, sql, &[&f.project, &f.since])?))
 }
 
 pub async fn requests(State(state): State<Arc<AppState>>, Query(f): Query<Filter>) -> ApiResult {
     let conn = open(&state)?;
-    let sql = "SELECT r.id, r.request_id, r.model, r.status, r.ttfb_ms, r.duration_ms,
-                      r.stop_reason, r.is_sidechain, r.agent_id, r.started_at,
-                      u.prompt_tokens, u.output_tokens, u.thinking_tokens,
-                      u.cache_read_tokens,
-                      u.cache_creation_5m_tokens + u.cache_creation_1h_tokens AS cache_write_tokens,
-                      (SELECT group_concat(name) FROM tool_invocations t WHERE t.request_id = r.id) AS tools
-               FROM requests r LEFT JOIN usage u ON u.request_id = r.id
-               WHERE (?1 IS NULL OR r.session_id = ?1)
-               ORDER BY r.started_at DESC LIMIT 300";
-    Ok(Json(rows(&conn, sql, &[&f.session])?))
+    let sql = format!(
+        "SELECT r.id, r.request_id, r.session_id, s.cwd AS project, r.model, r.status,
+                r.ttfb_ms, r.duration_ms, r.stop_reason, r.is_sidechain, r.agent_id,
+                r.started_at, substr(r.error, 1, 200) AS error,
+                u.prompt_tokens, u.input_tokens, u.output_tokens, u.thinking_tokens,
+                u.cache_read_tokens,
+                u.cache_creation_5m_tokens + u.cache_creation_1h_tokens AS cache_write_tokens,
+                (SELECT group_concat(name) FROM
+                   (SELECT name FROM tool_invocations t WHERE t.request_id = r.id ORDER BY t.ordinal)
+                ) AS tools
+         FROM requests r
+         LEFT JOIN usage u    ON u.request_id = r.id
+         LEFT JOIN sessions s ON s.id = r.session_id
+         WHERE {SCOPE}
+         ORDER BY r.started_at DESC LIMIT 300"
+    );
+    Ok(Json(rows(&conn, &sql, &scope_params(&f))?))
 }
 
 pub async fn tools(State(state): State<Arc<AppState>>, Query(f): Query<Filter>) -> ApiResult {
     let conn = open(&state)?;
+    // Results are keyed by tool_use_id and carry their own session and timestamp, so
+    // they scope directly rather than through the request that first carried them.
     let produced = rows(
         &conn,
         "SELECT tc.name, count(*) AS results, sum(tc.result_chars) AS chars,
                 sum(tc.est_tokens) AS est_tokens, sum(tc.is_error) AS errors
-         FROM tool_calls tc
-         WHERE (?1 IS NULL OR tc.session_id = ?1)
+         FROM tool_calls tc LEFT JOIN sessions s ON s.id = tc.session_id
+         WHERE (?1 IS NULL OR s.cwd = ?1)
+           AND (?2 IS NULL OR tc.session_id = ?2)
+           AND (?3 IS NULL OR tc.seen_at >= ?3)
          GROUP BY tc.name ORDER BY est_tokens DESC",
-        &[&f.session],
+        &scope_params(&f),
     )?;
     let called = rows(
         &conn,
-        "SELECT ti.name, count(*) AS calls
-         FROM tool_invocations ti JOIN requests r ON r.id = ti.request_id
-         WHERE (?1 IS NULL OR r.session_id = ?1)
-         GROUP BY ti.name ORDER BY calls DESC",
-        &[&f.session],
+        &format!(
+            "SELECT ti.name, count(*) AS calls
+             FROM tool_invocations ti
+             JOIN requests r      ON r.id = ti.request_id
+             LEFT JOIN sessions s ON s.id = r.session_id
+             WHERE {SCOPE}
+             GROUP BY ti.name ORDER BY calls DESC"
+        ),
+        &scope_params(&f),
     )?;
     Ok(Json(json!({ "produced": produced, "called": called })))
 }
@@ -407,4 +608,13 @@ pub async fn accounts_remove(
     tokio::task::spawn_blocking(move || store.remove(&id)).await??;
     state.invalidate().await;
     Ok(Json(json!({ "ok": true })))
+}
+
+/// Health, and the pid a replacement instance needs in order to hand over.
+pub async fn health() -> Json<Value> {
+    Json(json!({
+        "ok": true,
+        "pid": std::process::id(),
+        "version": env!("CARGO_PKG_VERSION"),
+    }))
 }
