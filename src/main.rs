@@ -59,6 +59,7 @@ async fn main() -> anyhow::Result<()> {
         credential.subscription_type.clone(),
     );
     let state = proxy::AppState::new(config, credential, capture)?;
+    tracing::info!("the credential is re-read from the Keychain as it nears expiry");
     let app = Router::new()
         .route("/_router/health", get(|| async { "ok" }))
         .fallback(any(proxy::handle))

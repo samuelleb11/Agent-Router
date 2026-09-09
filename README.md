@@ -1,93 +1,132 @@
-# agent-router
+# Agent Router
 
+A local proxy that sits between Claude Code and Anthropic, so you can
 
+* **keep several Claude accounts separate on one machine** and pick which one is
+  serving, without `/login` and without restarting your agent; and
+* **see where your tokens actually go** — per project, per session, per model, per
+  tool, and what filled the context window.
 
-## Getting started
+Everything is local: one Rust binary, one SQLite file, no cloud, no telemetry, and a
+socket that only ever listens on loopback.
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+> **Status:** Phases 1–2 are done — the proxy captures and attributes real traffic.
+> Multi-account switching (Phase 3) and the web UI (Phase 4) are not built yet, so
+> today it routes through the account Claude Code is already logged into and you read
+> the data with SQL. See [ARCHITECTURE.md](ARCHITECTURE.md).
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+## Use it
 
-## Add your files
+**1. Build.**
 
-* [Create](https://docs.gitlab.com/user/project/repository/web_editor/#create-a-file) or [upload](https://docs.gitlab.com/user/project/repository/web_editor/#upload-a-file) files
-* [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
+```sh
+cargo build --release
+```
+
+**2. Run it.** Leave it running in a terminal, or background it.
+
+```sh
+./target/release/agent-router
+```
+
+It prints where it is listening, which credential it picked up and when that expires:
 
 ```
-cd existing_repo
-git remote add origin https://gitlab.example.com/example-org/agent-router.git
-git branch -M main
-git push -uf origin main
+agent-router listening on http://127.0.0.1:8787 (loopback only)
+  upstream:     https://api.anthropic.com
+  credential:   sk-ant-oat01 (subscription OAuth)
+  subscription: max
+  expires:      in 75 min
+capture started db=/Users/you/.agent-router/agent-router.db
 ```
 
-## Integrate with your tools
+**3. Point a project at it.** Create `.claude/settings.local.json` in the project:
 
-* [Set up project integrations](https://gitlab.example.com/example-org/agent-router/-/settings/integrations)
+```json
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://127.0.0.1:8787"
+  }
+}
+```
 
-## Collaborate with your team
+Add that file to the project's `.gitignore` — it is machine-local. The same three
+lines work in every project; there is nothing per-project to configure. Both the CLI
+and the VSCode extension read it.
 
-* [Invite team members and collaborators](https://docs.gitlab.com/user/project/members/)
-* [Create a new merge request](https://docs.gitlab.com/user/project/merge_requests/creating_merge_requests/)
-* [Automatically close issues from merge requests](https://docs.gitlab.com/user/project/issues/managing_issues/#closing-issues-automatically)
-* [Enable merge request approvals](https://docs.gitlab.com/user/project/merge_requests/approvals/)
-* [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
+**4. Use Claude Code normally.** Nothing else changes. Delete the settings file and
+the project goes straight back to talking to Anthropic directly.
 
-## Test and Deploy
+**5. Read the data.**
 
-Use the built-in continuous integration in GitLab.
+```sh
+sqlite3 ~/.agent-router/agent-router.db < queries.sql
+```
 
-* [Get started with GitLab CI/CD](https://docs.gitlab.com/ci/quick_start/)
-* [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/user/application_security/sast/)
-* [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/topics/autodevops/requirements/)
-* [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/user/clusters/agent/)
-* [Set up protected environments](https://docs.gitlab.com/ci/environments/protected_environments/)
+[`queries.sql`](queries.sql) answers the usual questions: tokens per project, tokens
+per session, cache hit rate, which tools produce the most output, what filled the
+context window, and how much of your 5-hour and weekly quota is gone.
 
-***
+## What it records
 
-# Editing this README
+Per request: the session and project it belongs to, the model, latency, status,
+exact token usage (input, output, thinking, cache reads, and cache writes split by
+5-minute and 1-hour tier), the tools the model called, the tool results in its
+context, quota headroom, and a capped copy of both bodies with their true sizes.
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
+Session and project attribution are exact, not inferred: Claude Code labels every
+request with `x-claude-code-session-id`, and that id names its own transcript file
+under `~/.claude/projects/<cwd-slug>/`, whose contents give the working directory
+and git branch.
 
-## Suggestions for a good README
+### One number worth looking at first
 
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
+On a normal Claude Code turn, **tool definitions are around three quarters of the
+context window** — far more than the conversation. Run the "where the context
+actually goes" query and see what your own split looks like.
 
-## Name
-Choose a self-explaining name for your project.
+## Configuration
 
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `AGENT_ROUTER_PORT` | `8787` | Port to listen on |
+| `AGENT_ROUTER_DB` | `~/.agent-router/agent-router.db` | Store location |
+| `AGENT_ROUTER_BODY_CAP` | `65536` | Bytes of each body kept; true size is always recorded |
+| `AGENT_ROUTER_UPSTREAM` | `https://api.anthropic.com` | Upstream API |
+| `AGENT_ROUTER_ACCESS_TOKEN` | *(unset)* | Use this token instead of the Keychain one |
+| `AGENT_ROUTER_LOG` | `agent_router=info` | `tracing` filter |
+| `AGENT_ROUTER_DUMP_HEADERS` | `1` | Requests to dump full headers for, at startup |
 
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
+There is deliberately **no setting for the bind address**. See below.
 
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
+## Security
 
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
+Agent Router holds a live subscription credential and signs everything it forwards,
+so reaching it is kept as hard as it can be without a login of its own:
 
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
+1. The socket binds to `127.0.0.1` only, and no flag or variable can widen that.
+2. The connecting peer must itself be on loopback.
+3. The `Host` header must parse as a loopback address. This is what defeats DNS
+   rebinding — a web page that resolves its own domain to `127.0.0.1` so your browser
+   will send credentialed requests here. Layers 1 and 2 both *pass* in that attack.
+4. Only `/v1/` paths are proxied, and only for callers that already presented a
+   credential of their own, so nothing can borrow the token by simply finding the port.
 
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
+Tokens live in the macOS Keychain and are never written to the database or to config.
+Inbound `authorization` and `x-api-key` headers are discarded, never stored. Captured
+bodies may contain your source code — the database is local and gitignored.
 
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
+## Current limitations
 
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
-
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
-
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
-
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
-
-## License
-For open source projects, say how it is licensed.
-
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+* **One account.** It borrows whichever account Claude Code is logged into, re-reading
+  the Keychain as the token nears expiry. Router-owned accounts and the switch are
+  Phase 3.
+* **No UI.** Phase 4. Use `queries.sql` in the meantime.
+* **No cost figures.** `usage.cost` is nullable and unset — there is no pricing table
+  yet, and on a subscription the quota utilization the router already records is the
+  more meaningful number.
+* **Subagent traffic is not separated.** `is_sidechain` needs the transcript join
+  (Phase 3b), so a subagent's tokens currently land in its parent session's totals.
+* **Context composition is an estimate.** Totals are exact; the split across system /
+  tools / history / tool results apportions that exact total by character share,
+  because there is no local tokenizer for current Claude models.

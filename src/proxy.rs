@@ -57,7 +57,10 @@ type HttpsClient = Client<
 pub struct AppState {
     pub client: HttpsClient,
     pub config: Config,
-    pub credential: Credential,
+    /// Re-read rather than held: Claude Code refreshes this Keychain entry roughly
+    /// hourly, and a token cached at startup would start 401ing mid-session. Phase 3
+    /// replaces this with router-owned tokens the router refreshes itself.
+    pub credential: tokio::sync::RwLock<Credential>,
     pub capture: Sender<CaptureEvent>,
     dumps_left: AtomicUsize,
     dropped: AtomicUsize,
@@ -79,11 +82,39 @@ impl AppState {
         Ok(Arc::new(Self {
             client,
             config,
-            credential,
+            credential: tokio::sync::RwLock::new(credential),
             capture,
             dumps_left,
             dropped: AtomicUsize::new(0),
         }))
+    }
+
+    /// The token to sign with, reloaded when it is close to expiry.
+    async fn access_token(&self) -> String {
+        const RENEW_WITHIN_SECS: i64 = 300;
+        {
+            let held = self.credential.read().await;
+            // expires_at_ms == 0 means an explicitly supplied token with no known
+            // expiry; leave it alone.
+            if held.expires_at_ms == 0 || held.expires_in_secs() > RENEW_WITHIN_SECS {
+                return held.access_token.clone();
+            }
+        }
+        let mut held = self.credential.write().await;
+        if held.expires_in_secs() <= RENEW_WITHIN_SECS {
+            match tokio::task::spawn_blocking(crate::credentials::load).await {
+                Ok(Ok(fresh)) => {
+                    tracing::info!(
+                        "credential reloaded from the Keychain; expires in {} min",
+                        fresh.expires_in_secs() / 60
+                    );
+                    *held = fresh;
+                }
+                Ok(Err(err)) => tracing::warn!(error = %err, "could not reload the credential"),
+                Err(err) => tracing::warn!(error = %err, "credential reload task failed"),
+            }
+        }
+        held.access_token.clone()
     }
 
     /// Hand a finished request to the capture task, or drop it. Never blocks.
@@ -165,6 +196,7 @@ async fn forward(state: Arc<AppState>, req: Request<Body>) -> anyhow::Result<Res
         .map(|a| a.as_str().to_owned())
         .unwrap_or_default();
 
+    let token = state.access_token().await;
     let mut out = Request::builder().method(parts.method.clone()).uri(upstream);
     {
         let headers = out.headers_mut().expect("builder has headers");
@@ -172,7 +204,7 @@ async fn forward(state: Arc<AppState>, req: Request<Body>) -> anyhow::Result<Res
         headers.insert("host", HeaderValue::from_str(&authority)?);
         // The credential swap: whatever the agent sent is discarded, ours goes on.
         headers.remove("x-api-key");
-        let mut auth = HeaderValue::from_str(&format!("Bearer {}", state.credential.access_token))?;
+        let mut auth = HeaderValue::from_str(&format!("Bearer {token}"))?;
         auth.set_sensitive(true);
         headers.insert("authorization", auth);
     }
