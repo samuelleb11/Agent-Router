@@ -17,3 +17,7 @@ serde_json = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
+rusqlite = { version = "0.37", features = ["bundled"] }
+flate2 = "1"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+async-stream = "0.3"

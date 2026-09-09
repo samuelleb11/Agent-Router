@@ -39,8 +39,19 @@ authorization:            sk-ant-oat01-…            (subscription OAuth)
 anthropic-beta:           oauth-2025-04-20,interleaved-thinking-2025-05-14,…
 user-agent:               claude-cli/2.1.266 (external, claude-vscode, agent-sdk/0.3.267)
 x-app:                    cli
-→ response header  request-id: req_011Cetg5MiwC75RoJRMWEZa9
+→ response headers
+   request-id:                                 req_011Cetg5MiwC75RoJRMWEZa9
+   content-encoding:                           gzip
+   anthropic-ratelimit-unified-status:         allowed
+   anthropic-ratelimit-unified-5h-utilization: 0.04     5h-reset: 1789005000
+   anthropic-ratelimit-unified-7d-utilization: 0.71     7d-reset: 1789333200
 ```
+
+Two consequences. Responses arrive **gzipped**, so capture decompresses a copy while the
+original is relayed downstream untouched. And the rate-limit headers give per-account quota
+utilization for free — on a subscription that is the scarce resource actually being spent, and
+it matters more than a synthetic dollar figure, which is why `usage.cost` stays nullable until
+a pricing table exists.
 
 So the proxy alone knows: the session, the account it served with, latency, status,
 rate-limit headers, errors, the entrypoint (VSCode vs CLI), and the exact usage in the SSE
@@ -133,7 +144,15 @@ tool_calls (id, request_id, ordinal, name, input_chars,
 bodies     (request_id, direction, content, truncated_at, true_bytes)
 ```
 
-`requests.session_id` is nullable: rows land unattributed and are backfilled by the join.
+`requests.session_id` is nullable: a request whose transcript does not exist yet lands
+unattributed and is resolved on a later request in the same session.
+
+**Why `tool_calls` is keyed by `tool_use_id`.** Every request in a session replays the entire
+conversation, so the same tool result appears in request N, N+1, N+2 and so on. Keying the
+table by the request would count one 200 KB file read once per subsequent turn and report tool
+costs several times larger than reality. `tool_use_id` is stable and unique, so the result is
+recorded once, on the request that first carried it. `tool_invocations` is the separate,
+per-request record of calls the assistant actually *made* in that response.
 
 ### Token estimates are estimates
 
@@ -172,8 +191,9 @@ the project straight back to talking to Anthropic directly.
 | Phase | Deliverable |
 | --- | --- |
 | 1 | ✅ **Done.** Proxy listener, credential swap, byte-faithful streaming, path/credential guards. Verified end to end from `test-project`: subscription OAuth works over a custom base URL, and `x-claude-code-session-id` gives exact session attribution for free. |
-| 2 | Capture + SQLite schema; session→project resolution; transcript watcher for enrichment. Usage attributable to session and project by hand-written SQL. |
+| 2 | ✅ **Done.** Capture tee, SQLite schema, SSE usage parsing through gzip, context composition, tool attribution, quota headroom, session→project resolution. Verified against a live tool-using session. |
 | 3 | Multi-account: OAuth PKCE flow, Keychain storage, refresh, live switching. |
+| 3b | Transcript enrichment: `isSidechain` per request, so subagent token burn separates from the main thread. Joined on `request-id`. |
 | 4 | Embedded web dashboard: accounts, projects, the switch, and the token breakdowns. |
 
 Each phase after the first is useful on its own.

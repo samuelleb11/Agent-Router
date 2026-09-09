@@ -4,9 +4,14 @@
 //! Capture, the transcript join, multi-account switching and the web UI follow.
 //! See ARCHITECTURE.md.
 
+mod analyze;
+mod capture;
 mod config;
+mod db;
 mod credentials;
+mod guard;
 mod proxy;
+mod transcript;
 
 use anyhow::Context;
 use axum::routing::{any, get};
@@ -31,7 +36,7 @@ async fn main() -> anyhow::Result<()> {
 
     let bind = config.bind;
     let upstream = config.upstream.clone();
-    tracing::info!("agent-router listening on http://{bind}");
+    tracing::info!("agent-router listening on http://{bind} (loopback only)");
     tracing::info!("  upstream:     {upstream}");
     tracing::info!("  credential:   {}", credential.kind());
     if credential.expires_at_ms > 0 {
@@ -47,7 +52,13 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("point a project at it with .claude/settings.local.json:");
     tracing::info!("  {{ \"env\": {{ \"ANTHROPIC_BASE_URL\": \"http://{bind}\" }} }}");
 
-    let state = proxy::AppState::new(config, credential)?;
+    let capture = capture::spawn(
+        config.db_path.clone(),
+        proxy::ACCOUNT_ID.to_string(),
+        "default (Claude Code Keychain)".to_string(),
+        credential.subscription_type.clone(),
+    );
+    let state = proxy::AppState::new(config, credential, capture)?;
     let app = Router::new()
         .route("/_router/health", get(|| async { "ok" }))
         .fallback(any(proxy::handle))
@@ -57,7 +68,10 @@ async fn main() -> anyhow::Result<()> {
         .await
         .with_context(|| format!("binding {bind} (is another agent-router running?)"))?;
 
-    axum::serve(listener, app)
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
         .with_graceful_shutdown(async {
             tokio::signal::ctrl_c().await.ok();
             tracing::info!("shutting down");

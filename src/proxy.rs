@@ -1,10 +1,10 @@
 //! Byte-faithful reverse proxy to Anthropic with a credential swap.
 //!
 //! Invariants (see ARCHITECTURE.md):
-//!   * The response streams straight back to the agent, unbuffered. Nothing on the
-//!     hot path waits on capture, parsing or disk.
-//!   * Bodies are never decoded, re-encoded or rewritten. `accept-encoding` is passed
-//!     through untouched and the compressed bytes are relayed as-is.
+//!   * The response streams straight back to the agent, unbuffered. Capture rides
+//!     alongside it and can only ever drop events, never delay bytes.
+//!   * Response bodies are relayed exactly as they arrive — still compressed, never
+//!     re-encoded. Capture decompresses a *copy* so it can read the SSE.
 //!   * The only header the router changes is `authorization`.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -12,14 +12,21 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use axum::body::Body;
-use axum::extract::State;
+use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Request, Response, StatusCode, Uri};
 use axum::response::IntoResponse;
+use futures_util::StreamExt;
+use http_body_util::BodyStream;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
+use tokio::sync::mpsc::Sender;
 
+use crate::analyze::{analyze_request, SseScanner};
+use crate::capture::{CaptureEvent, Decoder, RateLimit, StoredBody};
 use crate::config::Config;
 use crate::credentials::{token_kind, Credential};
+use crate::db::now_ms;
+use crate::guard;
 
 /// Headers that must not be forwarded across a proxy hop (RFC 9110 §7.6.1),
 /// plus `host`, which is rewritten to the upstream authority.
@@ -35,17 +42,33 @@ const HOP_BY_HOP: &[&str] = &[
     "host",
 ];
 
-type HttpsClient = Client<hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>, Body>;
+/// Ceiling on a buffered request body. Claude Code sends complete JSON with a
+/// content-length, so buffering costs microseconds; this only stops a pathological
+/// body from being held in memory.
+const MAX_REQUEST_BODY: usize = 64 * 1024 * 1024;
+
+pub const ACCOUNT_ID: &str = "default";
+
+type HttpsClient = Client<
+    hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
+    Body,
+>;
 
 pub struct AppState {
     pub client: HttpsClient,
     pub config: Config,
     pub credential: Credential,
+    pub capture: Sender<CaptureEvent>,
     dumps_left: AtomicUsize,
+    dropped: AtomicUsize,
 }
 
 impl AppState {
-    pub fn new(config: Config, credential: Credential) -> anyhow::Result<Arc<Self>> {
+    pub fn new(
+        config: Config,
+        credential: Credential,
+        capture: Sender<CaptureEvent>,
+    ) -> anyhow::Result<Arc<Self>> {
         let tls = hyper_rustls::HttpsConnectorBuilder::new()
             .with_webpki_roots()
             .https_only()
@@ -53,11 +76,42 @@ impl AppState {
             .build();
         let client = Client::builder(TokioExecutor::new()).build(tls);
         let dumps_left = AtomicUsize::new(config.dump_headers);
-        Ok(Arc::new(Self { client, config, credential, dumps_left }))
+        Ok(Arc::new(Self {
+            client,
+            config,
+            credential,
+            capture,
+            dumps_left,
+            dropped: AtomicUsize::new(0),
+        }))
+    }
+
+    /// Hand a finished request to the capture task, or drop it. Never blocks.
+    fn offer(&self, ev: CaptureEvent) {
+        if self.capture.try_send(ev).is_err() {
+            let n = self.dropped.fetch_add(1, Ordering::Relaxed) + 1;
+            if n.is_power_of_two() {
+                tracing::warn!("capture queue full; {n} request(s) not recorded");
+            }
+        }
     }
 }
 
-pub async fn handle(State(state): State<Arc<AppState>>, req: Request<Body>) -> Response<Body> {
+pub async fn handle(
+    State(state): State<Arc<AppState>>,
+    ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
+    req: Request<Body>,
+) -> Response<Body> {
+    // Layers 2 and 3 of the access guards; see `guard`. Refused before the request
+    // touches the credential or the network.
+    if let Err(why) = guard::check_peer(peer) {
+        tracing::warn!(%peer, "refused: {why}");
+        return (StatusCode::FORBIDDEN, format!("agent-router: {why}\n")).into_response();
+    }
+    if let Err(why) = guard::check_host(req.headers()) {
+        tracing::warn!(%peer, "refused: {why}");
+        return (StatusCode::FORBIDDEN, format!("agent-router: {why}\n")).into_response();
+    }
     match forward(state, req).await {
         Ok(resp) => resp,
         Err(err) => {
@@ -69,6 +123,7 @@ pub async fn handle(State(state): State<Arc<AppState>>, req: Request<Body>) -> R
 
 async fn forward(state: Arc<AppState>, req: Request<Body>) -> anyhow::Result<Response<Body>> {
     let started = Instant::now();
+    let started_at_ms = now_ms();
     let (parts, body) = req.into_parts();
     let path_and_query = parts
         .uri
@@ -77,30 +132,32 @@ async fn forward(state: Arc<AppState>, req: Request<Body>) -> anyhow::Result<Res
         .unwrap_or("/")
         .to_string();
 
-    // Phase 1 diagnostic: what does Claude Code actually put on the wire when its
-    // base URL points somewhere other than Anthropic? Tokens are logged by family
-    // prefix only, never by value.
     if state.dumps_left.fetch_sub(1, Ordering::Relaxed) > 0 {
         dump_request(&parts.method, &path_and_query, &parts.headers);
     }
 
-    // The router holds a real subscription credential, so it must not lend it to
-    // anything that wanders onto the port. A browser tab that hits 127.0.0.1:8787 —
-    // or any page on this machine that POSTs to it — would otherwise have its
-    // request signed with the user's token. Two cheap guards: only API paths are
-    // proxied, and the caller must already have presented a credential of its own.
+    // Layer 4: the router holds a real subscription credential, so it must not lend
+    // it to anything that wanders onto the port.
     if !path_and_query.starts_with("/v1/") {
         tracing::warn!(path = %path_and_query, "refused: not an API path");
         return Ok((StatusCode::NOT_FOUND, "agent-router: not an API path\n").into_response());
     }
     if !parts.headers.contains_key("authorization") && !parts.headers.contains_key("x-api-key") {
         tracing::warn!(path = %path_and_query, "refused: caller presented no credential");
-        return Ok((StatusCode::UNAUTHORIZED, "agent-router: no credential presented\n")
-            .into_response());
+        return Ok(
+            (StatusCode::UNAUTHORIZED, "agent-router: no credential presented\n").into_response(),
+        );
     }
 
     // Exact session identity, straight off the wire — Claude Code labels every request.
     let session_id = header_str(&parts.headers, "x-claude-code-session-id");
+    let entrypoint = header_str(&parts.headers, "user-agent");
+
+    // Claude Code sends a complete JSON body with a content-length, so collecting it
+    // is effectively free and lets the capture task see what filled the context. The
+    // latency-sensitive direction — the response stream — is never buffered.
+    let request_bytes = axum::body::to_bytes(body, MAX_REQUEST_BODY).await?;
+    let shape = analyze_request(&request_bytes);
 
     let upstream: Uri = format!("{}{}", state.config.upstream, path_and_query).parse()?;
     let authority = upstream
@@ -120,17 +177,26 @@ async fn forward(state: Arc<AppState>, req: Request<Body>) -> anyhow::Result<Res
         headers.insert("authorization", auth);
     }
 
-    let upstream_resp = state.client.request(out.body(body)?).await?;
+    let upstream_resp = state
+        .client
+        .request(out.body(Body::from(request_bytes.clone()))?)
+        .await?;
     let (resp_parts, resp_body) = upstream_resp.into_parts();
 
-    // Latency to response headers. Full stream duration lands in Phase 2, where the
-    // async tee owns the body and can time it without holding up the agent.
+    let ttfb_ms = started.elapsed().as_millis() as i64;
     let request_id = header_str(&resp_parts.headers, "request-id");
+    let status = resp_parts.status.as_u16() as i64;
+    let rl = RateLimit::from_headers(&resp_parts.headers);
+    let encoding = header_str(&resp_parts.headers, "content-encoding");
+    let is_sse = header_str(&resp_parts.headers, "content-type")
+        .map(|ct| ct.contains("event-stream"))
+        .unwrap_or(false);
+
     tracing::info!(
         method = %parts.method,
         path = %path_and_query,
-        status = resp_parts.status.as_u16(),
-        ttfb_ms = started.elapsed().as_millis() as u64,
+        status,
+        ttfb_ms,
         request_id = request_id.as_deref().unwrap_or("-"),
         session = session_id.as_deref().unwrap_or("-"),
         "proxied"
@@ -144,7 +210,92 @@ async fn forward(state: Arc<AppState>, req: Request<Body>) -> anyhow::Result<Res
         let headers = resp.headers_mut().expect("builder has headers");
         copy_forwardable(&resp_parts.headers, headers);
     }
-    Ok(resp.body(Body::new(resp_body))?)
+
+    // The tee. Each chunk is forwarded downstream first, then copied into the
+    // scanner. Capture can only ever fall behind by dropping, never by blocking.
+    let method = parts.method.to_string();
+    let body_cap = state.config.body_cap;
+    let tee = async_stream::stream! {
+        let mut stream = BodyStream::new(resp_body);
+        let mut decoder = Decoder::for_encoding(encoding.as_deref());
+        let mut scanner = SseScanner::default();
+        let mut raw = Vec::new();
+        let mut wire_bytes: i64 = 0;
+        let mut transport_error: Option<String> = None;
+
+        while let Some(item) = stream.next().await {
+            match item {
+                Ok(frame) => {
+                    let Ok(data) = frame.into_data() else { continue };
+                    wire_bytes += data.len() as i64;
+                    let plain = decoder.feed(&data);
+                    if !plain.is_empty() {
+                        if raw.len() < body_cap {
+                            let room = body_cap - raw.len();
+                            raw.extend_from_slice(&plain[..plain.len().min(room)]);
+                        }
+                        if is_sse {
+                            scanner.feed(&plain);
+                        }
+                    }
+                    yield Ok::<_, std::io::Error>(data);
+                }
+                Err(err) => {
+                    transport_error = Some(err.to_string());
+                    yield Err(std::io::Error::other(err.to_string()));
+                    break;
+                }
+            }
+        }
+
+        let tail = decoder.finish();
+        if !tail.is_empty() {
+            if raw.len() < body_cap {
+                let room = body_cap - raw.len();
+                raw.extend_from_slice(&tail[..tail.len().min(room)]);
+            }
+            if is_sse {
+                scanner.feed(&tail);
+            }
+        }
+        if !is_sse && !raw.is_empty() {
+            scanner.absorb_json_body(&raw);
+        }
+
+        state.offer(CaptureEvent {
+            request_id,
+            message_id: scanner.message_id.clone(),
+            session_id,
+            account_id: ACCOUNT_ID.to_string(),
+            entrypoint,
+            model: scanner
+                .model
+                .clone()
+                .or_else(|| shape.as_ref().and_then(|s| s.model.clone())),
+            method,
+            path: path_and_query,
+            started_at_ms,
+            ttfb_ms,
+            duration_ms: started.elapsed().as_millis() as i64,
+            status,
+            // The response is the authority; the request's `stream` flag is the
+            // fallback for a call that errored before any event arrived.
+            streaming: is_sse || shape.as_ref().map(|s| s.streaming).unwrap_or(false),
+            stop_reason: scanner.stop_reason.clone(),
+            service_tier: scanner.service_tier.clone(),
+            error: transport_error.or(scanner.error.clone()),
+            rl,
+            usage: scanner.usage.clone(),
+            tool_calls: scanner.tool_calls.clone(),
+            request_body: StoredBody::new(&request_bytes, body_cap),
+            response_body: StoredBody::new(&raw, body_cap),
+            request_bytes: request_bytes.len() as i64,
+            response_bytes: wire_bytes,
+            shape,
+        });
+    };
+
+    Ok(resp.body(Body::from_stream(tee))?)
 }
 
 /// Copy every header except the hop-by-hop set. Values are moved verbatim — no
@@ -180,9 +331,6 @@ fn dump_request(method: &axum::http::Method, path: &str, headers: &HeaderMap) {
             };
             tracing::info!("  {}: {}", name.as_str(), shown);
         }
-    }
-    if !headers.contains_key("authorization") && !headers.contains_key("x-api-key") {
-        tracing::warn!("  (no credential header present — the agent sent none)");
     }
     tracing::info!("--- end headers ---");
 }
