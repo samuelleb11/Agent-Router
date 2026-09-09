@@ -21,3 +21,4 @@ rusqlite = { version = "0.37", features = ["bundled"] }
 flate2 = "1"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 async-stream = "0.3"
+keyring = { version = "3", features = ["apple-native"] }

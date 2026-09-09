@@ -10,9 +10,8 @@ A local proxy that sits between Claude Code and Anthropic, so you can
 Everything is local: one Rust binary, one SQLite file, no cloud, no telemetry, and a
 socket that only ever listens on loopback.
 
-> **Status:** the proxy, the capture pipeline and the dashboard are done. Multi-account
-> switching is not — today it routes through the account Claude Code is already logged
-> into. See [ARCHITECTURE.md](ARCHITECTURE.md).
+> **Status:** proxy, capture, dashboard and multi-account switching are all working.
+> See [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Use it
 
@@ -88,6 +87,25 @@ On a normal Claude Code turn, **tool definitions are around three quarters of th
 context window** — far more than the conversation. Run the "where the context
 actually goes" query and see what your own split looks like.
 
+## Accounts
+
+The account Claude Code is already logged into is picked up automatically — nothing to
+configure. To add another, open the dashboard and use **+ add an account**:
+
+* **Long-lived token (recommended).** Log into the other account in a terminal and run
+  `claude setup-token`; paste what it prints. The token does not expire, so the router
+  never has to refresh it and can never collide with a running Claude Code.
+* **Separate Claude Code profile.** The router creates an isolated `CLAUDE_CONFIG_DIR`
+  and hands you a `claude auth login` command to run in a terminal. It polls for
+  completion and fills in the email, org and plan itself. The token is short-lived and
+  only Claude Code can renew it, so the dashboard shows its expiry.
+
+Switching is a click, takes effect on the **next request**, and needs no restart of the
+router or of Claude Code. Tokens are held in the macOS Keychain, never in the database.
+
+An isolated profile cannot disturb your main login: a fresh `CLAUDE_CONFIG_DIR` reports
+"not logged in" even with the default profile's `.claude.json` copied into it.
+
 ## Configuration
 
 | Variable | Default | Purpose |
@@ -121,11 +139,10 @@ bodies may contain your source code — the database is local and gitignored.
 
 ## Current limitations
 
-* **One account.** It borrows whichever account Claude Code is logged into, re-reading
-  the Keychain as the token nears expiry. Router-owned accounts and the switch are
-  Phase 3.
-* **The dashboard is read-only.** Account management and the switch land with
-  multi-account support.
+* **Adding an account needs a terminal once.** Claude Code's login is a terminal
+  program and produces no output when driven headlessly, so the router cannot run it
+  inside the page. It sets everything up either side of that one command and detects
+  when you finish.
 * **No cost figures.** `usage.cost` is nullable and unset — there is no pricing table
   yet, and on a subscription the quota utilization the router already records is the
   more meaningful number.

@@ -4,18 +4,18 @@
 //! Capture, the transcript join, multi-account switching and the web UI follow.
 //! See ARCHITECTURE.md.
 
+mod accounts;
 mod analyze;
 mod api;
 mod capture;
 mod config;
 mod db;
-mod credentials;
 mod guard;
 mod proxy;
 mod transcript;
 
 use anyhow::Context;
-use axum::routing::{any, get};
+use axum::routing::{any, get, post};
 use axum::Router;
 
 #[tokio::main]
@@ -33,35 +33,40 @@ async fn main() -> anyhow::Result<()> {
         .ok();
 
     let config = config::Config::from_env()?;
-    let credential = credentials::load().context("loading a credential to route with")?;
-
     let bind = config.bind;
-    let upstream = config.upstream.clone();
-    tracing::info!("agent-router listening on http://{bind} (loopback only)");
-    tracing::info!("  upstream:     {upstream}");
-    tracing::info!("  credential:   {}", credential.kind());
-    if credential.expires_at_ms > 0 {
-        let mins = credential.expires_in_secs() / 60;
-        tracing::info!("  subscription: {}", credential.subscription_type);
-        tracing::info!("  scopes:       {}", credential.scopes.join(", "));
-        if mins <= 0 {
-            tracing::warn!("  expires:      EXPIRED {} min ago — expect 401s", -mins);
+    let db_path = config.db_path.clone();
+
+    // Create the schema and make sure there is always something to route as: the
+    // account Claude Code is already logged into, discovered rather than configured.
+    {
+        let db = db::Db::open(&db_path)?;
+        let status = accounts::probe_profile(None).unwrap_or_default();
+        let label = status
+            .email
+            .clone()
+            .unwrap_or_else(|| "Claude Code (default profile)".to_string());
+        db.upsert_default_account(proxy::ACCOUNT_ID, &label, &status)?;
+        tracing::info!("agent-router listening on http://{bind} (loopback only)");
+        tracing::info!("  dashboard:    http://{bind}");
+        tracing::info!("  upstream:     {}", config.upstream);
+        tracing::info!("  database:     {}", db_path.display());
+        if status.logged_in {
+            tracing::info!(
+                "  default acct: {label}{}",
+                status
+                    .subscription_type
+                    .as_deref()
+                    .map(|s| format!(" · {s}"))
+                    .unwrap_or_default()
+            );
         } else {
-            tracing::info!("  expires:      in {mins} min");
+            tracing::warn!("  default acct: not logged in — run `claude` and log in, or add an account in the UI");
         }
     }
-    tracing::info!("  dashboard:    http://{bind}");
-    tracing::info!("point a project at it with .claude/settings.local.json:");
-    tracing::info!("  {{ \"env\": {{ \"ANTHROPIC_BASE_URL\": \"http://{bind}\" }} }}");
 
-    let capture = capture::spawn(
-        config.db_path.clone(),
-        proxy::ACCOUNT_ID.to_string(),
-        "default (Claude Code Keychain)".to_string(),
-        credential.subscription_type.clone(),
-    );
-    let state = proxy::AppState::new(config, credential, capture)?;
-    tracing::info!("the credential is re-read from the Keychain as it nears expiry");
+    let capture = capture::spawn(db_path.clone());
+    let state = proxy::AppState::new(config, capture)?;
+
     let app = Router::new()
         .route("/", get(api::index))
         .route("/favicon.svg", get(api::favicon))
@@ -70,6 +75,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/sessions", get(api::sessions))
         .route("/api/requests", get(api::requests))
         .route("/api/tools", get(api::tools))
+        .route("/api/accounts", get(api::accounts_list).post(api::accounts_add))
+        .route("/api/accounts/activate", post(api::accounts_activate))
+        .route("/api/accounts/probe", post(api::accounts_probe))
+        .route("/api/accounts/remove", post(api::accounts_remove))
         .route("/_router/health", get(|| async { "ok" }))
         .fallback(any(proxy::handle))
         .layer(axum::middleware::from_fn(guard::layer))

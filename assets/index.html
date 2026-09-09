@@ -70,6 +70,20 @@ tbody tr.on { background:color-mix(in srgb, var(--accent) 13%, transparent); }
 .empty { color:var(--muted); padding:22px; text-align:center; font-size:13px; }
 button.link { background:none; border:0; color:var(--accent); cursor:pointer; font:inherit;
               padding:0; text-decoration:underline; }
+.btn { background:var(--accent); color:#fff; border:0; border-radius:7px; padding:7px 14px;
+       font:inherit; font-weight:500; cursor:pointer; }
+.btn:disabled { opacity:.5; cursor:default; }
+.btn.ghost { background:none; color:var(--accent);
+             border:1px solid color-mix(in srgb, var(--accent) 45%, transparent); }
+.formrow { display:flex; flex-wrap:wrap; gap:12px; margin-bottom:10px; }
+.formrow label { display:flex; flex-direction:column; gap:4px; font-size:12px;
+                 color:var(--muted); }
+.formrow input, .formrow select { font:inherit; padding:6px 9px; border-radius:6px;
+  border:1px solid var(--line); background:var(--bg); color:var(--ink); min-width:220px; }
+pre.cmd { background:var(--bg); border:1px solid var(--line); border-radius:7px;
+  padding:10px 12px; overflow-x:auto; font-size:12px; margin:8px 0 0;
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+.dot { width:7px; height:7px; border-radius:99px; display:inline-block; margin-right:6px; }
 .note { color:var(--muted); font-size:12px; margin-top:9px; }
 </style>
 </head>
@@ -84,6 +98,31 @@ button.link { background:none; border:0; color:var(--accent); cursor:pointer; fo
   </header>
 
   <section class="panel quota" id="quota"></section>
+
+  <h2>Accounts</h2>
+  <section class="panel">
+    <div class="tablewrap"><table id="accounts"></table></div>
+    <div id="addbox" style="margin-top:14px; border-top:1px solid var(--line); padding-top:14px">
+      <button class="link" id="addtoggle">+ add an account</button>
+      <div id="addform" hidden style="margin-top:12px">
+        <div class="formrow">
+          <label>Name<input id="a-label" placeholder="work" autocomplete="off"></label>
+          <label>Type<select id="a-source">
+            <option value="token">Long-lived token (recommended)</option>
+            <option value="profile">Separate Claude Code profile</option>
+          </select></label>
+        </div>
+        <div id="a-token-row" class="formrow">
+          <label style="flex:1">Token
+            <input id="a-token" placeholder="sk-ant-oat01-…" autocomplete="off" spellcheck="false">
+          </label>
+        </div>
+        <p class="note" id="a-help"></p>
+        <button class="btn" id="a-save">Add account</button>
+        <span class="note" id="a-msg"></span>
+      </div>
+    </div>
+  </section>
 
   <h2>Totals</h2>
   <section class="grid" id="tiles"></section>
@@ -118,6 +157,7 @@ button.link { background:none; border:0; color:var(--accent); cursor:pointer; fo
 
 <script>
 const state = { project:null, session:null };
+let pollProfile = null;
 const CTX_COLORS = { tools:'--c1', system:'--c2', history:'--c3', tool_results:'--c4' };
 
 const n  = v => v == null ? '—' : Number(v).toLocaleString();
@@ -208,7 +248,99 @@ function renderContext(rows) {
      <span class="muted">${k(r.est_tokens)}</span></span>`).join('');
 }
 
+async function renderAccounts() {
+  const list = await get('/api/accounts');
+  table(document.getElementById('accounts'), [
+    { label:'', get:a => Number(a.active)
+        ? '<span class="dot" style="background:var(--ok)"></span>active'
+        : `<button class="link" data-act="${esc(a.id)}">use</button>` },
+    { label:'Account', get:a => esc(a.email || a.label) },
+    { label:'Org', get:a => esc(a.org_name || '—') },
+    { label:'Plan', get:a => esc(a.subscription_type || '—') },
+    { label:'Source', get:a => `<span class="tag">${esc(a.source)}</span>` },
+    { label:'Credential', get:a => Number(a.ready)
+        ? esc(a.detail)
+        : `<span class="tag err">${esc(String(a.detail).slice(0,70))}</span>` },
+    { label:'Expires', num:true, get:a => Number(a.expires_at)
+        ? when(a.expires_at) : 'no expiry' },
+    { label:'', get:a => a.source === 'keychain' ? ''
+        : `<button class="link" data-del="${esc(a.id)}">remove</button>` },
+  ], list, { empty:'No accounts yet.' });
+
+  document.querySelectorAll('#accounts [data-act]').forEach(b => b.onclick = async e => {
+    e.stopPropagation();
+    await post('/api/accounts/activate', { id: b.dataset.act });
+    refresh();
+  });
+  document.querySelectorAll('#accounts [data-del]').forEach(b => b.onclick = async e => {
+    e.stopPropagation();
+    if (!confirm('Remove this account from the router? Its stored token is deleted.')) return;
+    await post('/api/accounts/remove', { id: b.dataset.del });
+    refresh();
+  });
+}
+
+const post = async (path, body) => {
+  const r = await fetch(path, { method:'POST', headers:{'content-type':'application/json'},
+                                body: JSON.stringify(body) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || r.statusText);
+  return j;
+};
+
+function wireAddForm() {
+  const box = document.getElementById('addform');
+  const src = document.getElementById('a-source');
+  const help = document.getElementById('a-help');
+  const msg = document.getElementById('a-msg');
+  const tokenRow = document.getElementById('a-token-row');
+
+  const describe = () => {
+    const isToken = src.value === 'token';
+    tokenRow.hidden = !isToken;
+    help.innerHTML = isToken
+      ? 'Run <code>claude setup-token</code> in a terminal while logged into the other '
+        + 'account, and paste what it prints. Long-lived, so the router never has to '
+        + 'refresh it. Stored in your Keychain, never in the database.'
+      : 'The router creates an isolated profile directory and gives you a command to run. '
+        + 'Claude Code\'s login needs a real terminal, so it cannot happen in this page — '
+        + 'but the router detects when you finish and fills in the rest.';
+  };
+  src.onchange = describe; describe();
+
+  document.getElementById('addtoggle').onclick = () => { box.hidden = !box.hidden; };
+
+  document.getElementById('a-save').onclick = async () => {
+    const label = document.getElementById('a-label').value.trim();
+    if (!label) { msg.textContent = 'Give the account a name.'; return; }
+    msg.textContent = 'working…';
+    try {
+      const res = await post('/api/accounts', {
+        label, source: src.value, token: document.getElementById('a-token').value });
+      document.getElementById('a-token').value = '';
+      if (res.command) {
+        msg.innerHTML = 'Run this in a terminal — this page will notice when you are done:'
+          + `<pre class="cmd">${esc(res.command)}</pre>`;
+        clearInterval(pollProfile);
+        pollProfile = setInterval(async () => {
+          const st = await post('/api/accounts/probe', { id: res.id }).catch(() => ({}));
+          if (st.loggedIn) {
+            clearInterval(pollProfile); pollProfile = null;
+            msg.textContent = `Signed in as ${st.email || res.id}.`;
+            box.hidden = true; refresh();
+          }
+        }, 3000);
+      } else {
+        msg.textContent = 'Added.'; box.hidden = true;
+      }
+      renderAccounts();
+    } catch (e) { msg.textContent = String(e.message || e); }
+  };
+}
+wireAddForm();
+
 async function refresh() {
+  await renderAccounts();
   const s = await get('/api/summary');
   renderQuota(s.quota, s.account);
   renderTiles(s.totals || {});

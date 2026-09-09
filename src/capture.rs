@@ -148,7 +148,7 @@ impl Decoder {
 }
 
 /// Start the capture task and return the sender the proxy tees into.
-pub fn spawn(db_path: PathBuf, account_id: String, label: String, subscription: String) -> mpsc::Sender<CaptureEvent> {
+pub fn spawn(db_path: PathBuf) -> mpsc::Sender<CaptureEvent> {
     // Bounded: a burst deeper than this is dropped rather than queued, so memory
     // cannot grow without limit and the hot path is never asked to wait.
     let (tx, mut rx) = mpsc::channel::<CaptureEvent>(256);
@@ -161,9 +161,6 @@ pub fn spawn(db_path: PathBuf, account_id: String, label: String, subscription: 
                 return;
             }
         };
-        if let Err(err) = db.upsert_account(&account_id, &label, &subscription) {
-            tracing::error!(error = %err, "could not record the active account");
-        }
         tracing::info!(db = %db_path.display(), "capture started");
 
         let mut resolver = Resolver::new();

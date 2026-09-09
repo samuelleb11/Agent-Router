@@ -23,8 +23,8 @@ use tokio::sync::mpsc::Sender;
 
 use crate::analyze::{analyze_request, SseScanner};
 use crate::capture::{CaptureEvent, Decoder, RateLimit, StoredBody};
+use crate::accounts::{self, token_kind};
 use crate::config::Config;
-use crate::credentials::{token_kind, Credential};
 use crate::db::now_ms;
 
 /// Headers that must not be forwarded across a proxy hop (RFC 9110 §7.6.1),
@@ -48,6 +48,14 @@ const MAX_REQUEST_BODY: usize = 64 * 1024 * 1024;
 
 pub const ACCOUNT_ID: &str = "default";
 
+/// The credential currently being signed with, cached between requests.
+pub struct Active {
+    pub account_id: String,
+    pub label: String,
+    pub token: String,
+    pub expires_at_ms: i64,
+}
+
 type HttpsClient = Client<
     hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
     Body,
@@ -56,21 +64,18 @@ type HttpsClient = Client<
 pub struct AppState {
     pub client: HttpsClient,
     pub config: Config,
-    /// Re-read rather than held: Claude Code refreshes this Keychain entry roughly
-    /// hourly, and a token cached at startup would start 401ing mid-session. Phase 3
-    /// replaces this with router-owned tokens the router refreshes itself.
-    pub credential: tokio::sync::RwLock<Credential>,
+    /// Cached, not held: a Keychain-sourced token is refreshed by Claude Code roughly
+    /// hourly, so one cached at startup would begin 401ing mid-session. Cleared
+    /// outright when the active account changes, so a switch takes effect on the very
+    /// next request with nothing restarted.
+    pub active: tokio::sync::RwLock<Option<Active>>,
     pub capture: Sender<CaptureEvent>,
     dumps_left: AtomicUsize,
     dropped: AtomicUsize,
 }
 
 impl AppState {
-    pub fn new(
-        config: Config,
-        credential: Credential,
-        capture: Sender<CaptureEvent>,
-    ) -> anyhow::Result<Arc<Self>> {
+    pub fn new(config: Config, capture: Sender<CaptureEvent>) -> anyhow::Result<Arc<Self>> {
         let tls = hyper_rustls::HttpsConnectorBuilder::new()
             .with_webpki_roots()
             .https_only()
@@ -81,39 +86,54 @@ impl AppState {
         Ok(Arc::new(Self {
             client,
             config,
-            credential: tokio::sync::RwLock::new(credential),
+            active: tokio::sync::RwLock::new(None),
             capture,
             dumps_left,
             dropped: AtomicUsize::new(0),
         }))
     }
 
-    /// The token to sign with, reloaded when it is close to expiry.
-    async fn access_token(&self) -> String {
+    /// Drop the cached credential so the next request re-resolves it.
+    pub async fn invalidate(&self) {
+        *self.active.write().await = None;
+    }
+
+    /// The account and token to sign with, re-resolved when the cache is empty or
+    /// the token is close to expiry.
+    async fn signing_credential(&self) -> anyhow::Result<(String, String)> {
         const RENEW_WITHIN_SECS: i64 = 300;
         {
-            let held = self.credential.read().await;
-            // expires_at_ms == 0 means an explicitly supplied token with no known
-            // expiry; leave it alone.
-            if held.expires_at_ms == 0 || held.expires_in_secs() > RENEW_WITHIN_SECS {
-                return held.access_token.clone();
-            }
-        }
-        let mut held = self.credential.write().await;
-        if held.expires_in_secs() <= RENEW_WITHIN_SECS {
-            match tokio::task::spawn_blocking(crate::credentials::load).await {
-                Ok(Ok(fresh)) => {
-                    tracing::info!(
-                        "credential reloaded from the Keychain; expires in {} min",
-                        fresh.expires_in_secs() / 60
-                    );
-                    *held = fresh;
+            let held = self.active.read().await;
+            if let Some(a) = held.as_ref() {
+                let fresh = a.expires_at_ms == 0
+                    || (a.expires_at_ms - crate::db::now_ms()) / 1000 > RENEW_WITHIN_SECS;
+                if fresh {
+                    return Ok((a.account_id.clone(), a.token.clone()));
                 }
-                Ok(Err(err)) => tracing::warn!(error = %err, "could not reload the credential"),
-                Err(err) => tracing::warn!(error = %err, "credential reload task failed"),
             }
         }
-        held.access_token.clone()
+        let mut held = self.active.write().await;
+        let db_path = self.config.db_path.clone();
+        let loaded = tokio::task::spawn_blocking(move || {
+            let store = accounts::Store::new(db_path);
+            let account = store.active()?;
+            let resolved = accounts::resolve(&account)?;
+            Ok::<_, anyhow::Error>(Active {
+                account_id: account.id,
+                label: account.label,
+                token: resolved.token,
+                expires_at_ms: resolved.expires_at_ms,
+            })
+        })
+        .await??;
+        tracing::info!(
+            account = %loaded.label,
+            credential = token_kind(&loaded.token),
+            "signing credential resolved"
+        );
+        let pair = (loaded.account_id.clone(), loaded.token.clone());
+        *held = Some(loaded);
+        Ok(pair)
     }
 
     /// Hand a finished request to the capture task, or drop it. Never blocks.
@@ -186,7 +206,7 @@ async fn forward(state: Arc<AppState>, req: Request<Body>) -> anyhow::Result<Res
         .map(|a| a.as_str().to_owned())
         .unwrap_or_default();
 
-    let token = state.access_token().await;
+    let (account_id, token) = state.signing_credential().await?;
     let mut out = Request::builder().method(parts.method.clone()).uri(upstream);
     {
         let headers = out.headers_mut().expect("builder has headers");
@@ -290,7 +310,7 @@ async fn forward(state: Arc<AppState>, req: Request<Body>) -> anyhow::Result<Res
             message_id: scanner.message_id.clone(),
             session_id,
             agent_id,
-            account_id: ACCOUNT_ID.to_string(),
+            account_id,
             entrypoint,
             model: scanner
                 .model

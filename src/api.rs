@@ -231,3 +231,180 @@ pub async fn tools(State(state): State<Arc<AppState>>, Query(f): Query<Filter>) 
     )?;
     Ok(Json(json!({ "produced": produced, "called": called })))
 }
+
+// ---------------------------------------------------------------------------
+// Accounts
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+pub struct AddAccount {
+    pub label: String,
+    pub source: String,
+    /// Required for `token` accounts: the value `claude setup-token` printed.
+    pub token: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct AccountRef {
+    pub id: String,
+}
+
+pub async fn accounts_list(State(state): State<Arc<AppState>>) -> ApiResult {
+    let conn = open(&state)?;
+    let mut list = rows(
+        &conn,
+        "SELECT id, label, source, profile_dir, email, org_name, subscription_type,
+                active, created_at
+         FROM accounts ORDER BY created_at",
+        &[],
+    )?;
+
+    // Report whether each account can actually produce a token right now, so a
+    // half-finished profile login is visible in the UI instead of failing later.
+    if let Some(items) = list.as_array_mut() {
+        for item in items.iter_mut() {
+            let Some(obj) = item.as_object_mut() else { continue };
+            let account = crate::accounts::Account {
+                id: obj.get("id").and_then(Value::as_str).unwrap_or_default().to_string(),
+                label: String::new(),
+                source: crate::accounts::Source::parse(
+                    obj.get("source").and_then(Value::as_str).unwrap_or("keychain"),
+                )
+                .unwrap_or(crate::accounts::Source::Keychain),
+                profile_dir: obj
+                    .get("profile_dir")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+            };
+            let (ready, detail, expires) =
+                match tokio::task::spawn_blocking(move || crate::accounts::resolve(&account)).await
+                {
+                    Ok(Ok(r)) => (
+                        true,
+                        crate::accounts::token_kind(&r.token).to_string(),
+                        r.expires_at_ms,
+                    ),
+                    Ok(Err(e)) => (false, e.to_string(), 0),
+                    Err(e) => (false, e.to_string(), 0),
+                };
+            obj.insert("ready".into(), json!(ready));
+            obj.insert("detail".into(), json!(detail));
+            obj.insert("expires_at".into(), json!(expires));
+        }
+    }
+    Ok(Json(list))
+}
+
+pub async fn accounts_add(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<AddAccount>,
+) -> ApiResult {
+    let source = crate::accounts::Source::parse(&req.source)?;
+    let id = crate::accounts::slugify(&req.label);
+    let store = crate::accounts::Store::new(state.config.db_path.clone());
+
+    let result = tokio::task::spawn_blocking(move || -> anyhow::Result<Value> {
+        match source {
+            crate::accounts::Source::Token => {
+                let token = req
+                    .token
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|t| !t.is_empty())
+                    .ok_or_else(|| anyhow::anyhow!("a token is required for this account type"))?;
+                crate::accounts::store_token(&id, token)?;
+                store.add(&id, &req.label, source, None, &Default::default())?;
+                Ok(json!({ "id": id, "ready": true }))
+            }
+            crate::accounts::Source::Profile => {
+                // The router creates and owns the profile directory; the login itself
+                // is a terminal program, so the UI hands back the command to run.
+                let dir = crate::accounts::profiles_root()?.join(&id);
+                std::fs::create_dir_all(&dir)?;
+                let status = crate::accounts::probe_profile(Some(&dir)).unwrap_or_default();
+                store.add(&id, &req.label, source, Some(&dir.to_string_lossy()), &status)?;
+                Ok(json!({
+                    "id": id,
+                    "ready": status.logged_in,
+                    "profile_dir": dir.to_string_lossy(),
+                    "command": format!("CLAUDE_CONFIG_DIR={} claude auth login", dir.display()),
+                }))
+            }
+            crate::accounts::Source::Keychain => Err(anyhow::anyhow!(
+                "the default Keychain account is discovered automatically and cannot be added"
+            )),
+        }
+    })
+    .await??;
+    Ok(Json(result))
+}
+
+/// Re-check a profile account's login state, and pick up its email and org once the
+/// terminal login completes. The UI polls this so the flow finishes on its own.
+pub async fn accounts_probe(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<AccountRef>,
+) -> ApiResult {
+    let conn = open(&state)?;
+    let dir: Option<String> = rows(
+        &conn,
+        "SELECT profile_dir FROM accounts WHERE id = ?1",
+        &[&req.id],
+    )?
+    .as_array()
+    .and_then(|a| a.first().cloned())
+    .and_then(|v| v.get("profile_dir").and_then(Value::as_str).map(str::to_owned));
+    let Some(dir) = dir else {
+        return Ok(Json(json!({ "logged_in": false, "detail": "not a profile account" })));
+    };
+
+    let store = crate::accounts::Store::new(state.config.db_path.clone());
+    let id = req.id.clone();
+    let label_dir = dir.clone();
+    let status = tokio::task::spawn_blocking(move || -> anyhow::Result<Value> {
+        let status = crate::accounts::probe_profile(Some(std::path::Path::new(&label_dir)))?;
+        if status.logged_in {
+            let label = status.email.clone().unwrap_or_else(|| id.clone());
+            store.add(
+                &id,
+                &label,
+                crate::accounts::Source::Profile,
+                Some(&label_dir),
+                &status,
+            )?;
+        }
+        Ok(serde_json::to_value(status)?)
+    })
+    .await??;
+    Ok(Json(status))
+}
+
+pub async fn accounts_activate(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<AccountRef>,
+) -> ApiResult {
+    let store = crate::accounts::Store::new(state.config.db_path.clone());
+    let id = req.id.clone();
+    tokio::task::spawn_blocking(move || store.activate(&id)).await??;
+    // Drop the cached credential: the switch takes effect on the very next request,
+    // mid-session, with nothing restarted.
+    state.invalidate().await;
+    tracing::info!(account = %req.id, "active account switched");
+    Ok(Json(json!({ "ok": true, "active": req.id })))
+}
+
+pub async fn accounts_remove(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<AccountRef>,
+) -> ApiResult {
+    if req.id == crate::proxy::ACCOUNT_ID {
+        return Err(ApiError(anyhow::anyhow!(
+            "the default account is discovered automatically and cannot be removed"
+        )));
+    }
+    let store = crate::accounts::Store::new(state.config.db_path.clone());
+    let id = req.id.clone();
+    tokio::task::spawn_blocking(move || store.remove(&id)).await??;
+    state.invalidate().await;
+    Ok(Json(json!({ "ok": true })))
+}

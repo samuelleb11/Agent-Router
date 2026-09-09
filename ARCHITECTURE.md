@@ -24,7 +24,8 @@ the `Authorization` header.
 | Identity | **`x-claude-code-session-id` request header** | Claude Code labels every request with its session UUID. Exact, synchronous, no inference and no CLI wrapper |
 | Project | Session UUID → `~/.claude/projects/<cwd-slug>/<uuid>.jsonl` | A filename lookup resolves session to working directory. No content parsing |
 | Control surface | **Web UI only** | Accounts, login, the active-account switch and config are managed in the browser. No CLI beyond `agent-router serve` |
-| Credentials | Router-owned OAuth, tokens in the macOS Keychain | The agent never sees a credential, so switching accounts is a router-side concern |
+| Credentials | Claude Code's own login flows; tokens in the macOS Keychain | Measured: `claude setup-token` and `claude auth login` emit nothing headlessly, even given a pty — they need a real terminal. So the router orchestrates around that one command rather than reimplementing an OAuth client against Anthropic's endpoints |
+| Account switch | Cached credential, dropped on switch | Takes effect on the next request, mid-session, with nothing restarted |
 | Storage | One SQLite file (WAL), structure kept in full, content capped | Every aggregate stays derivable without gigabytes of file dumps on disk |
 | Cost/pricing | Config table, never hardcoded | Prices change |
 
@@ -194,7 +195,7 @@ the project straight back to talking to Anthropic directly.
 | --- | --- |
 | 1 | ✅ **Done.** Proxy listener, credential swap, byte-faithful streaming, path/credential guards. Verified end to end from `test-project`: subscription OAuth works over a custom base URL, and `x-claude-code-session-id` gives exact session attribution for free. |
 | 2 | ✅ **Done.** Capture tee, SQLite schema, SSE usage parsing through gzip, context composition, tool attribution, quota headroom, session→project resolution. Verified against a live tool-using session. |
-| 3 | Multi-account: OAuth PKCE flow, Keychain storage, refresh, live switching, and the accounts page in the UI. |
+| 3 | ✅ **Done.** Account registry with three sources, Keychain storage, live switching, and the accounts page. Verified by switching to a deliberately invalid credential mid-flight (200 → 401 → 200 with nothing restarted). |
 | 4 | ✅ **Done.** Embedded read-only dashboard: quota, projects, sessions, context composition, thread split, tools, requests. A single HTML file compiled into the binary — no build step and no node toolchain, which keeps the "one static binary" promise intact. Account management joins it in Phase 3. |
 
 Each phase after the first is useful on its own.

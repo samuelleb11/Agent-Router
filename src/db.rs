@@ -18,6 +18,10 @@ const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS accounts (
   id                TEXT PRIMARY KEY,
   label             TEXT NOT NULL,
+  source            TEXT NOT NULL DEFAULT 'keychain',
+  profile_dir       TEXT,
+  email             TEXT,
+  org_name          TEXT,
   subscription_type TEXT,
   active            INTEGER NOT NULL DEFAULT 0,
   created_at        INTEGER NOT NULL
@@ -134,15 +138,41 @@ impl Db {
         conn.execute_batch(SCHEMA)?;
         // Lightweight forward migration so an existing store upgrades in place.
         ensure_column(&conn, "requests", "agent_id", "TEXT")?;
+        for (col, ty) in [
+            ("source", "TEXT NOT NULL DEFAULT 'keychain'"),
+            ("profile_dir", "TEXT"),
+            ("email", "TEXT"),
+            ("org_name", "TEXT"),
+        ] {
+            ensure_column(&conn, "accounts", col, ty)?;
+        }
         Ok(Self { conn })
     }
 
-    pub fn upsert_account(&self, id: &str, label: &str, subscription: &str) -> Result<()> {
+    /// Record the account Claude Code is already logged into. Called once at startup;
+    /// it never steals `active` from an account the user has chosen.
+    pub fn upsert_default_account(
+        &self,
+        id: &str,
+        label: &str,
+        status: &crate::accounts::AuthStatus,
+    ) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO accounts (id, label, subscription_type, active, created_at)
-             VALUES (?1, ?2, ?3, 1, ?4)
-             ON CONFLICT(id) DO UPDATE SET label = ?2, subscription_type = ?3, active = 1",
-            params![id, label, subscription, now_ms()],
+            "INSERT INTO accounts (id, label, source, email, org_name, subscription_type,
+                                   active, created_at)
+             VALUES (?1, ?2, 'keychain', ?3, ?4, ?5,
+                     CASE WHEN (SELECT count(*) FROM accounts WHERE active = 1) = 0 THEN 1 ELSE 0 END,
+                     ?6)
+             ON CONFLICT(id) DO UPDATE SET
+               label = ?2, email = ?3, org_name = ?4, subscription_type = ?5",
+            params![
+                id,
+                label,
+                status.email,
+                status.org_name,
+                status.subscription_type,
+                now_ms()
+            ],
         )?;
         Ok(())
     }
