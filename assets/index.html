@@ -457,7 +457,7 @@ pre.cmd { background:var(--bg); border:1px solid var(--line); border-radius:7px;
       </div>
       <p class="note" id="e-idnote" style="margin:0 0 10px"></p>
       <div id="e-token-row" class="formrow" style="flex-direction:column; gap:4px">
-        <label style="flex:1; width:100%">Replace credential <span class="muted">— leave blank to keep the current one</span>
+        <label style="flex:1; width:100%">Credential <span id="e-token-state" class="muted"></span>
           <input id="e-token" type="password" placeholder="sk-ant-oat01-…" autocomplete="new-password" spellcheck="false">
         </label>
         <p class="note" style="margin:0">A fresh <code>claude setup-token</code> value, if the current one was revoked or
@@ -1563,11 +1563,23 @@ function openEdit(a) {
   // Only a token account owns its credential; the others read Claude Code's.
   document.getElementById('e-token-row').hidden = a.source !== 'token';
   // The key itself is never sent back here, so say plainly whether one is held.
+  // Show that a secret is held without ever sending it back: dots in the
+  // placeholder, so the field looks filled but submits empty, which means "keep".
+  const DOTS = '\u2022'.repeat(24);
   const hasKey = Number(a.usage_key) === 1;
+  const usageInput = document.getElementById('e-usage');
+  usageInput.placeholder = hasKey ? DOTS : 'sk-ant-sid…';
   setText(document.getElementById('e-usage-state'), hasKey
-    ? '— one is stored; leave blank to keep it, or type a new one to replace it'
+    ? '— stored; leave blank to keep it, or type a new one to replace it'
     : '— none stored; optional, for usage figures');
   document.getElementById('e-usage-clear').hidden = !hasKey;
+
+  const tokenInput = document.getElementById('e-token');
+  const hasToken = Number(a.has_token) === 1 || a.has_token === true;
+  tokenInput.placeholder = hasToken ? DOTS : 'sk-ant-oat01-…';
+  setText(document.getElementById('e-token-state'), hasToken
+    ? '— stored; leave blank to keep it'
+    : '— none stored');
   // A Keychain account's identity is whoever Claude Code is logged in as, so it is
   // discovered on every request and anything typed here would be overwritten.
   const isKeychain = a.source === 'keychain';
@@ -1649,6 +1661,7 @@ function wireEditForm() {
     const label = document.getElementById('e-label').value.trim();
     const email = document.getElementById('e-email').value.trim();
     const usage = document.getElementById('e-usage').value.trim();
+    const token = document.getElementById('e-token').value.trim();
     msg.textContent = 'saving…';
     try {
       const body = { id: editing.id };

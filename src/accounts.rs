@@ -315,6 +315,12 @@ pub fn store_usage_token(account_id: &str, token: &str) -> Result<()> {
     secrets::update(account_id, |e| e.usage_key = Some(token))
 }
 
+/// Whether a signing credential is stored for this account. The value never leaves
+/// the router; this is only so the UI can show that the field is already filled.
+pub fn has_token(account_id: &str) -> bool {
+    secrets::get(account_id).token.is_some()
+}
+
 pub fn usage_token(account_id: &str) -> Option<String> {
     secrets::get(account_id).usage_key
 }

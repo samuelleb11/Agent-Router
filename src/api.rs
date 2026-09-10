@@ -607,6 +607,11 @@ pub async fn accounts_list(State(state): State<Arc<AppState>>) -> ApiResult {
                     Ok(Err(e)) => (false, e.to_string(), 0),
                     Err(e) => (false, e.to_string(), 0),
                 };
+            let id_for_check = obj.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
+            obj.insert(
+                "has_token".into(),
+                json!(crate::accounts::has_token(&id_for_check)),
+            );
             obj.insert("ready".into(), json!(ready));
             obj.insert("detail".into(), json!(detail));
             obj.insert("expires_at".into(), json!(expires));
