@@ -80,6 +80,11 @@
   .wrap-tag.on { color: var(--ok); }
   .wrap-tag.off { color: var(--faint); }
   /* Older sessions fold away: the list is for what you are working on now. */
+  /* Project headings: the list is mostly "which of my projects is moving". */
+  .grp { font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--faint);
+         padding: 10px 2px 2px; display: flex; align-items: baseline; gap: 7px; }
+  .grp:first-child { padding-top: 0; }
+  .grp .n { color: var(--line); font-size: 10.5px; }
   #older { margin-top: 4px; }
   #older > summary { cursor: pointer; color: var(--dim); font-size: 12.5px; padding: 8px 2px; list-style: none; }
   #older > summary::-webkit-details-marker { display: none; }
@@ -236,7 +241,7 @@ async function loadSessions() {
     el.className = 'card';
     el.innerHTML =
       `<div class="row1"><span class="dot ${r.active ? 'on' : ''}"></span>` +
-      `<span class="proj">${esc(base(r.cwd) || r.project)}</span>` +
+      `<span class="proj">${esc(r.title ? (r.git_branch || r.session_id.slice(0, 8)) : (base(r.cwd) || r.project))}</span>` +
       `<span class="wrap-tag ${r.wrapped ? 'on' : 'off'}" title="${r.wrapped
         ? 'Can take a typed message and a stop' : 'Read-only — start it after installing the wrapper'}">` +
       `${r.wrapped ? 'live' : 'view'}</span>` +
@@ -247,11 +252,28 @@ async function loadSessions() {
     return el;
   };
 
+  // Grouped by project, each group led by its most recent session — so the project
+  // you touched last is at the top, which is the order you actually look in.
+  const groupInto = (target, items) => {
+    const byProject = new Map();
+    for (const r of items) {
+      const k = base(r.cwd) || r.project;
+      (byProject.get(k) ?? byProject.set(k, []).get(k)).push(r);
+    }
+    for (const [name, items] of byProject) {
+      const h = document.createElement('div');
+      h.className = 'grp';
+      h.innerHTML = `<span>${esc(name)}</span><span class="n">${items.length}</span>`;
+      target.appendChild(h);
+      for (const r of items) target.appendChild(card(r));
+    }
+  };
+
   const CUTOFF = 12 * 3600 * 1000;
   const now = Date.now();
   const recent = rows.filter(r => now - r.last_activity_ms <= CUTOFF);
   const older = rows.filter(r => now - r.last_activity_ms > CUTOFF);
-  for (const r of recent) list.appendChild(card(r));
+  groupInto(list, recent);
 
   if (older.length) {
     // <details> keeps its own open state across the 5s refresh, so a section the
@@ -262,7 +284,7 @@ async function loadSessions() {
     if (wasOpen) d.open = true;
     d.innerHTML = `<summary>${older.length} older session${older.length > 1 ? 's' : ''}</summary><div></div>`;
     const box = d.querySelector('div');
-    for (const r of older) box.appendChild(card(r));
+    groupInto(box, older);
     list.appendChild(d);
   }
 }
@@ -347,12 +369,19 @@ function render(it) {
   return clampable(el);
 }
 
-function openSession(r) {
+function openSession(r, fromHistory) {
   // Remember where the reader was in the list, so coming back does not dump them
   // somewhere else — the feed leaves the window scrolled to its own bottom.
   listScroll = list.scrollTop;
   current = r;
+  // The open session lives in the URL, so a refresh comes back to it.
+  if (!fromHistory) {
+    const u = new URL(location.href);
+    u.searchParams.set('session', r.session_id);
+    history.pushState({ session: r.session_id }, '', u);
+  }
   list.classList.add('hide');
+  home.classList.add('hide');
   feed.classList.remove('hide');
   back.classList.remove('hide');
   composer.classList.remove('hide');
