@@ -183,11 +183,25 @@ fn serve_control(session_id: String, sink: Arc<Mutex<std::process::ChildStdin>>)
     if std::fs::create_dir_all(CONTROL_DIR).is_err() {
         return;
     }
-    let path = control_path(&session_id);
+    // Re-bind if the socket file ever goes away. It lives in /tmp, so a cleaner, a
+    // reboot-adjacent sweep or a stray rm can unlink it while this process still holds
+    // the fd — leaving a session that looks unwrapped forever despite being wrapped.
+    loop {
+        serve_once(&session_id, &sink);
+        std::thread::sleep(std::time::Duration::from_secs(3));
+    }
+}
+
+fn serve_once(session_id: &str, sink: &Arc<Mutex<std::process::ChildStdin>>) {
+    let path = control_path(session_id);
     let _ = std::fs::remove_file(&path);
     let Ok(listener) = UnixListener::bind(&path) else {
         return;
     };
+    // Non-blocking so the accept loop can notice the file vanishing and rebuild it.
+    if listener.set_nonblocking(true).is_err() {
+        return;
+    }
     // Owner-only: this socket types into someone's editor.
     #[cfg(unix)]
     {
@@ -195,11 +209,22 @@ fn serve_control(session_id: String, sink: Arc<Mutex<std::process::ChildStdin>>)
         let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
     }
 
-    for conn in listener.incoming() {
-        let Ok(mut conn) = conn else { continue };
-        let sink = Arc::clone(&sink);
-        std::thread::spawn(move || {
-            let mut body = Vec::new();
+    loop {
+        match listener.accept() {
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if !path.exists() {
+                    return; // rebind on the next pass
+                }
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                continue;
+            }
+            Err(_) => return,
+            Ok((conn, _)) => {
+                let mut conn = conn;
+                let _ = conn.set_nonblocking(false);
+                let sink = Arc::clone(sink);
+                std::thread::spawn(move || {
+                    let mut body = Vec::new();
             // A control message is one line; cap it so a stuck writer cannot grow us.
             let mut buf = [0u8; 8192];
             loop {
@@ -214,9 +239,11 @@ fn serve_control(session_id: String, sink: Arc<Mutex<std::process::ChildStdin>>)
                 }
             }
             let delivered = write_line(&sink, &body);
-            let _ = conn.write_all(if delivered { b"{\"ok\":true}\n" } else { b"{\"ok\":false}\n" });
-            let _ = conn.shutdown(Shutdown::Both);
-        });
+                    let _ = conn.write_all(if delivered { b"{\"ok\":true}\n" } else { b"{\"ok\":false}\n" });
+                    let _ = conn.shutdown(Shutdown::Both);
+                });
+            }
+        }
     }
 }
 

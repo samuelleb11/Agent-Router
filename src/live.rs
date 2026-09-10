@@ -77,6 +77,8 @@ pub struct LiveSession {
     pub title: Option<String>,
     pub last_activity_ms: i64,
     pub active: bool,
+    /// Running under the shim, so it can take a typed message and a stop.
+    pub wrapped: bool,
     pub bytes: u64,
 }
 
@@ -126,6 +128,7 @@ pub fn discover() -> Vec<LiveSession> {
                 .unwrap_or_default();
             let head = read_head(&path);
             LiveSession {
+                wrapped: crate::peer::wrapper_socket(&session_id).is_some(),
                 session_id,
                 cwd: head.cwd,
                 project,
