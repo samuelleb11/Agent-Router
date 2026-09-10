@@ -63,7 +63,8 @@
     flex: 1 1 auto; min-height: 0; overflow-y: auto;
     -webkit-overflow-scrolling: touch; overscroll-behavior: contain;
   }
-  #list { padding: 12px; display: grid; gap: 8px; align-content: start; }
+  #list { padding: 12px; display: grid; grid-template-columns: minmax(0, 1fr);
+          gap: 8px; align-content: start; }
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
           padding: 12px 13px; cursor: pointer; display: grid; gap: 5px; }
   .card:active { background: var(--panel2); }
@@ -99,8 +100,13 @@
      reads as text; the user's own words get the only filled bubble, because "what did
      I ask?" is the question you scan for. Everything else — tools, thinking — is
      apparatus and recedes. */
-  #feed { padding: 14px 12px 10px; display: grid; gap: 2px; align-content: start; }
-  .ev { border-radius: 12px; padding: 2px 2px; }
+  #feed { padding: 14px 12px 10px; display: grid; grid-template-columns: minmax(0, 1fr);
+          gap: 2px; align-content: start; }
+  /* min-width:0 for the same reason the column needs min-height:0: a grid item
+     defaults to min-width:auto, so a wide <pre> stretches the track instead of
+     scrolling inside it, and the whole page ends up scrolling sideways. */
+  .ev { border-radius: 12px; padding: 2px 2px; min-width: 0; }
+  .ev > * { min-width: 0; }
   .ev .who { font-size: 10.5px; letter-spacing: .04em; color: var(--faint);
              margin-bottom: 3px; display: flex; gap: 7px; align-items: baseline; }
   .ev .dur { margin-left: auto; }
@@ -188,6 +194,34 @@
            font-size: 11.5px; color: var(--dim); }
   #facts b { color: var(--fg); font-weight: 600; }
   #facts .sep { color: var(--faint); }
+  /* ---- folding ---- */
+  .clamp { position: relative; max-height: 11em; overflow: hidden !important; }
+  .clamp::after { content: ''; position: absolute; inset: auto 0 0 0; height: 3em;
+                  background: linear-gradient(transparent, var(--bg)); pointer-events: none; }
+  .ev.user .clamp::after { background: linear-gradient(transparent, var(--accent)); }
+  .term .out.clamp::after { background: linear-gradient(transparent, var(--panel)); }
+  .term .cmd.clamp::after { background: linear-gradient(transparent, var(--panel2)); }
+  /* Four lines is enough to recognise a command or see the head of its output;
+     anything longer is opened deliberately. 1.5 line-height at 12px. */
+  .term .clamp { max-height: 6em; }
+  .more { display: block; font-size: 11.5px; color: var(--accent); cursor: pointer;
+          user-select: none; margin-top: 5px; }
+  .term .more { padding: 4px 10px 6px; margin: 0; background: var(--panel); }
+
+  /* ---- markdown ---- */
+  .md { font-size: 14.5px; white-space: normal; font-family: inherit; }
+  .md pre.code { background: var(--panel2); border: 1px solid var(--line); border-radius: 8px;
+                 padding: 9px 11px; overflow-x: auto; margin: 7px 0; white-space: pre;
+                 font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .md code { background: var(--panel2); border-radius: 4px; padding: 1px 4px;
+             font: 12.5px ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .md ul { margin: 6px 0; padding-left: 20px; }
+  .md li { margin: 2px 0; }
+  .md h3 { font-size: 14.5px; margin: 9px 0 4px; }
+  .md p { margin: 6px 0; }
+  .md p:first-child { margin-top: 0; }
+  .md p:last-child { margin-bottom: 0; }
+
   .empty { color: var(--faint); text-align: center; padding: 40px 20px; }
   .hide { display: none !important; }
 </style>
@@ -348,15 +382,21 @@ function md(src) {
 function clampable(el) {
   const body = el.querySelector('.term .out, .term .cmd, pre, .md');
   if (!body) return el;
+  // Clamp first, then measure: an unclamped element always reports
+  // scrollHeight === clientHeight, so measuring before this never folded anything.
+  body.classList.add('clamp');
   requestAnimationFrame(() => {
-    if (body.scrollHeight <= body.clientHeight + 8) return;
-    body.classList.add('clamp');
+    if (body.scrollHeight <= body.clientHeight + 4) {
+      body.classList.remove('clamp');
+      return;
+    }
     const more = document.createElement('span');
     more.className = 'more';
-    more.textContent = 'Show more';
+    const lines = Math.round(body.scrollHeight / parseFloat(getComputedStyle(body).lineHeight || 18));
+    more.textContent = `Show ${lines} lines`;
     more.onclick = () => {
-      const open = body.classList.toggle('clamp');
-      more.textContent = open ? 'Show more' : 'Show less';
+      const folded = body.classList.toggle('clamp');
+      more.textContent = folded ? `Show ${lines} lines` : 'Show less';
     };
     body.after(more);
   });
