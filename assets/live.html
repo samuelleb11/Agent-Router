@@ -98,6 +98,8 @@
   #msg:disabled { color: var(--faint); }
   #note { font-size: 11.5px; color: var(--warn); }
   #note.ok { color: var(--ok); }
+  /* Stop takes the send button's place while a turn is running, as in the real UI. */
+  #stop { background: var(--warn); border-color: var(--warn); color: #1a1200; font-weight: 600; }
   .ev.pending { opacity: .6; border-style: dashed; border-left: 3px solid var(--accent); }
   .empty { color: var(--faint); text-align: center; padding: 40px 20px; }
   .hide { display: none !important; }
@@ -117,6 +119,7 @@
   <div class="cbox">
     <textarea id="msg" rows="1" placeholder="Send a message to this session…"></textarea>
     <button id="send">Send</button>
+    <button id="stop" class="hide" title="Stop this turn">■</button>
   </div>
   <div id="note"></div>
 </div>
@@ -125,7 +128,7 @@
 const $ = s => document.querySelector(s);
 const list = $('#list'), feed = $('#feed'), back = $('#back'), heading = $('#heading');
 const stat = $('#stat'), statText = $('#statText'), composer = $('#composer');
-const msg = $('#msg'), sendBtn = $('#send'), note = $('#note');
+const msg = $('#msg'), sendBtn = $('#send'), note = $('#note'), stopBtn = $('#stop');
 let es = null, current = null, listScroll = 0;
 
 const dur = ms => ms < 1000 ? Math.round(ms) + 'ms'
@@ -141,6 +144,11 @@ const base = p => (p || '').split('/').filter(Boolean).pop() || p || '—';
 
 function setStatus(s) {
   stat.className = s ? s.state : '';
+  // Stop is only meaningful while something is running, and only a wrapped session can
+  // be interrupted — so an unwrapped one keeps Send and finds out on click.
+  const busy = !!s && (s.state === 'tool' || s.state === 'working');
+  stopBtn.classList.toggle('hide', !busy);
+  sendBtn.classList.toggle('hide', busy);
   if (!s) { statText.textContent = ''; return; }
   const quiet = s.quiet_ms > 4000 ? ' · ' + dur(s.quiet_ms) : '';
   statText.textContent = s.detail + quiet;
@@ -220,6 +228,22 @@ function openSession(r) {
   es.addEventListener('status', e => { try { setStatus(JSON.parse(e.data)); } catch {} });
   es.addEventListener('error', () => { stat.className = ''; statText.textContent = 'reconnecting…'; });
 }
+
+stopBtn.onclick = async () => {
+  if (!current) return;
+  stopBtn.disabled = true;
+  try {
+    const res = await fetch('/api/live/interrupt', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ session: current.session_id })
+    });
+    const body = await res.json().catch(() => ({}));
+    note.className = res.ok ? 'ok' : '';
+    note.textContent = res.ok ? 'Stopped.' : (body.reason || 'Could not stop this session.');
+  } catch (err) {
+    note.className = ''; note.textContent = 'Could not stop — ' + err;
+  } finally { stopBtn.disabled = false; }
+};
 
 back.onclick = async () => {
   if (es) { es.close(); es = null; }

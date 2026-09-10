@@ -546,14 +546,15 @@ pub async fn send(Json(body): Json<SendBody>) -> Response {
     if text.is_empty() {
         return bad(axum::http::StatusCode::BAD_REQUEST, "Nothing to send.");
     }
-    let Some(path) = transcript_path(&body.session) else {
-        return bad(axum::http::StatusCode::NOT_FOUND, "No such session.");
-    };
-
-    let head = read_head(&path);
-    let first_ms = first_event_ms(&path);
+    // A wrapped session is addressed by id alone. Only the peer fallback needs the
+    // transcript, to work out which process owns it — so requiring one up front would
+    // refuse the very sessions we can serve best.
     let session = body.session.clone();
-    let cwd = head.cwd.clone();
+    let (cwd, first_ms) = match transcript_path(&body.session) {
+        Some(path) => (read_head(&path).cwd, first_event_ms(&path)),
+        None if crate::peer::wrapper_socket(&body.session).is_some() => (None, None),
+        None => return bad(axum::http::StatusCode::NOT_FOUND, "No such session."),
+    };
 
     let sent = tokio::task::spawn_blocking(move || {
         // The wrapper first, always: it delivers the message as the user's own turn.
@@ -597,6 +598,28 @@ fn first_event_ms(path: &Path) -> Option<i64> {
     let text = String::from_utf8_lossy(&buf[..n]);
     let line = text.lines().next()?;
     ts_ms(&serde_json::from_str::<Value>(line).ok()?)
+}
+
+#[derive(Deserialize)]
+pub struct InterruptBody {
+    pub session: String,
+}
+
+/// Stop a running turn — the live view's equivalent of the editor's stop button.
+///
+/// Only wrapped sessions can be stopped: an interrupt is a control frame on stdin, and
+/// the peer socket carries user messages, not control.
+pub async fn interrupt(Json(body): Json<InterruptBody>) -> Response {
+    let session = body.session.clone();
+    let done = tokio::task::spawn_blocking(move || crate::peer::interrupt_via_wrapper(&session)).await;
+    match done {
+        Ok(Ok(())) => {
+            tracing::info!(session = %body.session, "interrupted from the live view");
+            Json(serde_json::json!({ "ok": true })).into_response()
+        }
+        Ok(Err(e)) => bad(axum::http::StatusCode::SERVICE_UNAVAILABLE, &e.to_string()),
+        Err(e) => bad(axum::http::StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    }
 }
 
 #[derive(Deserialize)]

@@ -210,6 +210,33 @@ pub fn wrapper_socket(session_id: &str) -> Option<PathBuf> {
 /// that channel is, and wrong for a message its user typed on a phone — which is the
 /// whole reason the wrapper exists.
 pub fn send_via_wrapper(session_id: &str, text: &str) -> anyhow::Result<()> {
+    write_via_wrapper(
+        session_id,
+        &serde_json::json!({
+            "type": "user",
+            "message": { "role": "user", "content": [{ "type": "text", "text": text }] },
+        }),
+    )
+}
+
+/// Stop whatever the session is doing, the way the editor's stop button does.
+///
+/// `cancel_queued` matches the CLI's own interrupt payload: a stop pressed by a person
+/// means "and don't then run the things I typed while it was busy", which is the whole
+/// reason the button exists.
+pub fn interrupt_via_wrapper(session_id: &str) -> anyhow::Result<()> {
+    write_via_wrapper(
+        session_id,
+        &serde_json::json!({
+            "type": "control_request",
+            "request_id": uuid_v4(),
+            "request": { "subtype": "interrupt", "cancel_queued": true },
+        }),
+    )
+}
+
+/// One newline-delimited frame into a wrapped session's stdin.
+fn write_via_wrapper(session_id: &str, frame: &serde_json::Value) -> anyhow::Result<()> {
     let path = wrapper_socket(session_id)
         .ok_or_else(|| anyhow::anyhow!("this session is not running under the wrapper"))?;
     let addr = std::os::unix::net::SocketAddr::from_pathname(&path)?;
@@ -217,10 +244,6 @@ pub fn send_via_wrapper(session_id: &str, text: &str) -> anyhow::Result<()> {
     s.set_write_timeout(Some(CONNECT_TIMEOUT))?;
     s.set_read_timeout(Some(CONNECT_TIMEOUT))?;
 
-    let frame = serde_json::json!({
-        "type": "user",
-        "message": { "role": "user", "content": [{ "type": "text", "text": text }] },
-    });
     s.write_all(format!("{frame}\n").as_bytes())?;
     s.flush()?;
 
