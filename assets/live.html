@@ -289,7 +289,9 @@ const msg = $('#msg'), sendBtn = $('#send'), note = $('#note'), stopBtn = $('#st
 const facts = $('#facts'), home = $('#home');
 let es = null, current = null, listScroll = 0, following = true, watcher = null;
 // Sent messages, newest last. -1 means "composing", not browsing.
-let history = [], histAt = -1, histDraft = '';
+// NOT named `history`: that shadows window.history, and pushState then throws inside
+// openSession, which silently stops every card in the list from opening.
+let sent = [], histAt = -1, histDraft = '';
 
 const dur = ms => ms < 1000 ? Math.round(ms) + 'ms'
   : ms < 60000 ? (ms / 1000).toFixed(ms < 10000 ? 1 : 0) + 's'
@@ -723,7 +725,7 @@ msg.addEventListener('input', () => {
 msg.addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendBtn.click(); return; }
   if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
-  if (!history.length) return;
+  if (!sent.length) return;
 
   // Only take the arrow when the caret is on the edge it would leave, so a multi-line
   // draft can still be navigated normally.
@@ -733,7 +735,7 @@ msg.addEventListener('keydown', e => {
   if (e.key === 'ArrowDown' && !atEnd) return;
 
   if (e.key === 'ArrowUp') {
-    if (histAt === -1) { histDraft = msg.value; histAt = history.length; }
+    if (histAt === -1) { histDraft = msg.value; histAt = sent.length; }
     if (histAt === 0) return;
     histAt--;
   } else {
@@ -742,7 +744,7 @@ msg.addEventListener('keydown', e => {
   }
   e.preventDefault();
   // Past the newest entry is the draft you were writing when you started browsing.
-  msg.value = histAt >= history.length ? (histAt = -1, histDraft) : history[histAt];
+  msg.value = histAt >= sent.length ? (histAt = -1, histDraft) : sent[histAt];
   msg.style.height = 'auto';
   msg.style.height = Math.min(msg.scrollHeight, 120) + 'px';
   const end = msg.value.length;
