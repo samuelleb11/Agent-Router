@@ -231,3 +231,73 @@ recorded in full by it on the way out.
 | 4 | ✅ **Done.** Embedded read-only dashboard: quota, projects, sessions, context composition, thread split, tools, requests. A single HTML file compiled into the binary — no build step and no node toolchain, which keeps the "one static binary" promise intact. Account management joins it in Phase 3. |
 
 Each phase after the first is useful on its own.
+
+## Reaching a running session
+
+Three ways in, and the difference between them is decided by the operating system,
+not by Claude Code.
+
+**Transcripts (read).** `~/.claude/projects/<cwd-slug>/<uuid>.jsonl` is appended live
+by every session, including ones the router never proxied and ones the VSCode
+extension hosts. `live` tails these. It cannot break on a CLI update, because it reads
+a file the CLI has written the same way for its whole life. This is the whole basis of
+the live view, and it is why following works everywhere.
+
+**The peer socket (write, best-effort).** Every live session binds
+`/tmp/cc-socks/<pid>.sock` and publishes a token at
+`~/.claude/sessions/<pid>.<sha256(socket path)>.key`. Two newline-delimited JSON
+frames — `{"type":"auth","token":…}` then a `{"msgV":1,…,"type":"user",…}` — push a
+message into the session's input queue. `peer` implements this.
+
+Measured, it delivers into some sessions and silently not into others, with no
+observable difference between them: same extension host process, same launch flags,
+same CLI version, same socket ownership, verified from inside the receiving session.
+So it is exposed as best-effort and the UI says when it cannot confirm delivery. Do
+not build anything load-bearing on it.
+
+**Being the parent (write, reliable).** The VSCode extension does not attach to
+sessions; it spawns them:
+
+```
+claude --input-format stream-json --output-format stream-json \
+       --permission-prompt-tool stdio --include-partial-messages --replay-user-messages
+```
+
+and keeps their stdio. Measured: `fd 0` of a running session is an **anonymous unix
+socketpair**, not a pipe and not a pty. A socketpair has no name in the filesystem, so
+the only way to hold an endpoint is to have been given it at `exec`, or to be passed it
+over `SCM_RIGHTS` by someone who already has one. No permission, path or API grants it
+afterwards.
+
+That single fact settles the design. Typing into a session — and answering the
+`AskUserQuestion` and permission prompts that `--permission-prompt-tool stdio` routes
+over that same channel — requires having been there when it was spawned.
+
+### The wrapper
+
+So the router interposes at spawn time instead, by shimming the binary the extension
+executes:
+
+```
+VSCode extension
+   |  spawns, speaks stream-json          (unchanged)
+   v
+claude-wrapper  ------- control socket -------  Agent Router  ---- phone
+   |  spawns the real binary, owns its stdin
+   v
+claude (real)
+```
+
+The wrapper relays both directions byte-for-byte, sniffs only the session id out of the
+`init` message, and publishes a control socket named by that session id. A write on that
+socket becomes the *identical bytes the extension writes when you type* — an ordinary
+user turn, not a peer message. Because the wrapper also sees the downstream side of the
+permission channel, prompts become answerable remotely too.
+
+Two costs, both accepted deliberately:
+
+  * It shims a binary inside a version-pinned extension directory, so an extension
+    update requires reinstalling it. Setup owns that, with a version check at startup.
+  * If the wrapper dies the session dies with it. The relay path must therefore be as
+    dumb as `proxy`'s tee: no parse that can throw, no buffer that can stall, and a
+    fail-open to plain pass-through when anything unexpected happens.
