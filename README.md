@@ -148,6 +148,15 @@ so reaching it is kept as hard as it can be without a login of its own:
    credential of their own, so nothing can borrow the token by simply finding the port.
 
 Tokens live in the macOS Keychain and are never written to the database or to config.
+They are read and written through `/usr/bin/security`, and the items the router creates
+trust it (`-T /usr/bin/security`). That is a deliberate trade. A locally built binary is
+ad-hoc signed, so every `cargo build` produces a new code identity, "Always Allow"
+whitelists only the build that asked, and the prompt returns on the next rebuild — with
+no button that makes it stop. The cost is that any process running as you can read those
+items through `security` without a prompt, which is the same footing as Claude Code's own
+credential entry. If you would rather have a per-binary ACL, sign the binary with a
+stable identity (`codesign -s <your-cert> target/release/agent-router`) and the Security
+framework path becomes practical again.
 Inbound `authorization` and `x-api-key` headers are discarded, never stored. Captured
 bodies may contain your source code — the database is local and gitignored.
 

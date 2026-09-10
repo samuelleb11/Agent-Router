@@ -205,7 +205,16 @@ recorded in full by it on the way out.
 ## Security
 
 - Binds to `127.0.0.1` only. No telemetry, no cloud dependency.
-- OAuth tokens live in the macOS Keychain, never in the SQLite file or in config.
+- OAuth tokens live in the macOS Keychain, never in the SQLite file or in config,
+  and never appear in a process argument: reads use `find-generic-password -w`, which
+  writes only to stdout, and writes go through `security -i` with the command supplied
+  on stdin.
+- The Keychain is driven through `/usr/bin/security` rather than the Security framework,
+  because a locally built binary is ad-hoc signed and every build is a different code
+  identity to the ACL. The router's own items therefore carry `-T /usr/bin/security`,
+  which any process running as the user can also invoke — the same footing as Claude
+  Code's credential entry, and reversible by code-signing the binary with a stable
+  identity.
 - Inbound `Authorization` / `x-api-key` headers are discarded, never persisted.
 - The credential is attached only to `/v1/` requests that already presented one of their own.
   Anything else is refused before it reaches Anthropic.

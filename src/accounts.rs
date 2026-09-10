@@ -177,6 +177,12 @@ pub fn store_token(account_id: &str, token: &str) -> Result<()> {
 }
 
 pub fn forget_token(account_id: &str) -> Result<()> {
+    let out = security(&["delete-generic-password", "-s", ROUTER_SERVICE, "-a", account_id], None)?;
+    // Exit status 44 is errSecItemNotFound: already gone is the outcome we wanted.
+    if out.status.success() || out.status.code() == Some(44) {
+        return Ok(());
+    }
+    // A leftover entry written by an earlier build through the Security framework.
     let entry = keyring::Entry::new(ROUTER_SERVICE, account_id)?;
     match entry.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
@@ -184,14 +190,72 @@ pub fn forget_token(account_id: &str) -> Result<()> {
     }
 }
 
+// Why the Keychain is driven through /usr/bin/security rather than the Security
+// framework: the Keychain identifies an application by its code signature, and a
+// locally built binary is ad-hoc signed with a per-build hash. Every `cargo build`
+// is therefore a brand-new application as far as the ACL is concerned, "Always
+// Allow" whitelists only the build that asked, and the prompt comes back after the
+// next rebuild — and a running process whose binary was rebuilt underneath it cannot
+// be validated at all, so no button makes that prompt go away. `security` is
+// Apple-signed, so its identity never changes, and it is already trusted on Claude
+// Code's own entry because Claude Code reads and writes it the same way. Going
+// through it means the router never prompts, on any build.
+
+/// Run `security` with the given arguments, optionally feeding an interactive-mode
+/// command line on stdin so a secret never appears in the process list.
+fn security(args: &[&str], stdin_line: Option<&str>) -> Result<std::process::Output> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let mut cmd = Command::new("/usr/bin/security");
+    cmd.args(args)
+        .stdin(if stdin_line.is_some() { Stdio::piped() } else { Stdio::null() })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().context("running /usr/bin/security")?;
+    if let Some(line) = stdin_line {
+        let mut stdin = child.stdin.take().context("opening security's stdin")?;
+        stdin.write_all(line.as_bytes())?;
+        stdin.write_all(b"\n")?;
+        drop(stdin);
+    }
+    Ok(child.wait_with_output()?)
+}
+
 fn keychain_read(service: &str, account: &str) -> Result<String> {
-    Ok(keyring::Entry::new(service, account)?.get_password()?)
+    // `-w` prints only the secret, to stdout, followed by a newline.
+    let out = security(&["find-generic-password", "-s", service, "-a", account, "-w"], None)?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        anyhow::bail!(
+            "no Keychain entry for {service} / {account}: {}",
+            err.trim().trim_start_matches("security: ")
+        );
+    }
+    let text = String::from_utf8(out.stdout).context("Keychain entry was not UTF-8 text")?;
+    Ok(text.trim_end_matches(['\n', '\r']).to_string())
 }
 
 fn keychain_write(service: &str, account: &str, secret: &str) -> Result<()> {
-    // Via the Security framework rather than the `security` CLI: a secret passed as a
-    // command-line argument is visible to `ps` for as long as the process lives.
-    Ok(keyring::Entry::new(service, account)?.set_password(secret)?)
+    // Interactive mode reads the command line from stdin, so the secret is never a
+    // process argument. The parser splits on whitespace and honours double quotes;
+    // a token that could confuse it goes through the Security framework instead,
+    // where "Always Allow" is per build — but the item is at least written.
+    let simple = !secret.is_empty()
+        && secret
+            .chars()
+            .all(|c| c.is_ascii_graphic() && c != '"' && c != '\\');
+    if !simple {
+        return Ok(keyring::Entry::new(service, account)?.set_password(secret)?);
+    }
+    let line = format!(
+        "add-generic-password -U -s \"{service}\" -a \"{account}\" -w \"{secret}\" -T /usr/bin/security"
+    );
+    let out = security(&["-i"], Some(&line))?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        anyhow::bail!("storing the token in the Keychain failed: {}", err.trim());
+    }
+    Ok(())
 }
 
 fn current_user() -> String {
