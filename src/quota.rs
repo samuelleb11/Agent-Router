@@ -43,13 +43,33 @@ pub struct Cached {
 #[derive(serde::Deserialize)]
 pub struct UsageToken {
     pub account_id: String,
+    #[serde(default)]
     pub token: String,
+    /// Delete the stored key instead of setting one.
+    #[serde(default)]
+    pub clear: bool,
+}
+
+fn set_flag(state: &AppState, account_id: &str, set: bool) {
+    if let Ok(conn) = rusqlite::Connection::open(&state.config.db_path) {
+        let _ = conn.execute(
+            "UPDATE accounts SET usage_key = ?2 WHERE id = ?1",
+            rusqlite::params![account_id, set as i64],
+        );
+    }
 }
 
 pub async fn set_usage_token(
     State(state): State<Arc<AppState>>,
     Json(req): Json<UsageToken>,
 ) -> impl IntoResponse {
+    if req.clear {
+        let id = req.account_id.clone();
+        let _ = tokio::task::spawn_blocking(move || crate::accounts::forget_usage_token(&id)).await;
+        set_flag(&state, &req.account_id, false);
+        *state.quota_cache.write().await = None;
+        return Json(json!({ "ok": true, "cleared": true }));
+    }
     let token = req.token.trim().to_string();
     if token.is_empty() {
         return Json(json!({ "error": "no token supplied" }));
@@ -64,6 +84,7 @@ pub async fn set_usage_token(
         .await;
     match stored {
         Ok(Ok(())) => {
+            set_flag(&state, &req.account_id, true);
             // The stored key changes where quota comes from, so drop what we cached.
             *state.quota_cache.write().await = None;
             Json(json!({ "ok": true, "account_id": req.account_id }))

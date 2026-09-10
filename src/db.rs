@@ -144,6 +144,10 @@ impl Db {
             ("profile_dir", "TEXT"),
             ("email", "TEXT"),
             ("org_name", "TEXT"),
+            // Whether a claude.ai session key is stored for this account. The key
+            // itself stays in the Keychain; this is only so the UI can say whether
+            // one is set without a Keychain read per account per poll.
+            ("usage_key", "INTEGER NOT NULL DEFAULT 0"),
         ] {
             ensure_column(&conn, "accounts", col, ty)?;
         }

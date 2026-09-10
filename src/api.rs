@@ -11,6 +11,7 @@ use axum::http::{header, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::Json;
 use rusqlite::types::ValueRef;
+use rusqlite::OptionalExtension;
 use rusqlite::{Connection, OpenFlags};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
@@ -491,6 +492,10 @@ pub struct AccountEdit {
     pub label: Option<String>,
     /// The identity this account serves, when the router cannot discover it.
     pub email: Option<String>,
+    /// Replace the credential this account signs with. Only meaningful for a `token`
+    /// account — a Keychain account reads Claude Code's own entry, and a profile
+    /// account reads its profile directory, so neither is ours to overwrite.
+    pub token: Option<String>,
 }
 
 fn looks_like_email(s: &str) -> bool {
@@ -517,14 +522,47 @@ pub async fn accounts_edit(
             return Err(ApiError(anyhow::anyhow!("{email:?} is not an email address")));
         }
     }
-    let changed = conn.execute(
+    let source: Option<String> = conn
+        .query_row("SELECT source FROM accounts WHERE id = ?1", [&req.id], |r| {
+            r.get::<_, Option<String>>(0)
+        })
+        .optional()?
+        .flatten();
+    let Some(source) = source else {
+        return Err(ApiError(anyhow::anyhow!("no account with id {:?}", req.id)));
+    };
+
+    // Removing an account's stored session key must also clear the flag.
+    // Rotating the credential: replace it in the Keychain, in place, so the account
+    // keeps its id and everything recorded against it.
+    if let Some(token) = req.token.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+        if source != "token" {
+            return Err(ApiError(anyhow::anyhow!(
+                "a {source} account takes its credential from Claude Code, so there is \
+                 nothing here to replace — log in again instead"
+            )));
+        }
+        if token.starts_with("sk-ant-sid") {
+            return Err(ApiError(anyhow::anyhow!(
+                "that is a claude.ai session key — it belongs in the session-key field, \
+                 and cannot sign API requests"
+            )));
+        }
+        if !token.starts_with("sk-ant-") {
+            return Err(ApiError(anyhow::anyhow!(
+                "expected a token starting sk-ant- (from `claude setup-token`)"
+            )));
+        }
+        let id = req.id.clone();
+        let token = token.to_string();
+        tokio::task::spawn_blocking(move || crate::accounts::store_token(&id, &token)).await??;
+    }
+
+    conn.execute(
         "UPDATE accounts SET label = COALESCE(?2, label), email = COALESCE(?3, email)
          WHERE id = ?1",
         rusqlite::params![req.id, label, email],
     )?;
-    if changed == 0 {
-        return Err(ApiError(anyhow::anyhow!("no account with id {:?}", req.id)));
-    }
     // The cached credential carries the label and identity, so re-resolve it.
     state.invalidate().await;
     Ok(Json(json!({ "ok": true, "id": req.id })))
@@ -535,7 +573,7 @@ pub async fn accounts_list(State(state): State<Arc<AppState>>) -> ApiResult {
     let mut list = rows(
         &conn,
         "SELECT id, label, source, profile_dir, email, org_name, subscription_type,
-                active, created_at
+                active, created_at, coalesce(usage_key, 0) AS usage_key
          FROM accounts ORDER BY created_at",
         &[],
     )?;

@@ -23,11 +23,6 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 /// Keychain service the router stores its *own* secrets under.
-const ROUTER_SERVICE: &str = "agent-router";
-/// Keychain service for the optional claude.ai web session key an account may carry
-/// for reading usage. Kept separate from the inference credential: different scope,
-/// different lifetime, and losing one should not invalidate the other.
-const USAGE_SERVICE: &str = "agent-router-usage";
 /// Keychain service Claude Code stores the default profile's credentials under.
 const CLAUDE_SERVICE: &str = "Claude Code-credentials";
 
@@ -159,8 +154,9 @@ pub fn resolve(account: &Account) -> Result<Resolved> {
             Ok(resolved)
         }
         Source::Token => {
-            let token = keychain_read(ROUTER_SERVICE, &account.id)
-                .with_context(|| format!("reading the stored token for account {}", account.id))?;
+            let token = secrets::get(&account.id).token.ok_or_else(|| {
+                anyhow!("no token stored for account {} — add one in the dashboard", account.id)
+            })?;
             // setup-token issues long-lived tokens; there is no expiry to track.
             Ok(Resolved {
                 token: token.trim().to_string(),
@@ -201,55 +197,135 @@ fn parse_stored(raw: &str) -> Result<Resolved> {
     })
 }
 
+/// Router-owned secrets live in a 0600 file, not the Keychain.
+///
+/// The Keychain identifies an application by its code signature, and a locally built
+/// binary is ad-hoc signed with a per-build hash, so every rebuild is a new
+/// application to the ACL and "Always Allow" never sticks. The workaround is to trust
+/// `/usr/bin/security` on the item — but that lets *any* process running as this user
+/// read it without a prompt, which is the same exposure as a 0600 file in the user's
+/// home directory. Given identical real-world exposure, the file avoids the prompts,
+/// avoids the `-U` update path that cannot set an ACL without a GUI prompt, and keeps
+/// rotation a plain atomic write.
+///
+/// What it gives up: encryption at rest while the Keychain is locked. FileVault
+/// covers the disk-at-rest case, which is the one that matters here.
+///
+/// Claude Code's own credential entry is still read from the Keychain — that store
+/// belongs to Claude Code, and reading it never prompts.
+mod secrets {
+    use super::*;
+    use std::collections::BTreeMap;
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    #[derive(Debug, Default, Serialize, Deserialize)]
+    pub struct Entry {
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        pub token: Option<String>,
+        /// A claude.ai session key, used only to read usage.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        pub usage_key: Option<String>,
+    }
+
+    #[derive(Debug, Default, Serialize, Deserialize)]
+    struct File {
+        version: u32,
+        #[serde(default)]
+        accounts: BTreeMap<String, Entry>,
+    }
+
+    fn path() -> Result<PathBuf> {
+        let home = std::env::var("HOME").map_err(|_| anyhow!("HOME is not set"))?;
+        let dir = PathBuf::from(home).join(".agent-router");
+        std::fs::create_dir_all(&dir)?;
+        // The directory holds secrets; keep it owner-only too.
+        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+        Ok(dir.join("credentials.json"))
+    }
+
+    fn load() -> Result<File> {
+        let path = path()?;
+        match std::fs::read_to_string(&path) {
+            Ok(text) => Ok(serde_json::from_str(&text).unwrap_or_default()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(File::default()),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Write 0600 from the moment the file exists — never create it readable and
+    /// tighten afterwards — and rename into place so a reader never sees a partial file.
+    fn store(file: &File) -> Result<()> {
+        let path = path()?;
+        let tmp = path.with_extension("json.tmp");
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&tmp)?;
+        f.write_all(serde_json::to_string_pretty(file)?.as_bytes())?;
+        f.write_all(b"\n")?;
+        f.sync_all()?;
+        drop(f);
+        std::fs::rename(&tmp, &path)?;
+        Ok(())
+    }
+
+    pub fn get(account_id: &str) -> Entry {
+        load()
+            .ok()
+            .and_then(|f| f.accounts.get(account_id).map(|e| Entry {
+                token: e.token.clone(),
+                usage_key: e.usage_key.clone(),
+            }))
+            .unwrap_or_default()
+    }
+
+    pub fn update(account_id: &str, f: impl FnOnce(&mut Entry)) -> Result<()> {
+        let mut file = load()?;
+        file.version = 1;
+        f(file.accounts.entry(account_id.to_string()).or_default());
+        // Drop the account entirely once it holds nothing.
+        if file
+            .accounts
+            .get(account_id)
+            .map(|e| e.token.is_none() && e.usage_key.is_none())
+            .unwrap_or(false)
+        {
+            file.accounts.remove(account_id);
+        }
+        store(&file)
+    }
+}
+
 pub fn store_token(account_id: &str, token: &str) -> Result<()> {
-    keychain_write(ROUTER_SERVICE, account_id, token.trim())
+    let token = token.trim().to_string();
+    secrets::update(account_id, |e| e.token = Some(token))
+}
+
+pub fn forget_token(account_id: &str) -> Result<()> {
+    secrets::update(account_id, |e| e.token = None)
 }
 
 /// A claude.ai session key (`sk-ant-sid…`), used only to read usage. It is never
 /// sent to api.anthropic.com and never used to sign a proxied request.
 pub fn store_usage_token(account_id: &str, token: &str) -> Result<()> {
-    keychain_write(USAGE_SERVICE, account_id, token.trim())
+    let token = token.trim().to_string();
+    secrets::update(account_id, |e| e.usage_key = Some(token))
 }
 
 pub fn usage_token(account_id: &str) -> Option<String> {
-    keychain_read(USAGE_SERVICE, account_id).ok().map(|t| t.trim().to_string())
+    secrets::get(account_id).usage_key
 }
 
 pub fn forget_usage_token(account_id: &str) -> Result<()> {
-    let out = security(&["delete-generic-password", "-s", USAGE_SERVICE, "-a", account_id], None)?;
-    if out.status.success() || out.status.code() == Some(44) {
-        return Ok(());
-    }
-    Ok(())
+    secrets::update(account_id, |e| e.usage_key = None)
 }
 
-pub fn forget_token(account_id: &str) -> Result<()> {
-    let out = security(&["delete-generic-password", "-s", ROUTER_SERVICE, "-a", account_id], None)?;
-    // Exit status 44 is errSecItemNotFound: already gone is the outcome we wanted.
-    if out.status.success() || out.status.code() == Some(44) {
-        return Ok(());
-    }
-    // A leftover entry written by an earlier build through the Security framework.
-    let entry = keyring::Entry::new(ROUTER_SERVICE, account_id)?;
-    match entry.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-        Err(e) => Err(e.into()),
-    }
-}
-
-// Why the Keychain is driven through /usr/bin/security rather than the Security
-// framework: the Keychain identifies an application by its code signature, and a
-// locally built binary is ad-hoc signed with a per-build hash. Every `cargo build`
-// is therefore a brand-new application as far as the ACL is concerned, "Always
-// Allow" whitelists only the build that asked, and the prompt comes back after the
-// next rebuild — and a running process whose binary was rebuilt underneath it cannot
-// be validated at all, so no button makes that prompt go away. `security` is
-// Apple-signed, so its identity never changes, and it is already trusted on Claude
-// Code's own entry because Claude Code reads and writes it the same way. Going
-// through it means the router never prompts, on any build.
-
-/// Run `security` with the given arguments, optionally feeding an interactive-mode
-/// command line on stdin so a secret never appears in the process list.
+/// Run `security`, optionally feeding an interactive-mode command line on stdin so a
+/// secret never appears in the process list. Only used to *read* Claude Code's entry
+/// now that the router keeps its own secrets in a file.
 fn security(args: &[&str], stdin_line: Option<&str>) -> Result<std::process::Output> {
     use std::io::Write;
     use std::process::{Command, Stdio};
@@ -268,8 +344,9 @@ fn security(args: &[&str], stdin_line: Option<&str>) -> Result<std::process::Out
     Ok(child.wait_with_output()?)
 }
 
+/// Read Claude Code's own credential entry. Its store, not ours — read-only, and it
+/// never prompts because `security` is permanently trusted on that item.
 fn keychain_read(service: &str, account: &str) -> Result<String> {
-    // `-w` prints only the secret, to stdout, followed by a newline.
     let out = security(&["find-generic-password", "-s", service, "-a", account, "-w"], None)?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
@@ -280,29 +357,6 @@ fn keychain_read(service: &str, account: &str) -> Result<String> {
     }
     let text = String::from_utf8(out.stdout).context("Keychain entry was not UTF-8 text")?;
     Ok(text.trim_end_matches(['\n', '\r']).to_string())
-}
-
-fn keychain_write(service: &str, account: &str, secret: &str) -> Result<()> {
-    // Interactive mode reads the command line from stdin, so the secret is never a
-    // process argument. The parser splits on whitespace and honours double quotes;
-    // a token that could confuse it goes through the Security framework instead,
-    // where "Always Allow" is per build — but the item is at least written.
-    let simple = !secret.is_empty()
-        && secret
-            .chars()
-            .all(|c| c.is_ascii_graphic() && c != '"' && c != '\\');
-    if !simple {
-        return Ok(keyring::Entry::new(service, account)?.set_password(secret)?);
-    }
-    let line = format!(
-        "add-generic-password -U -s \"{service}\" -a \"{account}\" -w \"{secret}\" -T /usr/bin/security"
-    );
-    let out = security(&["-i"], Some(&line))?;
-    if !out.status.success() {
-        let err = String::from_utf8_lossy(&out.stderr);
-        anyhow::bail!("storing the token in the Keychain failed: {}", err.trim());
-    }
-    Ok(())
 }
 
 fn current_user() -> String {
