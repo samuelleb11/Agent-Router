@@ -411,7 +411,7 @@ pub mod api {
 /// The block is delimited by markers so it can be removed exactly, leaving the rest
 /// of the user's profile untouched. The same principle as the settings file: add one
 /// thing, remember precisely what it was, take back only that.
-#[cfg(target_os = "linux")]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub mod profile_autostart {
     use super::*;
 
@@ -442,6 +442,16 @@ pub mod profile_autostart {
              {END}\n",
             exe = exe.display()
         )
+    }
+
+    #[cfg(test)]
+    pub fn block_for_test(exe: &Path) -> String {
+        block(exe)
+    }
+
+    #[cfg(test)]
+    pub fn strip_for_test(text: &str) -> String {
+        strip(text)
     }
 
     fn strip(text: &str) -> String {
@@ -704,6 +714,55 @@ pub mod service {
 
     pub fn is_registered() -> bool {
         false
+    }
+}
+
+#[cfg(test)]
+mod autostart_tests {
+    use super::profile_autostart::*;
+    use std::path::Path;
+
+    // These exercise the logic that edits a user's shell profile — the part with the
+    // most potential to do damage on a machine none of us can test on.
+
+    fn rc(body: &str) -> String {
+        format!("export EDITOR=vim\n{body}alias ll='ls -la'\n")
+    }
+
+    #[test]
+    fn removing_our_block_leaves_the_rest_of_the_profile_intact() {
+        let exe = Path::new("/home/u/.agent-router/bin/agent-router");
+        let original = rc("");
+        let with_block = format!("{original}{}", block_for_test(exe));
+        assert_eq!(strip_for_test(&with_block), original);
+    }
+
+    #[test]
+    fn installing_twice_does_not_duplicate_the_block() {
+        let exe = Path::new("/home/u/.agent-router/bin/agent-router");
+        let once = format!("{}{}", rc(""), block_for_test(exe));
+        // A second install strips first, then appends — never two copies.
+        let twice = format!("{}{}", strip_for_test(&once), block_for_test(exe));
+        assert_eq!(once, twice);
+        // One marker pair is what "not duplicated" actually means.
+        assert_eq!(twice.matches("# >>> agent-router >>>").count(), 1);
+        assert_eq!(twice.matches("# <<< agent-router <<<").count(), 1);
+    }
+
+    #[test]
+    fn a_profile_without_our_block_is_untouched() {
+        let untouched = rc("");
+        assert_eq!(strip_for_test(&untouched), untouched);
+    }
+
+    #[test]
+    fn the_block_starts_the_router_without_replacing_a_running_one() {
+        let exe = Path::new("/home/u/.agent-router/bin/agent-router");
+        let b = block_for_test(exe);
+        // --if-not-running is what makes this safe to run from every new shell.
+        assert!(b.contains("--if-not-running"), "{b}");
+        assert!(b.contains(&exe.display().to_string()));
+        assert!(b.trim_end().ends_with("# <<< agent-router <<<"), "{b}");
     }
 }
 
