@@ -201,6 +201,15 @@ fn read_head(path: &Path) -> Head {
     out
 }
 
+/// Bracketed system markers Claude Code stores under the user role.
+fn is_marker(s: &str) -> bool {
+    let t = s.trim();
+    t.starts_with('[')
+        && t.ends_with(']')
+        && t.len() < 200
+        && (t.contains("interrupted") || t.contains("Request interrupted") || t.contains("No response"))
+}
+
 fn first_user_text(v: &Value) -> Option<String> {
     let content = v.get("message")?.get("content")?;
     if let Some(s) = content.as_str() {
@@ -395,7 +404,14 @@ fn project_value(v: &Value, prev_ts_ms: Option<i64>) -> Vec<Item> {
     };
 
     if let Some(s) = content.as_str() {
-        push("text", None, Some(clip(s, TEXT_CAP)), None);
+        // Claude Code writes interruption markers as user-role text, but nobody typed
+        // them — showing them as the user's own words misattributes a cancellation to
+        // a request, which reads as if they asked for something they did not.
+        if is_marker(s) {
+            push("interrupt", None, Some(clip(s.trim_matches(['[', ']']), 200)), None);
+        } else {
+            push("text", None, Some(clip(s, TEXT_CAP)), None);
+        }
         return out;
     }
     let Some(blocks) = content.as_array() else {
@@ -676,6 +692,67 @@ fn scan_stats(path: &Path) -> Stats {
 }
 
 #[derive(Deserialize)]
+pub struct AnswerBody {
+    pub session: String,
+    /// Question text -> the answer chosen for it.
+    pub answers: std::collections::HashMap<String, String>,
+}
+
+/// What the session is waiting to be asked, so the UI can answer the live prompt rather
+/// than the one its transcript happened to record.
+pub async fn prompt(Query(q): Query<StreamQuery>) -> Response {
+    let session = q.session.clone();
+    match tokio::task::spawn_blocking(move || {
+        crate::peer::pending_prompt(&session, "AskUserQuestion")
+    })
+    .await
+    {
+        Ok(Some(v)) => Json(serde_json::json!({
+            "pending": true,
+            "request_id": v["request_id"],
+            "input": v["request"]["input"],
+        }))
+        .into_response(),
+        Ok(None) => Json(serde_json::json!({ "pending": false })).into_response(),
+        Err(e) => bad(axum::http::StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    }
+}
+
+/// Answer the pending question — the editor's Submit, from anywhere.
+pub async fn answer(Json(body): Json<AnswerBody>) -> Response {
+    const TOOL: &str = "AskUserQuestion";
+    let session = body.session.clone();
+    let answers = body.answers.clone();
+
+    let done = tokio::task::spawn_blocking(move || {
+        let req = crate::peer::pending_prompt(&session, TOOL).ok_or_else(|| {
+            anyhow::anyhow!("That session isn't waiting on a question right now.")
+        })?;
+        let request_id = req["request_id"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("the pending request has no id"))?
+            .to_string();
+
+        // The answers ride inside the tool's own input, beside the questions they
+        // answer — the shape the tool reads when it builds its result.
+        let mut input = req["request"]["input"].clone();
+        input["answers"] = serde_json::to_value(&answers)?;
+
+        crate::peer::answer_prompt(&session, &request_id, input, TOOL).map(|()| request_id)
+    })
+    .await;
+
+    match done {
+        Ok(Ok(id)) => {
+            tracing::info!(session = %body.session, request_id = %id, "answered a prompt from the live view");
+            Json(serde_json::json!({ "ok": true, "request_id": id })).into_response()
+        }
+        Ok(Err(e)) => bad(axum::http::StatusCode::SERVICE_UNAVAILABLE, &e.to_string()),
+        Err(e) => bad(axum::http::StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    }
+}
+
+#[derive(Deserialize)]
 pub struct InterruptBody {
     pub session: String,
 }
@@ -827,6 +904,16 @@ mod tests {
         assert_eq!(st.model.as_deref(), Some("claude-opus-5"));
         assert_eq!(st.total, 115, "cache counts toward what the session spent");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn interruption_markers_are_not_the_users_words() {
+        let line = r#"{"type":"user","message":{"role":"user","content":"[Request interrupted by user for tool use]"}}"#;
+        let items = project(line);
+        assert_eq!(items[0].kind, "interrupt", "must not render as a user message");
+
+        let real = r#"{"type":"user","message":{"role":"user","content":"[thinking] is this mine?"}}"#;
+        assert_eq!(project(real)[0].kind, "text", "a real message starting with a bracket stays a message");
     }
 
     #[test]

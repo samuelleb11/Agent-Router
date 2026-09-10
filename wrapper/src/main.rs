@@ -29,6 +29,7 @@
 //!
 //! Install: move the real binary aside to `claude.real`, put this in its place.
 
+use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::net::Shutdown;
 use std::os::unix::net::UnixListener;
@@ -117,6 +118,7 @@ fn main() {
             let mut buf = [0u8; 64 * 1024];
             let mut scan: Vec<u8> = Vec::new();
             let mut ctl: Vec<u8> = Vec::new();
+            let mut pending: BTreeMap<String, String> = BTreeMap::new();
             loop {
                 let n = match src.read(&mut buf) {
                     Ok(0) | Err(_) => break,
@@ -130,7 +132,7 @@ fn main() {
                 // blocked on. A prompt is a control_request the editor answers with a
                 // matching control_response; without the request_id nothing else can
                 // answer it. Best-effort, like everything else here.
-                note_control(&session_id, &buf[..n], &mut ctl);
+                note_control(&session_id, &buf[..n], &mut ctl, &mut pending);
 
                 if !found.load(Ordering::Relaxed) {
                     scan.extend_from_slice(&buf[..n]);
@@ -159,6 +161,7 @@ fn main() {
     if let Ok(Some(id)) = session_id.lock().map(|g| g.clone()) {
         let _ = std::fs::remove_file(control_path(&id));
         let _ = std::fs::remove_file(PathBuf::from(CONTROL_DIR).join(format!("{id}.ctl")));
+        let _ = std::fs::remove_file(PathBuf::from(CONTROL_DIR).join(format!("{id}.pending")));
     }
     std::process::exit(status.ok().and_then(|s| s.code()).unwrap_or(1));
 }
@@ -167,7 +170,12 @@ fn main() {
 ///
 /// Line-oriented and bounded: the tail is kept so a long session cannot grow the file,
 /// and a partial line is carried to the next read rather than parsed.
-fn note_control(session_id: &Mutex<Option<String>>, chunk: &[u8], carry: &mut Vec<u8>) {
+fn note_control(
+    session_id: &Mutex<Option<String>>,
+    chunk: &[u8],
+    carry: &mut Vec<u8>,
+    pending: &mut BTreeMap<String, String>,
+) {
     if !chunk.contains(&b'\n') && carry.len() > 256 * 1024 {
         carry.clear(); // a stream with no newlines is not what we are looking for
         return;
@@ -189,11 +197,26 @@ fn note_control(session_id: &Mutex<Option<String>>, chunk: &[u8], carry: &mut Ve
         if !is_control {
             continue;
         }
-        if let Ok(text) = std::str::from_utf8(line) {
-            hits.push_str(text);
-            hits.push('\n');
+        let Ok(text) = std::str::from_utf8(line) else {
+            continue;
+        };
+        hits.push_str(text);
+        hits.push('\n');
+
+        // Track what is still waiting for an answer. The .ctl tail can lose a request
+        // under a burst of MCP traffic, and a request nobody can find is a session
+        // nobody can unblock.
+        if let Some(id) = field(text, "\"request_id\":\"") {
+            if text.contains(r#""type":"control_request""#)
+                && text.contains(r#""subtype":"can_use_tool""#)
+            {
+                pending.insert(id, text.to_string());
+            } else if text.contains(r#""type":"control_response""#) {
+                pending.remove(&id);
+            }
         }
     }
+    write_pending(id, pending);
     if hits.is_empty() {
         return;
     }
@@ -205,6 +228,26 @@ fn note_control(session_id: &Mutex<Option<String>>, chunk: &[u8], carry: &mut Ve
     let kept: Vec<&str> = existing.lines().rev().take(40).collect();
     let out: String = kept.into_iter().rev().collect::<Vec<_>>().join("\n") + "\n";
     let _ = std::fs::write(&path, out);
+}
+
+/// Unanswered tool-permission requests, so the router can find what a session is
+/// blocked on without racing the .ctl tail.
+fn write_pending(session_id: &str, pending: &BTreeMap<String, String>) {
+    let path = PathBuf::from(CONTROL_DIR).join(format!("{session_id}.pending"));
+    if pending.is_empty() {
+        let _ = std::fs::remove_file(&path);
+        return;
+    }
+    let body: String = pending.values().cloned().collect::<Vec<_>>().join("\n") + "\n";
+    let _ = std::fs::write(&path, body);
+}
+
+/// The value of a `"key":"…"` pair, without parsing the whole line.
+fn field(line: &str, key: &str) -> Option<String> {
+    let start = line.find(key)? + key.len();
+    let rest = &line[start..];
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
 }
 
 fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
@@ -346,6 +389,13 @@ mod tests {
     fn tolerates_a_stream_with_no_id_at_all() {
         assert!(sniff_session_id(b"just some bytes").is_none());
         assert!(sniff_session_id(b"").is_none());
+    }
+
+    #[test]
+    fn field_reads_a_flat_json_value() {
+        let line = r#"{"type":"control_request","request_id":"abc-1","request":{}}"#;
+        assert_eq!(field(line, "\"request_id\":\""), Some("abc-1".into()));
+        assert_eq!(field(line, "\"nope\":\""), None);
     }
 
     #[test]

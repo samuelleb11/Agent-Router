@@ -259,6 +259,50 @@ fn write_via_wrapper(session_id: &str, frame: &serde_json::Value) -> anyhow::Res
     }
 }
 
+/// The tool-permission request a wrapped session is currently blocked on, if any.
+///
+/// Written by the wrapper, which sees the control traffic between the CLI and whatever
+/// hosts it. Only the newest is returned: a session waits on one prompt at a time.
+pub fn pending_prompt(session_id: &str, tool: &str) -> Option<serde_json::Value> {
+    if wrapper_socket(session_id).is_none() {
+        return None;
+    }
+    let path = PathBuf::from(WRAPPER_DIR).join(format!("{session_id}.pending"));
+    let body = std::fs::read_to_string(path).ok()?;
+    body.lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter(|v| v["request"]["tool_name"] == tool)
+        .next_back()
+}
+
+/// Answer a pending tool-permission request — what the editor does when someone picks
+/// an option and hits Submit.
+///
+/// An AskUserQuestion is a permission request whose answer rides in `updatedInput`:
+/// allowing the tool with an `answers` map is what turns the prompt into a tool result.
+pub fn answer_prompt(
+    session_id: &str,
+    request_id: &str,
+    updated_input: serde_json::Value,
+    tool: &str,
+) -> anyhow::Result<()> {
+    write_via_wrapper(
+        session_id,
+        &serde_json::json!({
+            "type": "control_response",
+            "response": {
+                "subtype": "success",
+                "request_id": request_id,
+                "response": {
+                    "behavior": "allow",
+                    "updatedInput": updated_input,
+                    "tool_name": tool,
+                },
+            },
+        }),
+    )
+}
+
 /// Push a user message into a live session's input queue.
 pub fn send(peer: &Peer, text: &str) -> anyhow::Result<String> {
     let raw = std::fs::read_to_string(key_path(&peer.socket.to_string_lossy()))
