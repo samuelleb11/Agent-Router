@@ -12,6 +12,7 @@ mod config;
 mod db;
 mod guard;
 mod lifecycle;
+mod login;
 mod proxy;
 mod quota;
 mod setup;
@@ -237,6 +238,8 @@ async fn serve() -> anyhow::Result<()> {
         .route("/api/quota", get(quota::quota))
         .route("/api/quota/raw", get(quota::raw_usage))
         .route("/api/usage-token", post(quota::set_usage_token))
+        .route("/api/login/start", post(login::api::start_login))
+        .route("/api/login/status", get(login::api::login_status))
         .route("/api/setup", get(setup::api::status))
         .route("/api/setup/service", post(setup::api::service_toggle))
         .route("/api/setup/config", post(setup::api::config_toggle))

@@ -26,4 +26,5 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 async-stream = "0.3"
 keyring = { version = "3", features = ["apple-native"] }
 socket2 = { version = "0.5", features = ["all"] }
+portable-pty = "0.9"
 libc = "0.2"

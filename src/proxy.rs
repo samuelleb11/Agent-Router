@@ -74,6 +74,8 @@ pub struct AppState {
     /// Last quota reading; see `quota`. Keyed by account, because one account's
     /// numbers must never be shown under another's name.
     pub quota_cache: tokio::sync::RwLock<Option<crate::quota::Cached>>,
+    /// The in-progress `setup-token` sign-in, if any. One at a time.
+    pub login: crate::login::Shared,
     pub capture: Sender<CaptureEvent>,
     dumps_left: AtomicUsize,
     dropped: AtomicUsize,
@@ -93,6 +95,7 @@ impl AppState {
             config,
             active: tokio::sync::RwLock::new(None),
             quota_cache: tokio::sync::RwLock::new(None),
+            login: Default::default(),
             capture,
             dumps_left,
             dropped: AtomicUsize::new(0),
