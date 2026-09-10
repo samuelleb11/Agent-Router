@@ -113,7 +113,10 @@ pub fn install(bin: &Path) -> anyhow::Result<()> {
     let real = real_beside(bin);
 
     match state_of(bin) {
-        State::Installed => return Ok(()),
+        // Already installed still means copy: this is how a newer wrapper reaches the
+        // extension. The real binary is already parked, so only the shim is replaced,
+        // and returning early here would silently pin the version installed first.
+        State::Installed => return copy_executable(&src, bin).map_err(Into::into),
         // The real binary is under `claude`; the parked copy is stale, so replace it.
         State::Inconsistent => {
             std::fs::remove_file(&real).ok();
@@ -263,6 +266,24 @@ mod tests {
         write(&bin, 32 * 1024 * 1024);
         remove(&bin).unwrap();
         assert_eq!(size(&bin), 32 * 1024 * 1024, "left alone");
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn installing_over_an_existing_shim_replaces_it() {
+        // A wrapper update must reach an extension that already has an older one.
+        let d = scratch("update");
+        let bin = d.join("claude");
+        std::fs::write(&bin, b"OLD WRAPPER").unwrap();
+        write(&d.join("claude.real"), 32 * 1024 * 1024);
+        assert_eq!(state_of(&bin), State::Installed);
+        let _ = install(&bin);
+        assert_ne!(
+            std::fs::read(&bin).unwrap(),
+            b"OLD WRAPPER".to_vec(),
+            "the shim was replaced, not left pinned at the first version"
+        );
+        assert!(d.join("claude.real").is_file(), "the real binary stays parked");
         std::fs::remove_dir_all(&d).ok();
     }
 
