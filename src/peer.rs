@@ -12,9 +12,13 @@
 //!  "message":{"role":"user","content":"…"},"priority":"next"}
 //! ```
 //!
-//! Sending the content bare — without the `<cross-session-message>` wrapper that the
-//! agent-to-agent path uses — makes it arrive as an ordinary user turn, which is what a
-//! message typed on a phone should look like.
+//! Sending the content bare, without the `<cross-session-message>` wrapper the
+//! agent-to-agent path uses, does NOT make it arrive as an ordinary user turn: the
+//! receiver adds its own framing regardless ("Another Claude session sent a message",
+//! plus a paragraph telling it to treat the sender as a teammate rather than as its
+//! user). That is correct for what this channel is and wrong for a message its user
+//! typed on a phone, and it is not removable from this side — which is why
+//! `send_via_wrapper` exists and is preferred.
 //!
 //! **This is an internal protocol.** Nothing about it is published, and a CLI update may
 //! change it without warning. So every failure here is reported to the caller rather than
@@ -32,6 +36,8 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 const SOCK_DIR: &str = "/tmp/cc-socks";
+/// Where a wrapped session offers its control socket (see `wrapper/`).
+const WRAPPER_DIR: &str = "/tmp/agent-router-sessions";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 /// A session started within this long of a transcript's first event is taken to own it.
 const START_TOLERANCE_MS: i64 = 120_000;
@@ -182,6 +188,52 @@ pub fn resolve(session_id: &str, cwd: Option<&str>, first_event_ms: Option<i64>)
         .filter(|(d, _)| *d <= START_TOLERANCE_MS)
         .min_by_key(|(d, _)| *d)
         .map(|(_, p)| p.clone())
+}
+
+/// Is this session running under the wrapper?
+pub fn wrapper_socket(session_id: &str) -> Option<PathBuf> {
+    if session_id.is_empty()
+        || !session_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+    {
+        return None;
+    }
+    let p = PathBuf::from(WRAPPER_DIR).join(format!("{session_id}.sock"));
+    p.exists().then_some(p)
+}
+
+/// Inject a user turn through the wrapper — the bytes the editor writes when someone
+/// types, with no framing of any kind.
+///
+/// The peer socket can only ever deliver a *peer* message, which Claude Code wraps in
+/// "another Claude session sent a message" and a paragraph telling the receiver to
+/// treat it as a teammate rather than as its user. That framing is correct for what
+/// that channel is, and wrong for a message its user typed on a phone — which is the
+/// whole reason the wrapper exists.
+pub fn send_via_wrapper(session_id: &str, text: &str) -> anyhow::Result<()> {
+    let path = wrapper_socket(session_id)
+        .ok_or_else(|| anyhow::anyhow!("this session is not running under the wrapper"))?;
+    let addr = std::os::unix::net::SocketAddr::from_pathname(&path)?;
+    let mut s = UnixStream::connect_addr(&addr)?;
+    s.set_write_timeout(Some(CONNECT_TIMEOUT))?;
+    s.set_read_timeout(Some(CONNECT_TIMEOUT))?;
+
+    let frame = serde_json::json!({
+        "type": "user",
+        "message": { "role": "user", "content": [{ "type": "text", "text": text }] },
+    });
+    s.write_all(format!("{frame}\n").as_bytes())?;
+    s.flush()?;
+
+    // The wrapper answers once it has written into the child's stdin, so unlike the
+    // peer socket this is a real delivery receipt rather than a successful write.
+    let mut reply = String::new();
+    use std::io::Read;
+    let _ = s.take(256).read_to_string(&mut reply);
+    if reply.contains("\"ok\":true") {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!("the wrapper did not accept the message"))
+    }
 }
 
 /// Push a user message into a live session's input queue.

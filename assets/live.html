@@ -262,9 +262,18 @@ sendBtn.onclick = async () => {
       feed.appendChild(echo);
       window.scrollTo(0, document.body.scrollHeight);
       msg.value = ''; msg.style.height = 'auto';
-      note.className = 'ok';
-      note.textContent = 'Queued to pid ' + (body.pid ?? '?') + ' — it lands when the session next reads input.';
-      setTimeout(() => { if (note.className === 'ok') note.textContent = ''; }, 6000);
+      if (body.framed) {
+        // Worth interrupting for: the session will see a teammate's request, not yours,
+        // and will often ask who sent it instead of just doing the thing.
+        note.className = '';
+        note.textContent = 'Sent, but as a peer message — this session will see it as coming from '
+          + 'another Claude, not from you. Install the wrapper in Settings and restart the session '
+          + 'for it to arrive as your own message.';
+      } else {
+        note.className = 'ok';
+        note.textContent = 'Delivered as your message.';
+        setTimeout(() => { if (note.className === 'ok') note.textContent = ''; }, 5000);
+      }
     } else {
       note.className = '';
       note.textContent = body.reason || ('Send failed (' + res.status + ')');

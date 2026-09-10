@@ -556,17 +556,29 @@ pub async fn send(Json(body): Json<SendBody>) -> Response {
     let cwd = head.cwd.clone();
 
     let sent = tokio::task::spawn_blocking(move || {
+        // The wrapper first, always: it delivers the message as the user's own turn.
+        // The peer socket can only deliver a *peer* message, which the receiver frames
+        // as coming from another Claude rather than from the person who typed it.
+        if crate::peer::wrapper_socket(&session).is_some() {
+            return crate::peer::send_via_wrapper(&session, &text).map(|()| ("wrapper", 0, String::new()));
+        }
         let peer = crate::peer::resolve(&session, cwd.as_deref(), first_ms).ok_or_else(|| {
             anyhow::anyhow!("That session isn't running any more, so there's nothing to send to.")
         })?;
-        crate::peer::send(&peer, &text).map(|id| (peer.pid, id))
+        crate::peer::send(&peer, &text).map(|id| ("peer", peer.pid, id))
     })
     .await;
 
     match sent {
-        Ok(Ok((pid, msg_id))) => {
-            tracing::info!(session = %body.session, pid, %msg_id, "delivered a message from the live view");
-            Json(serde_json::json!({ "ok": true, "pid": pid, "msg_id": msg_id })).into_response()
+        Ok(Ok((via, pid, msg_id))) => {
+            tracing::info!(session = %body.session, via, pid, "delivered a message from the live view");
+            Json(serde_json::json!({
+                "ok": true, "via": via, "pid": pid, "msg_id": msg_id,
+                // The UI says so, because the difference is visible in the session and
+                // the user would otherwise think we were mangling their message.
+                "framed": via == "peer",
+            }))
+            .into_response()
         }
         Ok(Err(e)) => bad(axum::http::StatusCode::SERVICE_UNAVAILABLE, &e.to_string()),
         Err(e) => bad(axum::http::StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
