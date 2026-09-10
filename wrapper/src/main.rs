@@ -82,6 +82,8 @@ fn main() {
     // buffers under the lock, so an injected turn can never interleave into the middle
     // of a line the extension is sending.
     let sink = Arc::new(Mutex::new(child_stdin));
+    // Shared, because answering a prompt has to speak upstream as well as down.
+    let up = Arc::new(Mutex::new(std::io::stdout()));
 
     // extension -> child. This is the direction that must never stall.
     {
@@ -112,8 +114,8 @@ fn main() {
         let session_id = Arc::clone(&session_id);
         let found = Arc::clone(&found);
         let sink = Arc::clone(&sink);
+        let up = Arc::clone(&up);
         std::thread::spawn(move || {
-            let mut out = std::io::stdout();
             let mut src = child_stdout;
             let mut buf = [0u8; 64 * 1024];
             let mut scan: Vec<u8> = Vec::new();
@@ -125,8 +127,11 @@ fn main() {
                     Ok(n) => n,
                 };
                 // Downstream first, always. The sniffer only ever sees a copy.
-                if out.write_all(&buf[..n]).is_err() || out.flush().is_err() {
-                    break;
+                {
+                    let Ok(mut out) = up.lock() else { break };
+                    if out.write_all(&buf[..n]).is_err() || out.flush().is_err() {
+                        break;
+                    }
                 }
                 // Control traffic, recorded so the router can see what the session is
                 // blocked on. A prompt is a control_request the editor answers with a
@@ -145,7 +150,8 @@ fn main() {
                         // Publishing is allowed to fail; a session without a control
                         // socket is simply one the router cannot type into.
                         let sink = Arc::clone(&sink);
-                        std::thread::spawn(move || serve_control(id, sink));
+                        let up = Arc::clone(&up);
+                        std::thread::spawn(move || serve_control(id, sink, up));
                     } else if scan.len() > 256 * 1024 {
                         // The id arrives in the first message or not at all.
                         found.store(true, Ordering::Relaxed);
@@ -278,7 +284,11 @@ fn sniff_session_id(buf: &[u8]) -> Option<String> {
 ///
 /// Every failure here is swallowed. This is an addition to a session that works fine
 /// without it, and it must never be the reason one dies.
-fn serve_control(session_id: String, sink: Arc<Mutex<std::process::ChildStdin>>) {
+fn serve_control(
+    session_id: String,
+    sink: Arc<Mutex<std::process::ChildStdin>>,
+    up: Arc<Mutex<std::io::Stdout>>,
+) {
     if std::fs::create_dir_all(CONTROL_DIR).is_err() {
         return;
     }
@@ -286,12 +296,16 @@ fn serve_control(session_id: String, sink: Arc<Mutex<std::process::ChildStdin>>)
     // reboot-adjacent sweep or a stray rm can unlink it while this process still holds
     // the fd — leaving a session that looks unwrapped forever despite being wrapped.
     loop {
-        serve_once(&session_id, &sink);
+        serve_once(&session_id, &sink, &up);
         std::thread::sleep(std::time::Duration::from_secs(3));
     }
 }
 
-fn serve_once(session_id: &str, sink: &Arc<Mutex<std::process::ChildStdin>>) {
+fn serve_once(
+    session_id: &str,
+    sink: &Arc<Mutex<std::process::ChildStdin>>,
+    up: &Arc<Mutex<std::io::Stdout>>,
+) {
     let path = control_path(session_id);
     let _ = std::fs::remove_file(&path);
     let Ok(listener) = UnixListener::bind(&path) else {
@@ -322,6 +336,7 @@ fn serve_once(session_id: &str, sink: &Arc<Mutex<std::process::ChildStdin>>) {
                 let mut conn = conn;
                 let _ = conn.set_nonblocking(false);
                 let sink = Arc::clone(sink);
+                let up = Arc::clone(up);
                 std::thread::spawn(move || {
                     let mut body = Vec::new();
             // A control message is one line; cap it so a stuck writer cannot grow us.
@@ -337,13 +352,37 @@ fn serve_once(session_id: &str, sink: &Arc<Mutex<std::process::ChildStdin>>) {
                     }
                 }
             }
-            let delivered = write_line(&sink, &body);
+                    let delivered = write_line(&sink, &body);
+                    // The host drew its own prompt when it saw the request and waits on
+                    // its own UI; it cannot learn we answered. A cancel echoing the same
+                    // id is how a request is withdrawn, so the picker comes down instead
+                    // of hanging there answered-but-open.
+                    if delivered {
+                        if let Some(id) = answered_request_id(&body) {
+                            let frame = format!(
+                                "{{\"type\":\"control_cancel_request\",\"request_id\":\"{id}\"}}\n"
+                            );
+                            if let Ok(mut w) = up.lock() {
+                                let _ = w.write_all(frame.as_bytes());
+                                let _ = w.flush();
+                            }
+                        }
+                    }
                     let _ = conn.write_all(if delivered { b"{\"ok\":true}\n" } else { b"{\"ok\":false}\n" });
                     let _ = conn.shutdown(Shutdown::Both);
                 });
             }
         }
     }
+}
+
+/// The request id of an injected `control_response`, if that is what this was.
+fn answered_request_id(body: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(body).ok()?;
+    if !text.contains(r#""type":"control_response""#) {
+        return None;
+    }
+    field(text, "\"request_id\":\"")
 }
 
 /// Write one newline-terminated message into the child's stdin, atomically.
@@ -389,6 +428,14 @@ mod tests {
     fn tolerates_a_stream_with_no_id_at_all() {
         assert!(sniff_session_id(b"just some bytes").is_none());
         assert!(sniff_session_id(b"").is_none());
+    }
+
+    #[test]
+    fn only_a_control_response_triggers_a_cancel_upstream() {
+        let resp = br#"{"type":"control_response","response":{"request_id":"r-9","subtype":"success"}}"#;
+        assert_eq!(answered_request_id(resp), Some("r-9".into()));
+        let user = br#"{"type":"user","message":{"role":"user","content":"hi"}}"#;
+        assert_eq!(answered_request_id(user), None, "a typed message must not cancel anything");
     }
 
     #[test]
