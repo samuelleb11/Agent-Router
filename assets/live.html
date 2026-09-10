@@ -307,7 +307,7 @@ let es = null, current = null, listScroll = 0, following = true, watcher = null,
 let noteTimer = 0;
 function say(text, opts = {}) {
   clearTimeout(noteTimer);
-  say('');
+  note.textContent = '';
   if (!text) { note.className = ''; return; }
   note.className = 'show' + (opts.ok ? ' ok' : '');
   const body = document.createElement('span');
@@ -748,7 +748,7 @@ async function showList(fromHistory) {
   facts.classList.add('hide');
   list.classList.remove('hide');
   heading.textContent = 'Live sessions';
-  note.textContent = '';
+  say('');
   // Restore only after the rows are back, or there is nothing tall enough to scroll.
   home.classList.remove('hide');
   if (!fromHistory) {
