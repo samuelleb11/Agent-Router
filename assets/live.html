@@ -633,6 +633,7 @@ function openSession(r, fromHistory) {
   composer.classList.remove('hide');
   heading.textContent = base(r.cwd) || r.project;
   feed.innerHTML = '';
+  sent = []; histAt = -1; histDraft = '';
   note.textContent = ''; note.className = '';
   feed.scrollTop = 0;
   if (es) es.close();
@@ -648,7 +649,16 @@ function openSession(r, fromHistory) {
   watcher.observe(feed);
   es = new EventSource('/api/live/stream?session=' + encodeURIComponent(r.session_id));
   es.onmessage = e => {
-    try { feed.appendChild(render(JSON.parse(e.data))); } catch {}
+    try {
+      const it = JSON.parse(e.data);
+      // Everything this person already said in this session, so ArrowUp works the
+      // moment the page opens instead of only after sending something.
+      if (it.role === 'user' && it.kind === 'text' && it.text && !it.sidechain) {
+        if (sent[sent.length - 1] !== it.text) sent.push(it.text);
+        if (sent.length > 200) sent.shift();
+      }
+      feed.appendChild(render(it));
+    } catch {}
     if (following) feed.scrollTop = feed.scrollHeight;
   };
   es.addEventListener('status', e => { try { setStatus(JSON.parse(e.data)); } catch {} });

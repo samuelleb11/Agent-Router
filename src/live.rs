@@ -422,7 +422,13 @@ fn project_value(v: &Value, prev_ts_ms: Option<i64>) -> Vec<Item> {
         match b.get("type").and_then(|t| t.as_str()).unwrap_or("") {
             "text" => {
                 if let Some(s) = b.get("text").and_then(|t| t.as_str()) {
-                    if !s.trim().is_empty() {
+                    if s.trim().is_empty() {
+                        // nothing to show
+                    } else if ty == "user" && is_marker(s) {
+                        // Same markers as the string form: the transcript stores them
+                        // either way, and the first fix only caught one of them.
+                        push("interrupt", None, Some(clip(s.trim_matches(['[', ']']), 200)), None);
+                    } else {
                         push("text", None, Some(clip(s, TEXT_CAP)), None);
                     }
                 }
@@ -914,6 +920,18 @@ mod tests {
 
         let real = r#"{"type":"user","message":{"role":"user","content":"[thinking] is this mine?"}}"#;
         assert_eq!(project(real)[0].kind, "text", "a real message starting with a bracket stays a message");
+    }
+
+    #[test]
+    fn markers_are_caught_in_block_form_too() {
+        // The transcript stores these both as a bare string and as a text block.
+        let block = r#"{"type":"user","message":{"role":"user","content":[
+            {"type":"text","text":"[Request interrupted by user for tool use]"}]}}"#;
+        assert_eq!(project(block)[0].kind, "interrupt");
+
+        let assistant = r#"{"type":"assistant","message":{"role":"assistant","content":[
+            {"type":"text","text":"[not a marker] I am explaining brackets"}]}}"#;
+        assert_eq!(project(assistant)[0].kind, "text", "only the user role carries them");
     }
 
     #[test]
