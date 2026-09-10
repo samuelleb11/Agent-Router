@@ -515,8 +515,8 @@ function askForm(ask) {
 
   const foot = document.createElement('div');
   foot.className = 'ask-foot';
-  foot.innerHTML = '<button class="btn">Submit answers</button>' +
-    '<span class="ask-hint">or type a reply below</span>';
+  foot.innerHTML = '<button class="btn">Send as message</button>' +
+    '<span class="ask-hint">answering the prompt itself still needs the editor</span>';
   wrap.appendChild(foot);
 
   foot.querySelector('.btn').onclick = () => {
@@ -529,9 +529,9 @@ function askForm(ask) {
       foot.querySelector('.ask-hint').textContent = 'Pick at least one answer first.';
       return;
     }
-    wrap.closest('.ev').classList.add('done');
-    wrap.querySelectorAll('input, .btn').forEach(x => { x.disabled = true; });
-    deliver(parts.join('\n'));
+    // Not marked done: the prompt is still pending, and greying the form out would
+    // claim otherwise.
+    deliver(parts.join('\n'), { ask: true });
   };
   return wrap;
 }
@@ -695,7 +695,7 @@ msg.addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendBtn.click(); }
 });
 
-async function deliver(text) {
+async function deliver(text, opts = {}) {
   if (!text || !current) return;
   sendBtn.disabled = true;
   try {
@@ -724,9 +724,15 @@ async function deliver(text) {
           + 'another Claude, not from you. Install the wrapper in Settings and restart the session '
           + 'for it to arrive as your own message.';
       } else {
-        note.className = 'ok';
-        note.textContent = 'Delivered as your message.';
-        setTimeout(() => { if (note.className === 'ok') note.textContent = ''; }, 5000);
+        note.className = opts.ask ? '' : 'ok';
+        // Measured: a queued user turn does NOT satisfy a pending AskUserQuestion. The
+        // session is blocked on a control_response for that tool call, and this message
+        // waits behind it. Saying "delivered" here would be true and misleading.
+        note.textContent = opts.ask
+          ? 'Sent as a message — it will not dismiss the prompt. The session stays blocked '
+            + 'until someone answers it in the editor.'
+          : 'Delivered as your message.';
+        if (!opts.ask) setTimeout(() => { if (note.className === 'ok') note.textContent = ''; }, 5000);
       }
     } else {
       note.className = '';
