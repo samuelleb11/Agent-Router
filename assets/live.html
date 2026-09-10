@@ -240,6 +240,16 @@
   .md p { margin: 6px 0; }
   .md p:first-child { margin-top: 0; }
   .md p:last-child { margin-bottom: 0; }
+  .md h4, .md h5, .md h6 { font-size: 13.5px; margin: 8px 0 4px; }
+  .md a { color: var(--accent); }
+  .md blockquote { margin: 6px 0; padding-left: 10px; border-left: 2px solid var(--line);
+                   color: var(--dim); }
+  /* Tables scroll rather than widen the column, same rule as terminal blocks. */
+  .md table { display: block; overflow-x: auto; max-width: 100%; border-collapse: collapse;
+              margin: 8px 0; font-size: 13px; }
+  .md th, .md td { border: 1px solid var(--line); padding: 5px 9px; text-align: left;
+                   vertical-align: top; white-space: nowrap; }
+  .md th { background: var(--panel2); font-weight: 600; }
 
   .empty { color: var(--faint); text-align: center; padding: 40px 20px; }
   .hide { display: none !important; }
@@ -381,19 +391,45 @@ function md(src) {
   let t = esc(src).replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) =>
     '\u0000' + (blocks.push(`<pre class="code">${code.replace(/\n$/, '')}</pre>`) - 1) + '\u0000');
   t = t.replace(/`([^`\n]+)`/g, '<code>$1</code>')
-       .replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>');
+       .replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>')
+       .replace(/(^|[\s(])\*([^*\n]+)\*/g, '$1<i>$2</i>')
+       .replace(/\[([^\]\n]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
   const out = [];
-  let list = null;
-  for (const raw of t.split('\n')) {
-    const line = raw.trimEnd();
+  let list = null, table = null;
+  const cells = (line) => line.replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|').map(c => c.trim());
+  const flushTable = () => {
+    if (!table) return;
+    const [head, ...body] = table;
+    out.push('<table><thead><tr>' + head.map(c => `<th>${c}</th>`).join('') + '</tr></thead><tbody>' +
+      body.map(r => '<tr>' + r.map(c => `<td>${c}</td>`).join('') + '</tr>').join('') + '</tbody></table>');
+    table = null;
+  };
+  const lines = t.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trimEnd();
     const bullet = line.match(/^\s*[-*]\s+(.*)$/);
-    const head = line.match(/^#{1,6}\s+(.*)$/);
-    if (bullet) { (list ??= []).push(`<li>${bullet[1]}</li>`); continue; }
+    const num = line.match(/^\s*\d+[.)]\s+(.*)$/);
+    const head = line.match(/^(#{1,6})\s+(.*)$/);
+    const quote = line.match(/^&gt;\s?(.*)$/);
+    // A table is a header row followed by a |---|---| separator; without that a line
+    // of pipes is just prose and must stay prose.
+    const isRow = /^\s*\|.*\|\s*$/.test(line);
+    const isRule = /^\s*\|[\s:|-]+\|\s*$/.test(line);
+    if (isRow && !table && /^\s*\|[\s:|-]+\|\s*$/.test((lines[i + 1] || '').trimEnd())) {
+      table = [cells(line)]; i++; continue;
+    }
+    if (table) {
+      if (isRow && !isRule) { table.push(cells(line)); continue; }
+      flushTable();
+    }
+    if (bullet || num) { (list ??= []).push(`<li>${(bullet || num)[1]}</li>`); continue; }
     if (list) { out.push(`<ul>${list.join('')}</ul>`); list = null; }
-    if (head) out.push(`<h3>${head[1]}</h3>`);
+    if (head) { const n = Math.min(head[1].length + 2, 6); out.push(`<h${n}>${head[2]}</h${n}>`); }
+    else if (quote) out.push(`<blockquote>${quote[1]}</blockquote>`);
     else if (line.trim()) out.push(`<p>${line}</p>`);
   }
   if (list) out.push(`<ul>${list.join('')}</ul>`);
+  flushTable();
   return out.join('').replace(/\u0000(\d+)\u0000/g, (_, i) => blocks[i]);
 }
 
