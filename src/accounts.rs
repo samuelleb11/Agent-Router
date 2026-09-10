@@ -23,7 +23,8 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 /// Keychain service the router stores its *own* secrets under.
-/// Keychain service Claude Code stores the default profile's credentials under.
+/// Keychain service Claude Code stores the default profile's credentials under (macOS).
+#[cfg(target_os = "macos")]
 const CLAUDE_SERVICE: &str = "Claude Code-credentials";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -147,8 +148,7 @@ pub fn resolve(account: &Account) -> Result<Resolved> {
             // the stored row, so a later /login cannot retroactively relabel traffic
             // that a different account actually served.
             let live = probe_profile(None).ok().and_then(|s| s.email);
-            let raw = keychain_read(CLAUDE_SERVICE, &current_user())
-                .context("reading Claude Code's Keychain entry — log in with `claude` first")?;
+            let raw = read_default_profile_credentials()?;
             let mut resolved = parse_stored(&raw)?;
             resolved.identity = live;
             Ok(resolved)
@@ -326,6 +326,7 @@ pub fn forget_usage_token(account_id: &str) -> Result<()> {
 /// Run `security`, optionally feeding an interactive-mode command line on stdin so a
 /// secret never appears in the process list. Only used to *read* Claude Code's entry
 /// now that the router keeps its own secrets in a file.
+#[cfg(target_os = "macos")]
 fn security(args: &[&str], stdin_line: Option<&str>) -> Result<std::process::Output> {
     use std::io::Write;
     use std::process::{Command, Stdio};
@@ -344,8 +345,32 @@ fn security(args: &[&str], stdin_line: Option<&str>) -> Result<std::process::Out
     Ok(child.wait_with_output()?)
 }
 
-/// Read Claude Code's own credential entry. Its store, not ours — read-only, and it
-/// never prompts because `security` is permanently trusted on that item.
+/// Read Claude Code's own stored credential for the default profile.
+///
+/// macOS keeps it in the login Keychain; elsewhere Claude Code writes
+/// `~/.claude/.credentials.json`, the same shape an isolated profile directory uses.
+/// Either way this is Claude Code's store, not ours, and we only ever read it.
+fn read_default_profile_credentials() -> Result<String> {
+    #[cfg(target_os = "macos")]
+    {
+        keychain_read(CLAUDE_SERVICE, &current_user())
+            .context("reading Claude Code's Keychain entry — log in with `claude` first")
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let path = home_dir()?.join(".claude").join(".credentials.json");
+        std::fs::read_to_string(&path).with_context(|| {
+            format!("reading {} — log in with `claude` first", path.display())
+        })
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn home_dir() -> Result<PathBuf> {
+    crate::setup::home_dir()
+}
+
+#[cfg(target_os = "macos")]
 fn keychain_read(service: &str, account: &str) -> Result<String> {
     let out = security(&["find-generic-password", "-s", service, "-a", account, "-w"], None)?;
     if !out.status.success() {
@@ -359,6 +384,7 @@ fn keychain_read(service: &str, account: &str) -> Result<String> {
     Ok(text.trim_end_matches(['\n', '\r']).to_string())
 }
 
+#[cfg(target_os = "macos")]
 fn current_user() -> String {
     std::env::var("USER").unwrap_or_else(|_| "unknown".into())
 }

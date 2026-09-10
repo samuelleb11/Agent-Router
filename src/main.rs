@@ -53,6 +53,19 @@ async fn main() -> anyhow::Result<()> {
             print!("{USAGE}");
             return Ok(());
         }
+        Some("--if-not-running") => {
+            // Something already serving means our job is done. Used by the shell
+            // profile autostart, which runs on every new shell.
+            let port: u16 = std::env::var("AGENT_ROUTER_PORT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(8787);
+            let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+            if lifecycle::incumbent(addr).is_some() {
+                return Ok(());
+            }
+            return serve().await;
+        }
         Some(other) if other.starts_with('-') => {
             eprintln!("unknown option {other:?}\n\n{USAGE}");
             std::process::exit(2);

@@ -300,7 +300,7 @@ pub mod api {
         json!({
             "service": {
                 "registered": service::is_registered(),
-                "supported": cfg!(target_os = "macos"),
+                "supported": cfg!(any(target_os = "macos", target_os = "linux")),
                 "platform": std::env::consts::OS,
             },
             "url": format!("http://127.0.0.1:{}", state.config.bind.port()),
@@ -405,10 +405,104 @@ pub mod api {
     }
 }
 
+/// Autostart from a shell profile, for systems with no service manager — which in
+/// practice means WSL, where systemd only runs if `/etc/wsl.conf` opts in.
+///
+/// The block is delimited by markers so it can be removed exactly, leaving the rest
+/// of the user's profile untouched. The same principle as the settings file: add one
+/// thing, remember precisely what it was, take back only that.
+#[cfg(target_os = "linux")]
+pub mod profile_autostart {
+    use super::*;
+
+    const BEGIN: &str = "# >>> agent-router >>>";
+    const END: &str = "# <<< agent-router <<<";
+
+    /// Every profile file that exists, so the router starts whichever shell is used.
+    fn candidates() -> Vec<PathBuf> {
+        let Ok(home) = home_dir() else { return vec![] };
+        let mut out: Vec<PathBuf> = [".bashrc", ".zshrc"]
+            .iter()
+            .map(|f| home.join(f))
+            .filter(|p| p.exists())
+            .collect();
+        if out.is_empty() {
+            out.push(home.join(".profile"));
+        }
+        out
+    }
+
+    fn block(exe: &Path) -> String {
+        format!(
+            "{BEGIN}\n\
+             # Starts Agent Router if it is not already running. `--if-not-running`\n\
+             # exits immediately when something already answers on the port, so this\n\
+             # is safe to run from every new shell.\n\
+             [ -x \"{exe}\" ] && \"{exe}\" --if-not-running >>\"$HOME/.agent-router/logs/router.log\" 2>&1 &\n\
+             {END}\n",
+            exe = exe.display()
+        )
+    }
+
+    fn strip(text: &str) -> String {
+        let mut out = String::new();
+        let mut skipping = false;
+        for line in text.lines() {
+            if line.trim() == BEGIN {
+                skipping = true;
+                continue;
+            }
+            if line.trim() == END {
+                skipping = false;
+                continue;
+            }
+            if !skipping {
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+        out
+    }
+
+    pub fn install(exe: &Path) -> Result<Vec<PathBuf>> {
+        std::fs::create_dir_all(data_dir()?.join("logs"))?;
+        let mut touched = vec![];
+        for path in candidates() {
+            let existing = std::fs::read_to_string(&path).unwrap_or_default();
+            let mut cleaned = strip(&existing);
+            if !cleaned.is_empty() && !cleaned.ends_with('\n') {
+                cleaned.push('\n');
+            }
+            write_atomic(&path, &format!("{cleaned}{}", block(exe)))?;
+            touched.push(path);
+        }
+        Ok(touched)
+    }
+
+    pub fn uninstall() -> Result<()> {
+        for path in candidates() {
+            let Ok(existing) = std::fs::read_to_string(&path) else { continue };
+            if existing.contains(BEGIN) {
+                write_atomic(&path, &strip(&existing))?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn is_registered() -> bool {
+        candidates().iter().any(|p| {
+            std::fs::read_to_string(p)
+                .map(|t| t.contains(BEGIN))
+                .unwrap_or(false)
+        })
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Service registration
 // ---------------------------------------------------------------------------
 
+#[cfg(target_os = "macos")]
 pub const SERVICE_LABEL: &str = "ca.whnet.agent-router";
 
 #[cfg(target_os = "macos")]
@@ -508,7 +602,87 @@ pub mod service {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
+pub mod service {
+    use super::*;
+
+    pub const UNIT: &str = "agent-router.service";
+
+    fn unit_path() -> Result<PathBuf> {
+        let dir = home_dir()?.join(".config").join("systemd").join("user");
+        std::fs::create_dir_all(&dir)?;
+        Ok(dir.join(UNIT))
+    }
+
+    pub fn install(exe: &Path) -> Result<PathBuf> {
+        let dir = data_dir()?;
+        std::fs::create_dir_all(dir.join("logs"))?;
+        let path_env = std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into());
+        let unit = format!(
+            "[Unit]\n\
+             Description=Agent Router — local proxy between Claude Code and Anthropic\n\
+             After=network.target\n\n\
+             [Service]\n\
+             ExecStart={exe}\n\
+             # Restart on a crash only. A clean exit is deliberate: it is what happens\n\
+             # when a newer build takes the port over, and restarting would fight that.\n\
+             Restart=on-failure\n\
+             RestartSec=5\n\
+             Environment=PATH={path_env}\n\n\
+             [Install]\n\
+             WantedBy=default.target\n",
+            exe = exe.display(),
+        );
+        let path = unit_path()?;
+        write_atomic(&path, &unit)?;
+
+        // WSL only runs systemd when /etc/wsl.conf opts in, so a failure here is
+        // expected rather than exceptional — say what to do instead.
+        if run("systemctl", &["--user", "daemon-reload"]).is_err() {
+            // Expected under WSL rather than exceptional: fall back to the shell
+            // profile so the router still comes up on its own.
+            let _ = std::fs::remove_file(&path);
+            let touched = super::profile_autostart::install(exe)?;
+            return touched.into_iter().next().ok_or_else(|| {
+                anyhow!("no shell profile found to add an autostart line to")
+            });
+        }
+        run("systemctl", &["--user", "enable", "--now", UNIT])?;
+        Ok(path)
+    }
+
+    pub fn uninstall() -> Result<()> {
+        let _ = super::profile_autostart::uninstall();
+        let _ = run("systemctl", &["--user", "disable", "--now", UNIT]);
+        if let Ok(p) = unit_path() {
+            let _ = std::fs::remove_file(p);
+        }
+        let _ = run("systemctl", &["--user", "daemon-reload"]);
+        Ok(())
+    }
+
+    pub fn is_registered() -> bool {
+        unit_path().map(|p| p.exists()).unwrap_or(false)
+            || super::profile_autostart::is_registered()
+    }
+
+    fn run(cmd: &str, args: &[&str]) -> Result<()> {
+        let out = std::process::Command::new(cmd)
+            .args(args)
+            .output()
+            .with_context(|| format!("running {cmd}"))?;
+        if !out.status.success() {
+            return Err(anyhow!(
+                "{cmd} {}: {}",
+                args.join(" "),
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub mod service {
     use super::*;
 
