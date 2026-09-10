@@ -1,0 +1,642 @@
+//! Self-install: register the service, and point Claude Code at the router.
+//!
+//! The rule this module exists to honour: **only ever touch our own key.** A user's
+//! settings file is theirs. We add exactly one entry, remember precisely what was
+//! there before, and on removal put that back — but only if the value is still the
+//! one we wrote. If the user has since changed it, we leave it alone and say so.
+//! Nothing else in the file is rewritten, reordered or reformatted.
+
+use std::path::{Path, PathBuf};
+
+use anyhow::{anyhow, Context, Result};
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
+
+/// The one settings key the router manages.
+const ENV_KEY: &str = "ANTHROPIC_BASE_URL";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Managed {
+    /// Absolute path of the settings file we edited.
+    pub settings_path: String,
+    pub scope: String,
+    /// What we wrote, so we can tell our value from a later user edit.
+    pub value: String,
+    /// The value that was there before us; `None` means the key was absent.
+    pub previous: Option<String>,
+    pub applied_at: i64,
+    /// A full copy of the file as it was, for a manual restore.
+    pub backup_path: Option<String>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct State {
+    #[serde(default)]
+    pub managed: Vec<Managed>,
+}
+
+pub fn state_path() -> Result<PathBuf> {
+    let dir = data_dir()?;
+    Ok(dir.join("managed.json"))
+}
+
+pub fn data_dir() -> Result<PathBuf> {
+    let home = home_dir()?;
+    let dir = home.join(".agent-router");
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
+/// `$HOME` on Unix, `%USERPROFILE%` on Windows.
+pub fn home_dir() -> Result<PathBuf> {
+    if let Ok(h) = std::env::var("HOME") {
+        if !h.is_empty() {
+            return Ok(PathBuf::from(h));
+        }
+    }
+    if let Ok(h) = std::env::var("USERPROFILE") {
+        if !h.is_empty() {
+            return Ok(PathBuf::from(h));
+        }
+    }
+    Err(anyhow!("neither HOME nor USERPROFILE is set"))
+}
+
+pub fn load_state() -> State {
+    state_path()
+        .ok()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
+}
+
+pub fn save_state(state: &State) -> Result<()> {
+    let path = state_path()?;
+    write_atomic(&path, &serde_json::to_string_pretty(state)?)
+}
+
+/// Global settings live at `~/.claude/settings.json`; a project's machine-local
+/// settings at `<project>/.claude/settings.local.json`, which is gitignored.
+pub fn settings_path(project: Option<&Path>) -> Result<PathBuf> {
+    Ok(match project {
+        Some(dir) => dir.join(".claude").join("settings.local.json"),
+        None => home_dir()?.join(".claude").join("settings.json"),
+    })
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+fn write_atomic(path: &Path, text: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, text)?;
+    std::fs::rename(&tmp, path)?;
+    Ok(())
+}
+
+/// Read a settings file, preserving key order. A missing file is an empty object; a
+/// malformed one is an error, because silently replacing a file we cannot parse
+/// would destroy settings we were asked to preserve.
+fn read_settings(path: &Path) -> Result<Map<String, Value>> {
+    match std::fs::read_to_string(path) {
+        Ok(text) if text.trim().is_empty() => Ok(Map::new()),
+        Ok(text) => match serde_json::from_str::<Value>(&text) {
+            Ok(Value::Object(m)) => Ok(m),
+            Ok(_) => Err(anyhow!("{} is not a JSON object", path.display())),
+            Err(e) => Err(anyhow!("{} is not valid JSON ({e}) — fix or move it first", path.display())),
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Map::new()),
+        Err(e) => Err(e).context(format!("reading {}", path.display())),
+    }
+}
+
+pub enum Applied {
+    Added,
+    Replaced { previous: String },
+    /// Already pointed at us, but untracked — now recorded so it can be undone.
+    Adopted,
+    AlreadySet,
+}
+
+/// Point a settings file at the router, recording what was there before.
+pub fn apply(path: &Path, url: &str, scope: &str) -> Result<Applied> {
+    let mut settings = read_settings(path)?;
+
+    let previous = settings
+        .get("env")
+        .and_then(Value::as_object)
+        .and_then(|e| e.get(ENV_KEY))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+
+    let already = previous.as_deref() == Some(url);
+    if already && load_state().managed.iter().any(|m| m.settings_path == path.to_string_lossy()) {
+        return Ok(Applied::AlreadySet);
+    }
+
+    // Back up the whole file once, before the first change we make to it.
+    let backup_path = if path.exists() && !already {
+        let backup = path.with_extension(format!("json.before-agent-router.{}", now_ms()));
+        std::fs::copy(path, &backup)?;
+        Some(backup.to_string_lossy().into_owned())
+    } else {
+        None
+    };
+
+    // Touch nothing but our key: `env` keeps every other variable, and every
+    // sibling key keeps its position because the map preserves insertion order.
+    let env = settings
+        .entry("env".to_string())
+        .or_insert_with(|| Value::Object(Map::new()));
+    let Some(env) = env.as_object_mut() else {
+        return Err(anyhow!("\"env\" in {} is not an object", path.display()));
+    };
+    env.insert(ENV_KEY.to_string(), Value::String(url.to_string()));
+
+    if !already {
+        write_atomic(path, &(serde_json::to_string_pretty(&Value::Object(settings))? + "\n"))?;
+    }
+
+    let mut state = load_state();
+    state.managed.retain(|m| m.settings_path != path.to_string_lossy());
+    state.managed.push(Managed {
+        settings_path: path.to_string_lossy().into_owned(),
+        scope: scope.to_string(),
+        value: url.to_string(),
+        // When adopting, there is no knowable prior value: the key already held ours.
+        previous: if already { None } else { previous.clone() },
+        applied_at: now_ms(),
+        backup_path,
+    });
+    save_state(&state)?;
+
+    Ok(match (already, previous) {
+        // The value was already ours but nothing was tracking it — a hand-edited
+        // file. Adopt it so uninstall can undo it.
+        (true, _) => Applied::Adopted,
+        (false, Some(previous)) => Applied::Replaced { previous },
+        (false, None) => Applied::Added,
+    })
+}
+
+pub enum Reverted {
+    Restored { to: String },
+    Removed,
+    NotOurs { found: String },
+    NotManaged,
+}
+
+/// Undo what `apply` did — and nothing else.
+pub fn revert(path: &Path) -> Result<Reverted> {
+    let mut state = load_state();
+    let key = path.to_string_lossy().into_owned();
+    let Some(idx) = state.managed.iter().position(|m| m.settings_path == key) else {
+        return Ok(Reverted::NotManaged);
+    };
+    let managed = state.managed[idx].clone();
+
+    let mut settings = read_settings(path)?;
+    let current = settings
+        .get("env")
+        .and_then(Value::as_object)
+        .and_then(|e| e.get(ENV_KEY))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+
+    // If it is no longer the value we wrote, the user changed it deliberately.
+    // Reverting would undo their edit, so stop and leave the file alone.
+    match current.as_deref() {
+        Some(found) if found != managed.value => {
+            return Ok(Reverted::NotOurs { found: found.to_string() })
+        }
+        None => {
+            state.managed.remove(idx);
+            save_state(&state)?;
+            return Ok(Reverted::Removed);
+        }
+        _ => {}
+    }
+
+    let outcome = {
+        let env = settings
+            .get_mut("env")
+            .and_then(Value::as_object_mut)
+            .ok_or_else(|| anyhow!("\"env\" vanished from {}", path.display()))?;
+        match &managed.previous {
+            Some(previous) => {
+                env.insert(ENV_KEY.to_string(), Value::String(previous.clone()));
+                Reverted::Restored { to: previous.clone() }
+            }
+            None => {
+                env.remove(ENV_KEY);
+                // Leave no debris: an `env` we created and then emptied goes too.
+                if env.is_empty() {
+                    settings.remove("env");
+                }
+                Reverted::Removed
+            }
+        }
+    };
+
+    write_atomic(path, &(serde_json::to_string_pretty(&Value::Object(settings))? + "\n"))?;
+    state.managed.remove(idx);
+    save_state(&state)?;
+    Ok(outcome)
+}
+
+/// Copy the running binary somewhere stable, so rebuilding the repo never swaps the
+/// file out from under the installed service.
+pub fn install_binary() -> Result<PathBuf> {
+    let dir = data_dir()?.join("bin");
+    std::fs::create_dir_all(&dir)?;
+    let dest = dir.join(if cfg!(windows) { "agent-router.exe" } else { "agent-router" });
+    let current = std::env::current_exe()?;
+    if current != dest {
+        let tmp = dest.with_extension("new");
+        std::fs::copy(&current, &tmp)?;
+        std::fs::rename(&tmp, &dest)?;
+    }
+    Ok(dest)
+}
+
+// ---------------------------------------------------------------------------
+// Web API — the same operations the subcommands perform, so setup can be done
+// from the dashboard the binary is already serving.
+// ---------------------------------------------------------------------------
+
+pub mod api {
+    use std::sync::Arc;
+
+    use axum::extract::State;
+    use axum::Json;
+    use serde::Deserialize;
+    use serde_json::{json, Value};
+
+    use super::*;
+    use crate::proxy::AppState;
+
+    fn snapshot(state: &AppState) -> Value {
+        let managed = load_state()
+            .managed
+            .into_iter()
+            .map(|m| {
+                json!({
+                    "path": m.settings_path,
+                    "scope": m.scope,
+                    "value": m.value,
+                    "previous": m.previous,
+                    "backup_path": m.backup_path,
+                    "applied_at": m.applied_at,
+                })
+            })
+            .collect::<Vec<_>>();
+        json!({
+            "service": {
+                "registered": service::is_registered(),
+                "supported": cfg!(target_os = "macos"),
+                "platform": std::env::consts::OS,
+            },
+            "url": format!("http://127.0.0.1:{}", state.config.bind.port()),
+            "global_settings_path": settings_path(None)
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            "managed": managed,
+        })
+    }
+
+    pub async fn status(State(state): State<Arc<AppState>>) -> Json<Value> {
+        Json(snapshot(&state))
+    }
+
+    #[derive(Deserialize)]
+    pub struct Toggle {
+        pub enable: bool,
+    }
+
+    pub async fn service_toggle(
+        State(state): State<Arc<AppState>>,
+        Json(req): Json<Toggle>,
+    ) -> Json<Value> {
+        let result = tokio::task::spawn_blocking(move || -> Result<()> {
+            if req.enable {
+                let exe = install_binary()?;
+                service::install(&exe)?;
+            } else {
+                service::uninstall()?;
+            }
+            Ok(())
+        })
+        .await;
+        match result {
+            Ok(Ok(())) => {
+                let mut out = snapshot(&state);
+                out["ok"] = json!(true);
+                Json(out)
+            }
+            Ok(Err(e)) => Json(json!({ "error": e.to_string() })),
+            Err(e) => Json(json!({ "error": e.to_string() })),
+        }
+    }
+
+    #[derive(Deserialize)]
+    pub struct ConfigReq {
+        pub enable: bool,
+        /// Absent means the global settings file.
+        #[serde(default)]
+        pub project: Option<String>,
+    }
+
+    pub async fn config_toggle(
+        State(state): State<Arc<AppState>>,
+        Json(req): Json<ConfigReq>,
+    ) -> Json<Value> {
+        let url = format!("http://127.0.0.1:{}", state.config.bind.port());
+        let project = req.project.clone().map(PathBuf::from);
+        if let Some(dir) = &project {
+            if !dir.is_dir() {
+                return Json(json!({ "error": format!("{} is not a directory", dir.display()) }));
+            }
+        }
+        let scope = if project.is_some() { "project" } else { "global" };
+
+        let result = tokio::task::spawn_blocking(move || -> Result<String> {
+            let path = settings_path(project.as_deref())?;
+            if req.enable {
+                Ok(match apply(&path, &url, scope)? {
+                    Applied::Added => format!("added ANTHROPIC_BASE_URL to {}", path.display()),
+                    Applied::Replaced { previous } => {
+                        format!("replaced {previous} in {}; it will be restored", path.display())
+                    }
+                    Applied::Adopted => {
+                        format!("adopted the existing setting in {}", path.display())
+                    }
+                    Applied::AlreadySet => format!("{} already points here", path.display()),
+                })
+            } else {
+                Ok(match revert(&path)? {
+                    Reverted::Restored { to } => format!("restored {to}"),
+                    Reverted::Removed => "removed ANTHROPIC_BASE_URL".to_string(),
+                    Reverted::NotOurs { found } => {
+                        format!("left alone — it now reads {found}, which we did not write")
+                    }
+                    Reverted::NotManaged => "was not managed by agent-router".to_string(),
+                })
+            }
+        })
+        .await;
+
+        match result {
+            Ok(Ok(detail)) => {
+                let mut out = snapshot(&state);
+                out["ok"] = json!(true);
+                out["detail"] = json!(detail);
+                Json(out)
+            }
+            Ok(Err(e)) => Json(json!({ "error": e.to_string() })),
+            Err(e) => Json(json!({ "error": e.to_string() })),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Service registration
+// ---------------------------------------------------------------------------
+
+pub const SERVICE_LABEL: &str = "ca.whnet.agent-router";
+
+#[cfg(target_os = "macos")]
+pub mod service {
+    use super::*;
+
+    fn plist_path() -> Result<PathBuf> {
+        let dir = home_dir()?.join("Library").join("LaunchAgents");
+        std::fs::create_dir_all(&dir)?;
+        Ok(dir.join(format!("{SERVICE_LABEL}.plist")))
+    }
+
+    fn uid() -> String {
+        // SAFETY: getuid() cannot fail and touches no memory we own.
+        unsafe { libc::getuid() }.to_string()
+    }
+
+    pub fn install(exe: &Path) -> Result<PathBuf> {
+        let dir = data_dir()?;
+        std::fs::create_dir_all(dir.join("logs"))?;
+        let logs = dir.join("logs").join("router.log");
+
+        // launchd hands a process almost no PATH, and the router shells out to
+        // `claude` to identify accounts.
+        let claude_dir = which("claude").unwrap_or_else(|| PathBuf::from("/usr/local/bin"));
+        let path_env = format!(
+            "{}:/usr/bin:/bin:/usr/sbin:/sbin",
+            claude_dir.parent().unwrap_or(Path::new("/usr/local/bin")).display()
+        );
+
+        let plist = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>{SERVICE_LABEL}</string>
+  <key>ProgramArguments</key><array><string>{exe}</string></array>
+  <key>RunAtLoad</key><true/>
+  <!-- Restart on a crash only. A clean exit is deliberate: it is what happens when a
+       newer build takes the port over, and restarting then would fight the handover. -->
+  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+  <key>ThrottleInterval</key><integer>5</integer>
+  <key>ProcessType</key><string>Background</string>
+  <key>EnvironmentVariables</key><dict>
+    <key>PATH</key><string>{path_env}</string>
+    <key>HOME</key><string>{home}</string>
+  </dict>
+  <key>StandardOutPath</key><string>{logs}</string>
+  <key>StandardErrorPath</key><string>{logs}</string>
+</dict>
+</plist>
+"#,
+            exe = exe.display(),
+            home = home_dir()?.display(),
+            logs = logs.display(),
+        );
+
+        let path = plist_path()?;
+        write_atomic(&path, &plist)?;
+        let domain = format!("gui/{}", uid());
+        let _ = run("launchctl", &["bootout", &format!("{domain}/{SERVICE_LABEL}")]);
+        run("launchctl", &["bootstrap", &domain, &path.to_string_lossy()])?;
+        let _ = run("launchctl", &["enable", &format!("{domain}/{SERVICE_LABEL}")]);
+        Ok(path)
+    }
+
+    pub fn uninstall() -> Result<()> {
+        let domain = format!("gui/{}", uid());
+        let _ = run("launchctl", &["bootout", &format!("{domain}/{SERVICE_LABEL}")]);
+        if let Ok(p) = plist_path() {
+            let _ = std::fs::remove_file(p);
+        }
+        Ok(())
+    }
+
+    pub fn is_registered() -> bool {
+        plist_path().map(|p| p.exists()).unwrap_or(false)
+    }
+
+    fn which(bin: &str) -> Option<PathBuf> {
+        let out = std::process::Command::new("/usr/bin/which").arg(bin).output().ok()?;
+        out.status.success().then(|| {
+            PathBuf::from(String::from_utf8_lossy(&out.stdout).trim().to_string())
+        })
+    }
+
+    fn run(cmd: &str, args: &[&str]) -> Result<()> {
+        let out = std::process::Command::new(cmd).args(args).output()?;
+        if !out.status.success() {
+            return Err(anyhow!(
+                "{cmd} {}: {}",
+                args.join(" "),
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub mod service {
+    use super::*;
+
+    /// Windows would register a per-user logon task (Task Scheduler supports
+    /// restart-on-failure, which the Run registry key does not). Deliberately not
+    /// written blind: it cannot be tested from here, and an untested installer that
+    /// edits the registry is worse than none.
+    pub fn install(_exe: &Path) -> Result<PathBuf> {
+        Err(anyhow!(
+            "automatic service registration is not implemented on this platform yet — \
+             the router still runs in the foreground, and `install --no-service` will \
+             set up the Claude Code config for you"
+        ))
+    }
+
+    pub fn uninstall() -> Result<()> {
+        Ok(())
+    }
+
+    pub fn is_registered() -> bool {
+        false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("ar-setup-{name}-{}", now_ms()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("settings.json")
+    }
+
+    /// `HOME` is process-global, so tests that redirect it must not run in
+    /// parallel with each other — without this they interleave and each sees
+    /// another's managed state.
+    static HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn with_home<T>(f: impl FnOnce() -> T) -> T {
+        let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // Keep managed-state writes out of the real home directory.
+        let tmp = std::env::temp_dir().join(format!("ar-home-{}", now_ms()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let old = std::env::var("HOME").ok();
+        std::env::set_var("HOME", &tmp);
+        let out = f();
+        match old {
+            Some(h) => std::env::set_var("HOME", h),
+            None => std::env::remove_var("HOME"),
+        }
+        out
+    }
+
+    #[test]
+    fn adds_our_key_and_leaves_every_other_setting_untouched() {
+        with_home(|| {
+            let path = scratch("add");
+            std::fs::write(
+                &path,
+                r#"{"effortLevel":"max","env":{"FOO":"bar"},"other":{"deep":[1,2]}}"#,
+            )
+            .unwrap();
+            apply(&path, "http://127.0.0.1:8787", "global").unwrap();
+
+            let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            assert_eq!(v["effortLevel"], "max");
+            assert_eq!(v["env"]["FOO"], "bar");
+            assert_eq!(v["other"]["deep"][1], 2);
+            assert_eq!(v["env"]["ANTHROPIC_BASE_URL"], "http://127.0.0.1:8787");
+        });
+    }
+
+    #[test]
+    fn revert_removes_a_key_we_added_and_the_env_we_created() {
+        with_home(|| {
+            let path = scratch("revert");
+            std::fs::write(&path, r#"{"effortLevel":"max"}"#).unwrap();
+            apply(&path, "http://127.0.0.1:8787", "global").unwrap();
+            matches!(revert(&path).unwrap(), Reverted::Removed);
+
+            let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            assert_eq!(v["effortLevel"], "max");
+            assert!(v.get("env").is_none(), "an env we created should not be left behind");
+        });
+    }
+
+    #[test]
+    fn revert_restores_a_value_that_was_there_before_us() {
+        with_home(|| {
+            let path = scratch("restore");
+            std::fs::write(&path, r#"{"env":{"ANTHROPIC_BASE_URL":"https://upstream.example"}}"#)
+                .unwrap();
+            apply(&path, "http://127.0.0.1:8787", "global").unwrap();
+            match revert(&path).unwrap() {
+                Reverted::Restored { to } => assert_eq!(to, "https://upstream.example"),
+                _ => panic!("should have restored the prior value"),
+            }
+            let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            assert_eq!(v["env"]["ANTHROPIC_BASE_URL"], "https://upstream.example");
+        });
+    }
+
+    #[test]
+    fn revert_refuses_to_undo_an_edit_the_user_made_themselves() {
+        with_home(|| {
+            let path = scratch("useredit");
+            std::fs::write(&path, "{}").unwrap();
+            apply(&path, "http://127.0.0.1:8787", "global").unwrap();
+            // The user re-points it somewhere else afterwards.
+            std::fs::write(&path, r#"{"env":{"ANTHROPIC_BASE_URL":"http://127.0.0.1:9999"}}"#)
+                .unwrap();
+            match revert(&path).unwrap() {
+                Reverted::NotOurs { found } => assert_eq!(found, "http://127.0.0.1:9999"),
+                _ => panic!("must not clobber a value the user changed"),
+            }
+            let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            assert_eq!(v["env"]["ANTHROPIC_BASE_URL"], "http://127.0.0.1:9999");
+        });
+    }
+
+    #[test]
+    fn malformed_settings_are_refused_rather_than_replaced() {
+        with_home(|| {
+            let path = scratch("broken");
+            std::fs::write(&path, "{ this is not json").unwrap();
+            assert!(apply(&path, "http://127.0.0.1:8787", "global").is_err());
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ this is not json");
+        });
+    }
+}

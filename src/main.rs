@@ -14,6 +14,7 @@ mod guard;
 mod lifecycle;
 mod proxy;
 mod quota;
+mod setup;
 mod transcript;
 
 use std::time::Duration;
@@ -21,8 +22,141 @@ use std::time::Duration;
 use axum::routing::{any, get, post};
 use axum::Router;
 
+const USAGE: &str = "\
+agent-router — a local proxy between Claude Code and Anthropic
+
+USAGE:
+  agent-router                       run the router (default)
+  agent-router install [OPTIONS]     point Claude Code at it, and start it at login
+  agent-router uninstall             undo exactly what install changed
+  agent-router status                show what is installed and what is managed
+
+INSTALL OPTIONS:
+  --project <dir>   configure one project instead of every project
+  --no-service      only edit the config; do not register a login item
+  --port <n>        router port (default 8787)
+
+Only one settings key is ever touched: env.ANTHROPIC_BASE_URL. Everything else in
+your settings file is left exactly as it is, and uninstall restores whatever was
+there before — unless you have since changed it yourself, in which case it is left
+alone.
+";
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match args.first().map(String::as_str) {
+        Some("install") => return cmd_install(&args[1..]),
+        Some("uninstall") => return cmd_uninstall(),
+        Some("status") => return cmd_status(),
+        Some("-h") | Some("--help") | Some("help") => {
+            print!("{USAGE}");
+            return Ok(());
+        }
+        Some(other) if other.starts_with('-') => {
+            eprintln!("unknown option {other:?}\n\n{USAGE}");
+            std::process::exit(2);
+        }
+        Some(other) => {
+            eprintln!("unknown command {other:?}\n\n{USAGE}");
+            std::process::exit(2);
+        }
+        None => {}
+    }
+    serve().await
+}
+
+fn flag_value(args: &[String], name: &str) -> Option<String> {
+    args.iter()
+        .position(|a| a == name)
+        .and_then(|i| args.get(i + 1))
+        .cloned()
+}
+
+fn cmd_install(args: &[String]) -> anyhow::Result<()> {
+    let port: u16 = flag_value(args, "--port")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(8787);
+    let url = format!("http://127.0.0.1:{port}");
+    let project = flag_value(args, "--project").map(std::path::PathBuf::from);
+    let scope = if project.is_some() { "project" } else { "global" };
+
+    if !args.iter().any(|a| a == "--no-service") {
+        let exe = setup::install_binary()?;
+        match setup::service::install(&exe) {
+            Ok(path) => println!("service   registered: {}", path.display()),
+            Err(err) => println!("service   skipped: {err}"),
+        }
+    }
+
+    let path = setup::settings_path(project.as_deref())?;
+    match setup::apply(&path, &url, scope)? {
+        setup::Applied::Added => println!("config    added ANTHROPIC_BASE_URL={url}"),
+        setup::Applied::Replaced { previous } => {
+            println!("config    ANTHROPIC_BASE_URL={url}");
+            println!("          was {previous} — uninstall will put that back");
+        }
+        setup::Applied::Adopted => {
+            println!("config    already pointed at {url}; now tracked so uninstall can undo it")
+        }
+        setup::Applied::AlreadySet => println!("config    already pointing at {url}"),
+    }
+    println!("          {} ({scope})", path.display());
+    println!("\ndashboard {url}");
+    Ok(())
+}
+
+fn cmd_uninstall() -> anyhow::Result<()> {
+    let state = setup::load_state();
+    if state.managed.is_empty() {
+        println!("config    nothing was managed by agent-router");
+    }
+    for managed in &state.managed {
+        let path = std::path::PathBuf::from(&managed.settings_path);
+        match setup::revert(&path)? {
+            setup::Reverted::Restored { to } => {
+                println!("config    restored ANTHROPIC_BASE_URL={to}\n          {}", path.display())
+            }
+            setup::Reverted::Removed => {
+                println!("config    removed ANTHROPIC_BASE_URL\n          {}", path.display())
+            }
+            setup::Reverted::NotOurs { found } => {
+                println!("config    left alone: now set to {found}, which is not what we wrote");
+                println!("          {}", path.display());
+            }
+            setup::Reverted::NotManaged => {}
+        }
+    }
+    setup::service::uninstall()?;
+    println!("service   unregistered");
+    println!("\ndata kept at {}", setup::data_dir()?.display());
+    Ok(())
+}
+
+fn cmd_status() -> anyhow::Result<()> {
+    println!(
+        "service   {}",
+        if setup::service::is_registered() { "registered" } else { "not registered" }
+    );
+    let state = setup::load_state();
+    if state.managed.is_empty() {
+        println!("config    no settings files are managed");
+    }
+    for m in &state.managed {
+        println!("config    {} ({})", m.settings_path, m.scope);
+        println!("          set to {}", m.value);
+        match &m.previous {
+            Some(p) => println!("          restores to {p} on uninstall"),
+            None => println!("          key did not exist before; uninstall removes it"),
+        }
+        if let Some(b) = &m.backup_path {
+            println!("          backup {b}");
+        }
+    }
+    Ok(())
+}
+
+async fn serve() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_env("AGENT_ROUTER_LOG")
@@ -90,6 +224,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/quota", get(quota::quota))
         .route("/api/quota/raw", get(quota::raw_usage))
         .route("/api/usage-token", post(quota::set_usage_token))
+        .route("/api/setup", get(setup::api::status))
+        .route("/api/setup/service", post(setup::api::service_toggle))
+        .route("/api/setup/config", post(setup::api::config_toggle))
         .route("/_router/health", get(api::health))
         .fallback(any(proxy::handle))
         .layer(axum::middleware::from_fn(guard::layer))
