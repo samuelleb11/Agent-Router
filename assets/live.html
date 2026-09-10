@@ -1,6 +1,6 @@
 <!doctype html>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
 <title>Live sessions · Agent Router</title>
 <style>
   :root {
@@ -18,9 +18,21 @@
   }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html, body { margin: 0; background: var(--bg); color: var(--fg); }
-  body { font: 15px/1.5 ui-sans-serif, -apple-system, system-ui, "Segoe UI", sans-serif; }
+  body {
+    font: 15px/1.5 ui-sans-serif, -apple-system, system-ui, "Segoe UI", sans-serif;
+    /* A flex column pinned to the *dynamic* viewport. On iOS the URL bar showing and
+       hiding changes the viewport, and `vh` does not follow it — which is what makes a
+       body-scrolled page with a sticky footer lurch about. `dvh` does follow it, and
+       with the panes scrolling internally the composer is simply the last row of a
+       fixed-height column: it cannot drift, and nothing reflows when the bar moves. */
+    height: 100vh;
+    height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
   header {
-    position: sticky; top: 0; z-index: 5;
+    flex: none; z-index: 5;
     background: color-mix(in srgb, var(--bg) 88%, transparent);
     backdrop-filter: blur(12px); border-bottom: 1px solid var(--line);
     padding: 10px 14px; padding-top: calc(10px + env(safe-area-inset-top));
@@ -44,7 +56,12 @@
   @keyframes pulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: .35; transform: scale(.75); } }
   @media (prefers-reduced-motion: reduce) { #stat .pip { animation: none !important; } }
 
-  #list { padding: 12px; display: grid; gap: 8px; }
+  /* The two panes are interchangeable: whichever is visible owns the scroll. */
+  #list, #feed {
+    flex: 1 1 auto; min-height: 0; overflow-y: auto;
+    -webkit-overflow-scrolling: touch; overscroll-behavior: contain;
+  }
+  #list { padding: 12px; display: grid; gap: 8px; align-content: start; }
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
           padding: 12px 13px; cursor: pointer; display: grid; gap: 5px; }
   .card:active { background: var(--panel2); }
@@ -58,7 +75,7 @@
   .meta { color: var(--faint); font-size: 11.5px; font-family: ui-monospace, Menlo, monospace; }
 
   /* ---- transcript ---- */
-  #feed { padding: 12px 12px 8px; display: grid; gap: 9px; }
+  #feed { padding: 12px 12px 8px; display: grid; gap: 9px; align-content: start; }
   .ev { border-radius: 10px; padding: 10px 12px; border: 1px solid var(--line); background: var(--panel); }
   .ev .who { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
              color: var(--faint); margin-bottom: 4px; display: flex; gap: 7px; align-items: baseline; }
@@ -87,8 +104,7 @@
 
   /* ---- composer ---- */
   #composer {
-    position: sticky; bottom: 0; background: color-mix(in srgb, var(--bg) 92%, transparent);
-    backdrop-filter: blur(12px); border-top: 1px solid var(--line);
+    flex: none; background: var(--bg); border-top: 1px solid var(--line);
     padding: 10px 12px; padding-bottom: calc(10px + env(safe-area-inset-bottom));
     display: grid; gap: 7px;
   }
@@ -206,7 +222,7 @@ function render(it) {
 function openSession(r) {
   // Remember where the reader was in the list, so coming back does not dump them
   // somewhere else — the feed leaves the window scrolled to its own bottom.
-  listScroll = window.scrollY;
+  listScroll = list.scrollTop;
   current = r;
   list.classList.add('hide');
   feed.classList.remove('hide');
@@ -215,15 +231,15 @@ function openSession(r) {
   heading.textContent = base(r.cwd) || r.project;
   feed.innerHTML = '';
   note.textContent = ''; note.className = '';
-  window.scrollTo(0, 0);
+  feed.scrollTop = 0;
   if (es) es.close();
 
-  const atBottom = () => window.innerHeight + window.scrollY >= document.body.offsetHeight - 140;
+  const atBottom = () => feed.scrollHeight - feed.scrollTop - feed.clientHeight < 140;
   es = new EventSource('/api/live/stream?session=' + encodeURIComponent(r.session_id));
   es.onmessage = e => {
     const stick = atBottom();
     try { feed.appendChild(render(JSON.parse(e.data))); } catch {}
-    if (stick) window.scrollTo(0, document.body.scrollHeight);
+    if (stick) feed.scrollTop = feed.scrollHeight;
   };
   es.addEventListener('status', e => { try { setStatus(JSON.parse(e.data)); } catch {} });
   es.addEventListener('error', () => { stat.className = ''; statText.textContent = 'reconnecting…'; });
@@ -254,7 +270,7 @@ back.onclick = async () => {
   note.textContent = '';
   // Restore only after the rows are back, or there is nothing tall enough to scroll.
   await loadSessions();
-  window.scrollTo(0, listScroll);
+  list.scrollTop = listScroll;
 };
 
 msg.addEventListener('input', () => {
@@ -284,7 +300,7 @@ sendBtn.onclick = async () => {
       echo.innerHTML = '<div class="who">you · queued</div><pre></pre>';
       echo.querySelector('pre').textContent = text;
       feed.appendChild(echo);
-      window.scrollTo(0, document.body.scrollHeight);
+      feed.scrollTop = feed.scrollHeight;
       msg.value = ''; msg.style.height = 'auto';
       if (body.framed) {
         // Worth interrupting for: the session will see a teammate's request, not yours,
@@ -308,10 +324,29 @@ sendBtn.onclick = async () => {
   } finally { sendBtn.disabled = false; }
 };
 
+// iOS ignores interactive-widget and overlays the keyboard instead of resizing the
+// layout, so dvh alone still leaves the composer underneath it. The visual viewport is
+// the one thing that does shrink, so the shell is pinned to that when it is available.
+const vv = window.visualViewport;
+if (vv) {
+  let raf = 0;
+  const fit = () => {
+    cancelAnimationFrame(raf);
+    raf = requestAnimationFrame(() => {
+      document.body.style.height = vv.height + 'px';
+      // Keep the newest message in view when the keyboard takes half the screen.
+      if (!feed.classList.contains('hide')) feed.scrollTop = feed.scrollHeight;
+    });
+  };
+  vv.addEventListener('resize', fit);
+  vv.addEventListener('scroll', fit);
+  fit();
+}
+
 loadSessions();
 setInterval(() => {
   if (!feed.classList.contains('hide')) return;
-  const keep = window.scrollY;
-  loadSessions().then(() => window.scrollTo(0, keep));
+  const keep = list.scrollTop;
+  loadSessions().then(() => { list.scrollTop = keep; });
 }, 5000);
 </script>
