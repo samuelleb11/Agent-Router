@@ -138,6 +138,7 @@ impl Db {
         conn.execute_batch(SCHEMA)?;
         // Lightweight forward migration so an existing store upgrades in place.
         ensure_column(&conn, "requests", "agent_id", "TEXT")?;
+        ensure_column(&conn, "requests", "account_email", "TEXT")?;
         for (col, ty) in [
             ("source", "TEXT NOT NULL DEFAULT 'keychain'"),
             ("profile_dir", "TEXT"),
@@ -215,8 +216,8 @@ impl Db {
                started_at, ttfb_ms, duration_ms, status, streaming, stop_reason,
                service_tier, error, rl_status, rl_5h_utilization, rl_7d_utilization,
                rl_5h_reset, rl_7d_reset, request_bytes, response_bytes,
-               agent_id, is_sidechain)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24)
+               agent_id, is_sidechain, account_email)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25)
              ON CONFLICT(request_id) DO NOTHING",
             params![
                 ev.request_id,
@@ -243,6 +244,7 @@ impl Db {
                 ev.response_bytes,
                 ev.agent_id,
                 ev.agent_id.is_some() as i64,
+                ev.account_email,
             ],
         )?;
         let row_id = tx.last_insert_rowid();

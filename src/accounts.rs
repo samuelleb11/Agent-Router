@@ -24,6 +24,10 @@ use std::path::{Path, PathBuf};
 
 /// Keychain service the router stores its *own* secrets under.
 const ROUTER_SERVICE: &str = "agent-router";
+/// Keychain service for the optional claude.ai web session key an account may carry
+/// for reading usage. Kept separate from the inference credential: different scope,
+/// different lifetime, and losing one should not invalidate the other.
+const USAGE_SERVICE: &str = "agent-router-usage";
 /// Keychain service Claude Code stores the default profile's credentials under.
 const CLAUDE_SERVICE: &str = "Claude Code-credentials";
 
@@ -59,11 +63,18 @@ pub struct Account {
     pub label: String,
     pub source: Source,
     pub profile_dir: Option<String>,
+    /// The identity this account was recorded as. For a Keychain account this is
+    /// checked before signing: `/login` rewrites that Keychain entry in place, so the
+    /// credential there is only this account's while the logged-in identity still
+    /// matches.
+    pub email: Option<String>,
 }
 
 /// A credential ready to sign with.
 pub struct Resolved {
     pub token: String,
+    /// Who the credential actually belongs to, where that is knowable.
+    pub identity: Option<String>,
     /// Milliseconds since the Unix epoch, or 0 when the token has no known expiry.
     pub expires_at_ms: i64,
 }
@@ -132,18 +143,30 @@ pub fn resolve(account: &Account) -> Result<Resolved> {
         Source::Keychain => {
             if let Ok(token) = std::env::var("AGENT_ROUTER_ACCESS_TOKEN") {
                 if !token.is_empty() {
-                    return Ok(Resolved { token, expires_at_ms: 0 });
+                    return Ok(Resolved { token, identity: None, expires_at_ms: 0 });
                 }
             }
+            // `claude /login` overwrites this one Keychain entry in place, so this
+            // account means "whoever Claude Code is logged into now" — deliberately
+            // dynamic. The identity is therefore resolved per request and stamped on
+            // the stored row, so a later /login cannot retroactively relabel traffic
+            // that a different account actually served.
+            let live = probe_profile(None).ok().and_then(|s| s.email);
             let raw = keychain_read(CLAUDE_SERVICE, &current_user())
                 .context("reading Claude Code's Keychain entry — log in with `claude` first")?;
-            parse_stored(&raw)
+            let mut resolved = parse_stored(&raw)?;
+            resolved.identity = live;
+            Ok(resolved)
         }
         Source::Token => {
             let token = keychain_read(ROUTER_SERVICE, &account.id)
                 .with_context(|| format!("reading the stored token for account {}", account.id))?;
             // setup-token issues long-lived tokens; there is no expiry to track.
-            Ok(Resolved { token: token.trim().to_string(), expires_at_ms: 0 })
+            Ok(Resolved {
+                token: token.trim().to_string(),
+                identity: account.email.clone(),
+                expires_at_ms: 0,
+            })
         }
         Source::Profile => {
             let dir = account
@@ -157,7 +180,12 @@ pub fn resolve(account: &Account) -> Result<Resolved> {
                     path.display()
                 )
             })?;
-            parse_stored(&raw)
+            let mut resolved = parse_stored(&raw)?;
+            resolved.identity = probe_profile(Some(std::path::Path::new(dir)))
+                .ok()
+                .and_then(|s| s.email)
+                .or_else(|| account.email.clone());
+            Ok(resolved)
         }
     }
 }
@@ -168,12 +196,31 @@ fn parse_stored(raw: &str) -> Result<Resolved> {
     let _ = (&stored.oauth.scopes, &stored.oauth.subscription_type);
     Ok(Resolved {
         token: stored.oauth.access_token,
+        identity: None,
         expires_at_ms: stored.oauth.expires_at,
     })
 }
 
 pub fn store_token(account_id: &str, token: &str) -> Result<()> {
     keychain_write(ROUTER_SERVICE, account_id, token.trim())
+}
+
+/// A claude.ai session key (`sk-ant-sid…`), used only to read usage. It is never
+/// sent to api.anthropic.com and never used to sign a proxied request.
+pub fn store_usage_token(account_id: &str, token: &str) -> Result<()> {
+    keychain_write(USAGE_SERVICE, account_id, token.trim())
+}
+
+pub fn usage_token(account_id: &str) -> Option<String> {
+    keychain_read(USAGE_SERVICE, account_id).ok().map(|t| t.trim().to_string())
+}
+
+pub fn forget_usage_token(account_id: &str) -> Result<()> {
+    let out = security(&["delete-generic-password", "-s", USAGE_SERVICE, "-a", account_id], None)?;
+    if out.status.success() || out.status.code() == Some(44) {
+        return Ok(());
+    }
+    Ok(())
 }
 
 pub fn forget_token(account_id: &str) -> Result<()> {
@@ -280,7 +327,7 @@ impl Store {
     pub fn active(&self) -> Result<Account> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
-            "SELECT id, label, source, profile_dir FROM accounts
+            "SELECT id, label, source, profile_dir, email FROM accounts
              WHERE active = 1 ORDER BY created_at LIMIT 1",
         )?;
         let account = stmt
@@ -290,16 +337,18 @@ impl Store {
                     r.get::<_, String>(1)?,
                     r.get::<_, Option<String>>(2)?,
                     r.get::<_, Option<String>>(3)?,
+                    r.get::<_, Option<String>>(4)?,
                 ))
             })
             .optional()?;
-        let (id, label, source, profile_dir) =
+        let (id, label, source, profile_dir, email) =
             account.ok_or_else(|| anyhow!("no active account"))?;
         Ok(Account {
             id,
             label,
             source: Source::parse(source.as_deref().unwrap_or("keychain"))?,
             profile_dir,
+            email,
         })
     }
 
@@ -358,6 +407,7 @@ impl Store {
             .unwrap_or(false);
         conn.execute("DELETE FROM accounts WHERE id = ?1", [id])?;
         let _ = forget_token(id);
+        let _ = forget_usage_token(id);
         if was_active {
             // Never leave the router with nothing to sign with.
             conn.execute(

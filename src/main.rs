@@ -13,6 +13,7 @@ mod db;
 mod guard;
 mod lifecycle;
 mod proxy;
+mod quota;
 mod transcript;
 
 use std::time::Duration;
@@ -85,6 +86,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/accounts/activate", post(api::accounts_activate))
         .route("/api/accounts/probe", post(api::accounts_probe))
         .route("/api/accounts/remove", post(api::accounts_remove))
+        .route("/api/accounts/edit", post(api::accounts_edit))
+        .route("/api/quota", get(quota::quota))
+        .route("/api/quota/raw", get(quota::raw_usage))
+        .route("/api/usage-token", post(quota::set_usage_token))
         .route("/_router/health", get(api::health))
         .fallback(any(proxy::handle))
         .layer(axum::middleware::from_fn(guard::layer))

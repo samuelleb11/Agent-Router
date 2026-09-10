@@ -52,6 +52,8 @@ pub const ACCOUNT_ID: &str = "default";
 pub struct Active {
     pub account_id: String,
     pub label: String,
+    /// Who the credential actually belonged to when it was resolved.
+    pub identity: Option<String>,
     pub token: String,
     pub expires_at_ms: i64,
 }
@@ -69,6 +71,9 @@ pub struct AppState {
     /// outright when the active account changes, so a switch takes effect on the very
     /// next request with nothing restarted.
     pub active: tokio::sync::RwLock<Option<Active>>,
+    /// Last quota reading; see `quota`. Keyed by account, because one account's
+    /// numbers must never be shown under another's name.
+    pub quota_cache: tokio::sync::RwLock<Option<crate::quota::Cached>>,
     pub capture: Sender<CaptureEvent>,
     dumps_left: AtomicUsize,
     dropped: AtomicUsize,
@@ -87,6 +92,7 @@ impl AppState {
             client,
             config,
             active: tokio::sync::RwLock::new(None),
+            quota_cache: tokio::sync::RwLock::new(None),
             capture,
             dumps_left,
             dropped: AtomicUsize::new(0),
@@ -96,11 +102,23 @@ impl AppState {
     /// Drop the cached credential so the next request re-resolves it.
     pub async fn invalidate(&self) {
         *self.active.write().await = None;
+        // The quota reading belongs to the account that produced it, so a switch
+        // must drop it too — otherwise the new account inherits the old one's numbers.
+        *self.quota_cache.write().await = None;
     }
 
-    /// The account and token to sign with, re-resolved when the cache is empty or
-    /// the token is close to expiry.
-    async fn signing_credential(&self) -> anyhow::Result<(String, String)> {
+    /// The account id and token to sign with.
+    pub(crate) async fn signing_credential(&self) -> anyhow::Result<(String, String)> {
+        self.signing_credential_full()
+            .await
+            .map(|(id, _identity, token)| (id, token))
+    }
+
+    /// The account, the identity it resolved to, and the token — re-resolved when the
+    /// cache is empty or the token is close to expiry.
+    pub(crate) async fn signing_credential_full(
+        &self,
+    ) -> anyhow::Result<(String, Option<String>, String)> {
         const RENEW_WITHIN_SECS: i64 = 300;
         {
             let held = self.active.read().await;
@@ -108,7 +126,7 @@ impl AppState {
                 let fresh = a.expires_at_ms == 0
                     || (a.expires_at_ms - crate::db::now_ms()) / 1000 > RENEW_WITHIN_SECS;
                 if fresh {
-                    return Ok((a.account_id.clone(), a.token.clone()));
+                    return Ok((a.account_id.clone(), a.identity.clone(), a.token.clone()));
                 }
             }
         }
@@ -121,6 +139,7 @@ impl AppState {
             Ok::<_, anyhow::Error>(Active {
                 account_id: account.id,
                 label: account.label,
+                identity: resolved.identity.or(account.email),
                 token: resolved.token,
                 expires_at_ms: resolved.expires_at_ms,
             })
@@ -128,12 +147,17 @@ impl AppState {
         .await??;
         tracing::info!(
             account = %loaded.label,
+            identity = loaded.identity.as_deref().unwrap_or("-"),
             credential = token_kind(&loaded.token),
             "signing credential resolved"
         );
-        let pair = (loaded.account_id.clone(), loaded.token.clone());
+        let out = (
+            loaded.account_id.clone(),
+            loaded.identity.clone(),
+            loaded.token.clone(),
+        );
         *held = Some(loaded);
-        Ok(pair)
+        Ok(out)
     }
 
     /// Hand a finished request to the capture task, or drop it. Never blocks.
@@ -206,7 +230,7 @@ async fn forward(state: Arc<AppState>, req: Request<Body>) -> anyhow::Result<Res
         .map(|a| a.as_str().to_owned())
         .unwrap_or_default();
 
-    let (account_id, token) = state.signing_credential().await?;
+    let (account_id, account_email, token) = state.signing_credential_full().await?;
     let mut out = Request::builder().method(parts.method.clone()).uri(upstream);
     {
         let headers = out.headers_mut().expect("builder has headers");
@@ -263,6 +287,7 @@ async fn forward(state: Arc<AppState>, req: Request<Body>) -> anyhow::Result<Res
         session_id,
         agent_id,
         account_id,
+        account_email,
         entrypoint,
         method: parts.method.to_string(),
         path: path_and_query,

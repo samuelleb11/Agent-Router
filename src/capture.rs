@@ -63,6 +63,7 @@ pub struct CaptureEvent {
     pub request_id: Option<String>,
     pub message_id: Option<String>,
     pub session_id: Option<String>,
+    pub account_email: Option<String>,
     /// Present only on subagent (Task tool) traffic — Claude Code labels it with
     /// `x-claude-code-agent-id`, which the main thread does not send. This is what
     /// separates subagent token burn from its parent session.
@@ -153,6 +154,10 @@ pub struct Pending {
     pub session_id: Option<String>,
     pub agent_id: Option<String>,
     pub account_id: String,
+    /// The identity that actually served this request. Recorded per request because
+    /// an account row's identity can change under it — `/login` rewrites the Keychain
+    /// entry the default account reads.
+    pub account_email: Option<String>,
     pub entrypoint: Option<String>,
     pub method: String,
     pub path: String,
@@ -253,6 +258,7 @@ impl Drop for Tee {
             session_id: p.session_id,
             agent_id: p.agent_id,
             account_id: p.account_id,
+            account_email: p.account_email,
             entrypoint: p.entrypoint,
             model: self
                 .scanner

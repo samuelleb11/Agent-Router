@@ -19,8 +19,20 @@ use crate::proxy::AppState;
 
 const INDEX_HTML: &str = include_str!("../assets/index.html");
 
-pub async fn index() -> Html<&'static str> {
-    Html(INDEX_HTML)
+pub async fn index() -> Response {
+    // The dashboard can switch and remove accounts, so it must not be framable: a
+    // transparent frame over a decoy would let another origin borrow those clicks.
+    (
+        [
+            (header::X_FRAME_OPTIONS, "DENY"),
+            (
+                header::CONTENT_SECURITY_POLICY,
+                "frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+            ),
+        ],
+        Html(INDEX_HTML),
+    )
+        .into_response()
 }
 
 pub async fn favicon() -> Response {
@@ -155,8 +167,12 @@ fn one(conn: &Connection, sql: &str, params: &[&dyn rusqlite::ToSql]) -> anyhow:
 /// same project / session / since filter as the lists so every figure on the page
 /// agrees with every other. Quota is the exception: it belongs to the account, not
 /// the project, so it always describes the active account.
-pub async fn summary(State(state): State<Arc<AppState>>, Query(f): Query<Filter>) -> ApiResult {
+pub async fn summary(State(state): State<Arc<AppState>>, Query(mut f): Query<Filter>) -> ApiResult {
     let conn = open(&state)?;
+    // Clamp once, on the Filter itself, so every query below binds the same sane value:
+    // the timeline does arithmetic on it, and i64::MAX would overflow (panic in debug).
+    let now = crate::db::now_ms();
+    f.since = f.since.map(|s| s.clamp(0, now));
     let p = scope_params(&f);
     let totals = one(
         &conn,
@@ -202,7 +218,8 @@ pub async fn summary(State(state): State<Arc<AppState>>, Query(f): Query<Filter>
     let context = rows(
         &conn,
         &format!(
-            "SELECT c.component, sum(c.est_tokens) AS est_tokens, sum(c.char_count) AS chars
+            "SELECT c.component, sum(c.est_tokens) AS est_tokens, sum(c.char_count) AS chars,
+                    count(DISTINCT c.request_id) AS requests
              FROM context c
              JOIN requests r       ON r.id = c.request_id
              LEFT JOIN sessions s  ON s.id = r.session_id
@@ -219,7 +236,8 @@ pub async fn summary(State(state): State<Arc<AppState>>, Query(f): Query<Filter>
                     coalesce(sum(u.output_tokens),0)   AS output_tokens,
                     coalesce(sum(u.thinking_tokens),0) AS thinking_tokens,
                     coalesce(sum(u.cache_read_tokens),0) AS cache_read_tokens,
-                    coalesce(sum(CASE WHEN r.status >= 400 OR r.error IS NOT NULL THEN 1 ELSE 0 END),0) AS errors
+                    coalesce(sum(CASE WHEN r.status >= 400 OR r.error IS NOT NULL THEN 1 ELSE 0 END),0) AS errors,
+                    coalesce(sum(CASE WHEN coalesce(r.is_sidechain,0) = 1 THEN 1 ELSE 0 END),0) AS subagent_requests
              FROM requests r
              LEFT JOIN usage u    ON u.request_id = r.id
              LEFT JOIN sessions s ON s.id = r.session_id
@@ -237,12 +255,23 @@ pub async fn summary(State(state): State<Arc<AppState>>, Query(f): Query<Filter>
                     count(*) AS requests,
                     coalesce(sum(u.prompt_tokens),0) AS prompt_tokens,
                     coalesce(sum(u.output_tokens),0) AS output_tokens,
+                    coalesce(sum(u.cache_read_tokens),0) AS cache_read_tokens,
                     count(DISTINCT r.agent_id) AS agents
              FROM requests r
              LEFT JOIN usage u    ON u.request_id = r.id
              LEFT JOIN sessions s ON s.id = r.session_id
              WHERE {SCOPE}
              GROUP BY coalesce(r.is_sidechain,0) ORDER BY coalesce(r.is_sidechain,0)"
+        ),
+        &p,
+    )?;
+    let stop_reasons = rows(
+        &conn,
+        &format!(
+            "SELECT coalesce(r.stop_reason, '(none)') AS stop_reason, count(*) AS requests
+             FROM requests r LEFT JOIN sessions s ON s.id = r.session_id
+             WHERE {SCOPE}
+             GROUP BY 1 ORDER BY 2 DESC"
         ),
         &p,
     )?;
@@ -276,12 +305,12 @@ pub async fn summary(State(state): State<Arc<AppState>>, Query(f): Query<Filter>
     let range = match (lo, hi) {
         (Some(lo), Some(hi)) => {
             let start = f.since.map_or(lo, |s| s.min(lo));
-            let end = if f.since.is_some() { crate::db::now_ms().max(hi) } else { hi };
+            let end = if f.since.is_some() { now.max(hi) } else { hi };
             Some((start, end))
         }
         // No requests in the window: still hand back the window, so the chart can
         // show an empty range rather than nothing at all.
-        _ => f.since.map(|s| (s, crate::db::now_ms().max(s + 1))),
+        _ => f.since.map(|s| (s, now.max(s.saturating_add(1)))),
     };
     let (timeline, quota_history, bucket) = match range {
         Some((start, end)) => {
@@ -325,6 +354,7 @@ pub async fn summary(State(state): State<Arc<AppState>>, Query(f): Query<Filter>
     Ok(Json(json!({
         "totals": totals, "quota": quota, "account": account, "context": context,
         "models": models, "threads": threads, "latency": latency,
+        "stop_reasons": stop_reasons,
         "timeline": {
             "start": range.map(|r| r.0), "end": range.map(|r| r.1),
             "bucket_ms": bucket, "rows": timeline,
@@ -393,7 +423,9 @@ pub async fn requests(State(state): State<Arc<AppState>>, Query(f): Query<Filter
                 u.cache_creation_5m_tokens + u.cache_creation_1h_tokens AS cache_write_tokens,
                 (SELECT group_concat(name) FROM
                    (SELECT name FROM tool_invocations t WHERE t.request_id = r.id ORDER BY t.ordinal)
-                ) AS tools
+                ) AS tools,
+                (SELECT group_concat(c.component || ':' || c.est_tokens)
+                 FROM context c WHERE c.request_id = r.id) AS context
          FROM requests r
          LEFT JOIN usage u    ON u.request_id = r.id
          LEFT JOIN sessions s ON s.id = r.session_id
@@ -410,7 +442,8 @@ pub async fn tools(State(state): State<Arc<AppState>>, Query(f): Query<Filter>) 
     let produced = rows(
         &conn,
         "SELECT tc.name, count(*) AS results, sum(tc.result_chars) AS chars,
-                sum(tc.est_tokens) AS est_tokens, sum(tc.is_error) AS errors
+                sum(tc.est_tokens) AS est_tokens, max(tc.est_tokens) AS max_tokens,
+                sum(tc.is_error) AS errors
          FROM tool_calls tc LEFT JOIN sessions s ON s.id = tc.session_id
          WHERE (?1 IS NULL OR s.cwd = ?1)
            AND (?2 IS NULL OR tc.session_id = ?2)
@@ -421,7 +454,9 @@ pub async fn tools(State(state): State<Arc<AppState>>, Query(f): Query<Filter>) 
     let called = rows(
         &conn,
         &format!(
-            "SELECT ti.name, count(*) AS calls
+            "SELECT ti.name, count(*) AS calls,
+                    count(DISTINCT ti.request_id) AS requests,
+                    coalesce(sum(CASE WHEN coalesce(r.is_sidechain,0) = 1 THEN 1 ELSE 0 END),0) AS subagent_calls
              FROM tool_invocations ti
              JOIN requests r      ON r.id = ti.request_id
              LEFT JOIN sessions s ON s.id = r.session_id
@@ -450,6 +485,51 @@ pub struct AccountRef {
     pub id: String,
 }
 
+#[derive(Deserialize)]
+pub struct AccountEdit {
+    pub id: String,
+    pub label: Option<String>,
+    /// The identity this account serves, when the router cannot discover it.
+    pub email: Option<String>,
+}
+
+fn looks_like_email(s: &str) -> bool {
+    let s = s.trim();
+    match s.split_once('@') {
+        Some((user, host)) => {
+            !user.is_empty() && host.contains('.') && !host.starts_with('.') && !s.contains(' ')
+        }
+        None => false,
+    }
+}
+
+/// Rename an account, or tell the router which identity it serves. The id and the
+/// stored credential are untouched, so history keyed to this account stays intact.
+pub async fn accounts_edit(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<AccountEdit>,
+) -> ApiResult {
+    let conn = rusqlite::Connection::open(&state.config.db_path)?;
+    let label = req.label.map(|l| l.trim().to_string()).filter(|l| !l.is_empty());
+    let email = req.email.map(|e| e.trim().to_string()).filter(|e| !e.is_empty());
+    if let Some(email) = &email {
+        if !looks_like_email(email) {
+            return Err(ApiError(anyhow::anyhow!("{email:?} is not an email address")));
+        }
+    }
+    let changed = conn.execute(
+        "UPDATE accounts SET label = COALESCE(?2, label), email = COALESCE(?3, email)
+         WHERE id = ?1",
+        rusqlite::params![req.id, label, email],
+    )?;
+    if changed == 0 {
+        return Err(ApiError(anyhow::anyhow!("no account with id {:?}", req.id)));
+    }
+    // The cached credential carries the label and identity, so re-resolve it.
+    state.invalidate().await;
+    Ok(Json(json!({ "ok": true, "id": req.id })))
+}
+
 pub async fn accounts_list(State(state): State<Arc<AppState>>) -> ApiResult {
     let conn = open(&state)?;
     let mut list = rows(
@@ -476,6 +556,7 @@ pub async fn accounts_list(State(state): State<Arc<AppState>>) -> ApiResult {
                     .get("profile_dir")
                     .and_then(Value::as_str)
                     .map(str::to_owned),
+                email: obj.get("email").and_then(Value::as_str).map(str::to_owned),
             };
             let (ready, detail, expires) =
                 match tokio::task::spawn_blocking(move || crate::accounts::resolve(&account)).await
@@ -514,7 +595,14 @@ pub async fn accounts_add(
                     .filter(|t| !t.is_empty())
                     .ok_or_else(|| anyhow::anyhow!("a token is required for this account type"))?;
                 crate::accounts::store_token(&id, token)?;
-                store.add(&id, &req.label, source, None, &Default::default())?;
+                // A long-lived token cannot tell us who it belongs to — the usage
+                // endpoint refuses it — so if the name given is an email address,
+                // take it as the identity. It is the only signal available.
+                let status = crate::accounts::AuthStatus {
+                    email: looks_like_email(&req.label).then(|| req.label.trim().to_string()),
+                    ..Default::default()
+                };
+                store.add(&id, &req.label, source, None, &status)?;
                 Ok(json!({ "id": id, "ready": true }))
             }
             crate::accounts::Source::Profile => {

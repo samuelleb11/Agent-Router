@@ -1,3 +1,6 @@
+[workspace]
+members = ["menubar"]
+
 [package]
 name = "agent-router"
 version = "0.1.0"
