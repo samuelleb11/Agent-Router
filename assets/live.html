@@ -82,9 +82,11 @@
   /* Older sessions fold away: the list is for what you are working on now. */
   /* Project headings: the list is mostly "which of my projects is moving". */
   .grp { font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--faint);
-         padding: 10px 2px 2px; display: flex; align-items: baseline; gap: 7px; }
+         padding: 12px 2px 2px; display: flex; align-items: center; gap: 7px; }
   .grp:first-child { padding-top: 0; }
-  .grp .n { color: var(--line); font-size: 10.5px; }
+  .grp .n { color: var(--dim); font-size: 10.5px; }
+  .grp .when { margin-left: auto; text-transform: none; letter-spacing: 0; font-size: 11px; }
+  .grp .dot { width: 6px; height: 6px; }
   #older { margin-top: 4px; }
   #older > summary { cursor: pointer; color: var(--dim); font-size: 12.5px; padding: 8px 2px; list-style: none; }
   #older > summary::-webkit-details-marker { display: none; }
@@ -233,7 +235,11 @@ async function loadSessions() {
   let rows = [];
   try { rows = await (await fetch('/api/live/sessions')).json(); }
   catch { stat.className = ''; statText.textContent = 'offline'; return; }
-  statText.textContent = rows.filter(r => r.active).length + ' active';
+  const live = rows.filter(r => r.active).length;
+  stat.className = live ? 'working' : 'idle';
+  statText.textContent = live
+    ? live + ' active'
+    : (rows.length ? 'idle · ' + ago(Math.max(...rows.map(r => r.last_activity_ms))) : 'nothing yet');
   list.innerHTML = rows.length ? '' : '<div class="empty">No sessions in the last week.</div>';
 
   const card = (r) => {
@@ -254,16 +260,25 @@ async function loadSessions() {
 
   // Grouped by project, each group led by its most recent session — so the project
   // you touched last is at the top, which is the order you actually look in.
-  const groupInto = (target, items) => {
+  const groupInto = (target, rows) => {
     const byProject = new Map();
-    for (const r of items) {
+    for (const r of rows) {
       const k = base(r.cwd) || r.project;
-      (byProject.get(k) ?? byProject.set(k, []).get(k)).push(r);
+      if (!byProject.has(k)) byProject.set(k, []);
+      byProject.get(k).push(r);
     }
-    for (const [name, items] of byProject) {
+    // Projects alphabetically, so a project keeps its place in the list instead of
+    // jumping to the top whenever it moves; sessions inside newest first, because
+    // within one project recency is what you are choosing between.
+    for (const name of [...byProject.keys()].sort((a, b) => a.localeCompare(b))) {
+      const items = byProject.get(name).sort((a, b) => b.last_activity_ms - a.last_activity_ms);
+      const live = items.some(r => r.active);
+      const newest = Math.max(...items.map(r => r.last_activity_ms));
       const h = document.createElement('div');
       h.className = 'grp';
-      h.innerHTML = `<span>${esc(name)}</span><span class="n">${items.length}</span>`;
+      h.innerHTML = `<span class="dot ${live ? 'on' : ''}"></span>` +
+        `<span>${esc(name)}</span><span class="n">${items.length}</span>` +
+        `<span class="when">${ago(newest)}</span>`;
       target.appendChild(h);
       for (const r of items) target.appendChild(card(r));
     }
