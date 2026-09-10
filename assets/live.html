@@ -207,8 +207,20 @@
   #msg { flex: 1; resize: none; font: inherit; color: var(--fg); background: var(--panel);
          border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; max-height: 120px; }
   #msg:disabled { color: var(--faint); }
-  #note { font-size: 11.5px; color: var(--warn); }
-  #note.ok { color: var(--ok); }
+  /* A notice sits above the box it is about, framed, and can be dismissed — the same
+     shape the editor uses for its own notices. */
+  #note {
+    display: none; align-items: flex-start; gap: 10px;
+    font-size: 12px; line-height: 1.45; color: var(--warn);
+    background: color-mix(in srgb, var(--warn) 12%, var(--bg));
+    border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
+    border-radius: 9px; padding: 9px 11px;
+  }
+  #note.show { display: flex; }
+  #note.ok { color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, var(--bg));
+             border-color: color-mix(in srgb, var(--ok) 45%, transparent); }
+  #note .x { margin-left: auto; cursor: pointer; opacity: .7; flex: none; padding: 0 2px; }
+  #note .x:hover { opacity: 1; }
   /* Stop takes the send button's place while a turn is running, as in the real UI. */
   #stop { background: var(--warn); border-color: var(--warn); color: #1a1200; font-weight: 600; }
   .ev.pending { opacity: .6; border-style: dashed; border-left: 3px solid var(--accent); }
@@ -273,12 +285,12 @@
 <div id="feed" class="hide"></div>
 
 <div id="composer" class="hide">
+  <div id="note"></div>
   <div class="cbox">
     <textarea id="msg" rows="1" placeholder="Send a message to this session…"></textarea>
     <button id="send">Send</button>
     <button id="stop" class="hide" title="Stop this turn">■</button>
   </div>
-  <div id="note"></div>
 </div>
 
 <script>
@@ -287,7 +299,32 @@ const list = $('#list'), feed = $('#feed'), back = $('#back'), heading = $('#hea
 const stat = $('#stat'), statText = $('#statText'), composer = $('#composer');
 const msg = $('#msg'), sendBtn = $('#send'), note = $('#note'), stopBtn = $('#stop');
 const facts = $('#facts'), home = $('#home');
-let es = null, current = null, listScroll = 0, following = true, watcher = null;
+let es = null, current = null, listScroll = 0, following = true, watcher = null, pinTo = null;
+// Pinning twice — now and after layout settles — costs nothing and covers the frame
+// in which a row changes height.
+// Show a notice above the composer, dismissible, optionally self-clearing. Text is set
+// as textContent, never markup: some of these carry a server-supplied reason.
+let noteTimer = 0;
+function say(text, opts = {}) {
+  clearTimeout(noteTimer);
+  say('');
+  if (!text) { note.className = ''; return; }
+  note.className = 'show' + (opts.ok ? ' ok' : '');
+  const body = document.createElement('span');
+  body.textContent = text;
+  const x = document.createElement('span');
+  x.className = 'x';
+  x.textContent = '✕';
+  x.title = 'Dismiss';
+  x.onclick = () => say('');
+  note.append(body, x);
+  if (opts.for) noteTimer = setTimeout(() => say(''), opts.for);
+}
+
+function pin() {
+  feed.scrollTop = feed.scrollHeight;
+  requestAnimationFrame(() => { if (following) feed.scrollTop = feed.scrollHeight; });
+}
 // Sent messages, newest last. -1 means "composing", not browsing.
 // NOT named `history`: that shadows window.history, and pushState then throws inside
 // openSession, which silently stops every card in the list from opening.
@@ -359,14 +396,14 @@ async function loadSessions() {
     // Projects alphabetically, so a project keeps its place in the list instead of
     // jumping to the top whenever it moves; sessions inside newest first, because
     // within one project recency is what you are choosing between.
-    for (const name of [...byProject.keys()].sort((a, b) => a.localeCompare(b))) {
-      const items = byProject.get(name).sort((a, b) => b.last_activity_ms - a.last_activity_ms);
+    for (const project of [...byProject.keys()].sort((a, b) => a.localeCompare(b))) {
+      const items = byProject.get(project).sort((a, b) => b.last_activity_ms - a.last_activity_ms);
       const live = items.some(r => r.active);
       const newest = Math.max(...items.map(r => r.last_activity_ms));
       const h = document.createElement('div');
       h.className = 'grp';
       h.innerHTML = `<span class="dot ${live ? 'on' : ''}"></span>` +
-        `<span>${esc(name)}</span><span class="n">${items.length}</span>` +
+        `<span>${esc(project)}</span><span class="n">${items.length}</span>` +
         `<span class="when">${ago(newest)}</span>`;
       target.appendChild(h);
       for (const r of items) target.appendChild(card(r));
@@ -634,7 +671,7 @@ function openSession(r, fromHistory) {
   heading.textContent = base(r.cwd) || r.project;
   feed.innerHTML = '';
   sent = []; histAt = -1; histDraft = '';
-  note.textContent = ''; note.className = '';
+  say('');
   feed.scrollTop = 0;
   if (es) es.close();
 
@@ -645,8 +682,12 @@ function openSession(r, fromHistory) {
   following = true;
   feed.onscroll = () => { following = atBottom(); };
   watcher?.disconnect();
-  watcher = new ResizeObserver(() => { if (following) feed.scrollTop = feed.scrollHeight; });
-  watcher.observe(feed);
+  // Observe the rows, not the scroller. #feed is flex:1, so its own box never changes
+  // size — only its scrollHeight does — and a ResizeObserver on it fires almost never.
+  // Rows do change: clampable() folds them a frame after they land, and that is exactly
+  // when a pinned view slips off the bottom.
+  watcher = new ResizeObserver(() => { if (following) pin(); });
+  pinTo = feed;
   es = new EventSource('/api/live/stream?session=' + encodeURIComponent(r.session_id));
   es.onmessage = e => {
     try {
@@ -657,9 +698,11 @@ function openSession(r, fromHistory) {
         if (sent[sent.length - 1] !== it.text) sent.push(it.text);
         if (sent.length > 200) sent.shift();
       }
-      feed.appendChild(render(it));
+      const row = render(it);
+      feed.appendChild(row);
+      watcher?.observe(row);
     } catch {}
-    if (following) feed.scrollTop = feed.scrollHeight;
+    if (following) pin();
   };
   es.addEventListener('status', e => { try { setStatus(JSON.parse(e.data)); } catch {} });
   es.addEventListener('error', () => { stat.className = ''; statText.textContent = 'reconnecting…'; });
@@ -691,10 +734,10 @@ stopBtn.onclick = async () => {
       body: JSON.stringify({ session: current.session_id })
     });
     const body = await res.json().catch(() => ({}));
-    note.className = res.ok ? 'ok' : '';
-    note.textContent = res.ok ? 'Stopped.' : (body.reason || 'Could not stop this session.');
+    if (res.ok) say('Stopped.', { ok: true, for: 4000 });
+    else say(body.reason || 'Could not stop this session.');
   } catch (err) {
-    note.className = ''; note.textContent = 'Could not stop — ' + err;
+    say('Could not stop — ' + err);
   } finally { stopBtn.disabled = false; }
 };
 
@@ -779,34 +822,29 @@ async function deliver(text, opts = {}) {
       echo.innerHTML = '<div class="who">you · queued</div><pre></pre>';
       echo.querySelector('pre').textContent = text;
       feed.appendChild(echo);
+      watcher?.observe(echo);
       following = true;
-      feed.scrollTop = feed.scrollHeight;
+      pin();
       msg.value = ''; msg.style.height = 'auto';
       if (body.framed) {
         // Worth interrupting for: the session will see a teammate's request, not yours,
         // and will often ask who sent it instead of just doing the thing.
-        note.className = '';
-        note.textContent = 'Sent, but as a peer message — this session will see it as coming from '
-          + 'another Claude, not from you. Install the wrapper in Settings and restart the session '
-          + 'for it to arrive as your own message.';
+        say('Sent, but as a peer message — this session will see it as coming from another '
+          + 'Claude, not from you. Install the wrapper in Settings and restart the session for '
+          + 'it to arrive as your own message.');
       } else {
-        note.className = opts.ask ? '' : 'ok';
+
         // Measured: a queued user turn does NOT satisfy a pending AskUserQuestion. The
         // session is blocked on a control_response for that tool call, and this message
         // waits behind it. Saying "delivered" here would be true and misleading.
-        note.textContent = opts.ask
-          ? 'Sent as a message — it will not dismiss the prompt. The session stays blocked '
-            + 'until someone answers it in the editor.'
-          : 'Delivered as your message.';
-        if (!opts.ask) setTimeout(() => { if (note.className === 'ok') note.textContent = ''; }, 5000);
+        if (opts.ask) say('Sent as a message — it may not dismiss the prompt.');
+        else say('Delivered as your message.', { ok: true, for: 4000 });
       }
     } else {
-      note.className = '';
-      note.textContent = body.reason || ('Send failed (' + res.status + ')');
+      say(body.reason || ('Send failed (' + res.status + ')'));
     }
   } catch (err) {
-    note.className = '';
-    note.textContent = 'Send failed — ' + err;
+    say('Send failed — ' + err);
   } finally { sendBtn.disabled = false; }
 }
 
