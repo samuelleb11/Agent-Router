@@ -517,6 +517,19 @@ pre.cmd { background:var(--bg); border:1px solid var(--line); border-radius:7px;
       </div>
     </div>
 
+    <h4 class="modal-sec next">Claude Code setup<span class="h2sub" id="setupsub"></span></h4>
+    <div id="setupbody"></div>
+    <div class="formrow" style="margin-top:10px; align-items:flex-end">
+      <label style="flex:1">Route a single project instead
+        <input id="s-project" placeholder="/path/to/project" autocomplete="off" spellcheck="false">
+      </label>
+      <button class="btn ghost" id="s-project-add">Route this project</button>
+    </div>
+    <p class="note" style="margin-top:8px">Only <code>env.ANTHROPIC_BASE_URL</code> is ever written. Everything else in
+      your settings file is left as it is, and turning this off puts back whatever was there before — unless you have
+      changed it yourself since, in which case it is left alone.</p>
+    <span class="note" id="s-msg"></span>
+
     <h4 class="modal-sec next">Router</h4>
     <div id="routerinfo"></div>
     <p class="note">Everything above is stored locally. The router's own settings (port, database
@@ -814,6 +827,7 @@ const settings = document.getElementById('settings');
 function openSettings() {
   if (settings.open) return;
   settings.showModal();
+  renderSetup().catch(() => {});
   // Resolving every credential is not free, so it is done when the panel is actually open.
   if (!accountsProbed) { accountsCache = null; clearTimeout(timer); tick(); }
   renderRouterInfo();
