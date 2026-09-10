@@ -45,6 +45,8 @@
            border: 1px solid var(--line); border-radius: 8px; padding: 7px 11px; cursor: pointer; }
   button:active { transform: translateY(1px); }
   button:disabled { opacity: .5; cursor: not-allowed; }
+  .chip { font-size: 12px; color: var(--dim); background: var(--panel2); border: 1px solid var(--line);
+          border-radius: 8px; padding: 6px 9px; flex: none; text-decoration: none; }
 
   /* ---- status pill: what the session is doing right now ---- */
   #stat { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dim);
@@ -164,6 +166,7 @@
 </style>
 
 <header>
+  <a id="home" class="chip" href="/" title="Back to the dashboard">‹ Dashboard</a>
   <button id="back" class="hide">‹</button>
   <h1 id="heading">Live sessions</h1>
   <span class="sp"></span>
@@ -188,7 +191,7 @@ const $ = s => document.querySelector(s);
 const list = $('#list'), feed = $('#feed'), back = $('#back'), heading = $('#heading');
 const stat = $('#stat'), statText = $('#statText'), composer = $('#composer');
 const msg = $('#msg'), sendBtn = $('#send'), note = $('#note'), stopBtn = $('#stop');
-const facts = $('#facts');
+const facts = $('#facts'), home = $('#home');
 let es = null, current = null, listScroll = 0;
 
 const dur = ms => ms < 1000 ? Math.round(ms) + 'ms'
@@ -199,6 +202,7 @@ const ago = ms => {
   return s < 60 ? Math.round(s) + 's' : s < 3600 ? Math.round(s / 60) + 'm'
     : s < 86400 ? Math.round(s / 3600) + 'h' : Math.round(s / 86400) + 'd';
 };
+const fetchSessions = () => fetch('/api/live/sessions').then(r => r.json()).catch(() => []);
 const num = n => n >= 1e9 ? (n / 1e9).toFixed(1) + 'B'
   : n >= 1e6 ? (n / 1e6).toFixed(1) + 'M'
   : n >= 1e3 ? Math.round(n / 1e3) + 'k' : String(n || 0);
@@ -397,7 +401,7 @@ stopBtn.onclick = async () => {
   } finally { stopBtn.disabled = false; }
 };
 
-back.onclick = async () => {
+async function showList(fromHistory) {
   if (es) { es.close(); es = null; }
   current = null;
   feed.classList.add('hide'); back.classList.add('hide'); composer.classList.add('hide');
@@ -406,9 +410,26 @@ back.onclick = async () => {
   heading.textContent = 'Live sessions';
   note.textContent = '';
   // Restore only after the rows are back, or there is nothing tall enough to scroll.
+  home.classList.remove('hide');
+  if (!fromHistory) {
+    const u = new URL(location.href);
+    u.searchParams.delete('session');
+    history.pushState({}, '', u);
+  }
   await loadSessions();
   list.scrollTop = listScroll;
-};
+}
+
+back.onclick = () => showList(false);
+
+// Browser back moves between the list and a session rather than leaving the page.
+addEventListener('popstate', async (e) => {
+  const id = e.state?.session || new URL(location.href).searchParams.get('session');
+  if (!id) return showList(true);
+  const rows = await fetchSessions();
+  const row = rows.find(r => r.session_id === id);
+  if (row) openSession(row, true); else showList(true);
+});
 
 msg.addEventListener('input', () => {
   msg.style.height = 'auto';
@@ -480,7 +501,16 @@ if (vv) {
   fit();
 }
 
-loadSessions();
+(async () => {
+  await loadSessions();
+  // A refresh lands back on the session that was open.
+  const want = new URL(location.href).searchParams.get('session');
+  if (!want) return;
+  const rows = await fetchSessions();
+  const row = rows.find(r => r.session_id === want);
+  if (row) openSession(row, true);
+})();
+
 setInterval(() => {
   if (!feed.classList.contains('hide')) return;
   const keep = list.scrollTop;
