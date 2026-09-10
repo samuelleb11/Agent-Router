@@ -1,5 +1,5 @@
 [workspace]
-members = ["menubar"]
+members = ["menubar", "wrapper"]
 
 [package]
 name = "agent-router"
