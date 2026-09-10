@@ -18,6 +18,7 @@ mod login;
 mod proxy;
 mod quota;
 mod setup;
+mod shim;
 mod transcript;
 
 use std::time::Duration;
@@ -252,6 +253,7 @@ async fn serve() -> anyhow::Result<()> {
         .route("/api/setup", get(setup::api::status))
         .route("/api/setup/service", post(setup::api::service_toggle))
         .route("/api/setup/config", post(setup::api::config_toggle))
+        .route("/api/setup/shim", get(shim::api::status).post(shim::api::toggle))
         .route("/live", get(live::page))
         .route("/api/live/sessions", get(live::sessions))
         .route("/api/live/stream", get(live::stream))

@@ -1668,6 +1668,7 @@ function openEdit(a) {
 
 async function renderSetup() {
   const d = await get('/api/setup');
+  const sh = await get('/api/setup/shim').catch(() => null);
   const rows = [];
   const svc = d.service || {};
   rows.push(`<div class="row" style="padding:6px 0"><span>
@@ -1680,6 +1681,21 @@ async function renderSetup() {
   rows.push(`<div class="row" style="padding:6px 0; border-top:1px solid var(--line)"><span>
       <b>Route every project</b><br><span class="muted">${esc(d.global_settings_path || '')}</span></span>
     <span><button class="btn sm ${global ? 'danger' : ''}" data-cfg="${global ? '0' : '1'}">${global ? 'Stop routing' : 'Route everything'}</button></span></div>`);
+
+  if (sh && (sh.targets || []).length) {
+    const label = { installed: 'installed', not_installed: 'not installed', inconsistent: 'needs reinstalling' };
+    rows.push(`<div class="row" style="padding:6px 0; border-top:1px solid var(--line)"><span>
+        <b>Type into editor sessions</b><br><span class="muted">Lets the live view send messages to sessions
+        VSCode starts. Takes effect for sessions started afterwards; ones already open keep their old stdio.
+        ${sh.available ? '' : '<b>The wrapper binary is missing next to agent-router.</b>'}</span></span><span></span></div>`);
+    for (const t of sh.targets) {
+      const on = t.state === 'installed';
+      rows.push(`<div class="row" style="padding:6px 0 6px 14px"><span>
+          <span class="muted path">${esc(t.extension)}</span><br><span class="muted">${label[t.state] || t.state}</span></span>
+        <span><button class="btn sm ${on ? 'danger' : ''}" data-shim="${on ? 'remove' : 'install'}"
+          data-path="${esc(t.path)}" ${sh.available || on ? '' : 'disabled'}>${on ? 'Remove' : 'Install'}</button></span></div>`);
+    }
+  }
 
   for (const m of (d.managed || []).filter(m => m.scope === 'project')) {
     rows.push(`<div class="row" style="padding:6px 0; border-top:1px solid var(--line)"><span>
@@ -1697,6 +1713,12 @@ async function renderSetup() {
     catch (e) { msg.textContent = String(e.message || e); }
     renderSetup();
   };
+  document.querySelectorAll('#setupbody [data-shim]').forEach(b => b.onclick = () =>
+    act(async () => {
+      const r = await post('/api/setup/shim', { path: b.dataset.path, action: b.dataset.shim });
+      if (!r.ok) throw new Error(r.reason || 'failed');
+      return { detail: b.dataset.shim === 'install' ? 'Installed — restart a session to use it.' : 'Removed.' };
+    }));
   document.querySelectorAll('#setupbody [data-svc]').forEach(b => b.onclick = () =>
     act(() => post('/api/setup/service', { enable: b.dataset.svc === '1' })));
   document.querySelectorAll('#setupbody [data-cfg]').forEach(b => b.onclick = () =>
