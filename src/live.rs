@@ -46,7 +46,11 @@ const BACKFILL_BYTES: u64 = 512 * 1024;
 /// make the rest unreachable rather than merely folded.
 const TEXT_CAP: usize = 6000;
 /// Poll interval for transcript growth.
-const POLL: Duration = Duration::from_millis(500);
+///
+/// The real floor on latency is elsewhere: a message reaches the transcript only when
+/// it is complete, so partial output cannot appear here at any poll rate. This is set
+/// to be well under the gap between completed events rather than to chase tokens.
+const POLL: Duration = Duration::from_millis(200);
 
 fn projects_root() -> PathBuf {
     std::env::var("HOME")

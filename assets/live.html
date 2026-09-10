@@ -272,7 +272,7 @@ const list = $('#list'), feed = $('#feed'), back = $('#back'), heading = $('#hea
 const stat = $('#stat'), statText = $('#statText'), composer = $('#composer');
 const msg = $('#msg'), sendBtn = $('#send'), note = $('#note'), stopBtn = $('#stop');
 const facts = $('#facts'), home = $('#home');
-let es = null, current = null, listScroll = 0;
+let es = null, current = null, listScroll = 0, following = true, watcher = null;
 
 const dur = ms => ms < 1000 ? Math.round(ms) + 'ms'
   : ms < 60000 ? (ms / 1000).toFixed(ms < 10000 ? 1 : 0) + 's'
@@ -570,12 +570,19 @@ function openSession(r, fromHistory) {
   feed.scrollTop = 0;
   if (es) es.close();
 
+  // Following is a state, not a per-append test. Rows change height *after* they are
+  // appended — clampable() folds them a frame later — so a scroll issued at append
+  // time lands short of the bottom and the view silently stops following.
   const atBottom = () => feed.scrollHeight - feed.scrollTop - feed.clientHeight < 140;
+  following = true;
+  feed.onscroll = () => { following = atBottom(); };
+  watcher?.disconnect();
+  watcher = new ResizeObserver(() => { if (following) feed.scrollTop = feed.scrollHeight; });
+  watcher.observe(feed);
   es = new EventSource('/api/live/stream?session=' + encodeURIComponent(r.session_id));
   es.onmessage = e => {
-    const stick = atBottom();
     try { feed.appendChild(render(JSON.parse(e.data))); } catch {}
-    if (stick) feed.scrollTop = feed.scrollHeight;
+    if (following) feed.scrollTop = feed.scrollHeight;
   };
   es.addEventListener('status', e => { try { setStatus(JSON.parse(e.data)); } catch {} });
   es.addEventListener('error', () => { stat.className = ''; statText.textContent = 'reconnecting…'; });
@@ -670,6 +677,7 @@ async function deliver(text) {
       echo.innerHTML = '<div class="who">you · queued</div><pre></pre>';
       echo.querySelector('pre').textContent = text;
       feed.appendChild(echo);
+      following = true;
       feed.scrollTop = feed.scrollHeight;
       msg.value = ''; msg.style.height = 'auto';
       if (body.framed) {
