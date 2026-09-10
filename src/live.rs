@@ -41,8 +41,10 @@ const LISTED_WITHIN_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 const MAX_LISTED: usize = 60;
 /// How far back to read when backfilling a stream, in bytes.
 const BACKFILL_BYTES: u64 = 512 * 1024;
-/// Longest tool result or text we send to the browser. Phones do not want 40 KB.
-const TEXT_CAP: usize = 1200;
+/// Longest tool result or text we send to the browser. Generous, because the UI
+/// clamps what it *shows* and lets the reader expand — truncating here instead would
+/// make the rest unreachable rather than merely folded.
+const TEXT_CAP: usize = 6000;
 /// Poll interval for transcript growth.
 const POLL: Duration = Duration::from_millis(500);
 

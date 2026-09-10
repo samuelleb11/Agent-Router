@@ -102,7 +102,32 @@
                        letter-spacing: 0; font-size: 12.5px; }
   .io { display: grid; grid-template-columns: auto 1fr; gap: 6px 8px; align-items: start; margin-top: 2px; }
   .io b { font-size: 10px; color: var(--faint); font-weight: 600; padding-top: 3px; }
-  .ev.tool_result pre { color: var(--dim); max-height: 8.5em; overflow: hidden; }
+  .ev.tool_result pre { color: var(--dim); }
+  /* Long blocks are folded, never cut: the reader can always get to the rest. */
+  .clamp { position: relative; max-height: 11em; overflow: hidden; }
+  .clamp::after { content: ''; position: absolute; inset: auto 0 0 0; height: 3em;
+                  background: linear-gradient(transparent, var(--panel)); }
+  .ev.tool_use .clamp::after { background: linear-gradient(transparent, var(--panel2)); }
+  .more { display: block; margin-top: 6px; font-size: 11.5px; color: var(--accent);
+          cursor: pointer; user-select: none; }
+  /* Thinking folds to its one-line summary, as the real client does. */
+  .ev.thinking { padding: 6px 12px; }
+  .ev.thinking .who { margin: 0; cursor: pointer; }
+  .ev.thinking pre { display: none; margin-top: 6px; }
+  .ev.thinking.open pre { display: block; }
+  /* Markdown */
+  .md { font-size: 14.5px; white-space: normal; font-family: inherit; }
+  .md pre.code { background: var(--panel2); border: 1px solid var(--line); border-radius: 8px;
+                 padding: 9px 11px; overflow-x: auto; margin: 7px 0;
+                 font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre; }
+  .md code { background: var(--panel2); border-radius: 4px; padding: 1px 4px;
+             font: 12.5px ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .md ul { margin: 6px 0; padding-left: 20px; }
+  .md li { margin: 2px 0; }
+  .md h3 { font-size: 14.5px; margin: 9px 0 4px; }
+  .md p { margin: 6px 0; }
+  .md p:first-child { margin-top: 0; }
+  .md p:last-child { margin-bottom: 0; }
   .ev.sidechain { margin-left: 14px; border-left: 2px solid var(--warn); }
   .ev.ask { border-color: var(--ask); background: color-mix(in srgb, var(--ask) 10%, var(--panel)); }
   .ev.ask .q { font-weight: 600; margin: 6px 0 8px; font-size: 14.5px; }
@@ -235,6 +260,48 @@ async function loadSessions() {
   }
 }
 
+// Escape first, then add our own tags — content comes from transcripts, so nothing
+// from the session is ever interpreted as markup.
+function md(src) {
+  const blocks = [];
+  let t = esc(src).replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) =>
+    '\u0000' + (blocks.push(`<pre class="code">${code.replace(/\n$/, '')}</pre>`) - 1) + '\u0000');
+  t = t.replace(/`([^`\n]+)`/g, '<code>$1</code>')
+       .replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>');
+  const out = [];
+  let list = null;
+  for (const raw of t.split('\n')) {
+    const line = raw.trimEnd();
+    const bullet = line.match(/^\s*[-*]\s+(.*)$/);
+    const head = line.match(/^#{1,6}\s+(.*)$/);
+    if (bullet) { (list ??= []).push(`<li>${bullet[1]}</li>`); continue; }
+    if (list) { out.push(`<ul>${list.join('')}</ul>`); list = null; }
+    if (head) out.push(`<h3>${head[1]}</h3>`);
+    else if (line.trim()) out.push(`<p>${line}</p>`);
+  }
+  if (list) out.push(`<ul>${list.join('')}</ul>`);
+  return out.join('').replace(/\u0000(\d+)\u0000/g, (_, i) => blocks[i]);
+}
+
+// Fold anything tall behind a toggle rather than cutting it off.
+function clampable(el) {
+  const body = el.querySelector('pre, .md');
+  if (!body) return el;
+  requestAnimationFrame(() => {
+    if (body.scrollHeight <= body.clientHeight + 8) return;
+    body.classList.add('clamp');
+    const more = document.createElement('span');
+    more.className = 'more';
+    more.textContent = 'Show more';
+    more.onclick = () => {
+      const open = body.classList.toggle('clamp');
+      more.textContent = open ? 'Show more' : 'Show less';
+    };
+    body.after(more);
+  });
+  return el;
+}
+
 function render(it) {
   const el = document.createElement('div');
   el.className = 'ev ' + it.kind + (it.role === 'user' && it.kind === 'text' ? ' user' : '')
@@ -253,15 +320,22 @@ function render(it) {
   } else if (it.kind === 'tool_use') {
     el.innerHTML = `<div class="who"><span class="name">${esc(it.name)}</span>${d}</div>` +
       `<div class="io"><b>IN</b><pre>${esc(it.text)}</pre></div>`;
+    return clampable(el);
   } else if (it.kind === 'tool_result') {
     el.innerHTML = `<div class="io"><b>OUT</b><pre>${esc(it.text)}</pre></div>`;
+    return clampable(el);
+  } else if (it.kind === 'thinking') {
+    el.innerHTML = `<div class="who">Thought${it.dur_ms > 400 ? ' for ' + dur(it.dur_ms) : ''} ›</div>` +
+      `<pre>${esc(it.text)}</pre>`;
+    el.querySelector('.who').onclick = () => el.classList.toggle('open');
+    return el;
+  } else if (it.kind === 'text' && it.role === 'assistant') {
+    el.innerHTML = `<div class="who">${esc(who)}${d}</div><div class="md">${md(it.text)}</div>`;
   } else {
-    const label = it.kind === 'answer' ? '✓ answered'
-      : it.kind === 'thinking' ? `Thought${it.dur_ms > 400 ? ' for ' + dur(it.dur_ms) : ''}`
-      : esc(who);
-    el.innerHTML = `<div class="who">${label}${it.kind === 'thinking' ? '' : d}</div><pre>${esc(it.text)}</pre>`;
+    const label = it.kind === 'answer' ? '✓ answered' : esc(who);
+    el.innerHTML = `<div class="who">${label}${d}</div><pre>${esc(it.text)}</pre>`;
   }
-  return el;
+  return clampable(el);
 }
 
 function openSession(r) {
