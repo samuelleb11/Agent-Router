@@ -116,6 +116,7 @@ fn main() {
             let mut src = child_stdout;
             let mut buf = [0u8; 64 * 1024];
             let mut scan: Vec<u8> = Vec::new();
+            let mut ctl: Vec<u8> = Vec::new();
             loop {
                 let n = match src.read(&mut buf) {
                     Ok(0) | Err(_) => break,
@@ -125,6 +126,12 @@ fn main() {
                 if out.write_all(&buf[..n]).is_err() || out.flush().is_err() {
                     break;
                 }
+                // Control traffic, recorded so the router can see what the session is
+                // blocked on. A prompt is a control_request the editor answers with a
+                // matching control_response; without the request_id nothing else can
+                // answer it. Best-effort, like everything else here.
+                note_control(&session_id, &buf[..n], &mut ctl);
+
                 if !found.load(Ordering::Relaxed) {
                     scan.extend_from_slice(&buf[..n]);
                     if let Some(id) = sniff_session_id(&scan) {
@@ -151,8 +158,57 @@ fn main() {
     let _ = relay.join();
     if let Ok(Some(id)) = session_id.lock().map(|g| g.clone()) {
         let _ = std::fs::remove_file(control_path(&id));
+        let _ = std::fs::remove_file(PathBuf::from(CONTROL_DIR).join(format!("{id}.ctl")));
     }
     std::process::exit(status.ok().and_then(|s| s.code()).unwrap_or(1));
+}
+
+/// Append any `control_request` line to `<session>.ctl` beside the socket.
+///
+/// Line-oriented and bounded: the tail is kept so a long session cannot grow the file,
+/// and a partial line is carried to the next read rather than parsed.
+fn note_control(session_id: &Mutex<Option<String>>, chunk: &[u8], carry: &mut Vec<u8>) {
+    if !chunk.contains(&b'\n') && carry.len() > 256 * 1024 {
+        carry.clear(); // a stream with no newlines is not what we are looking for
+        return;
+    }
+    carry.extend_from_slice(chunk);
+    let Some(cut) = carry.iter().rposition(|&b| b == b'\n') else {
+        return;
+    };
+    let complete: Vec<u8> = carry.drain(..=cut).collect();
+    let Ok(guard) = session_id.lock() else { return };
+    let Some(id) = guard.as_deref() else { return };
+    let mut hits = String::new();
+    for line in complete.split(|&b| b == b'\n') {
+        if line.is_empty() {
+            continue;
+        }
+        let is_control = find(line, b"\"type\":\"control_request\"").is_some()
+            || find(line, b"\"type\":\"control_response\"").is_some();
+        if !is_control {
+            continue;
+        }
+        if let Ok(text) = std::str::from_utf8(line) {
+            hits.push_str(text);
+            hits.push('\n');
+        }
+    }
+    if hits.is_empty() {
+        return;
+    }
+    let path = PathBuf::from(CONTROL_DIR).join(format!("{id}.ctl"));
+    let _ = std::fs::create_dir_all(CONTROL_DIR);
+    // Keep only the tail: what is pending now is what matters.
+    let mut existing = std::fs::read_to_string(&path).unwrap_or_default();
+    existing.push_str(&hits);
+    let kept: Vec<&str> = existing.lines().rev().take(40).collect();
+    let out: String = kept.into_iter().rev().collect::<Vec<_>>().join("\n") + "\n";
+    let _ = std::fs::write(&path, out);
+}
+
+fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    hay.windows(needle.len()).position(|w| w == needle)
 }
 
 fn control_path(session_id: &str) -> PathBuf {
