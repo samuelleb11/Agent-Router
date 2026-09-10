@@ -57,11 +57,16 @@ the project goes straight back to talking to Anthropic directly.
 
 **5. Open the dashboard** at <http://127.0.0.1:8787>.
 
-Quota headroom, tokens per project and per session, cache hit rate, the main-thread /
-subagent split, which tools produce the most output, and what filled each context
-window. Click a project to filter to it, click a session to drill into its requests.
-It refreshes every five seconds and is served from the same binary — no build step, no
-node toolchain, no network.
+Quota headroom for the active account with its history, the totals for whatever you
+have scoped (prompt and output tokens, cache hit rate, time to first token, errors),
+activity over time stacked by model, what the model read from cache versus paid in
+full, what filled the context window, the main-thread / subagent split, tokens per
+project and per session, which tools flood the context, and every request as an
+expandable row. Click a project or a session and the whole page rescopes to it; the
+breadcrumb and the time range (1h / 24h / 7d / 30d / all) sit in a sticky bar at the
+top and are mirrored in the URL, so a link keeps its scope. It refreshes every five
+seconds without flicker and is served from the same binary — no build step, no node
+toolchain, no network, and it works down to phone width.
 
 For anything the dashboard does not answer, the store is plain SQLite:
 

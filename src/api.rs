@@ -49,6 +49,8 @@ pub async fn favicon() -> Response {
 pub struct Filter {
     pub project: Option<String>,
     pub session: Option<String>,
+    /// Which configured account served the request. Absent means every account.
+    pub account: Option<String>,
     /// Lower bound on `requests.started_at`, in ms since the epoch. A time range the
     /// dashboard applies to everything on the page at once.
     pub since: Option<i64>,
@@ -59,13 +61,14 @@ pub struct Filter {
 
 /// The scope predicate every read shares. Requests are joined to their session as
 /// `s` (LEFT, so a request whose transcript has not appeared yet still counts) and
-/// the parameters are always bound in this order: project, session, since.
+/// the parameters are always bound in this order: project, session, since, account.
 const SCOPE: &str = "(?1 IS NULL OR s.cwd = ?1)
                      AND (?2 IS NULL OR r.session_id = ?2)
-                     AND (?3 IS NULL OR r.started_at >= ?3)";
+                     AND (?3 IS NULL OR r.started_at >= ?3)
+                     AND (?4 IS NULL OR r.account_id = ?4)";
 
-fn scope_params(f: &Filter) -> [&dyn rusqlite::ToSql; 3] {
-    [&f.project, &f.session, &f.since]
+fn scope_params(f: &Filter) -> [&dyn rusqlite::ToSql; 4] {
+    [&f.project, &f.session, &f.since, &f.account]
 }
 
 /// A percentile of a request column within the scope, by ORDER BY + OFFSET. SQLite
@@ -266,6 +269,23 @@ pub async fn summary(State(state): State<Arc<AppState>>, Query(mut f): Query<Fil
         ),
         &p,
     )?;
+    let by_account = rows(
+        &conn,
+        "SELECT r.account_id AS id,
+                coalesce(a.email, a.label, r.account_id) AS label,
+                max(coalesce(a.active, 0)) AS active,
+                count(*) AS requests,
+                coalesce(sum(u.prompt_tokens),0) AS prompt_tokens,
+                coalesce(sum(u.output_tokens),0) AS output_tokens,
+                count(DISTINCT r.session_id) AS sessions,
+                max(r.started_at) AS last_seen
+         FROM requests r
+         LEFT JOIN usage u    ON u.request_id = r.id
+         LEFT JOIN accounts a ON a.id = r.account_id
+         WHERE (?1 IS NULL OR r.started_at >= ?1)
+         GROUP BY r.account_id ORDER BY prompt_tokens DESC",
+        &[&f.since],
+    )?;
     let stop_reasons = rows(
         &conn,
         &format!(
@@ -319,7 +339,7 @@ pub async fn summary(State(state): State<Arc<AppState>>, Query(mut f): Query<Fil
             let timeline = rows(
                 &conn,
                 &format!(
-                    "SELECT ((r.started_at + ?4) / ?5) * ?5 - ?4 AS t, r.model,
+                    "SELECT ((r.started_at + ?5) / ?6) * ?6 - ?5 AS t, r.model,
                             count(*) AS requests,
                             coalesce(sum(u.prompt_tokens),0) AS prompt_tokens,
                             coalesce(sum(u.output_tokens),0) AS output_tokens,
@@ -332,7 +352,7 @@ pub async fn summary(State(state): State<Arc<AppState>>, Query(mut f): Query<Fil
                      WHERE {SCOPE}
                      GROUP BY t, r.model ORDER BY t, r.model"
                 ),
-                &[&f.project, &f.session, &f.since, &tz_ms, &bucket],
+                &[&f.project, &f.session, &f.since, &f.account, &tz_ms, &bucket],
             )?;
             // Quota history is the active account's, over the same buckets so the
             // two charts share an axis. The worst reading in a bucket is the one
@@ -355,7 +375,7 @@ pub async fn summary(State(state): State<Arc<AppState>>, Query(mut f): Query<Fil
     Ok(Json(json!({
         "totals": totals, "quota": quota, "account": account, "context": context,
         "models": models, "threads": threads, "latency": latency,
-        "stop_reasons": stop_reasons,
+        "stop_reasons": stop_reasons, "by_account": by_account,
         "timeline": {
             "start": range.map(|r| r.0), "end": range.map(|r| r.1),
             "bucket_ms": bucket, "rows": timeline,
@@ -385,8 +405,9 @@ pub async fn projects(State(state): State<Arc<AppState>>, Query(f): Query<Filter
          LEFT JOIN usage u ON u.request_id = r.id
          JOIN sessions s   ON s.id = r.session_id
          WHERE (?1 IS NULL OR r.started_at >= ?1)
+           AND (?2 IS NULL OR r.account_id = ?2)
          GROUP BY s.cwd ORDER BY prompt_tokens DESC",
-        &[&f.since],
+        &[&f.since, &f.account],
     )?))
 }
 
@@ -409,8 +430,9 @@ pub async fn sessions(State(state): State<Arc<AppState>>, Query(f): Query<Filter
                LEFT JOIN usage u ON u.request_id = r.id
                JOIN sessions s   ON s.id = r.session_id
                WHERE (?1 IS NULL OR s.cwd = ?1) AND (?2 IS NULL OR r.started_at >= ?2)
+                 AND (?3 IS NULL OR r.account_id = ?3)
                GROUP BY s.id ORDER BY s.last_seen_at DESC LIMIT 200";
-    Ok(Json(rows(&conn, sql, &[&f.project, &f.since])?))
+    Ok(Json(rows(&conn, sql, &[&f.project, &f.since, &f.account])?))
 }
 
 pub async fn requests(State(state): State<Arc<AppState>>, Query(f): Query<Filter>) -> ApiResult {
@@ -445,10 +467,13 @@ pub async fn tools(State(state): State<Arc<AppState>>, Query(f): Query<Filter>) 
         "SELECT tc.name, count(*) AS results, sum(tc.result_chars) AS chars,
                 sum(tc.est_tokens) AS est_tokens, max(tc.est_tokens) AS max_tokens,
                 sum(tc.is_error) AS errors
-         FROM tool_calls tc LEFT JOIN sessions s ON s.id = tc.session_id
+         FROM tool_calls tc
+         LEFT JOIN sessions s ON s.id = tc.session_id
+         LEFT JOIN requests r ON r.id = tc.first_request_id
          WHERE (?1 IS NULL OR s.cwd = ?1)
            AND (?2 IS NULL OR tc.session_id = ?2)
            AND (?3 IS NULL OR tc.seen_at >= ?3)
+           AND (?4 IS NULL OR r.account_id = ?4)
          GROUP BY tc.name ORDER BY est_tokens DESC",
         &scope_params(&f),
     )?;

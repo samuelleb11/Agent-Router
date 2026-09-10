@@ -373,7 +373,7 @@ pre.cmd { background:var(--bg); border:1px solid var(--line); border-radius:7px;
     <button class="link" id="reset" hidden>✕ clear scope</button>
   </div>
 
-  <h2 style="margin-top:0"><svg class="g" width="14" height="14"><use href="#g-quota"/></svg>Quota headroom<span class="h2sub" id="quotasub">for the whole account, whatever the page is scoped to</span></h2>
+  <h2 style="margin-top:0"><svg class="g" width="14" height="14"><use href="#g-quota"/></svg>Quota headroom<span class="h2sub" id="quotasub">the account that is serving right now</span></h2>
   <section class="panel" id="quotabox">
     <div class="quota" id="quota"></div>
     <div class="qhist" id="qhist"></div>
@@ -414,6 +414,9 @@ pre.cmd { background:var(--bg); border:1px solid var(--line); border-radius:7px;
       <div class="leg" id="threads"></div>
     </div>
   </section>
+
+  <h2 id="acctsh" hidden><svg class="g" width="14" height="14"><use href="#g-account"/></svg>Accounts<span class="h2sub" id="acctssub"></span></h2>
+  <section class="panel" id="acctspanel" hidden><div class="list" id="accountsplit"></div></section>
 
   <h2><svg class="g" width="14" height="14" style="color:var(--proj)"><use href="#g-project"/></svg>Projects<span class="h2sub" id="projsub"></span></h2>
   <section class="panel"><div class="list" id="projects"></div></section>
@@ -546,7 +549,7 @@ pre.cmd { background:var(--bg); border:1px solid var(--line); border-radius:7px;
 <script>
 'use strict';
 // ---------- state ----------
-const state = { project:null, session:null, range:'all', open:new Set(), fails:0, lastOk:null,
+const state = { account:null, project:null, session:null, range:'all', open:new Set(), fails:0, lastOk:null,
                 rq:{ kind:'all', model:null, stop:null }, rqShown:20 };
 let pollProfile = null;
 const RANGES = { all:null, '1h':3600e3, '24h':86400e3, '7d':7*86400e3, '30d':30*86400e3 };
@@ -800,6 +803,7 @@ function sinceMs() { const r = Object.hasOwn(RANGES, state.range) ? RANGES[state
   return typeof r === 'number' ? Date.now() - r : null; }
 function writeHash() {
   const p = new URLSearchParams();
+  if (state.account) p.set('a', state.account);
   if (state.project) p.set('p', state.project);
   if (state.session) p.set('s', state.session);
   if (state.range !== 'all') p.set('r', state.range);
@@ -809,6 +813,7 @@ function writeHash() {
 }
 function readHash() {
   const p = new URLSearchParams(location.hash.slice(1));
+  state.account = p.get('a') || null;
   state.project = p.get('p') || null; state.session = p.get('s') || null;
   const r = p.get('r');
   state.range = r && Object.hasOwn(RANGES, r) ? r : 'all';
@@ -822,7 +827,7 @@ function setScope(patch) {
   clearTimeout(timer); tick();
 }
 document.getElementById('range').addEventListener('click', e => { const b = e.target.closest('button'); if (b) setScope({ range: b.dataset.r }); });
-document.getElementById('reset').onclick = () => setScope({ project:null, session:null });
+document.getElementById('reset').onclick = () => setScope({ account:null, project:null, session:null });
 const settings = document.getElementById('settings');
 function openSettings() {
   if (settings.open) return;
@@ -867,9 +872,9 @@ document.getElementById('host').textContent = location.host;
 // is not destroyed by the five-second poll.
 function renderCrumbs(sessionRow) {
   const c = document.getElementById('crumbs');
-  document.getElementById('reset').hidden = !state.project && !state.session;
+  document.getElementById('reset').hidden = !state.project && !state.session && !state.account;
   const branch = sessionRow && sessionRow.git_branch ? ` (${sessionRow.git_branch})` : '';
-  const sig = [state.project, state.session, branch].join('\u0000');
+  const sig = [state.account, state.project, state.session, branch].join('\u0000');
   if (c._sig === sig) return;
   c._sig = sig;
   const crumb = (kind, glyph, glyphColor, label, title, strong) => {
@@ -879,8 +884,13 @@ function renderCrumbs(sessionRow) {
     b.addEventListener('click', () => openMenu(b, kind));
     return b;
   };
+  const acct = state.account && (lastSummary && lastSummary.by_account || []).find(a => a.id === state.account);
   c.replaceChildren(
     icon('scope', 'color:var(--accent)'),
+    crumb('account', 'account', 'color:var(--muted)',
+      state.account ? (acct ? acct.label : state.account) : 'All accounts',
+      state.account || 'Choose an account', !!state.account),
+    h('span', { class:'sep', text:'›' }),
     crumb('project', 'project', 'color:var(--proj)', state.project ? base(state.project) : 'All projects',
       state.project || 'Choose a project', !!state.project),
     h('span', { class:'sep', text:'›' }),
@@ -901,6 +911,20 @@ function closeMenu(refocus) {
 }
 function menuRows(kind) {
   const totals = (lastSummary && lastSummary.totals) || {};
+  if (kind === 'account') {
+    const list = (lastSummary && lastSummary.by_account) || [];
+    const all = list.reduce((a, x) => a + num(x.requests), 0);
+    return [{ key:'*', name:'All accounts', meta: `${n(all)} req`, current: !state.account,
+              pick: () => setScope({ account:null, project:null, session:null }) }]
+      .concat(list.map(a => ({
+        key: a.id, name: a.label || a.id,
+        // Two rows can carry the same identity (the discovered Keychain login and a
+        // token for the same person), so the router-side id is what tells them apart.
+        sub: a.id + (num(a.active) ? ' · active' : ''),
+        meta: `${k(a.prompt_tokens)} · ${n(a.requests)} req`, current: state.account === a.id,
+        pick: () => setScope({ account: a.id, project:null, session:null }),
+      })));
+  }
   if (kind === 'project') {
     const list = lastLists.projects || [];
     return [{ key:'*', name:'All projects', meta: `${n(totals.requests)} req`, current: !state.project,
@@ -1263,6 +1287,43 @@ function renderThreads(threads) {
   leg.replaceChildren(
     ...line(main, 'main thread', 'var(--tok)', 'main', `${n(main.requests ?? 0)} req · ${k(main.output_tokens)} out` + (main.cache_read_tokens != null ? ` · ${pct(main.cache_read_tokens, main.prompt_tokens)} cached` : '')),
     ...line(sub, 'subagents', 'var(--sub)', 'sub', num(sub.requests) ? `${n(sub.requests)} req · ${k(sub.output_tokens)} out · ${n(sub.agents)} agent${num(sub.agents) === 1 ? '' : 's'}` + (sub.cache_read_tokens != null ? ` · ${pct(sub.cache_read_tokens, sub.prompt_tokens)} cached` : '') : 'none in scope'));
+}
+
+// ---------- accounts split ----------
+// Only worth a panel once more than one account has served traffic; with a single
+// account it would restate the totals directly above it.
+function renderAccountSplit(list) {
+  const head = document.getElementById('acctsh'), panel = document.getElementById('acctspanel');
+  const el = document.getElementById('accountsplit');
+  list = (list || []).filter(a => num(a.requests) > 0);
+  const show = list.length > 1;
+  head.hidden = !show; panel.hidden = !show;
+  if (!show) return;
+  el.classList.toggle('hassel', !!state.account);
+  setText(document.getElementById('acctssub'),
+    state.account ? 'click the highlighted account again to clear'
+                  : `${list.length} accounts have served traffic · click one to scope the page`);
+  const max = Math.max(1, ...list.map(a => num(a.prompt_tokens)));
+  patchList(el, list, a => a.id, () => {
+    const row = makeBarRow(true);
+    row.addEventListener('click', () => {
+      const id = row.dataset.key;
+      setScope(state.account === id ? { account:null } : { account:id, project:null, session:null });
+    });
+    return row;
+  }, (row, a) => {
+    setBarRow(row, {
+      icon:'account', name: a.label || a.id, path: a.id, value: a.prompt_tokens, max,
+      chips: num(a.active) ? [h('span', { class:'tag ok', title:'serving new requests' }, 'active')] : [],
+      meta: [`${n(a.sessions)} session${num(a.sessions) === 1 ? '' : 's'}`, `${n(a.requests)} req`,
+             `${k(a.output_tokens)} out`, ago(a.last_seen)].join(' · '),
+      selected: state.account === a.id, title: a.id,
+      tipRows: [a.label || a.id, [a.id, 'account id'], [k(a.prompt_tokens), 'prompt tokens', 'var(--tok)'],
+        [k(a.output_tokens), 'output tokens'], [n(a.requests), 'requests'], [n(a.sessions), 'sessions'],
+        [tod(a.last_seen), 'last request'], num(a.active) ? ['yes', 'serving now'] : null],
+    });
+  });
+  fitTips(el);
 }
 
 // ---------- projects & sessions ----------
@@ -1801,11 +1862,11 @@ async function refresh() {
   const acctOpen = settings.open;
   const wantAccounts = !accountsCache || Date.now() - accountsAt > 30000 || (acctOpen && !accountsProbed);
   const [sum, projects, sessions, tools, requests, accounts, liveQuota] = await Promise.all([
-    get('/api/summary',  { project:state.project, session:state.session, since, tz }),
-    get('/api/projects', { since }),
-    get('/api/sessions', { project:state.project, since }),
-    get('/api/tools',    { project:state.project, session:state.session, since }),
-    get('/api/requests', { project:state.project, session:state.session, since }),
+    get('/api/summary',  { account:state.account, project:state.project, session:state.session, since, tz }),
+    get('/api/projects', { account:state.account, since }),
+    get('/api/sessions', { account:state.account, project:state.project, since }),
+    get('/api/tools',    { account:state.account, project:state.project, session:state.session, since }),
+    get('/api/requests', { account:state.account, project:state.project, session:state.session, since }),
     wantAccounts ? get('/api/accounts', { probe: acctOpen ? 1 : null }) : Promise.resolve(null),
     // Optional: present only on builds that carry it, and a failure must not blank the page.
     get('/api/quota').catch(() => null),
@@ -1824,6 +1885,7 @@ async function refresh() {
   renderContext(sum.context, t);
   renderModels(sum.models);
   renderThreads(sum.threads);
+  renderAccountSplit(sum.by_account);
   renderProjects(projects, t);
   renderSessions(sessions, t);
   renderTools(tools);
