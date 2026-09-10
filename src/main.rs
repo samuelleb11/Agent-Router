@@ -12,6 +12,8 @@ mod config;
 mod db;
 mod guard;
 mod lifecycle;
+mod live;
+mod peer;
 mod login;
 mod proxy;
 mod quota;
@@ -185,6 +187,8 @@ async fn serve() -> anyhow::Result<()> {
 
     let config = config::Config::from_env()?;
     let bind = config.bind;
+    // Layers 2 and 3 must know before the first request arrives.
+    guard::allow_off_host(!bind.ip().is_loopback());
     let db_path = config.db_path.clone();
 
     // Create the schema and make sure there is always something to route as: the
@@ -197,7 +201,12 @@ async fn serve() -> anyhow::Result<()> {
             .clone()
             .unwrap_or_else(|| "Claude Code (default profile)".to_string());
         db.upsert_default_account(proxy::ACCOUNT_ID, &label, &status)?;
-        tracing::info!("agent-router listening on http://{bind} (loopback only)");
+        if bind.ip().is_loopback() {
+            tracing::info!("agent-router listening on http://{bind} (loopback only)");
+        } else {
+            tracing::warn!("agent-router listening on http://{bind} — REACHABLE FROM THE NETWORK");
+            tracing::warn!("  no route requires authentication, and the proxy signs with your credential");
+        }
         tracing::info!("  dashboard:    http://{bind}");
         tracing::info!("  upstream:     {}", config.upstream);
         tracing::info!("  database:     {}", db_path.display());
@@ -243,6 +252,10 @@ async fn serve() -> anyhow::Result<()> {
         .route("/api/setup", get(setup::api::status))
         .route("/api/setup/service", post(setup::api::service_toggle))
         .route("/api/setup/config", post(setup::api::config_toggle))
+        .route("/live", get(live::page))
+        .route("/api/live/sessions", get(live::sessions))
+        .route("/api/live/stream", get(live::stream))
+        .route("/api/live/send", post(live::send))
         .route("/_router/health", get(api::health))
         .fallback(any(proxy::handle))
         .layer(axum::middleware::from_fn(guard::layer))

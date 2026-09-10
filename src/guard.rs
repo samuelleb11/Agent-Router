@@ -14,6 +14,7 @@
 //!    already presented a credential of their own.
 
 use std::net::{IpAddr, SocketAddr};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use axum::extract::{ConnectInfo, Request};
 use axum::http::{HeaderMap, StatusCode};
@@ -47,8 +48,21 @@ fn host_is_local(host: &str) -> bool {
     bare.parse::<IpAddr>().map(|ip| ip.is_loopback()).unwrap_or(false)
 }
 
+/// Set once at startup from the bind address. When the socket is deliberately bound
+/// off-loopback, layers 2 and 3 cannot demand loopback or they would refuse the very
+/// callers the operator just chose to allow.
+static OFF_HOST: AtomicBool = AtomicBool::new(false);
+
+pub fn allow_off_host(on: bool) {
+    OFF_HOST.store(on, Ordering::Relaxed);
+}
+
+fn off_host() -> bool {
+    OFF_HOST.load(Ordering::Relaxed)
+}
+
 pub fn check_peer(peer: SocketAddr) -> Result<(), &'static str> {
-    if peer.ip().is_loopback() {
+    if peer.ip().is_loopback() || off_host() {
         Ok(())
     } else {
         Err("caller is not on this machine")
@@ -58,9 +72,29 @@ pub fn check_peer(peer: SocketAddr) -> Result<(), &'static str> {
 pub fn check_host(headers: &HeaderMap) -> Result<(), &'static str> {
     match headers.get("host").and_then(|v| v.to_str().ok()) {
         Some(host) if host_is_local(host) => Ok(()),
-        Some(_) => Err("Host header is not a loopback address"),
+        // Off-loopback, the browser addresses us by bare IP. Bare IPs are still
+        // checked, and hostnames still refused, because DNS rebinding needs a *name*
+        // to point at us — so layer 3 keeps its whole purpose even when widened.
+        Some(host) if off_host() && host_is_ip_literal(host) => Ok(()),
+        Some(_) => Err("Host header is not an address we serve"),
         None => Err("no Host header"),
     }
+}
+
+/// True when the Host header is a bare IP literal rather than a registrable name.
+fn host_is_ip_literal(host: &str) -> bool {
+    let bare = if let Some(rest) = host.strip_prefix('[') {
+        match rest.split_once(']') {
+            Some((inner, _)) => inner,
+            None => return false,
+        }
+    } else {
+        match host.split_once(':') {
+            Some((h, p)) if !p.contains(':') && !p.is_empty() && p.bytes().all(|c| c.is_ascii_digit()) => h,
+            _ => host,
+        }
+    };
+    bare.parse::<IpAddr>().is_ok()
 }
 
 /// Applied to every route, not just the proxy: `/api` serves captured request
