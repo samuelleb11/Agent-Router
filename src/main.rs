@@ -257,6 +257,7 @@ async fn serve() -> anyhow::Result<()> {
         .route("/live", get(live::page))
         .route("/api/live/sessions", get(live::sessions))
         .route("/api/live/stream", get(live::stream))
+        .route("/api/live/stats", get(live::stats))
         .route("/api/live/send", post(live::send))
         .route("/api/live/interrupt", post(live::interrupt))
         .route("/_router/health", get(api::health))

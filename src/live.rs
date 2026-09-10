@@ -603,6 +603,72 @@ fn first_event_ms(path: &Path) -> Option<i64> {
     ts_ms(&serde_json::from_str::<Value>(line).ok()?)
 }
 
+/// What a session has spent, and how it is configured.
+#[derive(Serialize, Default)]
+pub struct Stats {
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub input: i64,
+    pub output: i64,
+    pub cache_read: i64,
+    pub cache_write: i64,
+    /// Everything the model read or wrote, cache included — the number that maps to
+    /// what the session actually cost.
+    pub total: i64,
+    pub turns: i64,
+}
+
+/// Totals for one session, read straight from its transcript.
+///
+/// The transcript is used rather than the router's own capture because it covers every
+/// session, including ones that never went through the proxy.
+pub async fn stats(Query(q): Query<StreamQuery>) -> Response {
+    let Some(path) = transcript_path(&q.session) else {
+        return bad(axum::http::StatusCode::NOT_FOUND, "No such session.");
+    };
+    let out = tokio::task::spawn_blocking(move || scan_stats(&path)).await;
+    match out {
+        Ok(st) => Json(st).into_response(),
+        Err(e) => bad(axum::http::StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    }
+}
+
+fn scan_stats(path: &Path) -> Stats {
+    use std::io::BufRead;
+    let mut st = Stats::default();
+    let Ok(f) = fs::File::open(path) else {
+        return st;
+    };
+    for line in std::io::BufReader::new(f).lines().map_while(Result::ok) {
+        let Ok(v) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        // Effort is stamped per turn; the last one is the mode in force now.
+        // as_str() before the fallback, not after: an explicit null is still `Some`,
+        // so falling back on the Option alone never reaches the second field.
+        if let Some(e) = v
+            .get("perTurnEffort")
+            .and_then(|x| x.as_str())
+            .or_else(|| v.get("effort").and_then(|x| x.as_str()))
+        {
+            st.effort = Some(e.to_string());
+        }
+        let Some(m) = v.get("message") else { continue };
+        if let Some(model) = m.get("model").and_then(|x| x.as_str()) {
+            st.model = Some(model.to_string());
+        }
+        let Some(u) = m.get("usage") else { continue };
+        let get = |k: &str| u.get(k).and_then(|x| x.as_i64()).unwrap_or(0);
+        st.input += get("input_tokens");
+        st.output += get("output_tokens");
+        st.cache_read += get("cache_read_input_tokens");
+        st.cache_write += get("cache_creation_input_tokens");
+        st.turns += 1;
+    }
+    st.total = st.input + st.output + st.cache_read + st.cache_write;
+    st
+}
+
 #[derive(Deserialize)]
 pub struct InterruptBody {
     pub session: String,
@@ -740,6 +806,22 @@ fn project(line: &str) -> Vec<Item> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_null_per_turn_effort_falls_through_to_the_session_effort() {
+        let dir = std::env::temp_dir().join(format!("stats-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("s.jsonl");
+        std::fs::write(&p, concat!(
+            r#"{"perTurnEffort":null,"effort":"high","message":{"model":"claude-opus-5",
+               "usage":{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":100}}}"#,
+        ).replace('\n', "").replace("               ", "")).unwrap();
+        let st = scan_stats(&p);
+        assert_eq!(st.effort.as_deref(), Some("high"), "null must not shadow the fallback");
+        assert_eq!(st.model.as_deref(), Some("claude-opus-5"));
+        assert_eq!(st.total, 115, "cache counts toward what the session spent");
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn projects_an_assistant_turn_into_one_row_per_block() {
