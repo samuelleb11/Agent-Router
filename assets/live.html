@@ -128,10 +128,27 @@
   .ev.tool_use, .ev.tool_result, .ev.thinking, .ev.other {
     border-left: 2px solid var(--line); padding: 3px 0 3px 11px; margin-left: 3px;
   }
+  .ev.tool_use { padding-top: 8px; }
   .ev.tool_use .name { color: var(--accent); font-weight: 600; font-size: 12px; }
-  .ev.tool_use pre, .ev.tool_result pre { color: var(--dim); font-size: 12px; }
-  .io { display: grid; grid-template-columns: auto 1fr; gap: 4px 8px; align-items: start; }
-  .io b { font-size: 9.5px; color: var(--faint); font-weight: 600; padding-top: 2px; }
+
+  /* A command and its output are one thing, so they share a block and the output
+     hangs directly off the command with no gap to read across. */
+  .term { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; margin-top: 4px;
+          max-width: 100%; }
+  .term .cmd, .term .out {
+    margin: 0; padding: 7px 10px; overflow-x: auto; overflow-y: hidden;
+    /* No wrapping: a wrapped path or flag is harder to read than a scrolled one. */
+    white-space: pre; overflow-wrap: normal;
+    font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .term .cmd { background: var(--panel2); color: var(--fg); }
+  .term .cmd::before { content: '$ '; color: var(--accent); }
+  .term.plain .cmd::before { content: ''; }
+  .term .out { background: var(--panel); color: var(--dim); border-top: 1px solid var(--line);
+               white-space: pre-wrap; overflow-wrap: anywhere; }
+  .term .out:empty { display: none; }
+  .term .lbl { font-size: 9.5px; letter-spacing: .05em; color: var(--faint);
+               padding: 3px 10px 0; background: var(--panel); }
   .ev.thinking .who { margin: 0; cursor: pointer; font-style: italic; }
   .ev.thinking pre { display: none; margin-top: 5px; color: var(--dim); font-style: italic; }
   .ev.thinking.open pre { display: block; }
@@ -329,7 +346,7 @@ function md(src) {
 
 // Fold anything tall behind a toggle rather than cutting it off.
 function clampable(el) {
-  const body = el.querySelector('pre, .md');
+  const body = el.querySelector('.term .out, .term .cmd, pre, .md');
   if (!body) return el;
   requestAnimationFrame(() => {
     if (body.scrollHeight <= body.clientHeight + 8) return;
@@ -364,11 +381,13 @@ function render(it) {
     }
     el.innerHTML = h;
   } else if (it.kind === 'tool_use') {
+    // Only a shell command earns a prompt glyph; a file path or a query is not typed.
+    const shell = it.name === 'Bash';
     el.innerHTML = `<div class="who"><span class="name">${esc(it.name)}</span>${d}</div>` +
-      `<div class="io"><b>IN</b><pre>${esc(it.text)}</pre></div>`;
+      `<div class="term ${shell ? '' : 'plain'}"><pre class="cmd">${esc(it.text)}</pre></div>`;
     return clampable(el);
   } else if (it.kind === 'tool_result') {
-    el.innerHTML = `<div class="io"><b>OUT</b><pre>${esc(it.text)}</pre></div>`;
+    el.innerHTML = `<div class="term"><div class="lbl">OUT</div><pre class="out">${esc(it.text)}</pre></div>`;
     return clampable(el);
   } else if (it.kind === 'thinking') {
     el.innerHTML = `<div class="who">Thought${it.dur_ms > 400 ? ' for ' + dur(it.dur_ms) : ''} ›</div>` +
