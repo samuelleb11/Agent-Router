@@ -21,8 +21,8 @@ use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
 use tokio::sync::mpsc::Sender;
 
-use crate::analyze::{analyze_request, SseScanner};
-use crate::capture::{CaptureEvent, Decoder, RateLimit, StoredBody};
+use crate::analyze::analyze_request;
+use crate::capture::{CaptureEvent, Pending, RateLimit, StoredBody, Tee};
 use crate::accounts::{self, token_kind};
 use crate::config::Config;
 use crate::db::now_ms;
@@ -137,7 +137,7 @@ impl AppState {
     }
 
     /// Hand a finished request to the capture task, or drop it. Never blocks.
-    fn offer(&self, ev: CaptureEvent) {
+    pub(crate) fn offer(&self, ev: CaptureEvent) {
         if self.capture.try_send(ev).is_err() {
             let n = self.dropped.fetch_add(1, Ordering::Relaxed) + 1;
             if n.is_power_of_two() {
@@ -255,91 +255,57 @@ async fn forward(state: Arc<AppState>, req: Request<Body>) -> anyhow::Result<Res
     }
 
     // The tee. Each chunk is forwarded downstream first, then copied into the
-    // scanner. Capture can only ever fall behind by dropping, never by blocking.
-    let method = parts.method.to_string();
-    let body_cap = state.config.body_cap;
-    let tee = async_stream::stream! {
-        let mut stream = BodyStream::new(resp_body);
-        let mut decoder = Decoder::for_encoding(encoding.as_deref());
-        let mut scanner = SseScanner::default();
-        let mut raw = Vec::new();
-        let mut wire_bytes: i64 = 0;
-        let mut transport_error: Option<String> = None;
+    // accumulator. Capture can only ever fall behind by dropping, never by blocking,
+    // and the accumulator emits its event on Drop so a response the consumer stops
+    // reading early — every content-length error body — is still recorded.
+    let pending = Pending {
+        request_id,
+        session_id,
+        agent_id,
+        account_id,
+        entrypoint,
+        method: parts.method.to_string(),
+        path: path_and_query,
+        started_at_ms,
+        ttfb_ms,
+        status,
+        streaming_requested: shape.as_ref().map(|s| s.streaming).unwrap_or(false),
+        rl,
+        request_body: StoredBody::new(&request_bytes, state.config.body_cap),
+        request_bytes: request_bytes.len() as i64,
+        shape,
+    };
+    let mut tee = Tee::new(
+        state.clone(),
+        pending,
+        encoding.as_deref(),
+        is_sse,
+        state.config.body_cap,
+        started,
+    );
 
+    let body = async_stream::stream! {
+        let mut stream = BodyStream::new(resp_body);
         while let Some(item) = stream.next().await {
             match item {
                 Ok(frame) => {
                     let Ok(data) = frame.into_data() else { continue };
-                    wire_bytes += data.len() as i64;
-                    let plain = decoder.feed(&data);
-                    if !plain.is_empty() {
-                        if raw.len() < body_cap {
-                            let room = body_cap - raw.len();
-                            raw.extend_from_slice(&plain[..plain.len().min(room)]);
-                        }
-                        if is_sse {
-                            scanner.feed(&plain);
-                        }
-                    }
+                    tee.feed(&data);
                     yield Ok::<_, std::io::Error>(data);
                 }
                 Err(err) => {
-                    transport_error = Some(err.to_string());
+                    tee.fail(err.to_string());
                     yield Err(std::io::Error::other(err.to_string()));
                     break;
                 }
             }
         }
-
-        let tail = decoder.finish();
-        if !tail.is_empty() {
-            if raw.len() < body_cap {
-                let room = body_cap - raw.len();
-                raw.extend_from_slice(&tail[..tail.len().min(room)]);
-            }
-            if is_sse {
-                scanner.feed(&tail);
-            }
-        }
-        if !is_sse && !raw.is_empty() {
-            scanner.absorb_json_body(&raw);
-        }
-
-        state.offer(CaptureEvent {
-            request_id,
-            message_id: scanner.message_id.clone(),
-            session_id,
-            agent_id,
-            account_id,
-            entrypoint,
-            model: scanner
-                .model
-                .clone()
-                .or_else(|| shape.as_ref().and_then(|s| s.model.clone())),
-            method,
-            path: path_and_query,
-            started_at_ms,
-            ttfb_ms,
-            duration_ms: started.elapsed().as_millis() as i64,
-            status,
-            // The response is the authority; the request's `stream` flag is the
-            // fallback for a call that errored before any event arrived.
-            streaming: is_sse || shape.as_ref().map(|s| s.streaming).unwrap_or(false),
-            stop_reason: scanner.stop_reason.clone(),
-            service_tier: scanner.service_tier.clone(),
-            error: transport_error.or(scanner.error.clone()),
-            rl,
-            usage: scanner.usage.clone(),
-            tool_calls: scanner.tool_calls.clone(),
-            request_body: StoredBody::new(&request_bytes, body_cap),
-            response_body: StoredBody::new(&raw, body_cap),
-            request_bytes: request_bytes.len() as i64,
-            response_bytes: wire_bytes,
-            shape,
-        });
+        // `tee` is dropped here on normal completion, and equally if this generator is
+        // dropped early because the consumer had all the bytes it was promised.
+        drop(tee);
     };
 
-    Ok(resp.body(Body::from_stream(tee))?)
+    Ok(resp.body(Body::from_stream(body))?)
 }
 
 /// Copy every header except the hop-by-hop set. Values are moved verbatim — no

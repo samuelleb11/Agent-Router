@@ -147,6 +147,141 @@ impl Decoder {
     }
 }
 
+/// Everything known about a request before its response body starts flowing.
+pub struct Pending {
+    pub request_id: Option<String>,
+    pub session_id: Option<String>,
+    pub agent_id: Option<String>,
+    pub account_id: String,
+    pub entrypoint: Option<String>,
+    pub method: String,
+    pub path: String,
+    pub started_at_ms: i64,
+    pub ttfb_ms: i64,
+    pub status: i64,
+    pub streaming_requested: bool,
+    pub rl: RateLimit,
+    pub shape: Option<RequestShape>,
+    pub request_body: StoredBody,
+    pub request_bytes: i64,
+}
+
+/// Accumulates the response as it streams past, and emits the capture event **when
+/// dropped** rather than when the stream ends.
+///
+/// Emitting at the end of the stream loses whole classes of request. A response with
+/// an exact `content-length` — which is every error body Anthropic returns, since
+/// they are small and unzipped — is satisfied once the consumer has read that many
+/// bytes, and the body is dropped without a final poll. Streaming and gzipped replies
+/// have no content-length and must be polled to completion, so they were captured and
+/// errors silently were not. The same gap swallowed any request whose client
+/// disconnected mid-stream. `Drop` runs in all three cases.
+pub struct Tee {
+    state: std::sync::Arc<crate::proxy::AppState>,
+    pending: Option<Pending>,
+    decoder: Decoder,
+    scanner: crate::analyze::SseScanner,
+    raw: Vec<u8>,
+    body_cap: usize,
+    wire_bytes: i64,
+    is_sse: bool,
+    started: std::time::Instant,
+    transport_error: Option<String>,
+}
+
+impl Tee {
+    pub fn new(
+        state: std::sync::Arc<crate::proxy::AppState>,
+        pending: Pending,
+        encoding: Option<&str>,
+        is_sse: bool,
+        body_cap: usize,
+        started: std::time::Instant,
+    ) -> Self {
+        Self {
+            state,
+            pending: Some(pending),
+            decoder: Decoder::for_encoding(encoding),
+            scanner: Default::default(),
+            raw: Vec::new(),
+            body_cap,
+            wire_bytes: 0,
+            is_sse,
+            started,
+            transport_error: None,
+        }
+    }
+
+    /// Feed bytes exactly as they came off the wire, still compressed.
+    pub fn feed(&mut self, chunk: &[u8]) {
+        self.wire_bytes += chunk.len() as i64;
+        let plain = self.decoder.feed(chunk);
+        self.absorb(&plain);
+    }
+
+    pub fn fail(&mut self, err: String) {
+        self.transport_error = Some(err);
+    }
+
+    fn absorb(&mut self, plain: &[u8]) {
+        if plain.is_empty() {
+            return;
+        }
+        if self.raw.len() < self.body_cap {
+            let room = self.body_cap - self.raw.len();
+            self.raw.extend_from_slice(&plain[..plain.len().min(room)]);
+        }
+        if self.is_sse {
+            self.scanner.feed(plain);
+        }
+    }
+}
+
+impl Drop for Tee {
+    fn drop(&mut self) {
+        let Some(p) = self.pending.take() else { return };
+        let tail = self.decoder.finish();
+        self.absorb(&tail);
+        if !self.is_sse && !self.raw.is_empty() {
+            let raw = std::mem::take(&mut self.raw);
+            self.scanner.absorb_json_body(&raw);
+            self.raw = raw;
+        }
+        let ev = CaptureEvent {
+            request_id: p.request_id,
+            message_id: self.scanner.message_id.clone(),
+            session_id: p.session_id,
+            agent_id: p.agent_id,
+            account_id: p.account_id,
+            entrypoint: p.entrypoint,
+            model: self
+                .scanner
+                .model
+                .clone()
+                .or_else(|| p.shape.as_ref().and_then(|s| s.model.clone())),
+            method: p.method,
+            path: p.path,
+            started_at_ms: p.started_at_ms,
+            ttfb_ms: p.ttfb_ms,
+            duration_ms: self.started.elapsed().as_millis() as i64,
+            status: p.status,
+            streaming: self.is_sse || p.streaming_requested,
+            stop_reason: self.scanner.stop_reason.clone(),
+            service_tier: self.scanner.service_tier.clone(),
+            error: self.transport_error.clone().or_else(|| self.scanner.error.clone()),
+            rl: p.rl,
+            usage: self.scanner.usage.clone(),
+            tool_calls: self.scanner.tool_calls.clone(),
+            request_body: p.request_body,
+            response_body: StoredBody::new(&self.raw, self.body_cap),
+            request_bytes: p.request_bytes,
+            response_bytes: self.wire_bytes,
+            shape: p.shape,
+        };
+        self.state.offer(ev);
+    }
+}
+
 /// Start the capture task and return the sender the proxy tees into.
 pub fn spawn(db_path: PathBuf) -> (mpsc::Sender<CaptureEvent>, tokio::task::JoinHandle<()>) {
     // Bounded: a burst deeper than this is dropped rather than queued, so memory
