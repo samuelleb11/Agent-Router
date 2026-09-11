@@ -225,6 +225,13 @@ pub async fn summary(State(state): State<Arc<AppState>>, Query(mut f): Query<Fil
         &conn,
         &format!(
             "SELECT c.component, sum(c.est_tokens) AS est_tokens, sum(c.char_count) AS chars,
+                    -- Priced as if each component were paid once as fresh input. It is
+                    -- a floor: whatever stays in the context is re-read every later
+                    -- turn, and this table cannot know how many turns that was.
+                    coalesce(sum(c.est_tokens * (
+                        SELECT p2.input FROM pricing p2
+                        WHERE instr(lower(coalesce(r.model,'')), p2.model) > 0
+                        ORDER BY length(p2.model) DESC LIMIT 1)) / 1000000.0, 0) AS est_cost_once,
                     count(DISTINCT c.request_id) AS requests
              FROM context c
              JOIN requests r       ON r.id = c.request_id
