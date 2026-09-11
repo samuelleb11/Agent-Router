@@ -1,5 +1,5 @@
 [workspace]
-members = ["menubar"]
+members = ["menubar", "wrapper"]
 
 [package]
 name = "agent-router"
@@ -7,7 +7,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "process"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "process", "time"] }
 axum = "0.8"
 hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["client", "client-legacy", "tokio", "http1"] }
@@ -28,3 +28,4 @@ keyring = { version = "3", features = ["apple-native"] }
 socket2 = { version = "0.5", features = ["all"] }
 portable-pty = "0.9"
 libc = "0.2"
+sha2 = "0.10"

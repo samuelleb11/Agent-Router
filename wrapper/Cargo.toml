@@ -1,0 +1,8 @@
+[package]
+name = "claude-wrapper"
+version = "0.1.0"
+edition = "2021"
+
+# No dependencies, deliberately. This process sits in the critical path of every
+# Claude Code session in the editor; there is nothing here to break on an update.
+[dependencies]

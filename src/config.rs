@@ -20,11 +20,22 @@ impl Config {
             .unwrap_or_else(|_| "8787".into())
             .parse()?;
 
-        // The bind address is deliberately NOT configurable. Agent Router holds a live
-        // subscription credential and signs whatever it forwards, so exposing it on a
-        // routable interface would hand that credential to the network. Loopback only,
-        // with no env var and no flag that can widen it.
-        let bind = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
+        // The bind address defaults to loopback and should stay there unless you mean
+        // otherwise. Agent Router holds a live subscription credential and signs
+        // whatever it forwards, so a routable bind hands that credential to everyone
+        // on the network: there is no authentication on any route, and `proxy` will
+        // sign for any caller that presents any credential at all. AGENT_ROUTER_BIND
+        // widens it deliberately, for following sessions from another device on a
+        // network you trust. Unset it to go back to loopback only.
+        let bind = match std::env::var("AGENT_ROUTER_BIND") {
+            Ok(addr) if !addr.trim().is_empty() => {
+                let ip: IpAddr = addr.trim().parse().map_err(|_| {
+                    anyhow::anyhow!("AGENT_ROUTER_BIND must be an IP address, got {addr:?}")
+                })?;
+                SocketAddr::new(ip, port)
+            }
+            _ => SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port),
+        };
 
         let db_path = match std::env::var("AGENT_ROUTER_DB") {
             Ok(p) => PathBuf::from(p),

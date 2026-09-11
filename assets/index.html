@@ -357,6 +357,7 @@ pre.cmd { background:var(--bg); border:1px solid var(--line); border-radius:7px;
   <header>
     <h1>Agent Router</h1>
     <span class="chip" id="livechip"><span class="dot" id="live"></span><span id="livetext">connecting…</span></span>
+    <a class="chip" href="/live" title="Follow and control running sessions">Sessions</a>
     <button class="chip" id="acct" title="Switch, add or remove accounts"><svg class="g" width="14" height="14"><use href="#g-account"/></svg><span id="accttext">—</span><span class="muted" style="font-size:11px">manage</span><svg class="g" width="14" height="14" style="color:var(--muted)"><use href="#g-chevron"/></svg></button>
     <span class="host" id="host"></span>
   </header>
@@ -571,6 +572,13 @@ const k   = v => { v = Number(v||0); const a = Math.abs(v);
   if (a >= 1e4) return (v/1e3).toFixed(0)+'k';
   if (a >= 1e3) return (v/1e3).toFixed(1)+'k';
   return String(Math.round(v)); };
+// Dollars. Cents matter at coffee prices and are noise at four figures, and a cost we
+// could not price — an unknown model — reads as an em dash rather than as free.
+const usd = v => { if (v == null) return '—'; const a = Math.abs(Number(v) || 0);
+  if (a >= 1000) return '$' + Math.round(a).toLocaleString();
+  if (a >= 1) return '$' + a.toFixed(2);
+  if (a > 0) return '$' + (a >= 0.01 ? a.toFixed(3) : a.toFixed(4));
+  return '$0'; };
 const pct = (a,b) => { a = Number(a||0); b = Number(b||0); if (!b) return '—';
   const p = 100*a/b; return (p >= 10 || p === 0 ? p.toFixed(0) : p.toFixed(1)) + '%'; };
 const ms  = v => v == null ? '—' : v < 1000 ? Math.round(v)+' ms' : (v/1000).toFixed(1)+' s';
@@ -921,7 +929,7 @@ function menuRows(kind) {
         // Two rows can carry the same identity (the discovered Keychain login and a
         // token for the same person), so the router-side id is what tells them apart.
         sub: a.id + (num(a.active) ? ' · active' : ''),
-        meta: `${k(a.prompt_tokens)} · ${n(a.requests)} req`, current: state.account === a.id,
+        meta: `${k(a.prompt_tokens)} · ${n(a.requests)} req · ${usd(a.cost)}`, current: state.account === a.id,
         pick: () => setScope({ account: a.id, project:null, session:null }),
       })));
   }
@@ -931,7 +939,7 @@ function menuRows(kind) {
               pick: () => setScope({ project:null, session:null }) }]
       .concat(list.map(p => ({
         key: p.project || '(unresolved)', name: base(p.project), sub: p.project || '', pathSub: true,
-        meta: `${k(p.prompt_tokens)} · ${n(p.requests)} req`, current: state.project === (p.project || '(unresolved)'),
+        meta: `${k(p.prompt_tokens)} · ${n(p.requests)} req · ${usd(p.cost)}`, current: state.project === (p.project || '(unresolved)'),
         pick: () => setScope({ project: p.project || '(unresolved)', session: null }),
       })));
   }
@@ -941,7 +949,7 @@ function menuRows(kind) {
     .concat(list.map(x => ({
       key: x.id, name: id8(x.id), mono: true,
       sub: [x.git_branch, state.project ? null : base(x.project), tod(x.started_at)].filter(Boolean).join(' · '),
-      meta: `${k(x.prompt_tokens)} · ${n(x.requests)} req`, current: state.session === x.id,
+      meta: `${k(x.prompt_tokens)} · ${n(x.requests)} req · ${usd(x.cost)}`, current: state.session === x.id,
       pick: () => setScope({ session: x.id, project: x.project || state.project }),
     })));
 }
@@ -1098,13 +1106,14 @@ function buckets(tl) {
   const byT = new Map();
   for (const r of tl.rows || []) {
     const t = Number(r.t); let o = byT.get(t);
-    if (!o) { o = { t, requests:0, prompt:0, output:0, cache:0, sub:0, errors:0, fam:{ opus:0, sonnet:0, haiku:0, other:0 }, famReq:{ opus:0, sonnet:0, haiku:0, other:0 } }; byT.set(t, o); }
+    if (!o) { o = { t, requests:0, prompt:0, output:0, cache:0, sub:0, errors:0, cost:0, fam:{ opus:0, sonnet:0, haiku:0, other:0 }, famReq:{ opus:0, sonnet:0, haiku:0, other:0 } }; byT.set(t, o); }
     o.requests += num(r.requests); o.prompt += num(r.prompt_tokens); o.output += num(r.output_tokens);
     o.cache += num(r.cache_read_tokens); o.sub += num(r.subagent_tokens); o.errors += num(r.errors);
+      o.cost += num(r.cost);
     const f = fam(r.model); o.fam[f] += num(r.prompt_tokens); o.famReq[f] += num(r.requests);
   }
   const out = [];
-  for (let t = t0, i = 0; t <= tl.end && i < 500; t += b, i++) out.push(byT.get(t) || { t, requests:0, prompt:0, output:0, cache:0, sub:0, errors:0, fam:{ opus:0, sonnet:0, haiku:0, other:0 }, famReq:{ opus:0, sonnet:0, haiku:0, other:0 } });
+  for (let t = t0, i = 0; t <= tl.end && i < 500; t += b, i++) out.push(byT.get(t) || { t, requests:0, prompt:0, output:0, cache:0, sub:0, errors:0, cost:0, fam:{ opus:0, sonnet:0, haiku:0, other:0 }, famReq:{ opus:0, sonnet:0, haiku:0, other:0 } });
   return out;
 }
 
@@ -1117,6 +1126,7 @@ function renderHeadline(t, lat, bk, tl) {
       h('div', { class:'k', text: label }), h('div', { class:'v' }), h('div', { class:'s' }), extra || null);
     el.append(
       tile('hero', 'Prompt tokens read', h('div', { class:'spark' })),
+      tile('spend', 'Spend'),
       tile('req', 'Requests'),
       tile('out', 'Output tokens', h('div', { class:'spark' })),
       tile('hit', 'Served from cache', h('div', { class:'meter', style:'--mc:var(--tok-3)' }, h('i'))),
@@ -1127,8 +1137,30 @@ function renderHeadline(t, lat, bk, tl) {
   const set = (id, v, s, bad) => { const x = document.getElementById('tile-'+id); setText(x.querySelector('.v'), v); setText(x.querySelector('.s'), s); x.querySelector('.v').classList.toggle('bad', !!bad); return x; };
   const hero = set('hero', k(prompt), t.first_seen ? `${tod(t.first_seen)} → ${tod(t.last_seen)} · everything the model read, cached or not` : 'nothing recorded yet — point Claude Code at this router');
   setSvg(hero.querySelector('.spark'), sparkSvg(bk.map(b => b.prompt), 40, true));
-  bindTip(hero, () => [[k(prompt), 'prompt tokens'], [k(t.input_tokens), 'uncached input'], [k(cached), 'cache reads'], [k(t.cache_write_tokens), 'cache writes'], tl && tl.bucket_ms ? [bucketName(tl.bucket_ms), 'per bar'] : null]);
+  bindTip(hero, () => [[usd(t.cost), 'cost of this scope'], [k(prompt), 'prompt tokens'], [k(t.input_tokens), 'uncached input'], [k(cached), 'cache reads'], [k(t.cache_write_tokens), 'cache writes'], tl && tl.bucket_ms ? [bucketName(tl.bucket_ms), 'per bar'] : null]);
   const plural = (v, one, many) => `${n(v)} ${num(v) === 1 ? one : many}`;
+  // The total alone is not interpretable: on an agentic workload most of it is cache,
+  // billed at a tenth of input, and the subtitle is where that becomes visible.
+  const rd = num(t.cache_read_tokens), wr5 = num(t.cache_write_5m_tokens),
+        wr1 = num(t.cache_write_1h_tokens), inp = num(t.input_tokens), outp = num(t.output_tokens);
+  const spend = set('spend', usd(t.cost),
+    num(t.cost) ? `${k(rd)} cached reads · ${k(outp)} out` : 'nothing priced in scope');
+  bindTip(spend, () => ['Where the money went',
+    [usd(t.cost), 'total in scope'],
+    [k(inp), 'uncached input'],
+    [k(wr5), 'cache writes, 5 min — 1.25x input'],
+    [k(wr1), 'cache writes, 1 hour — 2x input'],
+    [k(rd), 'cache reads — 0.1x input'],
+    [k(outp), 'output — dearest per token'],
+    [pct(rd, num(t.prompt_tokens)), 'of prompt served from cache'],
+    [n(t.requests), 'requests'],
+    ['editable in the pricing table', 'rates']]);
+  bindTip(spend, () => ['What this scope cost',
+    [usd(t.cost), 'total'],
+    [k(t.input_tokens), 'uncached input'],
+    [k(t.cache_write_tokens), 'cache writes, dearer than input'],
+    [k(cached), 'cache reads, a tenth of input'],
+    [k(t.output_tokens), 'output, the dearest of all']]);
   const req = set('req', n(t.requests), state.session ? `1 session · ${base(state.project)}`
     : `${plural(t.sessions, 'session', 'sessions')} · ${plural(t.projects, 'project', 'projects')}`
       + (num(t.subagent_requests) ? ` · ${n(t.subagent_requests)} by subagents` : ''));
@@ -1207,7 +1239,7 @@ function renderActivity(bk, tl) {
       tipTarget = box;
       showTip([`${tod(b.t)} – ${hm(end)}`,
         ...FAMS.filter(f => b.fam[f] > 0 || b.famReq[f] > 0).map(f => [k(b.fam[f]), `${f} · ${n(b.famReq[f])} req`, famColor(f)]),
-        [k(b.output), 'output tokens'], [pct(b.cache, b.prompt), 'from cache'],
+        [k(b.output), 'output tokens'], [usd(b.cost), 'cost'], [pct(b.cache, b.prompt), 'from cache'],
         b.sub > 0 ? [pct(b.sub, b.prompt), 'by subagents', 'var(--sub)'] : null,
         b.errors > 0 ? [n(b.errors), 'errors', 'var(--bad)'] : null], e.clientX, e.clientY);
     });
@@ -1237,7 +1269,7 @@ function renderContext(rows, totals) {
   const total = CTX.reduce((a, c) => a + num(byKey[c.key] && byKey[c.key].est_tokens), 0);
   const scale = Math.max(1, total);
   const segs = CTX.map(c => { const r = byKey[c.key] || {}; const v = num(r.est_tokens); const reqs = r.requests ?? totals.requests;
-    return { key:c.key, value:v, color:c.color, label:c.label, tip:[c.label, [k(v), 'est. tokens'], [pct(v, total), 'of the window'], [k(r.chars), 'characters'], reqs ? [k(v / reqs), `per request (${n(reqs)})`] : null] }; });
+    return { key:c.key, value:v, color:c.color, label:c.label, tip:[c.label, [`≥${usd(r.est_cost_once)}`, 'if paid once as input'], [k(v), 'est. tokens'], [pct(v, total), 'of the window'], [k(r.chars), 'characters'], reqs ? [k(v / reqs), `per request (${n(reqs)})`] : null] }; });
   setStack(document.getElementById('ctxbar'), segs);
   const box = document.getElementById('ctxrows');
   patchList(box, CTX, c => c.key,
@@ -1264,9 +1296,9 @@ function renderModels(models) {
     const f = fam(m.model), p = num(m.prompt_tokens);
     setBarRow(row, {
       name: shortModel(m.model), swatch: swatch(f, m.model), color: famColor(f), value: p, max,
-      meta: [`${n(m.requests)} req`, `${k(m.output_tokens)} out`, `${pct(m.cache_read_tokens, p)} cached`, num(m.subagent_requests) ? `${n(m.subagent_requests)} by subagents` : null, num(m.errors) ? `⚠ ${n(m.errors)}` : null].filter(Boolean).join(' · '),
+      meta: [`${n(m.requests)} req`, `${k(m.output_tokens)} out`, `${pct(m.cache_read_tokens, p)} cached`, usd(m.cost), num(m.subagent_requests) ? `${n(m.subagent_requests)} by subagents` : null, num(m.errors) ? `⚠ ${n(m.errors)}` : null].filter(Boolean).join(' · '),
       title: m.model,
-      tipRows: [m.model, [k(p), 'prompt tokens', famColor(f)], [k(m.output_tokens), 'output tokens'], [k(m.thinking_tokens), 'thinking'], [pct(m.cache_read_tokens, p), 'from cache'], [n(m.requests), 'requests'], [n(m.subagent_requests), 'by subagents'], [n(m.errors), 'errors']],
+      tipRows: [m.model, [usd(m.cost), 'cost'], [k(p), 'prompt tokens', famColor(f)], [k(m.output_tokens), 'output tokens'], [k(m.thinking_tokens), 'thinking'], [pct(m.cache_read_tokens, p), 'from cache'], [n(m.requests), 'requests'], [n(m.subagent_requests), 'by subagents'], [n(m.errors), 'errors']],
     });
   });
   fitTips(el);
@@ -1278,15 +1310,15 @@ function renderThreads(threads) {
   const main = rows.main || {}, sub = rows.subagent || {};
   const total = num(main.prompt_tokens) + num(sub.prompt_tokens);
   const segs = [
-    { key:'main', value:num(main.prompt_tokens), color:'var(--tok)', tip:['Main thread', [k(main.prompt_tokens), 'prompt tokens', 'var(--tok)'], [pct(main.prompt_tokens, total), 'share'], [n(main.requests), 'requests'], [k(main.output_tokens), 'output']] },
-    { key:'sub',  value:num(sub.prompt_tokens),  color:'var(--sub)', tip:['Subagents', [k(sub.prompt_tokens), 'prompt tokens', 'var(--sub)'], [pct(sub.prompt_tokens, total), 'share'], [n(sub.requests), 'requests'], [k(sub.output_tokens), 'output'], [n(sub.agents), 'distinct agents']] },
+    { key:'main', value:num(main.prompt_tokens), color:'var(--tok)', tip:['Main thread', [usd(main.cost), 'cost'], [k(main.prompt_tokens), 'prompt tokens', 'var(--tok)'], [pct(main.prompt_tokens, total), 'share'], [n(main.requests), 'requests'], [k(main.output_tokens), 'output']] },
+    { key:'sub',  value:num(sub.prompt_tokens),  color:'var(--sub)', tip:['Subagents', [usd(sub.cost), 'cost'], [k(sub.prompt_tokens), 'prompt tokens', 'var(--sub)'], [pct(sub.prompt_tokens, total), 'share'], [n(sub.requests), 'requests'], [k(sub.output_tokens), 'output'], [n(sub.agents), 'distinct agents']] },
   ];
   setStack(document.getElementById('thrbar'), segs);
   const leg = document.getElementById('threads');
   const line = (t, label, color, glyph, extra) => [legRow(color, label, glyph, extra), h('span'), h('b', { text: k(t.prompt_tokens) }), h('span', { class:'pc', text: pct(t.prompt_tokens, total) })];
   leg.replaceChildren(
-    ...line(main, 'main thread', 'var(--tok)', 'main', `${n(main.requests ?? 0)} req · ${k(main.output_tokens)} out` + (main.cache_read_tokens != null ? ` · ${pct(main.cache_read_tokens, main.prompt_tokens)} cached` : '')),
-    ...line(sub, 'subagents', 'var(--sub)', 'sub', num(sub.requests) ? `${n(sub.requests)} req · ${k(sub.output_tokens)} out · ${n(sub.agents)} agent${num(sub.agents) === 1 ? '' : 's'}` + (sub.cache_read_tokens != null ? ` · ${pct(sub.cache_read_tokens, sub.prompt_tokens)} cached` : '') : 'none in scope'));
+    ...line(main, 'main thread', 'var(--tok)', 'main', `${n(main.requests ?? 0)} req · ${k(main.output_tokens)} out · ${usd(main.cost)}` + (main.cache_read_tokens != null ? ` · ${pct(main.cache_read_tokens, main.prompt_tokens)} cached` : '')),
+    ...line(sub, 'subagents', 'var(--sub)', 'sub', num(sub.requests) ? `${n(sub.requests)} req · ${k(sub.output_tokens)} out · ${usd(sub.cost)} · ${n(sub.agents)} agent${num(sub.agents) === 1 ? '' : 's'}` + (sub.cache_read_tokens != null ? ` · ${pct(sub.cache_read_tokens, sub.prompt_tokens)} cached` : '') : 'none in scope'));
 }
 
 // ---------- accounts split ----------
@@ -1318,7 +1350,7 @@ function renderAccountSplit(list) {
       meta: [`${n(a.sessions)} session${num(a.sessions) === 1 ? '' : 's'}`, `${n(a.requests)} req`,
              `${k(a.output_tokens)} out`, ago(a.last_seen)].join(' · '),
       selected: state.account === a.id, title: a.id,
-      tipRows: [a.label || a.id, [a.id, 'account id'], [k(a.prompt_tokens), 'prompt tokens', 'var(--tok)'],
+      tipRows: [a.label || a.id, [a.id, 'account id'], [usd(a.cost), 'cost'], [k(a.prompt_tokens), 'prompt tokens', 'var(--tok)'],
         [k(a.output_tokens), 'output tokens'], [n(a.requests), 'requests'], [n(a.sessions), 'sessions'],
         [tod(a.last_seen), 'last request'], num(a.active) ? ['yes', 'serving now'] : null],
     });
@@ -1342,10 +1374,10 @@ function renderProjects(list, totals) {
       setBarRow(row, {
         icon:'project', iconStyle:'color:var(--proj)', name: base(p.project), path: p.project || '', chips: modelChips(p.models),
         value: prompt, sub: subp, max, subText: subp ? `${pct(subp, prompt)} subagents` : null,
-        meta: [`${n(p.sessions)} session${num(p.sessions) === 1 ? '' : 's'}`, `${n(p.requests)} req`, `${k(p.output_tokens)} out`, `${pct(p.cache_read_tokens, prompt)} cached`, num(p.errors) ? `⚠ ${n(p.errors)}` : null, ago(p.last_seen)].filter(Boolean).join(' · '),
+        meta: [`${n(p.sessions)} session${num(p.sessions) === 1 ? '' : 's'}`, `${n(p.requests)} req`, `${k(p.output_tokens)} out`, `${pct(p.cache_read_tokens, prompt)} cached`, usd(p.cost), num(p.errors) ? `⚠ ${n(p.errors)}` : null, ago(p.last_seen)].filter(Boolean).join(' · '),
         selected: state.project === (p.project || '(unresolved)'),
         title: p.project || '(unresolved)',
-        tipRows: [p.project || '(unresolved)', [k(prompt), 'prompt tokens', 'var(--tok)'], subp ? [k(subp), 'of it by subagents', 'var(--sub)'] : null, [k(p.output_tokens), 'output tokens'], [pct(p.cache_read_tokens, prompt), 'from cache'], [n(p.requests), 'requests'], [n(p.sessions), 'sessions'], [n(p.errors ?? 0), 'errors'], [`${tod(p.first_seen)} → ${tod(p.last_seen)}`, 'active']],
+        tipRows: [p.project || '(unresolved)', [usd(p.cost), 'cost'], [k(prompt), 'prompt tokens', 'var(--tok)'], subp ? [k(subp), 'of it by subagents', 'var(--sub)'] : null, [k(p.output_tokens), 'output tokens'], [pct(p.cache_read_tokens, prompt), 'from cache'], [n(p.requests), 'requests'], [n(p.sessions), 'sessions'], [n(p.errors ?? 0), 'errors'], [`${tod(p.first_seen)} → ${tod(p.last_seen)}`, 'active']],
       });
     });
   // Requests arrive before their transcript does, so some have no session and therefore no
@@ -1386,9 +1418,9 @@ function renderSessions(list, totals) {
       setBarRow(row, {
         icon:'session', iconStyle:'color:var(--sess)', name: id8(s.id), mono:true, chips, value: prompt, sub: subp, max,
         subText: subp ? `${pct(subp, prompt)} subagents` : null,
-        meta: [`${n(s.requests)} req`, `${k(s.output_tokens)} out`, num(s.subagents) ? `${n(s.subagents)} subagent${num(s.subagents) === 1 ? '' : 's'}` : null, num(s.errors) ? `⚠ ${n(s.errors)}` : null, `started ${tod(s.started_at)}`, dur(num(s.last_seen_at) - num(s.started_at))].filter(Boolean).join(' · '),
+        meta: [`${n(s.requests)} req`, usd(s.cost), `${k(s.output_tokens)} out`, num(s.subagents) ? `${n(s.subagents)} subagent${num(s.subagents) === 1 ? '' : 's'}` : null, num(s.errors) ? `⚠ ${n(s.errors)}` : null, `started ${tod(s.started_at)}`, dur(num(s.last_seen_at) - num(s.started_at))].filter(Boolean).join(' · '),
         selected: state.session === s.id, title: s.id,
-        tipRows: [s.id, [k(prompt), 'prompt tokens', 'var(--tok)'], subp ? [k(subp), 'of it by subagents', 'var(--sub)'] : null, [k(s.output_tokens), 'output tokens'], [pct(s.cache_read_tokens, prompt), 'from cache'], [n(s.requests), 'requests'], [n(s.errors ?? 0), 'errors'], [base(s.project), 'project'], [`${tod(s.started_at)} → ${tod(s.last_seen_at)}`, 'active'], s.entrypoint ? [s.entrypoint, 'launched from'] : null],
+        tipRows: [s.id, [usd(s.cost), 'cost'], [k(prompt), 'prompt tokens', 'var(--tok)'], subp ? [k(subp), 'of it by subagents', 'var(--sub)'] : null, [k(s.output_tokens), 'output tokens'], [pct(s.cache_read_tokens, prompt), 'from cache'], [n(s.requests), 'requests'], [n(s.errors ?? 0), 'errors'], [base(s.project), 'project'], [`${tod(s.started_at)} → ${tod(s.last_seen_at)}`, 'active'], s.entrypoint ? [s.entrypoint, 'launched from'] : null],
       });
     });
   if (!state.project) orphanRow(el, list, totals, 'session');
@@ -1405,9 +1437,9 @@ function renderTools(tools) {
     patchList(out, produced, t => t.name || '—', () => makeBarRow(false), (row, t) => {
       const v = num(t.est_tokens), res = num(t.results);
       setBarRow(row, { icon:'tool', iconStyle:'color:var(--c1)', name: t.name || '—', color:'var(--c1)', value: v, max,
-        meta: [`${n(res)} result${res === 1 ? '' : 's'}`, res ? `≈${k(v / res)} each` : null].filter(Boolean).join(' · '),
+        meta: [`${n(res)} result${res === 1 ? '' : 's'}`, res ? `≈${k(v / res)} each` : null, t.est_cost_once != null ? `≥${usd(t.est_cost_once)}` : null].filter(Boolean).join(' · '),
         metaWarn: num(t.errors) ? `${n(t.errors)} failed` : null,
-        tipRows: [t.name || '—', [k(v), 'est. tokens read', 'var(--c1)'], [k(t.chars), 'characters'], [n(res), 'results'], res ? [k(v / res), 'average result'] : null, t.max_tokens != null ? [k(t.max_tokens), 'largest result'] : null, [n(t.errors ?? 0), 'failed']] });
+        tipRows: [t.name || '—', [`≥${usd(t.est_cost_once)}`, 'if paid once as input'], [k(v), 'est. tokens read', 'var(--c1)'], [k(t.chars), 'characters'], [n(res), 'results'], res ? [k(v / res), 'average result'] : null, t.max_tokens != null ? [k(t.max_tokens), 'largest result'] : null, [n(t.errors ?? 0), 'failed']] });
     });
     fitTips(out);
   }
@@ -1526,8 +1558,8 @@ function renderRequests(list, lat) {
     const bad = num(r.status) >= 400 || r.error;
     q('.st').replaceChildren(bad ? h('span', { class:'tag err' }, icon('error'), r.status != null ? String(r.status) : 'ERR') : document.createTextNode(r.status != null ? String(r.status) : '—'));
     q('.mini i').style.width = (100 * prompt / max) + '%';
-    setText(q('.p'), k(prompt)); setText(q('.c'), prompt ? `${pct(r.cache_read_tokens, prompt)} cached` : '—'); setText(q('.o'), `${k(r.output_tokens)} out`); setText(q('.l'), r.ttfb_ms != null ? `${ms(r.ttfb_ms)} ttfb` : '—');
-    bindTip(q('.mini'), () => [[k(prompt), 'prompt tokens', 'var(--tok)'], [k(r.cache_read_tokens), 'from cache', 'var(--tok-3)'], [k(r.cache_write_tokens), 'written to cache'], [k(r.input_tokens), 'uncached input', 'var(--tok-2)'], [k(r.output_tokens), 'output'], [k(r.thinking_tokens), 'thinking']]);
+    setText(q('.p'), k(prompt)); setText(q('.c'), prompt ? `${pct(r.cache_read_tokens, prompt)} cached` : '—'); setText(q('.o'), `${k(r.output_tokens)} out · ${usd(r.cost)}`); setText(q('.l'), r.ttfb_ms != null ? `${ms(r.ttfb_ms)} ttfb` : '—');
+    bindTip(q('.mini'), () => [[usd(r.cost), 'cost of this request'], [k(prompt), 'prompt tokens', 'var(--tok)'], [k(r.cache_read_tokens), 'from cache', 'var(--tok-3)'], [k(r.cache_write_tokens), 'written to cache'], [k(r.input_tokens), 'uncached input', 'var(--tok-2)'], [k(r.output_tokens), 'output'], [k(r.thinking_tokens), 'thinking']]);
     renderDetail(row, r, false);
   });
 }
@@ -1668,6 +1700,7 @@ function openEdit(a) {
 
 async function renderSetup() {
   const d = await get('/api/setup');
+  const sh = await get('/api/setup/shim').catch(() => null);
   const rows = [];
   const svc = d.service || {};
   rows.push(`<div class="row" style="padding:6px 0"><span>
@@ -1680,6 +1713,21 @@ async function renderSetup() {
   rows.push(`<div class="row" style="padding:6px 0; border-top:1px solid var(--line)"><span>
       <b>Route every project</b><br><span class="muted">${esc(d.global_settings_path || '')}</span></span>
     <span><button class="btn sm ${global ? 'danger' : ''}" data-cfg="${global ? '0' : '1'}">${global ? 'Stop routing' : 'Route everything'}</button></span></div>`);
+
+  if (sh && (sh.targets || []).length) {
+    const label = { installed: 'installed', not_installed: 'not installed', inconsistent: 'needs reinstalling' };
+    rows.push(`<div class="row" style="padding:6px 0; border-top:1px solid var(--line)"><span>
+        <b>Type into editor sessions</b><br><span class="muted">Lets the live view send messages to sessions
+        VSCode starts. Takes effect for sessions started afterwards; ones already open keep their old stdio.
+        ${sh.available ? '' : '<b>The wrapper binary is missing next to agent-router.</b>'}</span></span><span></span></div>`);
+    for (const t of sh.targets) {
+      const on = t.state === 'installed';
+      rows.push(`<div class="row" style="padding:6px 0 6px 14px"><span>
+          <span class="muted path">${esc(t.extension)}</span><br><span class="muted">${label[t.state] || t.state}</span></span>
+        <span><button class="btn sm ${on ? 'danger' : ''}" data-shim="${on ? 'remove' : 'install'}"
+          data-path="${esc(t.path)}" ${sh.available || on ? '' : 'disabled'}>${on ? 'Remove' : 'Install'}</button></span></div>`);
+    }
+  }
 
   for (const m of (d.managed || []).filter(m => m.scope === 'project')) {
     rows.push(`<div class="row" style="padding:6px 0; border-top:1px solid var(--line)"><span>
@@ -1697,6 +1745,12 @@ async function renderSetup() {
     catch (e) { msg.textContent = String(e.message || e); }
     renderSetup();
   };
+  document.querySelectorAll('#setupbody [data-shim]').forEach(b => b.onclick = () =>
+    act(async () => {
+      const r = await post('/api/setup/shim', { path: b.dataset.path, action: b.dataset.shim });
+      if (!r.ok) throw new Error(r.reason || 'failed');
+      return { detail: b.dataset.shim === 'install' ? 'Installed — restart a session to use it.' : 'Removed.' };
+    }));
   document.querySelectorAll('#setupbody [data-svc]').forEach(b => b.onclick = () =>
     act(() => post('/api/setup/service', { enable: b.dataset.svc === '1' })));
   document.querySelectorAll('#setupbody [data-cfg]').forEach(b => b.onclick = () =>
