@@ -758,6 +758,11 @@ pub struct Stats {
     pub output: i64,
     pub cache_read: i64,
     pub cache_write: i64,
+    /// Split out because the two durations bill at different multipliers.
+    pub cache_write_5m: i64,
+    pub cache_write_1h: i64,
+    /// US dollars, from the rate table. None when the model is not in it.
+    pub cost: Option<f64>,
     /// Everything the model read or wrote, cache included — the number that maps to
     /// what the session actually cost.
     pub total: i64,
@@ -809,10 +814,47 @@ fn scan_stats(path: &Path) -> Stats {
         st.output += get("output_tokens");
         st.cache_read += get("cache_read_input_tokens");
         st.cache_write += get("cache_creation_input_tokens");
+        // The durations bill differently (1.25x vs 2x base), so they are kept apart.
+        // Older lines carry only the total; those land in the 5m bucket, which is the
+        // cheaper of the two and so cannot overstate a bill.
+        if let Some(c) = m.get("cache_creation") {
+            let g = |k: &str| c.get(k).and_then(|x| x.as_i64()).unwrap_or(0);
+            st.cache_write_5m += g("ephemeral_5m_input_tokens");
+            st.cache_write_1h += g("ephemeral_1h_input_tokens");
+        } else {
+            st.cache_write_5m += get("cache_creation_input_tokens");
+        }
         st.turns += 1;
     }
     st.total = st.input + st.output + st.cache_read + st.cache_write;
+    st.cost = price(&st);
     st
+}
+
+/// What a scanned session cost, if its model is in the rate table.
+fn price(st: &Stats) -> Option<f64> {
+    let model = st.model.as_deref()?;
+    let db = rusqlite::Connection::open(db_path()).ok()?;
+    let table = crate::pricing::load(&db).ok()?;
+    let rate = crate::pricing::rate_for(&table, model)?;
+    Some(crate::pricing::cost(
+        rate,
+        &crate::pricing::Tokens {
+            input: st.input,
+            cache_write_5m: st.cache_write_5m,
+            cache_write_1h: st.cache_write_1h,
+            cache_read: st.cache_read,
+            output: st.output,
+        },
+    ))
+}
+
+fn db_path() -> PathBuf {
+    std::env::var("AGENT_ROUTER_DB").map(PathBuf::from).unwrap_or_else(|_| {
+        PathBuf::from(std::env::var("HOME").unwrap_or_default())
+            .join(".agent-router")
+            .join("agent-router.db")
+    })
 }
 
 #[derive(Deserialize)]
@@ -832,6 +874,7 @@ pub async fn project_stats(Query(q): Query<ProjectQuery>) -> Response {
         let archived = archived_set();
         let now = now_ms();
         let mut total = Stats::default();
+        let mut spend = 0.0f64;
         let mut sessions = 0i64;
         let mut models: std::collections::BTreeSet<String> = Default::default();
 
@@ -855,22 +898,30 @@ pub async fn project_stats(Query(q): Query<ProjectQuery>) -> Response {
             total.output += st.output;
             total.cache_read += st.cache_read;
             total.cache_write += st.cache_write;
+            total.cache_write_5m += st.cache_write_5m;
+            total.cache_write_1h += st.cache_write_1h;
             total.turns += st.turns;
+            // Summed per session rather than over the total, because a project can mix
+            // models and each session's tokens must meet its own rates.
+            if let Some(c) = st.cost {
+                spend += c;
+            }
             sessions += 1;
         }
         total.total = total.input + total.output + total.cache_read + total.cache_write;
-        (total, sessions, models.into_iter().collect::<Vec<_>>())
+        (total, spend, sessions, models.into_iter().collect::<Vec<_>>())
     })
     .await;
 
     match out {
-        Ok((total, sessions, models)) => Json(serde_json::json!({
+        Ok((total, spend, sessions, models)) => Json(serde_json::json!({
             "sessions": sessions,
             "models": models,
             "total": total.total,
             "output": total.output,
             "cache_read": total.cache_read,
             "turns": total.turns,
+            "cost": spend,
         }))
         .into_response(),
         Err(e) => bad(axum::http::StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),

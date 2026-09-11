@@ -243,6 +243,7 @@
   #facts b { color: var(--fg); font-weight: 600; }
   #facts .proj-tot { margin-left: auto; padding-left: 12px; color: var(--faint); }
   #facts .proj-tot b { color: var(--dim); }
+  #facts .money { color: var(--warn); }
   #facts .sep { color: var(--faint); }
   /* ---- folding ---- */
   .clamp { position: relative; max-height: 11em; overflow: hidden !important; }
@@ -370,6 +371,11 @@ const ago = ms => {
     : s < 86400 ? Math.round(s / 3600) + 'h' : Math.round(s / 86400) + 'd';
 };
 const fetchSessions = () => fetch('/api/live/sessions').then(r => r.json()).catch(() => []);
+// Cents matter at coffee prices and are noise at four figures.
+const usd = n => n == null ? ''
+  : n >= 1000 ? '$' + Math.round(n).toLocaleString()
+  : n >= 1 ? '$' + n.toFixed(2)
+  : '$' + n.toFixed(3);
 const num = n => n >= 1e9 ? (n / 1e9).toFixed(1) + 'B'
   : n >= 1e6 ? (n / 1e6).toFixed(1) + 'M'
   : n >= 1e3 ? Math.round(n / 1e3) + 'k' : String(n || 0);
@@ -837,9 +843,11 @@ function openSession(r, fromHistory) {
       bits.push(`<span class="sep">·</span><span><b>${num(t.total)}</b> tokens</span>`);
       bits.push(`<span class="sep">·</span><span>${num(t.output)} out · ${num(t.cache_read)} cached</span>`);
       bits.push(`<span class="sep">·</span><span>${t.turns} turn${t.turns === 1 ? '' : 's'}</span>`);
+      if (t.cost != null) bits.push(`<span class="sep">·</span><span class="money"><b>${usd(t.cost)}</b></span>`);
       if (p && p.sessions > 1) {
         bits.push(`<span class="proj-tot">project · ${p.sessions} sessions · ` +
-                  `<b>${num(p.total)}</b> tokens · ${p.turns} turns</span>`);
+                  `<b>${num(p.total)}</b> tokens · ${p.turns} turns` +
+                  (p.cost != null ? ` · <b class="money">${usd(p.cost)}</b>` : '') + `</span>`);
       }
       facts.innerHTML = bits.join(' ');
     })

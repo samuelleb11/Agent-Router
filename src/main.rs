@@ -14,6 +14,7 @@ mod guard;
 mod lifecycle;
 mod live;
 mod peer;
+mod pricing;
 mod login;
 mod proxy;
 mod quota;
@@ -196,6 +197,11 @@ async fn serve() -> anyhow::Result<()> {
     // account Claude Code is already logged into, discovered rather than configured.
     {
         let db = db::Db::open(&db_path)?;
+        {
+            // Rates live in the database so they can be corrected without a rebuild.
+            let conn = rusqlite::Connection::open(&db_path)?;
+            pricing::ensure_table(&conn)?;
+        }
         let status = accounts::probe_profile(None).unwrap_or_default();
         let label = status
             .email
