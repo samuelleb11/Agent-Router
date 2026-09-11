@@ -74,6 +74,31 @@ pub fn ensure_table(db: &Connection) -> rusqlite::Result<()> {
             r.output
         ])?;
     }
+    drop(stmt);
+
+    // Cost is derived, never stored. A rate corrected today should restate every
+    // request ever captured, which a column written at capture time cannot do.
+    //
+    // The model a request carries is a wire name — dated, suffixed, sometimes prefixed
+    // — so it is matched against the longest table key it contains, the same rule the
+    // Rust lookup uses, because `claude-opus-4` is a substring of `claude-opus-4-1`.
+    db.execute_batch(
+        "DROP VIEW IF EXISTS request_cost;
+         CREATE VIEW request_cost AS
+         SELECT r.id AS request_id,
+                ( u.input_tokens             * p.input
+                + u.cache_creation_5m_tokens * p.cache_write_5m
+                + u.cache_creation_1h_tokens * p.cache_write_1h
+                + u.cache_read_tokens        * p.cache_read
+                + u.output_tokens            * p.output ) / 1000000.0 AS cost
+         FROM requests r
+         JOIN usage u ON u.request_id = r.id
+         JOIN pricing p ON p.model = (
+             SELECT p2.model FROM pricing p2
+             WHERE instr(lower(r.model), p2.model) > 0
+             ORDER BY length(p2.model) DESC LIMIT 1
+         );",
+    )?;
     Ok(())
 }
 
@@ -140,6 +165,48 @@ mod tests {
         let db = Connection::open_in_memory().unwrap();
         ensure_table(&db).unwrap();
         load(&db).unwrap()
+    }
+
+    #[test]
+    fn the_view_prices_a_request_the_same_way_the_code_does() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE requests (id INTEGER PRIMARY KEY, model TEXT);
+             CREATE TABLE usage (request_id INTEGER, input_tokens INT, output_tokens INT,
+                 cache_read_tokens INT, cache_creation_5m_tokens INT, cache_creation_1h_tokens INT);
+             INSERT INTO requests VALUES (1, 'claude-opus-5-20260115');
+             INSERT INTO usage VALUES (1, 1000, 2000, 500000, 10000, 0);",
+        )
+        .unwrap();
+        ensure_table(&db).unwrap();
+
+        let from_view: f64 = db
+            .query_row("SELECT cost FROM request_cost WHERE request_id = 1", [], |r| r.get(0))
+            .unwrap();
+        let t = load(&db).unwrap();
+        let from_code = cost(
+            rate_for(&t, "claude-opus-5-20260115").unwrap(),
+            &Tokens { input: 1000, output: 2000, cache_read: 500_000, cache_write_5m: 10_000, cache_write_1h: 0 },
+        );
+        assert!((from_view - from_code).abs() < 1e-9, "view {from_view} vs code {from_code}");
+    }
+
+    #[test]
+    fn an_unknown_model_is_left_out_rather_than_priced_at_zero() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE requests (id INTEGER PRIMARY KEY, model TEXT);
+             CREATE TABLE usage (request_id INTEGER, input_tokens INT, output_tokens INT,
+                 cache_read_tokens INT, cache_creation_5m_tokens INT, cache_creation_1h_tokens INT);
+             INSERT INTO requests VALUES (1, 'some-other-vendor/model-x');
+             INSERT INTO usage VALUES (1, 1000, 2000, 0, 0, 0);",
+        )
+        .unwrap();
+        ensure_table(&db).unwrap();
+        let n: i64 = db
+            .query_row("SELECT count(*) FROM request_cost WHERE request_id = 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0, "an unpriced model must be absent, not counted as free");
     }
 
     #[test]

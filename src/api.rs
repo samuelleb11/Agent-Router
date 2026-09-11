@@ -183,6 +183,7 @@ pub async fn summary(State(state): State<Arc<AppState>>, Query(mut f): Query<Fil
         &format!(
             "SELECT count(*) AS requests,
                     coalesce(sum(u.prompt_tokens),0)   AS prompt_tokens,
+                    coalesce(sum(c.cost),0) AS cost,
                     coalesce(sum(u.input_tokens),0)    AS input_tokens,
                     coalesce(sum(u.output_tokens),0)   AS output_tokens,
                     coalesce(sum(u.thinking_tokens),0) AS thinking_tokens,
@@ -198,6 +199,7 @@ pub async fn summary(State(state): State<Arc<AppState>>, Query(mut f): Query<Fil
                     max(r.started_at) AS last_seen
              FROM requests r
              LEFT JOIN usage u    ON u.request_id = r.id
+             LEFT JOIN request_cost c ON c.request_id = r.id
              LEFT JOIN sessions s ON s.id = r.session_id
              WHERE {SCOPE}"
         ),
@@ -237,6 +239,7 @@ pub async fn summary(State(state): State<Arc<AppState>>, Query(mut f): Query<Fil
         &format!(
             "SELECT r.model, count(*) AS requests,
                     coalesce(sum(u.prompt_tokens),0)   AS prompt_tokens,
+                    coalesce(sum(c.cost),0) AS cost,
                     coalesce(sum(u.output_tokens),0)   AS output_tokens,
                     coalesce(sum(u.thinking_tokens),0) AS thinking_tokens,
                     coalesce(sum(u.cache_read_tokens),0) AS cache_read_tokens,
@@ -244,6 +247,7 @@ pub async fn summary(State(state): State<Arc<AppState>>, Query(mut f): Query<Fil
                     coalesce(sum(CASE WHEN coalesce(r.is_sidechain,0) = 1 THEN 1 ELSE 0 END),0) AS subagent_requests
              FROM requests r
              LEFT JOIN usage u    ON u.request_id = r.id
+             LEFT JOIN request_cost c ON c.request_id = r.id
              LEFT JOIN sessions s ON s.id = r.session_id
              WHERE r.model IS NOT NULL AND {SCOPE}
              GROUP BY r.model ORDER BY prompt_tokens DESC"
@@ -258,11 +262,13 @@ pub async fn summary(State(state): State<Arc<AppState>>, Query(mut f): Query<Fil
             "SELECT CASE WHEN coalesce(r.is_sidechain,0) = 1 THEN 'subagent' ELSE 'main' END AS thread,
                     count(*) AS requests,
                     coalesce(sum(u.prompt_tokens),0) AS prompt_tokens,
+                    coalesce(sum(c.cost),0) AS cost,
                     coalesce(sum(u.output_tokens),0) AS output_tokens,
                     coalesce(sum(u.cache_read_tokens),0) AS cache_read_tokens,
                     count(DISTINCT r.agent_id) AS agents
              FROM requests r
              LEFT JOIN usage u    ON u.request_id = r.id
+             LEFT JOIN request_cost c ON c.request_id = r.id
              LEFT JOIN sessions s ON s.id = r.session_id
              WHERE {SCOPE}
              GROUP BY coalesce(r.is_sidechain,0) ORDER BY coalesce(r.is_sidechain,0)"
@@ -276,11 +282,13 @@ pub async fn summary(State(state): State<Arc<AppState>>, Query(mut f): Query<Fil
                 max(coalesce(a.active, 0)) AS active,
                 count(*) AS requests,
                 coalesce(sum(u.prompt_tokens),0) AS prompt_tokens,
+                    coalesce(sum(c.cost),0) AS cost,
                 coalesce(sum(u.output_tokens),0) AS output_tokens,
                 count(DISTINCT r.session_id) AS sessions,
                 max(r.started_at) AS last_seen
          FROM requests r
          LEFT JOIN usage u    ON u.request_id = r.id
+         LEFT JOIN request_cost c ON c.request_id = r.id
          LEFT JOIN accounts a ON a.id = r.account_id
          WHERE (?1 IS NULL OR r.started_at >= ?1)
          GROUP BY r.account_id ORDER BY prompt_tokens DESC",
@@ -342,12 +350,14 @@ pub async fn summary(State(state): State<Arc<AppState>>, Query(mut f): Query<Fil
                     "SELECT ((r.started_at + ?5) / ?6) * ?6 - ?5 AS t, r.model,
                             count(*) AS requests,
                             coalesce(sum(u.prompt_tokens),0) AS prompt_tokens,
+                    coalesce(sum(c.cost),0) AS cost,
                             coalesce(sum(u.output_tokens),0) AS output_tokens,
                             coalesce(sum(u.cache_read_tokens),0) AS cache_read_tokens,
                             coalesce(sum(CASE WHEN coalesce(r.is_sidechain,0) = 1 THEN u.prompt_tokens ELSE 0 END),0) AS subagent_tokens,
                             coalesce(sum(CASE WHEN r.status >= 400 OR r.error IS NOT NULL THEN 1 ELSE 0 END),0) AS errors
                      FROM requests r
                      LEFT JOIN usage u    ON u.request_id = r.id
+                     LEFT JOIN request_cost c ON c.request_id = r.id
                      LEFT JOIN sessions s ON s.id = r.session_id
                      WHERE {SCOPE}
                      GROUP BY t, r.model ORDER BY t, r.model"
@@ -394,6 +404,7 @@ pub async fn projects(State(state): State<Arc<AppState>>, Query(f): Query<Filter
                 count(DISTINCT s.id) AS sessions,
                 count(*)             AS requests,
                 coalesce(sum(u.prompt_tokens),0) AS prompt_tokens,
+                    coalesce(sum(c.cost),0) AS cost,
                 coalesce(sum(u.output_tokens),0) AS output_tokens,
                 coalesce(sum(u.cache_read_tokens),0) AS cache_read_tokens,
                 coalesce(sum(CASE WHEN coalesce(r.is_sidechain,0) = 1 THEN u.prompt_tokens ELSE 0 END),0) AS subagent_tokens,
@@ -402,7 +413,8 @@ pub async fn projects(State(state): State<Arc<AppState>>, Query(f): Query<Filter
                 min(r.started_at)    AS first_seen,
                 max(r.started_at)    AS last_seen
          FROM requests r
-         LEFT JOIN usage u ON u.request_id = r.id
+         LEFT JOIN usage u    ON u.request_id = r.id
+         LEFT JOIN request_cost c ON c.request_id = r.id
          JOIN sessions s   ON s.id = r.session_id
          WHERE (?1 IS NULL OR r.started_at >= ?1)
            AND (?2 IS NULL OR r.account_id = ?2)
@@ -418,6 +430,7 @@ pub async fn sessions(State(state): State<Arc<AppState>>, Query(f): Query<Filter
                       s.started_at, s.last_seen_at,
                       count(*) AS requests,
                       coalesce(sum(u.prompt_tokens),0) AS prompt_tokens,
+                    coalesce(sum(c.cost),0) AS cost,
                       coalesce(sum(u.output_tokens),0) AS output_tokens,
                       coalesce(sum(u.cache_read_tokens),0) AS cache_read_tokens,
                       coalesce(sum(CASE WHEN coalesce(r.is_sidechain,0) = 1 THEN u.prompt_tokens ELSE 0 END),0) AS subagent_tokens,
@@ -427,7 +440,8 @@ pub async fn sessions(State(state): State<Arc<AppState>>, Query(f): Query<Filter
                       min(r.started_at) AS first_request_at,
                       max(r.started_at) AS last_request_at
                FROM requests r
-               LEFT JOIN usage u ON u.request_id = r.id
+               LEFT JOIN usage u    ON u.request_id = r.id
+               LEFT JOIN request_cost c ON c.request_id = r.id
                JOIN sessions s   ON s.id = r.session_id
                WHERE (?1 IS NULL OR s.cwd = ?1) AND (?2 IS NULL OR r.started_at >= ?2)
                  AND (?3 IS NULL OR r.account_id = ?3)
@@ -442,6 +456,7 @@ pub async fn requests(State(state): State<Arc<AppState>>, Query(f): Query<Filter
                 r.ttfb_ms, r.duration_ms, r.stop_reason, r.is_sidechain, r.agent_id,
                 r.started_at, substr(r.error, 1, 200) AS error,
                 u.prompt_tokens, u.input_tokens, u.output_tokens, u.thinking_tokens,
+                c.cost AS cost,
                 u.cache_read_tokens,
                 u.cache_creation_5m_tokens + u.cache_creation_1h_tokens AS cache_write_tokens,
                 (SELECT group_concat(name) FROM
@@ -451,6 +466,7 @@ pub async fn requests(State(state): State<Arc<AppState>>, Query(f): Query<Filter
                  FROM context c WHERE c.request_id = r.id) AS context
          FROM requests r
          LEFT JOIN usage u    ON u.request_id = r.id
+         LEFT JOIN request_cost c ON c.request_id = r.id
          LEFT JOIN sessions s ON s.id = r.session_id
          WHERE {SCOPE}
          ORDER BY r.started_at DESC LIMIT 300"
@@ -466,6 +482,14 @@ pub async fn tools(State(state): State<Arc<AppState>>, Query(f): Query<Filter>) 
         &conn,
         "SELECT tc.name, count(*) AS results, sum(tc.result_chars) AS chars,
                 sum(tc.est_tokens) AS est_tokens, max(tc.est_tokens) AS max_tokens,
+                -- An estimate of an estimate, and labelled as one in the UI: these are
+                -- guessed token counts for tool output, priced as if they were paid once
+                -- as fresh input. The real cost is worse, because anything in the context
+                -- is re-read on every later turn at the cache-read rate.
+                coalesce(sum(tc.est_tokens * (
+                    SELECT p.input FROM pricing p
+                    WHERE instr(lower(coalesce(r.model,'')), p.model) > 0
+                    ORDER BY length(p.model) DESC LIMIT 1)) / 1000000.0, 0) AS est_cost_once,
                 sum(tc.is_error) AS errors
          FROM tool_calls tc
          LEFT JOIN sessions s ON s.id = tc.session_id
