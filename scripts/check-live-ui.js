@@ -133,6 +133,29 @@ check('tabs cover the project and keep creation order', async () => {
   if (labels[0] !== 'Older one') throw new Error(`oldest must lead, got ${labels.join(', ')}`);
 });
 
+check('archived sessions leave the tabs, but come back when live', async () => {
+  const shelved = { ...SESSIONS[1], archived: true, active: false, state: 'idle',
+                    last_activity_ms: Date.now() };
+  SESSIONS[1] = shelved;
+  await api.loadSessions();
+  api.openSession(SESSIONS[0], true);
+  if (api.tabLabels().length !== 1) throw new Error('an archived session should not hold a tab');
+
+  SESSIONS[1] = { ...shelved, state: 'ask' };  // it wants something
+  await api.loadSessions();
+  api.openSession(SESSIONS[0], true);
+  if (api.tabLabels().length !== 2) throw new Error('an archived session that wakes must reappear');
+  SESSIONS[1] = { ...shelved, archived: false, state: 'ask' };
+});
+
+check('stale sessions do not clutter the tabs', async () => {
+  SESSIONS[1] = { ...SESSIONS[1], archived: false, active: false, state: 'idle',
+                  last_activity_ms: Date.now() - 40 * 3600 * 1000 };
+  await api.loadSessions();
+  api.openSession(SESSIONS[0], true);
+  if (api.tabLabels().length !== 1) throw new Error('a session idle for days should not hold a tab');
+});
+
 const captured = process.argv[2];
 if (captured && fs.existsSync(captured)) {
   check('every captured event renders', () => {

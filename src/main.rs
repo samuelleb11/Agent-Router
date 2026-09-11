@@ -262,6 +262,8 @@ async fn serve() -> anyhow::Result<()> {
         .route("/api/live/interrupt", post(live::interrupt))
         .route("/api/live/prompt", get(live::prompt))
         .route("/api/live/answer", post(live::answer))
+        .route("/api/live/archive", post(live::archive))
+        .route("/api/live/project", get(live::project_stats))
         .route("/_router/health", get(api::health))
         .fallback(any(proxy::handle))
         .layer(axum::middleware::from_fn(guard::layer))

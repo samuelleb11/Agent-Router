@@ -35,8 +35,26 @@ use serde_json::Value;
 
 /// A session counts as "active" if its transcript grew this recently.
 const ACTIVE_WITHIN_MS: i64 = 120_000;
+/// The window that counts as "current" — matches what the view puts on screen.
+const LISTED_RECENT_MS: i64 = 12 * 60 * 60 * 1000;
 /// Sessions older than this are not offered at all.
 const LISTED_WITHIN_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+/// Where the archive list lives. A session id in here is one the reader has finished
+/// with; it stays hidden until it shows signs of life again.
+fn archive_path() -> PathBuf {
+    PathBuf::from(std::env::var("HOME").unwrap_or_default())
+        .join(".agent-router")
+        .join("archived.json")
+}
+
+fn archived_set() -> std::collections::HashSet<String> {
+    std::fs::read_to_string(archive_path())
+        .ok()
+        .and_then(|raw| serde_json::from_str::<Vec<String>>(&raw).ok())
+        .map(|v| v.into_iter().collect())
+        .unwrap_or_default()
+}
+
 /// Most sessions listed, newest first.
 const MAX_LISTED: usize = 60;
 /// How far back to read when backfilling a stream, in bytes.
@@ -88,6 +106,9 @@ pub struct LiveSession {
     pub active: bool,
     /// working | ask | idle | stalled | failed — what it is doing, without opening it.
     pub state: String,
+    /// Put away by the reader. Ignored the moment the session is active again, because
+    /// archiving says "I am done with this", not "never show me this".
+    pub archived: bool,
     /// Running under the shim, so it can take a typed message and a stop.
     pub wrapped: bool,
     pub bytes: u64,
@@ -100,6 +121,7 @@ pub struct LiveSession {
 pub fn discover() -> Vec<LiveSession> {
     let root = projects_root();
     let now = now_ms();
+    let archived = archived_set();
     let mut found: Vec<(i64, u64, PathBuf, String)> = Vec::new();
 
     let Ok(dirs) = fs::read_dir(&root) else {
@@ -139,6 +161,7 @@ pub fn discover() -> Vec<LiveSession> {
                 .unwrap_or_default();
             let head = read_head(&path);
             LiveSession {
+                archived: archived.contains(&session_id),
                 state: tail_state(&path, &session_id, now - m).to_string(),
                 wrapped: crate::peer::wrapper_socket(&session_id).is_some(),
                 title: read_ai_title(&path).or(head.title),
@@ -790,6 +813,107 @@ fn scan_stats(path: &Path) -> Stats {
     }
     st.total = st.input + st.output + st.cache_read + st.cache_write;
     st
+}
+
+#[derive(Deserialize)]
+pub struct ProjectQuery {
+    /// The working directory the sessions share.
+    pub cwd: String,
+}
+
+/// Everything a project has spent, summed over the sessions on screen.
+///
+/// Archived and long-dead sessions are left out deliberately: the number is meant to
+/// answer "what is this project costing me now", and a year of finished sessions
+/// answers a different question.
+pub async fn project_stats(Query(q): Query<ProjectQuery>) -> Response {
+    let cwd = q.cwd.clone();
+    let out = tokio::task::spawn_blocking(move || {
+        let archived = archived_set();
+        let now = now_ms();
+        let mut total = Stats::default();
+        let mut sessions = 0i64;
+        let mut models: std::collections::BTreeSet<String> = Default::default();
+
+        for s in discover() {
+            if s.cwd.as_deref() != Some(cwd.as_str()) {
+                continue;
+            }
+            let current = s.active || s.state == "working" || s.state == "ask"
+                || now - s.last_activity_ms <= LISTED_RECENT_MS;
+            if archived.contains(&s.session_id) && !current {
+                continue;
+            }
+            let Some(path) = transcript_path(&s.session_id) else {
+                continue;
+            };
+            let st = scan_stats(&path);
+            if let Some(m) = st.model.clone() {
+                models.insert(m);
+            }
+            total.input += st.input;
+            total.output += st.output;
+            total.cache_read += st.cache_read;
+            total.cache_write += st.cache_write;
+            total.turns += st.turns;
+            sessions += 1;
+        }
+        total.total = total.input + total.output + total.cache_read + total.cache_write;
+        (total, sessions, models.into_iter().collect::<Vec<_>>())
+    })
+    .await;
+
+    match out {
+        Ok((total, sessions, models)) => Json(serde_json::json!({
+            "sessions": sessions,
+            "models": models,
+            "total": total.total,
+            "output": total.output,
+            "cache_read": total.cache_read,
+            "turns": total.turns,
+        }))
+        .into_response(),
+        Err(e) => bad(axum::http::StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct ArchiveBody {
+    pub session: String,
+    pub archived: bool,
+}
+
+/// Put a session away, or bring it back.
+///
+/// Stored as a plain list of ids rather than in the database, because it is the
+/// reader's shelf and should survive the database being deleted or rebuilt.
+pub async fn archive(Json(body): Json<ArchiveBody>) -> Response {
+    if transcript_path(&body.session).is_none() {
+        return bad(axum::http::StatusCode::NOT_FOUND, "No such session.");
+    }
+    let done = tokio::task::spawn_blocking(move || -> anyhow::Result<usize> {
+        let mut set = archived_set();
+        if body.archived {
+            set.insert(body.session);
+        } else {
+            set.remove(&body.session);
+        }
+        let mut ids: Vec<String> = set.into_iter().collect();
+        ids.sort();
+        let path = archive_path();
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        std::fs::write(&path, serde_json::to_vec_pretty(&ids)?)?;
+        Ok(ids.len())
+    })
+    .await;
+
+    match done {
+        Ok(Ok(n)) => Json(serde_json::json!({ "ok": true, "archived": n })).into_response(),
+        Ok(Err(e)) => bad(axum::http::StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+        Err(e) => bad(axum::http::StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    }
 }
 
 #[derive(Deserialize)]
