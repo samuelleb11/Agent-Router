@@ -70,7 +70,13 @@
   .card:active { background: var(--panel2); }
   .row1 { display: flex; align-items: center; gap: 8px; }
   .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; }
-  .dot.on { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 25%, transparent); }
+  /* One vocabulary everywhere a session is shown: list row, tab, header. */
+  .dot.s-working { background: var(--accent); animation: pulse 1.1s ease-in-out infinite; }
+  .dot.s-ask     { background: var(--ask); animation: pulse .8s ease-in-out infinite; }
+  .dot.s-idle    { background: var(--ok); }
+  .dot.s-stalled { background: var(--warn); }
+  .dot.s-failed  { background: #e06c75; box-shadow: 0 0 0 3px color-mix(in srgb, #e06c75 22%, transparent); }
+  .dot.on { box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 25%, transparent); }
   .proj { font-weight: 600; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .ago { margin-left: auto; color: var(--faint); font-size: 12px; flex: none; }
   .title { color: var(--dim); font-size: 13px; overflow: hidden;
@@ -268,6 +274,18 @@
                    vertical-align: top; white-space: nowrap; }
   .md th { background: var(--panel2); font-weight: 600; }
 
+  /* Sessions of one project, as tabs. Ordered by when they began, never by activity:
+     ordering by activity moves a tab out from under the cursor mid-click. */
+  #tabs { flex: none; display: flex; gap: 2px; overflow-x: auto; padding: 0 10px;
+          border-bottom: 1px solid var(--line); background: var(--panel2); }
+  #tabs::-webkit-scrollbar { height: 0; }
+  #tabs .stab { display: flex; align-items: center; gap: 6px; flex: none; cursor: pointer;
+                background: none; border: 0; border-bottom: 2px solid transparent;
+                border-radius: 0; padding: 8px 10px; font-size: 12.5px; color: var(--dim);
+                max-width: 15em; white-space: nowrap; }
+  #tabs .stab .lbl { overflow: hidden; text-overflow: ellipsis; }
+  #tabs .stab.on { color: var(--fg); border-bottom-color: var(--accent); }
+  #tabs .stab:hover { color: var(--fg); }
   .empty { color: var(--faint); text-align: center; padding: 40px 20px; }
   .hide { display: none !important; }
 </style>
@@ -280,6 +298,7 @@
   <span id="stat"><span class="pip"></span><span id="statText"></span></span>
 </header>
 
+<div id="tabs" class="hide"></div>
 <div id="facts" class="hide"></div>
 <div id="list"></div>
 <div id="feed" class="hide"></div>
@@ -298,7 +317,7 @@ const $ = s => document.querySelector(s);
 const list = $('#list'), feed = $('#feed'), back = $('#back'), heading = $('#heading');
 const stat = $('#stat'), statText = $('#statText'), composer = $('#composer');
 const msg = $('#msg'), sendBtn = $('#send'), note = $('#note'), stopBtn = $('#stop');
-const facts = $('#facts'), home = $('#home');
+const facts = $('#facts'), home = $('#home'), tabs = $('#tabs');
 let es = null, current = null, listScroll = 0, following = true, watcher = null, pinTo = null;
 // Pinning twice — now and after layout settles — costs nothing and covers the frame
 // in which a row changes height.
@@ -357,10 +376,12 @@ function setStatus(s) {
   statText.textContent = s.detail + quiet;
 }
 
+let allRows = [];
 async function loadSessions() {
   let rows = [];
   try { rows = await (await fetch('/api/live/sessions')).json(); }
   catch { stat.className = ''; statText.textContent = 'offline'; return; }
+  allRows = rows;
   const live = rows.filter(r => r.active).length;
   stat.className = live ? 'working' : 'idle';
   statText.textContent = live
@@ -372,7 +393,7 @@ async function loadSessions() {
     const el = document.createElement('div');
     el.className = 'card';
     el.innerHTML =
-      `<div class="row1"><span class="dot ${r.active ? 'on' : ''}"></span>` +
+      `<div class="row1"><span class="dot s-${esc(r.state || 'idle')} ${r.active ? 'on' : ''}"></span>` +
       `<span class="proj">${esc(r.title ? (r.git_branch || r.session_id.slice(0, 8)) : (base(r.cwd) || r.project))}</span>` +
       `<span class="wrap-tag ${r.wrapped ? 'on' : 'off'}" title="${r.wrapped
         ? 'Can take a typed message and a stop' : 'Read-only — start it after installing the wrapper'}">` +
@@ -402,7 +423,7 @@ async function loadSessions() {
       const newest = Math.max(...items.map(r => r.last_activity_ms));
       const h = document.createElement('div');
       h.className = 'grp';
-      h.innerHTML = `<span class="dot ${live ? 'on' : ''}"></span>` +
+      h.innerHTML = `<span class="dot s-${live ? 'working' : 'idle'} ${live ? 'on' : ''}"></span>` +
         `<span>${esc(project)}</span><span class="n">${items.length}</span>` +
         `<span class="when">${ago(newest)}</span>`;
       target.appendChild(h);
@@ -652,6 +673,31 @@ function render(it) {
   return clampable(el);
 }
 
+/// Every session of this project, oldest first, as tabs.
+function drawTabs(current) {
+  const key = base(current.cwd) || current.project;
+  const siblings = allRows
+    .filter(x => (base(x.cwd) || x.project) === key)
+    // Creation order, so a tab keeps its position for the life of the session. Sorting
+    // by activity would shuffle them every refresh, which is unusable as a tab strip.
+    .sort((a, b) => (a.created_ms || a.last_activity_ms) - (b.created_ms || b.last_activity_ms));
+
+  tabs.innerHTML = '';
+  tabs.classList.toggle('hide', siblings.length < 2);
+  if (siblings.length < 2) return;
+
+  for (const x of siblings) {
+    const t = document.createElement('button');
+    t.className = 'stab' + (x.session_id === current.session_id ? ' on' : '');
+    t.title = (x.title || x.session_id) + ' · ' + (x.state || '');
+    t.innerHTML = `<span class="dot s-${esc(x.state || 'idle')}"></span>` +
+      `<span class="lbl">${esc(x.title || x.session_id.slice(0, 8))}</span>`;
+    t.onclick = () => { if (x.session_id !== current.session_id) openSession(x); };
+    tabs.appendChild(t);
+  }
+  tabs.querySelector('.stab.on')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+}
+
 function openSession(r, fromHistory) {
   // Remember where the reader was in the list, so coming back does not dump them
   // somewhere else — the feed leaves the window scrolled to its own bottom.
@@ -709,6 +755,7 @@ function openSession(r, fromHistory) {
 
   // Totals need a whole-file scan, so they are fetched once per open rather than
   // pushed with every event.
+  drawTabs(r);
   facts.classList.remove('hide');
   facts.innerHTML = '<span class="muted">reading totals…</span>';
   fetch('/api/live/stats?session=' + encodeURIComponent(r.session_id))
@@ -745,7 +792,7 @@ async function showList(fromHistory) {
   if (es) { es.close(); es = null; }
   current = null;
   feed.classList.add('hide'); back.classList.add('hide'); composer.classList.add('hide');
-  facts.classList.add('hide');
+  facts.classList.add('hide'); tabs.classList.add('hide');
   list.classList.remove('hide');
   heading.textContent = 'Live sessions';
   say('');

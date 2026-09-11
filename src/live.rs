@@ -79,10 +79,15 @@ pub struct LiveSession {
     pub cwd: Option<String>,
     pub project: String,
     pub git_branch: Option<String>,
-    /// First thing the user said, as a title.
+    /// Claude Code's own name for the session, falling back to what was first asked.
     pub title: Option<String>,
+    /// When the session began. Ordering by this keeps a list of sessions still: order
+    /// by activity and they reshuffle under the reader every few seconds.
+    pub created_ms: Option<i64>,
     pub last_activity_ms: i64,
     pub active: bool,
+    /// working | ask | idle | stalled | failed — what it is doing, without opening it.
+    pub state: String,
     /// Running under the shim, so it can take a typed message and a stop.
     pub wrapped: bool,
     pub bytes: u64,
@@ -134,12 +139,14 @@ pub fn discover() -> Vec<LiveSession> {
                 .unwrap_or_default();
             let head = read_head(&path);
             LiveSession {
+                state: tail_state(&path, &session_id, now - m).to_string(),
                 wrapped: crate::peer::wrapper_socket(&session_id).is_some(),
+                title: read_ai_title(&path).or(head.title),
+                created_ms: head.created_ms,
                 session_id,
                 cwd: head.cwd,
                 project,
                 git_branch: head.git_branch,
-                title: head.title,
                 last_activity_ms: m,
                 active: now - m <= ACTIVE_WITHIN_MS,
                 bytes,
@@ -153,6 +160,32 @@ struct Head {
     cwd: Option<String>,
     git_branch: Option<String>,
     title: Option<String>,
+    created_ms: Option<i64>,
+}
+
+/// Claude Code names each session as it goes, appending an `ai-title` line whenever it
+/// refines the name. The last one is the current name, so this reads from the end —
+/// on a long transcript the good title is nowhere near the front.
+fn read_ai_title(path: &Path) -> Option<String> {
+    const TAIL: u64 = 512 * 1024;
+    let mut f = fs::File::open(path).ok()?;
+    let len = f.metadata().ok()?.len();
+    let from = len.saturating_sub(TAIL);
+    f.seek(SeekFrom::Start(from)).ok()?;
+    let mut buf = Vec::new();
+    f.take(TAIL).read_to_end(&mut buf).ok()?;
+    let text = String::from_utf8_lossy(&buf);
+    text.lines()
+        .rev()
+        .filter(|l| l.contains("\"ai-title\""))
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .find_map(|v| {
+            v.get("aiTitle")
+                .and_then(|t| t.as_str())
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .map(|t| clip(t, 90))
+        })
 }
 
 /// Read enough of the front of a transcript to label it: the cwd, the branch, and the
@@ -172,6 +205,9 @@ fn read_head(path: &Path) -> Head {
         };
         if out.cwd.is_none() {
             out.cwd = v.get("cwd").and_then(|c| c.as_str()).map(str::to_owned);
+        }
+        if out.created_ms.is_none() {
+            out.created_ms = ts_ms(&v);
         }
         if out.git_branch.is_none() {
             out.git_branch = v
@@ -194,7 +230,7 @@ fn read_head(path: &Path) -> Head {
                 }
             }
         }
-        if out.cwd.is_some() && out.title.is_some() {
+        if out.cwd.is_some() && out.title.is_some() && out.created_ms.is_some() {
             break;
         }
     }
@@ -231,6 +267,65 @@ fn clip(s: &str, cap: usize) -> String {
     }
     let kept: String = s.chars().take(cap).collect();
     format!("{kept}…")
+}
+
+/// A session's state, read from the end of its transcript.
+///
+/// The same reasoning the open view uses — a tool call with no result is work in
+/// progress — but from the tail of the file rather than a live stream, so the list can
+/// say what every session is doing without opening any of them.
+fn tail_state(path: &Path, session_id: &str, quiet_ms: i64) -> &'static str {
+    /// A tool call outstanding this long is not working, it is stuck or abandoned.
+    const STALLED_AFTER_MS: i64 = 10 * 60 * 1000;
+    const TAIL: u64 = 256 * 1024;
+
+    // A wrapped session waiting on a prompt is a fact, not an inference.
+    if crate::peer::pending_prompt(session_id, "AskUserQuestion").is_some() {
+        return "ask";
+    }
+
+    let Ok(mut f) = fs::File::open(path) else {
+        return "idle";
+    };
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    if f.seek(SeekFrom::Start(len.saturating_sub(TAIL))).is_err() {
+        return "idle";
+    }
+    let mut buf = Vec::new();
+    if f.take(TAIL).read_to_end(&mut buf).is_err() {
+        return "idle";
+    }
+    let text = String::from_utf8_lossy(&buf);
+
+    let mut prog = Progress::default();
+    let mut failed = false;
+    for line in text.lines().skip(1) {
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        // An API error is the last thing that happened until something else happens.
+        failed = match v.get("isApiErrorMessage").and_then(|b| b.as_bool()) {
+            Some(true) => true,
+            _ => {
+                if v.get("type").and_then(|t| t.as_str()) == Some("assistant") {
+                    false
+                } else {
+                    failed
+                }
+            }
+        };
+        advance(&v, &mut prog);
+    }
+
+    if prog.ask_open {
+        "ask"
+    } else if failed {
+        "failed"
+    } else if !prog.pending.is_empty() {
+        if quiet_ms > STALLED_AFTER_MS { "stalled" } else { "working" }
+    } else {
+        "idle"
+    }
 }
 
 /// One rendered row in the live view.
@@ -932,6 +1027,30 @@ mod tests {
         let assistant = r#"{"type":"assistant","message":{"role":"assistant","content":[
             {"type":"text","text":"[not a marker] I am explaining brackets"}]}}"#;
         assert_eq!(project(assistant)[0].kind, "text", "only the user role carries them");
+    }
+
+    #[test]
+    fn the_newest_ai_title_wins() {
+        let dir = std::env::temp_dir().join(format!("title-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("s.jsonl");
+        std::fs::write(&p, concat!(
+            r#"{"type":"ai-title","aiTitle":"First guess"}"#, "\n",
+            r#"{"type":"user","message":{"role":"user","content":"hello"}}"#, "\n",
+            r#"{"type":"ai-title","aiTitle":"What it turned out to be"}"#, "\n",
+        )).unwrap();
+        assert_eq!(read_ai_title(&p).as_deref(), Some("What it turned out to be"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_transcript_with_no_title_falls_back() {
+        let dir = std::env::temp_dir().join(format!("notitle-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("s.jsonl");
+        std::fs::write(&p, r#"{"type":"user","message":{"role":"user","content":"just this"}}"#).unwrap();
+        assert!(read_ai_title(&p).is_none());
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

@@ -24,7 +24,16 @@ const check = (name, fn) => {
 const mkEl = (tag = 'div') => {
   const el = {
     tagName: tag, children: [], style: {}, dataset: {}, _cls: new Set(),
-    innerHTML: '', textContent: '', value: '', title: '',
+    get innerHTML() { return el._html || ''; },
+    set innerHTML(v) {
+      el._html = v;
+      // The page builds a tab as `…<span class="lbl">Title</span>`; capture it so the
+      // check can assert on what a reader would actually see.
+      const m = /class="lbl">([^<]*)</.exec(v);
+      if (m) el._label = m[1];
+      if (v === '') el.children.length = 0;
+    },
+    textContent: '', value: '', title: '',
     scrollTop: 0, scrollHeight: 100, clientHeight: 50,
     selectionStart: 0, selectionEnd: 0, disabled: false,
     classList: {
@@ -34,6 +43,7 @@ const mkEl = (tag = 'div') => {
       contains: (c) => el._cls.has(c),
     },
     appendChild: (c) => (el.children.push(c), c),
+    set _ignore(v) {},
     append: (...c) => el.children.push(...c),
     querySelector: () => mkEl(), querySelectorAll: () => [],
     addEventListener() {}, closest: () => mkEl(), setSelectionRange() {},
@@ -52,7 +62,20 @@ global.history = { pushState() {}, replaceState() {} };
 global.visualViewport = null;
 global.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
 global.EventSource = class { addEventListener() {} close() {} };
-global.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve([]) });
+// Two sessions in one project and one in another, so the tab strip has something to
+// draw and its ordering is exercised.
+const SESSIONS = [
+  { session_id: 'aaa-1', cwd: '/code/project-a', project: 'p1', title: 'Older one',
+    created_ms: 1000, last_activity_ms: 9000, active: true, wrapped: true, state: 'working' },
+  { session_id: 'bbb-2', cwd: '/code/project-a', project: 'p1', title: 'Newer one',
+    created_ms: 5000, last_activity_ms: 2000, active: false, wrapped: false, state: 'ask' },
+  { session_id: 'ccc-3', cwd: '/code/project-b', project: 'p2', title: 'Elsewhere',
+    created_ms: 3000, last_activity_ms: 3000, active: false, wrapped: false, state: 'failed' },
+];
+global.fetch = (url = '') => Promise.resolve({
+  ok: true,
+  json: () => Promise.resolve(String(url).includes('/api/live/sessions') ? SESSIONS : {}),
+});
 global.requestAnimationFrame = (f) => setTimeout(f, 0);
 global.cancelAnimationFrame = () => {};
 global.getComputedStyle = () => ({ lineHeight: '18' });
@@ -62,7 +85,8 @@ global.addEventListener = () => {};
 check('script evaluates', () => { new Function(js)(); });
 
 const api = new Function(
-  js + '\n; return { render, md, openSession, showList, say, askForm, clampable };'
+  js + '\n; return { render, md, openSession, showList, say, askForm, clampable, loadSessions,' +
+       ' tabLabels: () => [...tabs.children].map(t => (t._label || \'\')) };'
 )();
 
 check('a local does not shadow a browser global the page uses', () => {
@@ -92,6 +116,21 @@ check('markdown survives hostile input', () => {
   const out = api.md('<img src=x onerror=alert(1)>\n**b** `c`\n- one\n\n| a | b |\n|---|---|\n| 1 | 2 |');
   if (/<img/.test(out)) throw new Error('escaping failed');
   if (!/<table>/.test(out) || !/<b>b<\/b>/.test(out)) throw new Error('markdown did not render');
+});
+
+check('the session list renders every state', async () => {
+  await api.loadSessions();
+  for (const st of ['working', 'ask', 'idle', 'stalled', 'failed']) {
+    api.openSession({ ...SESSIONS[0], state: st }, true);
+  }
+});
+
+check('tabs cover the project and keep creation order', async () => {
+  await api.loadSessions();
+  api.openSession(SESSIONS[0], true);
+  const labels = api.tabLabels();
+  if (labels.length !== 2) throw new Error(`expected 2 tabs for the project, got ${labels.length}`);
+  if (labels[0] !== 'Older one') throw new Error(`oldest must lead, got ${labels.join(', ')}`);
 });
 
 const captured = process.argv[2];
