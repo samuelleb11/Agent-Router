@@ -1,5 +1,53 @@
+# Rust: the workspace build directory and the per-platform ones scripts/build-target.sh
+# makes; .cargo is where CI keeps its registry cache
 /target
+/target-*
+/.cargo
+
+# Router data lives in ~/.agent-router, never in the tree: no database, journal or log
+# belongs here
 *.db
 *.db-wal
 *.db-shm
+*.log
+
+# Secrets stay in the Keychain, the router's secrets file and the vault
+.env
+.env.*
+*.p8
+*.p12
+*.pem
+*.mobileprovision
+credentials.json
+
+# macOS and editors
 .DS_Store
+.idea/
+*.swp
+*.orig
+*.rej
+
+# Claude Code: the per-project opt-in and worktrees are local to this machine
+.claude/settings.local.json
+.claude/worktrees/
+
+# iOS: the Xcode project is generated from ios/AgentRouter/project.yml; builds, test
+# results and the signing-specific spec stay local
+/ios/AgentRouter/AgentRouter.xcodeproj
+/ios/AgentRouter/build
+/ios/AgentRouter/build-*
+/ios/AgentRouter/project.nopush.yml
+/ios/AgentRouter/Sources/AgentRouter.entitlements
+xcuserdata/
+DerivedData/
+*.xcresult
+
+# VS Code extension and packaging: dependencies, the compiled extension, the bundled
+# binaries per platform and the VSIX files
+node_modules/
+/vscode/out
+/vscode/bin/*
+!/vscode/bin/.gitkeep
+/vscode/package.json.orig
+/dist
+*.vsix
