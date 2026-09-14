@@ -228,11 +228,37 @@ mod secrets {
         pub usage_key: Option<String>,
     }
 
+    /// The APNs signing key and its ids — what lets the router tell a phone a session
+    /// is waiting. The ids are not secret; they live here so they cannot drift from
+    /// the key they belong to.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct PushKey {
+        pub team_id: String,
+        pub key_id: String,
+        /// The `.p8` file's contents, PEM.
+        pub p8: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub bundle_id: Option<String>,
+    }
+
     #[derive(Debug, Default, Serialize, Deserialize)]
     struct File {
         version: u32,
         #[serde(default)]
         accounts: BTreeMap<String, Entry>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        push: Option<PushKey>,
+    }
+
+    pub fn push_key() -> Option<PushKey> {
+        load().ok().and_then(|f| f.push)
+    }
+
+    pub fn store_push_key(key: Option<PushKey>) -> Result<()> {
+        let mut file = load()?;
+        file.version = 1;
+        file.push = key;
+        store(&file)
     }
 
     fn path() -> Result<PathBuf> {
@@ -297,6 +323,16 @@ mod secrets {
         }
         store(&file)
     }
+}
+
+pub use secrets::PushKey;
+
+pub fn push_key() -> Option<PushKey> {
+    secrets::push_key()
+}
+
+pub fn store_push_key(key: Option<PushKey>) -> Result<()> {
+    secrets::store_push_key(key)
 }
 
 pub fn store_token(account_id: &str, token: &str) -> Result<()> {

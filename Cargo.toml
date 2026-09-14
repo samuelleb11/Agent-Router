@@ -9,10 +9,11 @@ edition = "2021"
 [dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "process", "time"] }
 axum = "0.8"
-hyper = { version = "1", features = ["client", "http1"] }
-hyper-util = { version = "0.1", features = ["client", "client-legacy", "tokio", "http1"] }
-hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "ring", "webpki-roots", "tls12"] }
+hyper = { version = "1", features = ["client", "http1", "http2"] }
+hyper-util = { version = "0.1", features = ["client", "client-legacy", "tokio", "http1", "http2"] }
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "ring", "webpki-roots", "tls12"] }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
+ring = "0.17"
 http-body-util = "0.1"
 bytes = "1"
 serde = { version = "1", features = ["derive"] }

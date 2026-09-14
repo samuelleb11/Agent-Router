@@ -201,6 +201,43 @@ pub fn wrapper_socket(session_id: &str) -> Option<PathBuf> {
     p.exists().then_some(p)
 }
 
+/// Is a wrapped session actually there to take a message?
+///
+/// A socket file is not a session. The wrapper unlinks its socket on the way out, but a
+/// wrapper that was killed leaves the file behind, and a phone showing that session as
+/// "live" is the one place the mistake costs the most — nothing on the phone can check.
+/// So the file is asked rather than trusted: a connection nobody accepts means nothing
+/// is listening, and the leftovers are removed so the next listing does not ask again.
+/// The wrapper reads EOF from the bare connect, answers `{"ok":false}` and hangs up;
+/// nothing reaches the session.
+pub fn wrapper_alive(session_id: &str) -> bool {
+    let Some(path) = wrapper_socket(session_id) else {
+        return false;
+    };
+    let Ok(addr) = std::os::unix::net::SocketAddr::from_pathname(&path) else {
+        return false;
+    };
+    match UnixStream::connect_addr(&addr) {
+        Ok(s) => {
+            let _ = s.shutdown(std::net::Shutdown::Both);
+            true
+        }
+        Err(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
+            ) =>
+        {
+            let _ = std::fs::remove_file(&path);
+            let _ = std::fs::remove_file(
+                PathBuf::from(WRAPPER_DIR).join(format!("{session_id}.pending")),
+            );
+            false
+        }
+        Err(_) => false,
+    }
+}
+
 /// Inject a user turn through the wrapper — the bytes the editor writes when someone
 /// types, with no framing of any kind.
 ///
@@ -235,6 +272,42 @@ pub fn interrupt_via_wrapper(session_id: &str) -> anyhow::Result<()> {
     )
 }
 
+/// Switch the session's model, the way the editor's picker does: a `set_model`
+/// control request. The CLI answers on its control channel, which the wrapper records;
+/// `control_response` reads that answer back. Returns the request id to look for.
+pub fn set_model_via_wrapper(session_id: &str, model: &str) -> anyhow::Result<String> {
+    let request_id = uuid_v4();
+    write_via_wrapper(
+        session_id,
+        &serde_json::json!({
+            "type": "control_request",
+            "request_id": request_id,
+            "request": { "subtype": "set_model", "model": model },
+        }),
+    )?;
+    Ok(request_id)
+}
+
+/// Set the effort level. There is no control request for it; `/effort <level>` is a
+/// command the CLI runs itself in this mode rather than sending to the model, so it
+/// goes in as a typed line.
+pub fn set_effort_via_wrapper(session_id: &str, level: &str) -> anyhow::Result<()> {
+    send_via_wrapper(session_id, &format!("/effort {level}"))
+}
+
+/// The CLI's answer to a control request we injected, once it has one: the
+/// `response` object of the matching `control_response` in the session's recording.
+pub fn control_response(session_id: &str, request_id: &str) -> Option<serde_json::Value> {
+    let path = PathBuf::from(WRAPPER_DIR).join(format!("{session_id}.ctl"));
+    let text = std::fs::read_to_string(path).ok()?;
+    text.lines()
+        .rev()
+        .filter(|l| l.contains("\"type\":\"control_response\"") && l.contains(request_id))
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .find(|v| v["response"]["request_id"] == request_id)
+        .map(|v| v["response"].clone())
+}
+
 /// One newline-delimited frame into a wrapped session's stdin.
 fn write_via_wrapper(session_id: &str, frame: &serde_json::Value) -> anyhow::Result<()> {
     let path = wrapper_socket(session_id)
@@ -264,7 +337,8 @@ fn write_via_wrapper(session_id: &str, frame: &serde_json::Value) -> anyhow::Res
 /// Written by the wrapper, which sees the control traffic between the CLI and whatever
 /// hosts it. Only the newest is returned: a session waits on one prompt at a time.
 pub fn pending_prompt(session_id: &str, tool: &str) -> Option<serde_json::Value> {
-    if wrapper_socket(session_id).is_none() {
+    // A prompt recorded by a wrapper that is gone is not pending; it is history.
+    if !wrapper_alive(session_id) {
         return None;
     }
     let path = PathBuf::from(WRAPPER_DIR).join(format!("{session_id}.pending"));
@@ -386,6 +460,43 @@ mod tests {
     fn rejects_a_date_it_does_not_understand() {
         assert!(parse_proc_start("").is_none());
         assert!(parse_proc_start("2026-09-10T07:35:03Z").is_none());
+    }
+
+    #[test]
+    fn a_socket_nobody_listens_on_is_not_a_live_session() {
+        let id = format!("test-{}", std::process::id());
+        let dir = PathBuf::from(WRAPPER_DIR);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("{id}.sock"));
+        let _ = std::fs::remove_file(&path);
+        assert!(!wrapper_alive(&id), "no file, no session");
+
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        assert!(wrapper_alive(&id), "a listener is a session");
+
+        // What a killed wrapper leaves behind: the file, and nothing on the other end.
+        drop(listener);
+        assert!(path.exists(), "dropping a listener does not unlink its file");
+        assert!(!wrapper_alive(&id), "a file with nobody behind it is not a session");
+        assert!(!path.exists(), "and the stale file is cleaned up");
+    }
+
+    #[test]
+    fn a_recorded_answer_is_found_by_its_request_id() {
+        let id = format!("test-ctl-{}", std::process::id());
+        let dir = PathBuf::from(WRAPPER_DIR);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("{id}.ctl"));
+        std::fs::write(&path, concat!(
+            r#"{"type":"control_request","request_id":"r-1","request":{"subtype":"set_model","model":"opus"}}"#, "\n",
+            r#"{"type":"control_response","response":{"subtype":"error","request_id":"r-0","error":"older"}}"#, "\n",
+            r#"{"type":"control_response","response":{"subtype":"success","request_id":"r-1","response":{"notices":["Switched to opus"]}}}"#, "\n",
+        )).unwrap();
+        let got = control_response(&id, "r-1").expect("the answer is there");
+        assert_eq!(got["subtype"], "success");
+        assert_eq!(got["response"]["notices"][0], "Switched to opus");
+        assert!(control_response(&id, "r-2").is_none(), "no answer yet");
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

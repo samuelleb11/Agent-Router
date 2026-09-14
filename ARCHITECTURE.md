@@ -68,6 +68,47 @@ Subagent traffic is separable from the wire too: Claude Code stamps `x-claude-co
 on Task-tool requests and omits it on the main thread. Measured on a single ordinary turn, a
 subagent accounted for **31% of the run's prompt tokens**, so this is not a rounding error.
 
+### Quota is forecast against hours of work, not hours on the clock
+
+The rate-limit headers hand us the reset time, so the question worth asking is not *when does
+the window reset* but *does the way you are working get you to 100% first*. Answering it needs
+a burn rate, and the obvious one — utilisation against wall-clock time — is wrong in a way the
+store itself demonstrates.
+
+In the 7-day window that reset on 2026-09-11, `an-account` sat between `u=0.97` and
+`u=0.98` for **31.4 hours with no requests at all**. That is sleep, not slow burn. Fitted
+against the clock, that window predicted exhaustion 15–33 hours early at every point before
+the gap, then flipped to "idle, never" once the gap was inside the lookback — a wall-clock
+rate is really measuring what fraction of the lookback you happened to be awake.
+
+Summing only the gaps that look like work (five minutes or less — Claude Code's turns are
+seconds apart) fixes it. The same window, refitted at eight points across 34 hours, held a
+steady 1.17%/active-hour and landed within ~45 minutes of work of the truth:
+
+```
+forecast at    used   %/active-h   work left   actual   err
+09-09 23:47    0.95        2.15%       2.33h    5.51h  -3.18h
+09-10 05:47    0.97        1.17%       2.55h    1.80h  +0.75h
+09-10 17:47    0.97        1.17%       2.55h    1.80h  +0.75h
+09-11 09:47    0.97        1.17%       2.55h    1.80h  +0.75h
+```
+
+So the unit is **hours of work left**, and a calendar date is derived from it through a duty
+cycle — which is measured over a horizon matched to the window, because the two are nothing
+alike. A 5-hour window is forecast against the session you are in (71–100% duty, measured);
+a 7-day window against the habit, sleep included (2.5–8.2 active hours a day here). Reading a
+week's duty off the session inside it projected four days of solid work nobody was going to do.
+
+Utilisation arrives rounded to whole percent, so a window younger than two steps has no slope
+worth trusting; it borrows the account's own recent average and `basis` says so. The rate also
+depends on the model — Opus eats a window far faster than Haiku — and is not weighted for it.
+Per `Token estimates are estimates`, the UI discloses what each projection was fitted on.
+
+Quota is per account, so the cross-account rollup adds spend, tokens and requests but never
+percentages; combined headroom is totalled in hours of work, and two credentials onto one
+Anthropic account (same 7-day reset) count once. It is a reporting figure — the router still
+does not route around a spent limit.
+
 **The transcript** is therefore *enrichment only*, and nothing load-bearing depends on it. It
 remains the only source for the reconstructed message tree and per-message branch history, and
 it is joined on `requestId`, which equals the `request-id` response header the proxy records.
@@ -202,9 +243,87 @@ Reversed, a probe every 20 ms across a live handover saw 575 successes and 0 fai
 while a 58-second streaming response begun on the old instance completed intact and was
 recorded in full by it on the way out.
 
+## Telling the phone
+
+A session under the wrapper writes every unanswered `can_use_tool` request to
+`/tmp/agent-router-sessions/<id>.pending` as it happens; a session without one reveals
+only an AskUserQuestion, and only through its transcript. `notify` watches both once a
+second and announces each prompt once, keyed by its request id — what is already waiting
+when the router starts is not announced, because a restart is not news. Delivery is
+Apple's push service (`apns`): an ES256 provider token minted from the team's `.p8`
+(kept in the secrets file beside the account credentials), reused for fifty minutes, over
+HTTP/2, to every phone that registered through `POST /api/push/register`. A device Apple
+reports gone is forgotten. The payload names the session and the phone's own id for the
+router, so a tap lands in the right chat — the store is attached to the registrar before
+any view exists and a tap that arrives earlier still is kept until it is, because a cold
+launch from the notification delivers the tap before the first view's task runs; and the
+notification delegate uses the completion-handler forms, completed on the main queue,
+because the `async` forms have their completion invoked from a background executor and
+UIKit's state-restoration work inside it asserts main-thread and aborts (a simulator UI
+test taps a local notification with the same payload to keep it so). Apple's `.p8`
+omits the public half of the key
+that `ring` insists on; when that bites, the key is passed once through the system
+`openssl` to fill it in.
+
+The key gets into the router two ways. The dashboard and the phone take a paste. Or the
+file Apple hands out, `AuthKey_<key id>.p8`, is dropped beside the database: while no
+key is stored, `notify` looks for it once a second, reads the key id off the name, takes
+the team id from what the app said about itself when it registered (`AppIdentifierPrefix`
+from its Info.plist, sent with `POST /api/push/register` along with its bundle id — which
+is also where the push topic comes from), proves the key signs, and stores it. The file
+is left where it is, made private, since Apple never hands the same key out twice; a file
+that fails is not retried until it changes. Nothing is provisioned after install from the
+router's side. What remains — a push-enabled App ID and the key itself — is issued only
+by Apple's portal to the account holder, and there is no API for the key.
+
+## The editor extension
+
+`vscode/` packages the router as a VS Code extension, one VSIX per platform with the
+router and the wrapper in `bin/`. The design follows one fact about VS Code: every
+window runs its own extension host and nothing is shared between them, so an extension
+that *was* the router would be several routers. Instead the extension is an installer, a
+supervisor and a UI for a machine-wide daemon that is alone on its port by construction.
+
+On activation — after start-up, not blocking it — each window asks `/_router/health`.
+A same-or-newer version answering means nothing to do. Otherwise the bundled binaries
+are copied beside their targets in `~/.agent-router/bin` and renamed over them (never
+written in place: the kernel kills a running binary whose file changes), and
+`agent-router --ensure` is spawned detached, so it outlives the window. `--ensure` is
+`--if-not-running` with a version check: it exits when the incumbent is as new as it
+is, and otherwise serves, which is the ordinary `SO_REUSEPORT` handover. Two windows
+racing at start-up both try; the loser sees a healthy peer and exits. Launchd (or a
+systemd user unit) owns boot-time and crash recovery, registered by `agent-router
+install --bind …`, which now carries the listen address into the service so the phone
+keeps working after a reboot; the extension's periodic health check covers the gap a
+handover leaves, since the instance that took over is not launchd's until next login.
+
+Claude Code is wired through its own settings and nothing else: `ANTHROPIC_BASE_URL`
+in its settings file, written by `install`, and `claudeCode.claudeProcessWrapper`
+pointing at `claude-wrapper`, which then receives the real binary's path as its first
+argument (the wrapper still works as the in-place shim when run under the name
+`claude`). That retires the need to modify Anthropic's extension folder, and with it
+the one behaviour a Marketplace listing could not describe as expected.
+
+The status bar item reads `/api/quota`, the menubar app's job inside the editor; the
+dashboard and live pages open through VS Code's Simple Browser, which defers to the
+Integrated Browser where it exists, with a webview frame as the fallback. The
+extension never stops the router: closing every window leaves the phone and the
+forecast working. Removal is an explicit command that runs `agent-router uninstall`
+and clears the wrapper setting.
+
 ## Security
 
-- Binds to `127.0.0.1` only. No telemetry, no cloud dependency.
+- Binds to `127.0.0.1` unless `AGENT_ROUTER_BIND` widens it deliberately — and then every
+  caller that is not on this machine must present the router's password (`auth.rs`): as
+  HTTP Basic from a browser, or as `Authorization: Bearer <password>` from an agent, which
+  is what a Claude Code elsewhere sends when `ANTHROPIC_AUTH_TOKEN` is set to it. With no
+  password set, off-host callers are refused outright, so the first one can only be set
+  from the machine itself — which is also how a forgotten one is replaced. Loopback is
+  never asked: whoever sits here already holds the Keychain. Stored as PBKDF2-HMAC-SHA256
+  (600k iterations) in the `settings` table, verified once per credential and remembered
+  by digest, one verification at a time with a 400 ms penalty per miss. It travels as
+  plain HTTP: the bind already assumes a network you trust. No telemetry, no cloud
+  dependency.
 - OAuth tokens live in the macOS Keychain, never in the SQLite file or in config,
   and never appear in a process argument: reads use `find-generic-password -w`, which
   writes only to stdout, and writes go through `security -i` with the command supplied
@@ -294,10 +413,80 @@ socket becomes the *identical bytes the extension writes when you type* — an o
 user turn, not a peer message. Because the wrapper also sees the downstream side of the
 permission channel, prompts become answerable remotely too.
 
+A session is reported as `wrapped` only when its control socket *answers*, not when the
+file exists: the wrapper unlinks its socket on a clean exit but a killed one leaves it
+behind, and a phone showing that session as live is where the mistake costs the most.
+The listing connects to each socket (the wrapper reads EOF, replies `{"ok":false}`, and
+nothing reaches the session) and removes the leftovers of a refused one. `wrapper_alive`
+in `peer.rs` is the one place that rule lives.
+
+The same socket changes what the session runs with. `set_model` is a control request
+the CLI's own SDK sends (`{subtype:"set_model", model}`); the CLI answers on its control
+channel with a success and its notices, or an error, and the wrapper's recording is
+where the router reads that answer back, so a refused name is reported rather than
+silently ignored. Effort has no control request; `/effort <level>` is a slash command
+flagged non-interactive in the CLI, so it goes in as a typed line and is executed rather
+than sent to the model. Both take effect on the next turn, which the transcript then
+records as `model` and `effort` on the assistant message.
+
 Two costs, both accepted deliberately:
 
   * It shims a binary inside a version-pinned extension directory, so an extension
-    update requires reinstalling it. Setup owns that, with a version check at startup.
+    update lands a fresh, unwrapped binary and every session it starts is view-only —
+    silently, unless something says so. Setup reports per-directory state (a `.real`
+    beside a small `claude` is installed; beside a large one is an interrupted install
+    or an update that overwrote us) and reinstalls from `claude-wrapper` beside the
+    router binary; the live page and the phone app both warn when the newest extension
+    is unwrapped.
   * If the wrapper dies the session dies with it. The relay path must therefore be as
     dumb as `proxy`'s tee: no parse that can throw, no buffer that can stall, and a
     fail-open to plain pass-through when anything unexpected happens.
+
+### Keeping the wrapper installed across extension updates
+
+The first cost above used to be paid by hand: notice the sessions went view-only, open
+Setup, click install, reload the editor. `shim::watch` pays it instead when the
+server-side switch is on (`settings.auto_wrapper`, `POST /api/setup/shim/auto`;
+off until turned on). Every 3 s it looks at each extension directory and installs into
+one whose `claude` is a real binary the wrapper is not in — but only once the file has
+*settled*: the same size on two consecutive looks and a modification time at least 5 s
+old. VS Code writes an update file by file, and wrapping a half-written binary would be
+worse than leaving it alone. The install is the same routine the Setup button calls;
+each one is noted in a short in-memory log the Setup section shows, and pushed to the
+phone. The switch is server-side on purpose: it is the router that does the work, so it
+is the router that must be told to stop, from any client, without shipping one.
+
+### What "working" means
+
+The live status is a fold over the transcript (`advance` in `live.rs`): a `tool_use`
+opens a pending call, its `tool_result` closes it, and assistant prose with nothing
+pending ends the turn. Two lines the CLI writes are part of that fold and were not at
+first. A user-role line reading `[Request interrupted by user]` (or `… for tool use`) —
+which is what Stop produces, and which is stored as a plain string or a text block
+depending on the CLI's mood — ends the turn outright: the tool it cut short will never
+get a result, and a feed still waiting for one shows Stop lit with nothing to stop. And
+`queue-operation` lines are the CLI's own bookkeeping of messages typed while a turn
+ran (`enqueue` / `dequeue` / `remove`); their count is the status's `queued`. Because
+the session queues on its own, Send is never replaced by Stop: the two sit side by side
+while a turn runs.
+
+### Side questions
+
+`/btw` is a `local-jsx` command: interactive only, and through stream-json the CLI
+answers "/btw isn't available in this environment". What it does is fork the session
+for a side conversation, and the router does that itself
+(`live::aside`, `POST /api/live/aside`):
+
+```
+claude -p --resume <id> --fork-session --tools "" \
+       --append-system-prompt "…answer briefly, no tools…" -- "<question>"
+```
+
+The real CLI binary is used (the newest extension's `claude.real`; the shim adds nothing
+a fork needs), run from the session's own directory so the fork lands in the same
+project, with `--output-format json` for one result object. A fork is a new session id
+with the original untouched — the question and answer never enter the session's
+transcript, nothing is interrupted, nothing is queued — and the id it leaves behind is
+shelved on the spot so the list does not fill with one-question sessions. The price is a
+replay of the session's context through the proxy, mostly served from cache; three
+minutes is the ceiling before the router gives up.

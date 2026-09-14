@@ -110,6 +110,23 @@ button:focus-visible, .brow:focus-visible, .sum:focus-visible, summary:focus-vis
 .qhist { margin-top:14px; }
 .qhist svg { width:100%; height:68px; display:block; }
 .qhist .legend { margin-top:6px; }
+/* forecast: where a window ends up, and how loudly to say so */
+.fc { font-size:11px; color:var(--muted); margin-top:6px; line-height:1.45; }
+.fc.warn { color:var(--warn); }
+.fc.bad { color:var(--bad); }
+.fc .basis { display:block; opacity:.72; }
+.runway { display:grid; gap:14px 22px; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); margin-top:16px; }
+.runway .k { font-size:12px; color:var(--muted); }
+.runway svg { width:100%; height:84px; display:block; }
+.runway .proj { stroke-dasharray:4 3; }
+/* all accounts */
+.acards { display:grid; gap:12px; grid-template-columns:repeat(auto-fit,minmax(272px,1fr)); }
+.acard { border:1px solid var(--line); border-radius:var(--radius); padding:12px 13px; min-width:0; }
+.acard .nm { font-size:13px; font-weight:600; display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+.acard .sub { font-size:11px; color:var(--muted); margin:3px 0 12px; }
+.acard .w + .w { margin-top:12px; }
+.acard .ftr { font-size:11px; color:var(--muted); margin-top:12px; padding-top:9px;
+  border-top:1px solid var(--line); display:flex; justify-content:space-between; gap:8px; font-variant-numeric:tabular-nums; }
 .legend { display:flex; flex-wrap:wrap; gap:6px 14px; font-size:12px; align-items:center; }
 .legend i { width:9px; height:9px; border-radius:2px; display:inline-block; margin-right:6px; vertical-align:-1px; }
 .legend i.line { width:14px; height:2px; border-radius:1px; vertical-align:2px; }
@@ -349,6 +366,7 @@ pre.cmd { background:var(--bg); border:1px solid var(--line); border-radius:7px;
     <symbol id="g-window" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><rect x="1.5" y="2" width="11" height="10" rx="1.5"/><path d="M1.5 5h11M4.5 8h5"/></symbol>
     <symbol id="g-list" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M2 3.5h10M2 7h10M2 10.5h10"/></symbol>
     <symbol id="g-activity" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M1.5 9l3-4 2.5 3 2-6 3.5 9"/></symbol>
+    <symbol id="g-lock" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><rect x="2.5" y="6.5" width="9" height="6" rx="1.5"/><path d="M4.5 6.5V4.5a2.5 2.5 0 0 1 5 0v2"/></symbol>
     <symbol id="g-read" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 3.5c2-1.2 3.8-1.2 5.5 0 1.7-1.2 3.5-1.2 5.5 0v8c-2-1.2-3.8-1.2-5.5 0-1.7-1.2-3.5-1.2-5.5 0z"/><path d="M7 3.5v8"/></symbol>
   </defs>
 </svg>
@@ -359,6 +377,7 @@ pre.cmd { background:var(--bg); border:1px solid var(--line); border-radius:7px;
     <span class="chip" id="livechip"><span class="dot" id="live"></span><span id="livetext">connecting…</span></span>
     <a class="chip" href="/live" title="Follow and control running sessions">Sessions</a>
     <button class="chip" id="acct" title="Switch, add or remove accounts"><svg class="g" width="14" height="14"><use href="#g-account"/></svg><span id="accttext">—</span><span class="muted" style="font-size:11px">manage</span><svg class="g" width="14" height="14" style="color:var(--muted)"><use href="#g-chevron"/></svg></button>
+    <span class="chip" id="remote" hidden><span class="dot" id="remotedot"></span><span id="remotetext"></span></span>
     <span class="host" id="host"></span>
   </header>
 
@@ -378,7 +397,12 @@ pre.cmd { background:var(--bg); border:1px solid var(--line); border-radius:7px;
   <section class="panel" id="quotabox">
     <div class="quota" id="quota"></div>
     <div class="qhist" id="qhist"></div>
+    <div class="runway" id="runway"></div>
   </section>
+
+  <h2 id="allh" hidden><svg class="g" width="14" height="14"><use href="#g-account"/></svg>All accounts<span class="h2sub" id="allsub"></span></h2>
+  <section class="headline" id="alltiles" hidden></section>
+  <section class="panel" id="allacct" hidden><div class="acards" id="acards"></div></section>
 
   <h2><svg class="g" width="14" height="14"><use href="#g-read"/></svg>Totals in scope<span class="h2sub" id="totalsub"></span></h2>
   <section class="headline" id="headline"></section>
@@ -444,6 +468,17 @@ pre.cmd { background:var(--bg); border:1px solid var(--line); border-radius:7px;
   </section>
 
 </div>
+
+<dialog class="modal" id="pw" aria-labelledby="pw-title">
+  <div class="modal-head">
+    <h3 id="pw-title"><svg class="g" width="14" height="14"><use href="#g-lock"/></svg>Set a password</h3>
+  </div>
+  <div class="modal-body">
+    <p class="note" style="margin:0 0 12px">This router is reachable from your network. Other devices will be asked for this
+      password; this Mac never is. Until one is set, other devices are refused.</p>
+    <div id="pw-first"></div>
+  </div>
+</dialog>
 
 <dialog class="modal" id="settings" aria-labelledby="settings-title">
   <div class="modal-head">
@@ -538,6 +573,18 @@ pre.cmd { background:var(--bg); border:1px solid var(--line); border-radius:7px;
     <div id="routerinfo"></div>
     <p class="note">Everything above is stored locally. The router's own settings (port, database
       location, upstream, body cap) are environment variables read at startup — see the README.</p>
+
+    <h4 class="modal-sec next">Notifications<span class="h2sub" id="pushsub"></span></h4>
+    <div id="pushbox"></div>
+    <p class="note" style="margin-top:8px">The iPhone app is told the moment a session waits on you — a permission, a question —
+      through Apple's push service. That needs an APNs key from your developer account (Keys → + → Apple Push Notifications
+      service); paste the <code>.p8</code> here once. It stays in the router's secrets file, never in the database.</p>
+
+    <h4 class="modal-sec next">Password<span class="h2sub" id="pwsub"></span></h4>
+    <div id="pw-settings"></div>
+    <p class="note" style="margin-top:8px">Asked of any device that is not this Mac — a browser gets the usual prompt (any
+      username), and a Claude Code elsewhere sets <code>ANTHROPIC_AUTH_TOKEN</code> to it. Forgotten? Set a new one from
+      here; this Mac never needs the old one.</p>
   </div>
 </dialog>
 
@@ -841,6 +888,7 @@ function openSettings() {
   if (settings.open) return;
   settings.showModal();
   renderSetup().catch(() => {});
+  renderPush().catch(() => {});
   // Resolving every credential is not free, so it is done when the panel is actually open.
   if (!accountsProbed) { accountsCache = null; clearTimeout(timer); tick(); }
   renderRouterInfo();
@@ -1020,7 +1068,7 @@ function renderHeader(acct, ok) {
 }
 
 // ---------- quota ----------
-function renderQuota(q, hist, tl, bk, live) {
+function renderQuota(q, hist, tl, bk, live, fcA) {
   const el = document.getElementById('quota');
   // `live` (GET /api/quota) is polled from Anthropic and stays true while the machine is
   // idle; the response headers in `q` only move when traffic flows. Prefer live, fall back.
@@ -1037,18 +1085,21 @@ function renderQuota(q, hist, tl, bk, live) {
   }
   if (!q) { setEmpty(el, 'No quota reading yet for the active account.'); }
   else {
-    const meter = (label, util, reset) => {
+    const meter = (label, util, reset, w) => {
       const p = Math.min(100, num(util) * 100);
       const col = p >= 90 ? 'var(--bad)' : p >= 70 ? 'var(--warn)' : 'var(--accent)';
       const d = h('div', {},
         h('div', { class:'row' }, h('span', { text: label }), h('span', { class:'muted num', text: `${p.toFixed(0)}% used · resets ${rel(reset)}` })),
-        h('div', { class:'meter', style:`--mc:${col}` }, h('i', { style:`width:${p}%` })));
-      bindTip(d, () => [label, [`${p.toFixed(1)}%`, 'used', col], [reset ? when(Number(reset)*1000) : '—', 'resets at']]);
+        h('div', { class:'meter', style:`--mc:${col}` }, h('i', { style:`width:${p}%` })),
+        fcLine(w));
+      bindTip(d, () => [label, [`${p.toFixed(1)}%`, 'used', col], [reset ? when(Number(reset)*1000) : '—', 'resets at'],
+        w && !w.expired ? [fcState(w).text, 'projection'] : null,
+        fcBasis(w) ? [fcBasis(w), 'measured'] : null]);
       return d;
     };
     el.replaceChildren(
-      meter('5-hour window', q.rl_5h_utilization, q.rl_5h_reset),
-      meter('7-day window', q.rl_7d_utilization, q.rl_7d_reset),
+      meter('5-hour window', q.rl_5h_utilization, q.rl_5h_reset, fcA && fcA.five_hour),
+      meter('7-day window', q.rl_7d_utilization, q.rl_7d_reset, fcA && fcA.seven_day),
       h('div', {}, h('div', { class:'row' }, h('span', { text:'Status' }),
           h('span', { class: q.severity === 'critical' || (q.rl_status && q.rl_status !== 'allowed') ? 'tag err' : q.severity === 'warning' ? 'tag' : 'tag ok' },
             q.severity ? icon(q.severity === 'critical' ? 'error' : 'quota') : null,
@@ -1096,6 +1147,192 @@ function renderQuota(q, hist, tl, bk, live) {
     box.addEventListener('pointerleave', () => { const l = box.querySelector('.xh'); if (l) l.classList.remove('on'); hideTip(); });
   }
   box._svgW = W;
+}
+
+// ---------- forecast ----------
+// The reset time is handed to us in the rate-limit headers; what this answers is whether
+// the way you are working gets you to 100% before it arrives. Burn is measured per hour
+// of *work*, not per hour on the clock — see src/forecast.rs for the real window where a
+// 31-hour idle gap made the wall-clock reading wrong by a day and a half.
+let lastForecast = null, lastFcActive = null;
+
+const hrs = v => v == null ? '—' : v < 1 ? Math.round(v * 60) + ' min'
+  : v < 10 ? v.toFixed(1) + ' h' : Math.round(v) + ' h';
+
+// What a window's projection says, and how loudly to say it.
+function fcState(w) {
+  if (!w) return { tone:'', text:'no rate-limit reading yet' };
+  if (w.expired) return { tone:'', text:`window rolled over ${ago(num(w.reset_at) * 1000)} · nothing seen since` };
+  if (w.basis === 'none' || w.active_hours_left == null) return { tone:'', text:'not enough burn yet to project' };
+  const left = hrs(num(w.active_hours_left));
+  if (w.exhausts_at) {
+    const early = num(w.reset_at) * 1000 - num(w.exhausts_at);
+    return { tone:'bad', text:`${left} of work left · runs out ${rel(num(w.exhausts_at) / 1000)}, ${dur(early)} before it resets` };
+  }
+  const end = Math.round(num(w.projected_end_util) * 100);
+  return { tone: end >= 90 ? 'warn' : '', text:`${left} of work left · resets first, ending ≈${end}%` };
+}
+
+// Estimates must say they are estimates, and say what they were fitted on.
+function fcBasis(w) {
+  if (!w || w.expired || w.basis === 'none' || !num(w.burn_per_active_hour)) return null;
+  const rate = `${(num(w.burn_per_active_hour) * 100).toFixed(1)}% per hour of work`;
+  return w.basis === 'trailing-windows'
+    ? `${rate} · nothing burnt yet this window, so this is your recent average`
+    : `${rate}, fitted on ${hrs(num(w.measured_active_hours))} · ${Math.round(num(w.duty_fraction) * 100)}% of the clock spent working`;
+}
+
+function fcLine(w) {
+  // Nothing at all to say — the endpoint is absent or this account has never carried a
+  // rate-limit header. Say nothing, rather than printing "no reading" under a meter that
+  // is plainly showing one from the response headers.
+  if (!w) return null;
+  const st = fcState(w), basis = fcBasis(w);
+  return h('div', { class: 'fc' + (st.tone ? ' ' + st.tone : '') },
+    st.tone === 'bad' ? icon('error', 'width:11px;height:11px;vertical-align:-1px;margin-right:3px') : null,
+    st.text,
+    basis ? h('span', { class:'basis', text: basis }) : null);
+}
+
+// One window, drawn across its own life: observed on the left of now, projected on the
+// right. The dashed ray is the whole point — where it meets the ceiling is the answer.
+function runwaySvg(w, color, W) {
+  const H = 84, L = 32, R = W - 8, top = 12, bot = 56;
+  const t0 = num(w.window_start) * 1000, t1 = num(w.reset_at) * 1000;
+  if (!(t1 > t0)) return '';
+  const x = t => L + (R - L) * Math.min(1, Math.max(0, (t - t0) / (t1 - t0)));
+  const y = u => bot - (bot - top) * Math.min(1, Math.max(0, u));
+  const now = Math.min(Date.now(), t1), used = num(w.used);
+  const pts = (w.series || []).map(p => [x(num(p.t)), y(num(p.u))]).concat([[x(now), y(used)]]);
+  const obs = pts.map((p, i) => `${i ? 'L' : 'M'}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join('');
+  const tgt = w.exhausts_at ? [x(num(w.exhausts_at)), y(1)] : [x(t1), y(num(w.projected_end_util))];
+  const rule = u => `<line x1="${L}" x2="${R}" y1="${y(u).toFixed(1)}" y2="${y(u).toFixed(1)}" stroke="var(--line)" stroke-width="1"/>`;
+  const lbl = (u, t) => `<text x="${L - 5}" y="${(y(u) + 4).toFixed(1)}" text-anchor="end" font-size="10" fill="var(--muted)">${t}</text>`;
+  return `<svg viewBox="0 0 ${W} ${H}" aria-hidden="true">
+    ${rule(1)}${rule(0)}${lbl(1, '100%')}${lbl(0, '0')}
+    <line x1="${x(now).toFixed(1)}" x2="${x(now).toFixed(1)}" y1="${top}" y2="${bot}" stroke="var(--muted)" stroke-width="1" opacity=".3"/>
+    <path d="${obs}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
+    <path class="proj" d="M${x(now).toFixed(1)},${y(used).toFixed(1)}L${tgt[0].toFixed(1)},${tgt[1].toFixed(1)}" fill="none" stroke="${w.exhausts_at ? 'var(--bad)' : 'var(--muted)'}" stroke-width="2" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
+    ${w.exhausts_at ? `<circle cx="${tgt[0].toFixed(1)}" cy="${tgt[1].toFixed(1)}" r="3.5" fill="var(--bad)" stroke="var(--panel)" stroke-width="2"/>` : ''}
+    <text x="${L}" y="${H - 6}" font-size="10" fill="var(--muted)">${esc(tod(t0))}</text>
+    <text x="${R}" y="${H - 6}" font-size="10" fill="var(--muted)" text-anchor="end">resets ${esc(tod(t1))}</text>
+  </svg>`;
+}
+
+function renderRunway(a) {
+  const box = document.getElementById('runway');
+  const wins = [['5-hour window', a && a.five_hour, 'var(--accent)'],
+                ['7-day window', a && a.seven_day, 'var(--tok)']]
+    .filter(([, w]) => w && !w.expired && w.window_start != null);
+  if (!wins.length) { box.replaceChildren(); box._svg = null; return; }
+  // The cells are a CSS grid we have not laid out yet, so derive their width the way the
+  // grid will: two columns when both fit at their 250px minimum, otherwise one.
+  const gw = box.clientWidth || 620;
+  const cols = gw >= 250 * wins.length + 22 * (wins.length - 1) ? wins.length : 1;
+  const W = Math.max(200, Math.floor((gw - 22 * (cols - 1)) / cols));
+  const sig = JSON.stringify([W, wins.map(([l, w]) =>
+    [l, w.used, w.reset_at, w.exhausts_at, w.projected_end_util, (w.series || []).length])]);
+  if (box._svg === sig) return;
+  box._svg = sig;
+  box.replaceChildren(...wins.map(([label, w, color]) => {
+    const cell = h('div', {}, h('div', { class:'k', text: `${label} · burn-down` }));
+    const svg = h('div');
+    svg.innerHTML = runwaySvg(w, color, W);
+    cell.append(svg);
+    bindTip(cell, () => {
+      const st = fcState(w);
+      return [`${label} — burn-down`,
+        [`${(num(w.used) * 100).toFixed(1)}%`, 'used now', color, 'line'],
+        [st.text, 'projection', w.exhausts_at ? 'var(--bad)' : 'var(--muted)', 'line'],
+        [when(num(w.window_start) * 1000), 'window opened'],
+        [when(num(w.reset_at) * 1000), 'window resets'],
+        fcBasis(w) ? [fcBasis(w), 'measured'] : null];
+    });
+    return cell;
+  }));
+}
+
+// Every account at once. Spend, tokens and requests add up across accounts; quota does
+// not — each percentage is of that account's own limit — so headroom is totalled in the
+// one unit that composes, hours of work left.
+function renderAllAccounts(fc) {
+  const head = document.getElementById('allh'), tiles = document.getElementById('alltiles'),
+        panel = document.getElementById('allacct'), cards = document.getElementById('acards');
+  const list = ((fc && fc.accounts) || []).filter(a => a && a.id);
+  const show = list.length > 0;
+  head.hidden = tiles.hidden = panel.hidden = !show;
+  if (!show) { cards.replaceChildren(); cards._sig = null; return; }
+  const g = fc.global || {}, ch = g.combined_headroom || {}, pace = g.pace_30d || {};
+  setText(document.getElementById('allsub'),
+    `${list.length} account${list.length === 1 ? '' : 's'} · spend and tokens add up, quota does not`);
+
+  if (!tiles.children.length) {
+    const t = (id, label) => h('div', { class:'panel tile', id:'at-' + id },
+      h('div', { class:'k', text: label }), h('div', { class:'v' }), h('div', { class:'s' }));
+    tiles.append(t('spend', 'Spend, every account'), t('tok', 'Tokens read'),
+      t('req', 'Requests'), t('head', 'Headroom left'), t('pace', '30-day pace'));
+  }
+  const set = (id, v, sub, bad) => {
+    const x = document.getElementById('at-' + id);
+    setText(x.querySelector('.v'), v); setText(x.querySelector('.s'), sub);
+    x.querySelector('.v').classList.toggle('bad', !!bad);
+    return x;
+  };
+  const first = ch.first_to_exhaust;
+  set('spend', usd(g.cost), `across ${n(g.accounts)} accounts, at API rates`);
+  set('tok', k(g.prompt_tokens), `${k(g.output_tokens)} written back`);
+  set('req', n(g.requests), 'in the selected range');
+  const headTile = set('head', hrs(ch.active_hours_left),
+    first ? `first to go: ${first.account_id} ${first.in_ms > 0 ? rel((Date.now() + num(first.in_ms)) / 1000) : 'now'}`
+          : `${n(ch.pools)} quota pool${num(ch.pools) === 1 ? '' : 's'}, none projected to run out`,
+    !!first);
+  bindTip(headTile, () => ['Headroom left',
+    [hrs(ch.active_hours_left), 'hours of work across every account'],
+    [n(ch.pools), 'separate quota pools'],
+    first ? [`${first.account_id} · ${first.window === 'five_hour' ? '5-hour' : '7-day'}`, 'first to run out'] : null,
+    first ? [when(num(first.at)), 'when'] : null,
+    'Percentages are per account and are never added; hours of work are.']);
+  set('pace', usd(pace.cost), `${k(pace.prompt_tokens)} tokens · from ${pace.basis || 'recent spend'}`);
+
+  // Two credentials onto one Anthropic account share a quota and report the same 7-day
+  // reset. Say so rather than letting the page read as two independent allowances.
+  const pools = new Map();
+  for (const a of list) {
+    if (a.pool == null) continue;
+    const key = String(a.pool);
+    pools.set(key, (pools.get(key) || []).concat(a.label || a.id));
+  }
+  const cardWindow = (label, w, color) => {
+    const live = w && !w.expired;
+    const p = live ? Math.min(100, num(w.used) * 100) : 0;
+    const col = !live ? 'var(--line)' : p >= 90 ? 'var(--bad)' : p >= 70 ? 'var(--warn)' : color;
+    return h('div', { class:'w' },
+      h('div', { class:'row' }, h('span', { text: label }),
+        h('span', { class:'muted num', text: live ? `${p.toFixed(0)}% used · resets ${rel(w.reset_at)}` : '—' })),
+      h('div', { class:'meter', style:`--mc:${col}` }, h('i', { style:`width:${p}%` })),
+      fcLine(w));
+  };
+  // `pool` belongs in the signature: it is not drawn directly, but it decides whether a
+  // card says it shares its allowance, and leaving it out froze that line in place.
+  const sig = JSON.stringify(list.map(a => [a.id, a.label, a.active, a.seen_at, a.pool,
+    a.usage && a.usage.cost, a.five_hour, a.seven_day]));
+  if (cards._sig === sig) return;
+  cards._sig = sig;
+  cards.replaceChildren(...list.map(a => {
+    const u = a.usage || {};
+    const shared = (pools.get(String(a.pool)) || []).filter(x => x !== (a.label || a.id));
+    const sub = [a.plan, a.seen_at ? `last request ${ago(a.seen_at)}` : 'never seen',
+      shared.length ? `shares a quota with ${shared.join(', ')}` : null].filter(Boolean).join(' · ');
+    return h('div', { class:'acard' },
+      h('div', { class:'nm' }, icon('account'), a.label || a.id,
+        num(a.active) ? h('span', { class:'tag ok', title:'serving new requests' }, 'active') : null),
+      h('div', { class:'sub', text: sub }),
+      cardWindow('5-hour', a.five_hour, 'var(--accent)'),
+      cardWindow('7-day', a.seven_day, 'var(--tok)'),
+      h('div', { class:'ftr' }, h('span', { text: usd(u.cost) }),
+        h('span', { text: `${k(u.prompt_tokens)} read` }),
+        h('span', { text: `${n(u.requests)} req` })));
+  }));
 }
 
 // ---------- timeline buckets ----------
@@ -1246,7 +1483,7 @@ function renderActivity(bk, tl) {
     box.addEventListener('pointerleave', () => { const l = box.querySelector('.xh'); if (l) l.classList.remove('on'); hideTip(); });
   }
 }
-new ResizeObserver(() => { document.querySelectorAll('.list').forEach(fitTips); if (lastAct) renderActivity(lastAct.bk, lastAct.tl); if (lastSummary) renderQuota(lastSummary.quota, lastSummary.quota_history, lastSummary.timeline, lastAct && lastAct.bk, lastLiveQuota); }).observe(document.getElementById('activity'));
+new ResizeObserver(() => { document.querySelectorAll('.list').forEach(fitTips); if (lastAct) renderActivity(lastAct.bk, lastAct.tl); if (lastSummary) renderQuota(lastSummary.quota, lastSummary.quota_history, lastSummary.timeline, lastAct && lastAct.bk, lastLiveQuota, lastFcActive); renderRunway(lastFcActive); }).observe(document.getElementById('activity'));
 
 // ---------- what the model read ----------
 function renderRead(t) {
@@ -1720,6 +1957,11 @@ async function renderSetup() {
         <b>Type into editor sessions</b><br><span class="muted">Lets the live view send messages to sessions
         VSCode starts. Takes effect for sessions started afterwards; ones already open keep their old stdio.
         ${sh.available ? '' : '<b>The wrapper binary is missing next to agent-router.</b>'}</span></span><span></span></div>`);
+    const last = (sh.auto_log || [])[0];
+    rows.push(`<div class="row" style="padding:6px 0 6px 14px"><span>
+        <b>Manage it automatically</b><br><span class="muted">Every extension update ships a fresh, unwrapped binary; with this on,
+        the router wraps it within seconds of VSCode installing it. ${last ? esc(last.what) + ' · ' + ago(last.at) : ''}</span></span>
+      <span><button class="btn sm ${sh.auto ? 'danger' : ''}" data-auto="${sh.auto ? '0' : '1'}" ${sh.available || sh.auto ? '' : 'disabled'}>${sh.auto ? 'Turn off' : 'Turn on'}</button></span></div>`);
     for (const t of sh.targets) {
       const on = t.state === 'installed';
       rows.push(`<div class="row" style="padding:6px 0 6px 14px"><span>
@@ -1750,6 +1992,12 @@ async function renderSetup() {
       const r = await post('/api/setup/shim', { path: b.dataset.path, action: b.dataset.shim });
       if (!r.ok) throw new Error(r.reason || 'failed');
       return { detail: b.dataset.shim === 'install' ? 'Installed — restart a session to use it.' : 'Removed.' };
+    }));
+  document.querySelectorAll('#setupbody [data-auto]').forEach(b => b.onclick = () =>
+    act(async () => {
+      const r = await post('/api/setup/shim/auto', { enabled: b.dataset.auto === '1' });
+      if (!r.ok) throw new Error(r.reason || 'failed');
+      return { detail: b.dataset.auto === '1' ? 'On — new extension versions are wrapped as they arrive.' : 'Off — the buttons below still work.' };
     }));
   document.querySelectorAll('#setupbody [data-svc]').forEach(b => b.onclick = () =>
     act(() => post('/api/setup/service', { enable: b.dataset.svc === '1' })));
@@ -1907,6 +2155,124 @@ function wireAddForm() {
 }
 wireAddForm();
 
+// ---------- password ----------
+// Asked only of callers that are not on this machine; see src/auth.rs. The page's job is
+// to make sure one exists the first time the network can reach us, and to say so after.
+let authInfo = null, authAt = 0, pwDismissed = false;
+const pwDialog = document.getElementById('pw');
+
+function pwForm(root, firstBoot) {
+  root.replaceChildren();
+  const a = h('input', { type:'password', placeholder:'at least 8 characters', autocomplete:'new-password', spellcheck:'false' });
+  const b = h('input', { type:'password', placeholder:'again', autocomplete:'new-password', spellcheck:'false' });
+  const msg = h('span', { class:'note', style:'margin:0' });
+  const configured = !!(authInfo && authInfo.configured);
+  const save = h('button', { class:'btn', text: configured && !firstBoot ? 'Change password' : 'Set password' });
+  const submit = async () => {
+    const pw = a.value;
+    if (pw.length < 8) return setText(msg, 'use at least 8 characters');
+    if (pw !== b.value) return setText(msg, 'the two entries differ');
+    save.disabled = true; setText(msg, 'saving…');
+    try {
+      await post('/api/auth', { password: pw });
+      a.value = b.value = ''; setText(msg, 'set');
+      if (pwDialog.open) pwDialog.close();
+      await renderAuth(true);
+    } catch (e) { setText(msg, e.message); }
+    finally { save.disabled = false; }
+  };
+  save.onclick = submit;
+  b.onkeydown = e => { if (e.key === 'Enter') submit(); };
+  const actions = [save];
+  if (firstBoot) actions.push(h('button', { class:'btn ghost', text:'Not now', onclick: () => pwDialog.close() }));
+  else if (configured) actions.push(h('button', { class:'btn sm danger', text:'Remove password', onclick: async () => {
+    try { await post('/api/auth', { clear: true }); setText(msg, 'removed — other devices are refused again'); await renderAuth(true); }
+    catch (e) { setText(msg, e.message); }
+  } }));
+  root.append(
+    h('div', { class:'formrow' }, h('label', {}, 'New password', a), h('label', {}, 'Confirm', b)),
+    h('div', { class:'formrow', style:'align-items:center' }, ...actions, msg));
+}
+
+function applyAuth(info) {
+  authInfo = info;
+  const chip = document.getElementById('remote'), dot = document.getElementById('remotedot');
+  chip.hidden = !info.remote_bind;
+  if (info.remote_bind) {
+    dot.className = 'dot' + (info.configured ? '' : ' bad');
+    setText(document.getElementById('remotetext'), info.configured ? 'network · password set' : 'network · no password');
+    chip.title = info.configured
+      ? 'Reachable from your network; other devices must give the password'
+      : 'Reachable from your network, but other devices are refused until a password is set';
+  }
+  setText(document.getElementById('pwsub'), info.configured
+    ? `set${info.updated_at ? ' · changed ' + ago(info.updated_at) : ''}`
+    : info.remote_bind ? 'not set — other devices are refused' : 'not set — only matters with AGENT_ROUTER_BIND');
+  const sroot = document.getElementById('pw-settings');
+  const sig = JSON.stringify([info.configured, info.remote_bind]);
+  if (sroot._sig !== sig) { sroot._sig = sig; pwForm(sroot, false); }
+  // First boot: ask once, from this machine, while the network can reach us and nothing
+  // guards it yet. Never over the top of the settings dialog.
+  if (info.remote_bind && !info.configured && info.from_loopback && !pwDismissed && !pwDialog.open && !settings.open) {
+    pwForm(document.getElementById('pw-first'), true);
+    pwDialog.showModal();
+  }
+  return info;
+}
+pwDialog.addEventListener('close', () => { pwDismissed = true; });
+
+// ---------- notifications ----------
+async function renderPush() {
+  const box = document.getElementById('pushbox');
+  let st;
+  try { st = await get('/api/push'); } catch (e) { setEmpty(box, 'Could not read notification settings — ' + e.message); return; }
+  setText(document.getElementById('pushsub'), st.configured
+    ? `key ${st.key_id} · ${st.devices.length} phone${st.devices.length === 1 ? '' : 's'}`
+    : 'no APNs key — phones cannot be told');
+  // The key as a file dropped beside the router's database: what was found, and what
+  // it still waits on. The paste form below is the other way in.
+  const keyFile = st.key_file ? h('p', { class:'note', style:'margin:0 0 8px', text: 'key file: ' + st.key_file })
+    : st.configured ? null
+    : h('p', { class:'note', style:'margin:0 0 8px', text: 'Drop the AuthKey_<key id>.p8 that developer.apple.com hands out into ~/.agent-router and the router takes it in by itself — or paste it here.' });
+  const team = h('input', { placeholder:'team id, e.g. ABCDE12345', value: st.team_id || '', autocomplete:'off', spellcheck:'false' });
+  const kid = h('input', { placeholder:'key id, e.g. ABC123DEF4', value: st.key_id || '', autocomplete:'off', spellcheck:'false' });
+  const bundle = h('input', { placeholder:'bundle id', value: st.bundle_id || '', autocomplete:'off', spellcheck:'false' });
+  const p8 = h('textarea', { placeholder: st.configured ? 'a new .p8 replaces the stored one' : '-----BEGIN PRIVATE KEY-----', rows:'4', spellcheck:'false', style:'width:100%; font:12px ui-monospace,monospace' });
+  const msg = h('span', { class:'note', style:'margin:0' });
+  const save = h('button', { class:'btn', text: st.configured ? 'Replace key' : 'Save key', onclick: async () => {
+    try { await post('/api/push/config', { team_id: team.value, key_id: kid.value, p8: p8.value, bundle_id: bundle.value }); setText(msg, 'saved'); renderPush(); }
+    catch (e) { setText(msg, e.message); }
+  } });
+  const test = h('button', { class:'btn ghost', text:'Send a test', onclick: async () => {
+    try { const r = await post('/api/push/test'); setText(msg, r.results.map(x => `…${x.device}: ${x.ok ? 'delivered' : x.error}`).join(' · ') || 'no phones registered'); renderPush(); }
+    catch (e) { setText(msg, e.message); }
+  } });
+  const clear = h('button', { class:'btn sm danger', text:'Remove key', onclick: async () => {
+    try { await post('/api/push/config', { clear: true }); renderPush(); } catch (e) { setText(msg, e.message); }
+  } });
+  const devices = st.devices.length
+    ? h('div', { class:'list' }, ...st.devices.map(d => h('div', { class:'row', style:'padding:4px 0' },
+        h('span', {}, `${d.name || 'phone'} · …${d.token_tail} · ${d.environment}`),
+        h('span', { class:'muted', text: d.last_result ? `${d.last_result} · ${ago(d.last_seen_at)}` : `registered ${ago(d.registered_at)}` }))))
+    : h('p', { class:'note', style:'margin:0', text:'No phone has registered yet — in the app, Settings → Notifications → Enable.' });
+  box.replaceChildren(
+    keyFile,
+    h('div', { class:'formrow' }, h('label', {}, 'Team', team), h('label', {}, 'Key id', kid), h('label', {}, 'Bundle id', bundle)),
+    h('div', { class:'formrow', style:'flex-direction:column; gap:4px' }, h('label', { style:'width:100%' }, 'APNs key (.p8)', p8)),
+    h('div', { class:'formrow', style:'align-items:center' }, save, st.configured ? test : null, st.configured ? clear : null, msg),
+    st.last_error ? h('p', { class:'note', style:'color:var(--bad); margin:0 0 8px', text: 'last failure: ' + st.last_error }) : null,
+    devices);
+}
+
+async function renderAuth(force) {
+  if (force || !authInfo || Date.now() - authAt > 30000) {
+    let info;
+    try { info = await get('/api/auth'); } catch { return; }
+    authAt = Date.now();
+    applyAuth(info);
+  }
+}
+
 // ---------- refresh loop ----------
 let timer = null, lastSummary = null, accountsAt = 0, accountsProbed = false, lastLiveQuota = null;
 let lastLists = { projects: [], sessions: [] }, lastRequests = [];
@@ -1915,7 +2281,7 @@ async function refresh() {
   const since = sinceMs(), tz = -new Date().getTimezoneOffset();
   const acctOpen = settings.open;
   const wantAccounts = !accountsCache || Date.now() - accountsAt > 30000 || (acctOpen && !accountsProbed);
-  const [sum, projects, sessions, tools, requests, accounts, liveQuota] = await Promise.all([
+  const [sum, projects, sessions, tools, requests, accounts, liveQuota, fcast] = await Promise.all([
     get('/api/summary',  { account:state.account, project:state.project, session:state.session, since, tz }),
     get('/api/projects', { account:state.account, since }),
     get('/api/sessions', { account:state.account, project:state.project, since }),
@@ -1924,6 +2290,7 @@ async function refresh() {
     wantAccounts ? get('/api/accounts', { probe: acctOpen ? 1 : null }) : Promise.resolve(null),
     // Optional: present only on builds that carry it, and a failure must not blank the page.
     get('/api/quota').catch(() => null),
+    get('/api/forecast', { since }).catch(() => null),
   ]);
   if (accounts) { accountsAt = Date.now(); accountsProbed = acctOpen; }
   lastSummary = sum;
@@ -1932,7 +2299,14 @@ async function refresh() {
   renderHeader(sum.account, true);
   renderCrumbs((sessions || []).find(s => s.id === state.session));
   lastLiveQuota = liveQuota || lastLiveQuota;
-  renderQuota(sum.quota, sum.quota_history, sum.timeline, bk, lastLiveQuota);
+  lastForecast = fcast || lastForecast;
+  // The quota panel describes whichever account is signing right now; the rest of the
+  // forecast covers every account, whatever the page is scoped to.
+  lastFcActive = ((lastForecast && lastForecast.accounts) || [])
+    .find(a => a.id === ((sum.account || {}).id)) || null;
+  renderQuota(sum.quota, sum.quota_history, sum.timeline, bk, lastLiveQuota, lastFcActive);
+  renderRunway(lastFcActive);
+  renderAllAccounts(lastForecast);
   renderHeadline(t, sum.latency, bk, sum.timeline);
   renderActivity(bk, sum.timeline);
   renderRead(t);
@@ -1946,6 +2320,7 @@ async function refresh() {
   lastRequests = requests || [];
   renderRequests(lastRequests, sum.latency);
   await renderAccounts(accounts || undefined);
+  await renderAuth();
 }
 async function tick() {
   clearTimeout(timer);

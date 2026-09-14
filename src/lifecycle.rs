@@ -29,6 +29,37 @@ pub fn incumbent(bind: SocketAddr) -> Option<i32> {
     (pid != std::process::id() as i32).then_some(pid)
 }
 
+/// Who is serving, and which build they are: `(pid, version)`. A health body without a
+/// version — a build older than this field — reports an empty string, which
+/// [`is_newer`] treats as older than anything.
+pub fn incumbent_version(bind: SocketAddr) -> Option<(i32, String)> {
+    let body = probe_health(bind)?;
+    let pid = parse_pid(&body)?;
+    if pid == std::process::id() as i32 {
+        return None;
+    }
+    Some((pid, parse_version(&body).unwrap_or_default()))
+}
+
+fn parse_version(body: &str) -> Option<String> {
+    let after = body.split("\"version\":").nth(1)?;
+    let rest = &after[after.find('"')? + 1..];
+    Some(rest[..rest.find('"')?].to_string())
+}
+
+/// Whether `ours` is a newer build than `theirs`, by dotted number. Anything that does
+/// not parse counts as older, so an incumbent of unknown vintage gets replaced.
+pub fn is_newer(ours: &str, theirs: &str) -> bool {
+    fn parts(v: &str) -> Vec<u64> {
+        v.trim()
+            .split(|c| c == '.' || c == '-' || c == '+')
+            .take(3)
+            .map(|p| p.parse().unwrap_or(0))
+            .collect()
+    }
+    parts(ours) > parts(theirs)
+}
+
 /// Pull the pid out of a `/_router/health` response. Deliberately tolerant: the body
 /// arrives with HTTP headers attached and is only ever produced by us.
 fn parse_pid(body: &str) -> Option<i32> {
@@ -138,5 +169,29 @@ mod tests {
         assert_eq!(parse_pid("{\"ok\":true}"), None);
         // A different service on the port must not be mistaken for an incumbent.
         assert_eq!(parse_pid("{\"pid\":\"not-a-number\"}"), None);
+    }
+}
+
+#[cfg(test)]
+mod version_tests {
+    use super::*;
+
+    #[test]
+    fn the_version_is_read_out_of_a_health_body_with_headers_attached() {
+        let body = "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\r\n{\"ok\":true,\"pid\":4242,\"version\":\"0.1.0\"}";
+        assert_eq!(parse_pid(body), Some(4242));
+        assert_eq!(parse_version(body).as_deref(), Some("0.1.0"));
+        assert_eq!(parse_version("{\"ok\":true,\"pid\":1}"), None, "a build from before the field");
+    }
+
+    #[test]
+    fn newer_means_a_higher_dotted_number_and_unknown_is_oldest() {
+        assert!(is_newer("0.2.0", "0.1.9"));
+        assert!(is_newer("0.1.10", "0.1.9"));
+        assert!(!is_newer("0.1.0", "0.1.0"));
+        assert!(!is_newer("0.1.0", "0.1.1"));
+        assert!(is_newer("0.1.0", ""), "an incumbent that reports no version is replaced");
+        assert!(!is_newer("", "0.1.0"));
+        assert!(!is_newer("0.1.0-rc1", "0.1.0"), "pre-release tags do not count");
     }
 }

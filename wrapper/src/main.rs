@@ -33,7 +33,7 @@ use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::net::Shutdown;
 use std::os::unix::net::UnixListener;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -45,13 +45,35 @@ const CONTROL_DIR: &str = "/tmp/agent-router-sessions";
 /// The real binary lives beside us under this name.
 const REAL_SUFFIX: &str = ".real";
 
+/// An absolute path to something runnable: what the editor hands a process wrapper.
+fn is_executable(p: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    p.is_absolute()
+        && std::fs::metadata(p)
+            .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+}
+
 fn main() {
-    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("claude"));
-    let real = {
-        let mut p = exe.clone().into_os_string();
-        p.push(REAL_SUFFIX);
-        PathBuf::from(p)
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    // Two ways to be run. As Claude Code's `claudeProcessWrapper` setting, the editor
+    // passes the real binary's path as the first argument. As the shim that replaced the
+    // editor's own `claude`, the real binary lives beside us as `claude.real`.
+    let real = match args.first().map(PathBuf::from) {
+        Some(p) if is_executable(&p) => {
+            args.remove(0);
+            p
+        }
+        _ => {
+            let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("claude"));
+            let mut p = exe.into_os_string();
+            p.push(REAL_SUFFIX);
+            PathBuf::from(p)
+        }
     };
+    if std::env::var_os("AGENT_ROUTER_WRAPPER_DEBUG").is_some() {
+        eprintln!("claude-wrapper: real={} args={args:?}", real.display());
+    }
 
     // Nothing to wrap: exec the real thing if we can find it, or fail exactly as the
     // missing binary would have.
@@ -60,7 +82,6 @@ fn main() {
         std::process::exit(127);
     }
 
-    let args: Vec<String> = std::env::args().skip(1).collect();
     let mut child = match Command::new(&real)
         .args(&args)
         .stdin(Stdio::piped())

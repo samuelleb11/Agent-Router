@@ -118,6 +118,27 @@ CREATE TABLE IF NOT EXISTS tool_invocations (
   name       TEXT NOT NULL
 );
 
+-- Router-level settings that must outlive a restart and have no better home.
+-- Today: the password hash (see auth.rs). Never a credential.
+CREATE TABLE IF NOT EXISTS settings (
+  key        TEXT PRIMARY KEY,
+  value      TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+-- Phones that asked to be told when a session is waiting on a person. The token is
+-- Apple's; `router_ref` is what the phone calls this router, echoed back so a tap
+-- opens the right session in the right place.
+CREATE TABLE IF NOT EXISTS push_devices (
+  token         TEXT PRIMARY KEY,
+  name          TEXT,
+  environment   TEXT NOT NULL DEFAULT 'development',
+  router_ref    TEXT,
+  registered_at INTEGER NOT NULL,
+  last_seen_at  INTEGER NOT NULL,
+  last_result   TEXT
+);
+
 CREATE TABLE IF NOT EXISTS bodies (
   request_id   INTEGER NOT NULL REFERENCES requests(id) ON DELETE CASCADE,
   direction    TEXT NOT NULL,
@@ -363,6 +384,27 @@ fn apportion(chars: i64, total_chars: i64, total_tokens: i64) -> i64 {
         return 0;
     }
     ((chars as i128 * total_tokens as i128) / total_chars as i128) as i64
+}
+
+/// A router-level setting, by key. Absent is `None`.
+pub fn setting(db_path: &Path, key: &str) -> Option<String> {
+    let conn = Connection::open_with_flags(
+        db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI,
+    )
+    .ok()?;
+    conn.query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| r.get(0))
+        .ok()
+}
+
+pub fn set_setting(db_path: &Path, key: &str, value: &str) -> Result<()> {
+    let conn = Connection::open(db_path)?;
+    conn.execute(
+        "INSERT INTO settings (key, value, updated_at) VALUES (?1, ?2, ?3)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+        params![key, value, now_ms()],
+    )?;
+    Ok(())
 }
 
 pub fn now_ms() -> i64 {

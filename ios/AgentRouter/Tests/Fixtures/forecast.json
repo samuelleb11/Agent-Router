@@ -1,0 +1,251 @@
+{
+ "generated_at": 1789200351055,
+ "since": null,
+ "accounts": [
+  {
+   "id": "primary",
+   "label": "primary@example.test",
+   "email": null,
+   "plan": null,
+   "active": 0,
+   "usage": {
+    "requests": 2639,
+    "prompt_tokens": 1090342493,
+    "output_tokens": 2534326,
+    "cost": 699.47566,
+    "last_seen": 1789105528587
+   },
+   "week": {
+    "cost": 699.47566,
+    "prompt_tokens": 1090342493,
+    "requests": 2639
+   },
+   "seen_at": 1789105528587,
+   "status": "allowed_warning",
+   "pool": 1789333200,
+   "five_hour": {
+    "expired": true,
+    "reset_at": 1789123200,
+    "seen_at": 1789105528587
+   },
+   "seven_day": {
+    "used": 0.98,
+    "reset_at": 1789333200,
+    "window_start": 1788728400,
+    "burn_per_active_hour": 0.012098156827137387,
+    "active_hours_left": 1.6531443827160512,
+    "duty_fraction": 0.13854533830087695,
+    "exhausts_at": 1789243306811,
+    "resets_first": false,
+    "projected_end_util": 1.0,
+    "basis": "this-window",
+    "measured_active_hours": 7.439149722222222,
+    "readings": 2639,
+    "expired": false,
+    "seen_at": 1789105528587,
+    "series": [
+     {
+      "t": 1788998400000,
+      "u": 0.89
+     },
+     {
+      "t": 1789023600000,
+      "u": 0.89
+     },
+     {
+      "t": 1789048800000,
+      "u": 0.93
+     },
+     {
+      "t": 1789074000000,
+      "u": 0.95
+     },
+     {
+      "t": 1789086600000,
+      "u": 0.98
+     },
+     {
+      "t": 1789099200000,
+      "u": 0.98
+     }
+    ]
+   }
+  },
+  {
+   "id": "secondary",
+   "label": "secondary@example.test",
+   "email": "secondary@example.test",
+   "plan": "max",
+   "active": 0,
+   "usage": {
+    "requests": 48,
+    "prompt_tokens": 1373667,
+    "output_tokens": 11103,
+    "cost": 0.8910738500000001,
+    "last_seen": 1789002975450
+   },
+   "week": {
+    "cost": 0.8910738500000001,
+    "prompt_tokens": 1373667,
+    "requests": 48
+   },
+   "seen_at": 1789002975450,
+   "status": "allowed_warning",
+   "pool": 1789146000,
+   "five_hour": {
+    "expired": true,
+    "reset_at": 1789014600,
+    "seen_at": 1789002975450
+   },
+   "seven_day": {
+    "expired": true,
+    "reset_at": 1789146000,
+    "seen_at": 1789002975450
+   }
+  },
+  {
+   "id": "retired",
+   "label": "retired@example.test",
+   "email": "retired@example.test",
+   "plan": null,
+   "active": 1,
+   "usage": {
+    "requests": 5143,
+    "prompt_tokens": 1584403225,
+    "output_tokens": 4650043,
+    "cost": 1086.98563475,
+    "last_seen": 1789199872568
+   },
+   "week": {
+    "cost": 1086.98563475,
+    "prompt_tokens": 1584403225,
+    "requests": 5143
+   },
+   "seen_at": 1789199872568,
+   "status": "allowed",
+   "pool": 1789750800,
+   "five_hour": {
+    "used": 0.06,
+    "reset_at": 1789213800,
+    "window_start": 1789195800,
+    "burn_per_active_hour": 0.05358376134189615,
+    "active_hours_left": 17.542628148148147,
+    "duty_fraction": 0.8938949462685819,
+    "exhausts_at": null,
+    "resets_first": true,
+    "projected_end_util": 0.2389391601263006,
+    "basis": "this-window",
+    "measured_active_hours": 1.1197422222222222,
+    "readings": 273,
+    "expired": false,
+    "seen_at": 1789199872568,
+    "series": [
+     {
+      "t": 1789195500000,
+      "u": 0.0
+     },
+     {
+      "t": 1789195875000,
+      "u": 0.01
+     },
+     {
+      "t": 1789196250000,
+      "u": 0.01
+     },
+     {
+      "t": 1789196625000,
+      "u": 0.01
+     },
+     {
+      "t": 1789197000000,
+      "u": 0.01
+     },
+     {
+      "t": 1789197375000,
+      "u": 0.01
+     },
+     {
+      "t": 1789197750000,
+      "u": 0.02
+     },
+     {
+      "t": 1789198125000,
+      "u": 0.03
+     },
+     {
+      "t": 1789198500000,
+      "u": 0.03
+     },
+     {
+      "t": 1789198875000,
+      "u": 0.05
+     },
+     {
+      "t": 1789199250000,
+      "u": 0.06
+     },
+     {
+      "t": 1789199625000,
+      "u": 0.06
+     }
+    ]
+   },
+   "seven_day": {
+    "used": 0.1,
+    "reset_at": 1789750800,
+    "window_start": 1789146000,
+    "burn_per_active_hour": 0.011114870613180552,
+    "active_hours_left": 80.9726025,
+    "duty_fraction": 0.3087190581929984,
+    "exhausts_at": null,
+    "resets_first": true,
+    "projected_end_util": 0.624665364077095,
+    "basis": "this-window",
+    "measured_active_hours": 8.996955833333333,
+    "readings": 2462,
+    "expired": false,
+    "seen_at": 1789199872568,
+    "series": [
+     {
+      "t": 1789149600000,
+      "u": 0.01
+     },
+     {
+      "t": 1789162200000,
+      "u": 0.05
+     },
+     {
+      "t": 1789174800000,
+      "u": 0.07
+     },
+     {
+      "t": 1789187400000,
+      "u": 0.1
+     }
+    ]
+   }
+  }
+ ],
+ "global": {
+  "requests": 7830.0,
+  "prompt_tokens": 2676119385.0,
+  "output_tokens": 7195472.0,
+  "cost": 1787.3523685999999,
+  "accounts": 3,
+  "combined_headroom": {
+   "active_hours_left": 19.195772530864197,
+   "pools": 2,
+   "first_to_exhaust": {
+    "account_id": "an-account",
+    "window": "seven_day",
+    "at": 1789243306811,
+    "in_ms": 42955756
+   }
+  },
+  "pace_30d": {
+   "cost": 7660.081579714285,
+   "prompt_tokens": 11469083078.571428,
+   "basis": "the last 7 days of recorded spend"
+  }
+ }
+}

@@ -526,6 +526,353 @@ pub async fn tools(State(state): State<Arc<AppState>>, Query(f): Query<Filter>) 
 }
 
 // ---------------------------------------------------------------------------
+// Forecast
+// ---------------------------------------------------------------------------
+
+/// The two rate-limit windows, paired with the columns that carry them.
+struct Win {
+    kind: crate::forecast::WindowKind,
+    reset_col: &'static str,
+    util_col: &'static str,
+    /// Whether duty is the session you are in, or the habit you keep. See `duty_for`.
+    session_duty: bool,
+}
+
+const WINDOWS: [Win; 2] = [
+    Win {
+        kind: crate::forecast::FIVE_HOUR,
+        reset_col: "rl_5h_reset",
+        util_col: "rl_5h_utilization",
+        session_duty: true,
+    },
+    Win {
+        kind: crate::forecast::SEVEN_DAY,
+        reset_col: "rl_7d_reset",
+        util_col: "rl_7d_utilization",
+        session_duty: false,
+    },
+];
+
+/// Every request an account made from `from_ms` onward, carrying the utilisation only
+/// for rows belonging to `reset`. Rows outside that window — and rows that carried no
+/// rate-limit header at all — still come back, because they are work, and work is the
+/// denominator the burn rate divides by.
+fn window_readings(
+    conn: &Connection,
+    account: &str,
+    win: &Win,
+    reset: i64,
+    from_ms: i64,
+) -> anyhow::Result<Vec<crate::forecast::Reading>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT r.started_at, CASE WHEN r.{reset} = ?2 THEN r.{util} END
+         FROM requests r WHERE r.account_id = ?1 AND r.started_at >= ?3
+         ORDER BY r.started_at",
+        reset = win.reset_col,
+        util = win.util_col,
+    ))?;
+    let out = stmt
+        .query_map(rusqlite::params![account, reset, from_ms], |row| {
+            Ok(crate::forecast::Reading { at_ms: row.get(0)?, util: row.get(1)? })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(out)
+}
+
+/// The account's own recent average, for a window still too young to have a slope.
+/// The most recent completed window that yields one wins; looking past three is
+/// reaching for data old enough to describe different habits.
+fn trailing_burn(conn: &Connection, account: &str, win: &Win, before: i64) -> Option<f64> {
+    let mut stmt = conn
+        .prepare(&format!(
+            "SELECT DISTINCT {reset} FROM requests
+             WHERE account_id = ?1 AND {reset} IS NOT NULL AND {reset} < ?2
+             ORDER BY {reset} DESC LIMIT 3",
+            reset = win.reset_col
+        ))
+        .ok()?;
+    let resets: Vec<i64> = stmt
+        .query_map(rusqlite::params![account, before], |r| r.get(0))
+        .ok()?
+        .filter_map(Result::ok)
+        .collect();
+    for reset in resets {
+        let from = (reset - win.kind.span_ms / 1000).saturating_mul(1000);
+        let rs = window_readings(conn, account, win, reset, from).ok()?;
+        if let Some((burn, _)) = crate::forecast::burn_from(&rs) {
+            return Some(burn);
+        }
+    }
+    None
+}
+
+/// Work ÷ clock, over a horizon chosen to match the window.
+///
+/// A **5-hour** window is forecast against the session you are in: once you are
+/// working you tend to keep working, and the store bears that out — these windows run
+/// at 71–100% duty from the first request to the last. So the clock starts at your
+/// first request in the window.
+///
+/// A **7-day** window is forecast against the habit, sleep included — 2.5–8.2 active
+/// hours a day here. Measuring a week the way a session is measured is the difference
+/// between "you will finish your week on Tuesday" and "you will not finish it at all":
+/// a 7-day window that opened this morning has only a session inside it, and reading
+/// 81% duty off that projects four days of solid work nobody was going to do.
+///
+/// The long horizon divides by however much history exists, capped at the window span,
+/// rather than always by the span itself — with three days on record, dividing a week
+/// into it would halve the duty and push every date out to meet it.
+fn duty_for(
+    conn: &Connection,
+    account: &str,
+    win: &Win,
+    readings: &[crate::forecast::Reading],
+    now_ms: i64,
+) -> anyhow::Result<f64> {
+    let (times, since): (Vec<i64>, i64) = if win.session_duty {
+        let Some(first) = readings.first() else { return Ok(0.0) };
+        (readings.iter().map(|r| r.at_ms).collect(), first.at_ms)
+    } else {
+        let from = now_ms - win.kind.span_ms;
+        let mut stmt = conn.prepare(
+            "SELECT started_at FROM requests
+             WHERE account_id = ?1 AND started_at >= ?2 ORDER BY started_at",
+        )?;
+        let times: Vec<i64> = stmt
+            .query_map(rusqlite::params![account, from], |r| r.get(0))?
+            .collect::<Result<_, _>>()?;
+        let first_ever: Option<i64> = conn.query_row(
+            "SELECT min(started_at) FROM requests WHERE account_id = ?1",
+            [account],
+            |r| r.get(0),
+        )?;
+        (times, first_ever.unwrap_or(from).max(from))
+    };
+    let span = (now_ms - since) as f64;
+    if span <= 0.0 {
+        return Ok(0.0);
+    }
+    Ok((crate::forecast::active_ms(&times) as f64 / span).clamp(0.0, 1.0))
+}
+
+/// Rate-limit windows projected to their end, for every account, with a rollup.
+///
+/// Unlike every other read in this file, this one ignores `project` and `session`
+/// entirely: a quota belongs to an account, not to whatever you happened to spend it
+/// on. Only the usage figures honour `since`.
+pub async fn forecast(State(state): State<Arc<AppState>>, Query(f): Query<Filter>) -> ApiResult {
+    let conn = open(&state)?;
+    let now = crate::db::now_ms();
+    let since = f.since.map(|s| s.clamp(0, now));
+    let week_ago = now - 7 * 86_400_000;
+
+    // Driven from `accounts` but unioned with anything the request log references, so a
+    // removed account's history is still reported rather than silently dropped.
+    let ids = rows(
+        &conn,
+        "SELECT a.id AS id, coalesce(a.email, a.label, a.id) AS label, a.email AS email,
+                a.subscription_type AS plan, coalesce(a.active, 0) AS active
+         FROM accounts a
+         UNION
+         SELECT DISTINCT r.account_id, r.account_id, NULL, NULL, 0
+         FROM requests r
+         WHERE r.account_id IS NOT NULL
+           AND r.account_id NOT IN (SELECT id FROM accounts)",
+        &[],
+    )?;
+
+    let mut out = Vec::new();
+    for item in ids.as_array().map(Vec::as_slice).unwrap_or_default() {
+        let Some(id) = item.get("id").and_then(Value::as_str) else { continue };
+
+        let usage = one(
+            &conn,
+            "SELECT count(*) AS requests,
+                    coalesce(sum(u.prompt_tokens),0)  AS prompt_tokens,
+                    coalesce(sum(u.output_tokens),0)  AS output_tokens,
+                    coalesce(sum(c.cost),0)           AS cost,
+                    max(r.started_at)                 AS last_seen
+             FROM requests r
+             LEFT JOIN usage u        ON u.request_id = r.id
+             LEFT JOIN request_cost c ON c.request_id = r.id
+             WHERE r.account_id = ?1 AND (?2 IS NULL OR r.started_at >= ?2)",
+            &[&id, &since],
+        )?;
+
+        // Spend over the trailing week, whatever range the page is showing. A pace is
+        // only meaningful against a fixed horizon.
+        let week = one(
+            &conn,
+            "SELECT coalesce(sum(c.cost),0) AS cost,
+                    coalesce(sum(u.prompt_tokens),0) AS prompt_tokens,
+                    count(*) AS requests
+             FROM requests r
+             LEFT JOIN usage u        ON u.request_id = r.id
+             LEFT JOIN request_cost c ON c.request_id = r.id
+             WHERE r.account_id = ?1 AND r.started_at >= ?2",
+            &[&id, &week_ago],
+        )?;
+
+        let latest = one(
+            &conn,
+            "SELECT rl_5h_reset, rl_7d_reset, rl_status, started_at
+             FROM requests
+             WHERE account_id = ?1 AND rl_status IS NOT NULL
+             ORDER BY started_at DESC LIMIT 1",
+            &[&id],
+        )?;
+        let seen_at = latest.get("started_at").and_then(Value::as_i64);
+
+        let mut windows = Map::new();
+        for win in &WINDOWS {
+            let reset = latest.get(win.reset_col).and_then(Value::as_i64);
+            let Some(reset) = reset else {
+                windows.insert(win.kind.name.into(), Value::Null);
+                continue;
+            };
+            // A window whose reset has already passed rolled over while we were not
+            // looking. We know nothing about the one that replaced it — reporting the
+            // old utilisation as current would be a lie with a number on it.
+            if reset.saturating_mul(1000) <= now {
+                windows.insert(
+                    win.kind.name.into(),
+                    json!({ "expired": true, "reset_at": reset, "seen_at": seen_at }),
+                );
+                continue;
+            }
+            let from_ms = (reset - win.kind.span_ms / 1000).saturating_mul(1000);
+            let readings = window_readings(&conn, id, win, reset, from_ms)?;
+            let fallback = if crate::forecast::burn_from(&readings).is_none() {
+                trailing_burn(&conn, id, win, reset)
+            } else {
+                None
+            };
+            let fc = crate::forecast::forecast(
+                &readings,
+                win.kind,
+                reset,
+                now,
+                fallback,
+                duty_for(&conn, id, win, &readings, now)?,
+            );
+            // A downsampled curve for the burn-down chart. The worst reading in a
+            // bucket is the one that matters for headroom, so max() — the same rule
+            // `summary`'s quota history uses.
+            let bucket = (win.kind.span_ms / 48).max(1);
+            let series = rows(
+                &conn,
+                &format!(
+                    "SELECT (r.started_at / ?3) * ?3 AS t, max(r.{util}) AS u
+                     FROM requests r
+                     WHERE r.account_id = ?1 AND r.{reset} = ?2 AND r.{util} IS NOT NULL
+                     GROUP BY t ORDER BY t",
+                    util = win.util_col,
+                    reset = win.reset_col,
+                ),
+                &[&id, &reset, &bucket],
+            )?;
+            let mut v = serde_json::to_value(&fc)?;
+            if let Some(o) = v.as_object_mut() {
+                o.insert("expired".into(), json!(false));
+                o.insert("seen_at".into(), json!(seen_at));
+                o.insert("series".into(), series);
+            }
+            windows.insert(win.kind.name.into(), v);
+        }
+
+        let mut row = item.clone();
+        if let Some(o) = row.as_object_mut() {
+            o.insert("usage".into(), usage);
+            o.insert("week".into(), week);
+            o.insert("seen_at".into(), json!(seen_at));
+            o.insert("status".into(), latest.get("rl_status").cloned().unwrap_or(Value::Null));
+            o.insert(
+                "pool".into(),
+                latest.get("rl_7d_reset").cloned().unwrap_or(Value::Null),
+            );
+            o.extend(windows);
+        }
+        out.push(row);
+    }
+
+    Ok(Json(json!({
+        "generated_at": now,
+        "since": since,
+        "accounts": out,
+        "global": global_rollup(&out, now),
+    })))
+}
+
+/// What totals across accounts and what does not.
+///
+/// Spend, tokens and requests add up. Utilisation does not — each account's percentage
+/// is of its own limit — so headroom is totalled in the one unit that composes: hours
+/// of work left. Two credentials onto one Anthropic account share a quota and report
+/// the same 7-day reset, so they are counted once.
+///
+/// This is a reporting figure. The router does not route around a spent limit; the
+/// active-account switch stays where it was, in the user's hands.
+fn global_rollup(accounts: &[Value], now: i64) -> Value {
+    let sum = |key: &str, field: &str| -> f64 {
+        accounts
+            .iter()
+            .filter_map(|a| a.get(key)?.get(field)?.as_f64())
+            .sum()
+    };
+
+    let mut pools: Map<String, Value> = Map::new();
+    let mut soonest: Option<(i64, String, &str)> = None;
+    for a in accounts {
+        let id = a.get("id").and_then(Value::as_str).unwrap_or("").to_string();
+        let pool = a
+            .get("pool")
+            .and_then(Value::as_i64)
+            .map_or_else(|| id.clone(), |p| p.to_string());
+        for key in ["five_hour", "seven_day"] {
+            let Some(w) = a.get(key).filter(|w| w.is_object()) else { continue };
+            if w.get("expired").and_then(Value::as_bool).unwrap_or(false) {
+                continue;
+            }
+            if let Some(at) = w.get("exhausts_at").and_then(Value::as_i64) {
+                if soonest.as_ref().is_none_or(|(best, ..)| at < *best) {
+                    soonest = Some((at, id.clone(), key));
+                }
+            }
+            // Per pool, the binding constraint is whichever window runs dry first.
+            if let Some(left) = w.get("active_hours_left").and_then(Value::as_f64) {
+                let slot = pools.entry(pool.clone()).or_insert_with(|| json!(left));
+                if slot.as_f64().is_some_and(|cur| left < cur) {
+                    *slot = json!(left);
+                }
+            }
+        }
+    }
+    let headroom: f64 = pools.values().filter_map(Value::as_f64).sum();
+
+    let week_cost = sum("week", "cost");
+    let week_tokens = sum("week", "prompt_tokens");
+    json!({
+        "requests":      sum("usage", "requests"),
+        "prompt_tokens": sum("usage", "prompt_tokens"),
+        "output_tokens": sum("usage", "output_tokens"),
+        "cost":          sum("usage", "cost"),
+        "accounts":      accounts.len(),
+        "combined_headroom": {
+            "active_hours_left": if pools.is_empty() { Value::Null } else { json!(headroom) },
+            "pools": pools.len(),
+            "first_to_exhaust": soonest.map(|(at, id, window)| json!({
+                "account_id": id, "window": window, "at": at, "in_ms": at - now,
+            })),
+        },
+        "pace_30d": {
+            "cost":          week_cost * 30.0 / 7.0,
+            "prompt_tokens": week_tokens * 30.0 / 7.0,
+            "basis":         "the last 7 days of recorded spend",
+        },
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Accounts
 // ---------------------------------------------------------------------------
 

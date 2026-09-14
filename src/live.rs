@@ -109,7 +109,8 @@ pub struct LiveSession {
     /// Put away by the reader. Ignored the moment the session is active again, because
     /// archiving says "I am done with this", not "never show me this".
     pub archived: bool,
-    /// Running under the shim, so it can take a typed message and a stop.
+    /// Running under the shim *and answering on its socket*, so a typed message or a
+    /// stop would actually arrive. A leftover socket file does not count.
     pub wrapped: bool,
     pub bytes: u64,
 }
@@ -160,10 +161,13 @@ pub fn discover() -> Vec<LiveSession> {
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_default();
             let head = read_head(&path);
+            // Asked first: a stale socket also carries a stale `.pending`, and the state
+            // below must not read "ask" off a prompt nobody is waiting on.
+            let wrapped = crate::peer::wrapper_alive(&session_id);
             LiveSession {
                 archived: archived.contains(&session_id),
                 state: tail_state(&path, &session_id, now - m).to_string(),
-                wrapped: crate::peer::wrapper_socket(&session_id).is_some(),
+                wrapped,
                 title: read_ai_title(&path).or(head.title),
                 created_ms: head.created_ms,
                 session_id,
@@ -258,6 +262,45 @@ fn read_head(path: &Path) -> Head {
         }
     }
     out
+}
+
+/// What a user-role text line really is. Besides what the person typed, Claude Code
+/// stores its own bookkeeping under that role: interruption markers, and the echo of a
+/// slash command — `<command-name>/model</command-name>…` followed by a
+/// `<local-command-stdout>` with what it printed, each preceded by a caveat that is
+/// addressed to the model, not to a reader.
+enum UserText {
+    Skip,
+    Interrupt(String),
+    Command(String),
+    Text(String),
+}
+
+fn tag(s: &str, name: &str) -> Option<String> {
+    let open = format!("<{name}>");
+    let close = format!("</{name}>");
+    let start = s.find(&open)? + open.len();
+    let end = s[start..].find(&close)? + start;
+    Some(s[start..end].trim().to_owned())
+}
+
+fn user_text(s: &str) -> UserText {
+    let t = s.trim();
+    if t.starts_with("<local-command-caveat>") {
+        return UserText::Skip;
+    }
+    if is_marker(t) {
+        return UserText::Interrupt(clip(t.trim_matches(['[', ']']), 200));
+    }
+    if let Some(name) = tag(t, "command-name") {
+        let args = tag(t, "command-args").unwrap_or_default();
+        let line = if args.is_empty() { name } else { format!("{name} {args}") };
+        return UserText::Command(clip(&line, 200));
+    }
+    if let Some(out) = tag(t, "local-command-stdout") {
+        return UserText::Command(clip(&out, TEXT_CAP));
+    }
+    UserText::Text(clip(t, TEXT_CAP))
 }
 
 /// Bracketed system markers Claude Code stores under the user role.
@@ -358,7 +401,7 @@ pub struct Item {
     pub t: Option<String>,
     /// user | assistant | system
     pub role: String,
-    /// text | thinking | tool_use | tool_result | ask | answer | other
+    /// text | thinking | tool_use | tool_result | ask | answer | interrupt | command | other
     pub kind: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -385,6 +428,8 @@ pub struct Status {
     pub detail: String,
     /// Milliseconds since the transcript last grew.
     pub quiet_ms: i64,
+    /// Messages typed while a turn ran, still waiting their turn.
+    pub queued: usize,
 }
 
 #[derive(Default)]
@@ -394,6 +439,7 @@ struct Progress {
     ask_open: bool,
     ended_turn: bool,
     last_ts_ms: Option<i64>,
+    queued: usize,
 }
 
 fn ts_ms(v: &Value) -> Option<i64> {
@@ -420,9 +466,26 @@ fn ts_ms(v: &Value) -> Option<i64> {
 
 /// Fold one transcript line into the running picture of what the session is doing.
 fn advance(v: &Value, p: &mut Progress) {
+    let ty = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
+    // The CLI's own queue: typed while a turn ran, taken up when it ends.
+    if ty == "queue-operation" {
+        match v.get("operation").and_then(Value::as_str) {
+            Some("enqueue") => p.queued += 1,
+            Some("dequeue") | Some("remove") => p.queued = p.queued.saturating_sub(1),
+            _ => {}
+        }
+        return;
+    }
     let Some(content) = v.get("message").and_then(|m| m.get("content")) else {
         return;
     };
+    // A user line stored as a plain string: the same words as the block form.
+    if let Some(s) = content.as_str() {
+        if ty == "user" {
+            user_line(s, p);
+        }
+        return;
+    }
     let Some(blocks) = content.as_array() else {
         return;
     };
@@ -446,8 +509,12 @@ fn advance(v: &Value, p: &mut Progress) {
             "text" => {
                 // Assistant prose with nothing outstanding means the turn is over and
                 // the session is waiting on a human.
-                if v.get("type").and_then(|t| t.as_str()) == Some("assistant") {
+                if ty == "assistant" {
                     p.ended_turn = p.pending.is_empty();
+                } else if ty == "user" {
+                    if let Some(s) = b.get("text").and_then(|t| t.as_str()) {
+                        user_line(s, p);
+                    }
                 }
             }
             _ => {}
@@ -455,18 +522,35 @@ fn advance(v: &Value, p: &mut Progress) {
     }
 }
 
+/// What a user-role line does to the state. An interruption ends the turn outright —
+/// the tool it cut short will never get a result, and a feed that keeps waiting for
+/// one says "working" forever, with Stop lit and nothing to stop. A new prompt starts
+/// a turn: the session is working until it answers.
+fn user_line(s: &str, p: &mut Progress) {
+    match user_text(s) {
+        UserText::Interrupt(_) => {
+            p.pending.clear();
+            p.ask_open = false;
+            p.ended_turn = true;
+        }
+        UserText::Text(_) => p.ended_turn = false,
+        UserText::Command(_) | UserText::Skip => {}
+    }
+}
+
 fn status_of(p: &Progress, quiet_ms: i64) -> Status {
+    let queued = p.queued;
     if p.ask_open {
-        return Status { state: "ask".into(), detail: "Waiting for your answer".into(), quiet_ms };
+        return Status { state: "ask".into(), detail: "Waiting for your answer".into(), quiet_ms, queued };
     }
     if !p.pending.is_empty() {
         let what = p.last_tool.clone().unwrap_or_else(|| "a tool".into());
-        return Status { state: "tool".into(), detail: format!("Running {what}"), quiet_ms };
+        return Status { state: "tool".into(), detail: format!("Running {what}"), quiet_ms, queued };
     }
     if p.ended_turn {
-        return Status { state: "idle".into(), detail: "Waiting for you".into(), quiet_ms };
+        return Status { state: "idle".into(), detail: "Waiting for you".into(), quiet_ms, queued };
     }
-    Status { state: "working".into(), detail: "Working".into(), quiet_ms }
+    Status { state: "working".into(), detail: "Working".into(), quiet_ms, queued }
 }
 
 /// Project one transcript line into zero or more rows.
@@ -525,10 +609,11 @@ fn project_value(v: &Value, prev_ts_ms: Option<i64>) -> Vec<Item> {
         // Claude Code writes interruption markers as user-role text, but nobody typed
         // them — showing them as the user's own words misattributes a cancellation to
         // a request, which reads as if they asked for something they did not.
-        if is_marker(s) {
-            push("interrupt", None, Some(clip(s.trim_matches(['[', ']']), 200)), None);
-        } else {
-            push("text", None, Some(clip(s, TEXT_CAP)), None);
+        match user_text(s) {
+            UserText::Skip => {}
+            UserText::Interrupt(t) => push("interrupt", None, Some(t), None),
+            UserText::Command(t) => push("command", None, Some(t), None),
+            UserText::Text(t) => push("text", None, Some(t), None),
         }
         return out;
     }
@@ -542,10 +627,15 @@ fn project_value(v: &Value, prev_ts_ms: Option<i64>) -> Vec<Item> {
                 if let Some(s) = b.get("text").and_then(|t| t.as_str()) {
                     if s.trim().is_empty() {
                         // nothing to show
-                    } else if ty == "user" && is_marker(s) {
+                    } else if ty == "user" {
                         // Same markers as the string form: the transcript stores them
                         // either way, and the first fix only caught one of them.
-                        push("interrupt", None, Some(clip(s.trim_matches(['[', ']']), 200)), None);
+                        match user_text(s) {
+                            UserText::Skip => {}
+                            UserText::Interrupt(t) => push("interrupt", None, Some(t), None),
+                            UserText::Command(t) => push("command", None, Some(t), None),
+                            UserText::Text(t) => push("text", None, Some(t), None),
+                        }
                     } else {
                         push("text", None, Some(clip(s, TEXT_CAP)), None);
                     }
@@ -1033,6 +1123,104 @@ pub struct InterruptBody {
     pub session: String,
 }
 
+/// The levels the CLI's `/effort` accepts, in order. `max` is silently downgraded by
+/// the CLI for models that do not offer it.
+pub const EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+
+/// The aliases the CLI's model picker knows; each also takes a `[1m]` suffix for the
+/// million-token context. A full model id works too.
+pub const MODEL_ALIASES: [&str; 6] = ["opus", "sonnet", "haiku", "fable", "mythos", "opusplan"];
+
+/// A model name the CLI could accept: an alias, an id, an optional `[1m]`.
+pub fn valid_model(m: &str) -> bool {
+    let m = m.trim();
+    !m.is_empty()
+        && m.len() <= 64
+        && m.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '_' | '[' | ']' | ':' | '/'))
+}
+
+/// What the two UIs offer, from one place.
+pub async fn options() -> Json<serde_json::Value> {
+    let mut models: Vec<String> = Vec::new();
+    for a in MODEL_ALIASES {
+        models.push(a.to_string());
+        models.push(format!("{a}[1m]"));
+    }
+    Json(serde_json::json!({ "models": models, "efforts": EFFORTS }))
+}
+
+#[derive(Deserialize)]
+pub struct ModelBody {
+    pub session: String,
+    pub model: String,
+}
+
+/// Change a running session's model — the editor's picker, from anywhere. The CLI
+/// confirms or refuses on its control channel; we wait briefly for that answer so a
+/// refused name is reported rather than silently ignored.
+pub async fn set_model(Json(body): Json<ModelBody>) -> Response {
+    let model = body.model.trim().to_string();
+    if !valid_model(&model) {
+        return bad(axum::http::StatusCode::BAD_REQUEST, "That is not a model name.");
+    }
+    if !crate::peer::wrapper_alive(&body.session) {
+        return bad(axum::http::StatusCode::SERVICE_UNAVAILABLE, "Only a session under the wrapper can change model; restart it after installing the wrapper.");
+    }
+    let session = body.session.clone();
+    let m = model.clone();
+    let sent = tokio::task::spawn_blocking(move || crate::peer::set_model_via_wrapper(&session, &m)).await;
+    let request_id = match sent {
+        Ok(Ok(id)) => id,
+        Ok(Err(e)) => return bad(axum::http::StatusCode::SERVICE_UNAVAILABLE, &e.to_string()),
+        Err(e) => return bad(axum::http::StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    };
+    // The answer usually lands within a few hundred milliseconds.
+    for _ in 0..12 {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        if let Some(r) = crate::peer::control_response(&body.session, &request_id) {
+            let ok = r["subtype"] == "success";
+            let notices: Vec<String> = r["response"]["notices"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|n| n.as_str().map(str::to_owned)).collect())
+                .unwrap_or_default();
+            if ok {
+                tracing::info!(session = %body.session, %model, "model switched from the live view");
+                return Json(serde_json::json!({ "ok": true, "model": model, "notices": notices })).into_response();
+            }
+            let why = r["error"].as_str().unwrap_or("the session refused the model").to_string();
+            return bad(axum::http::StatusCode::UNPROCESSABLE_ENTITY, &why);
+        }
+    }
+    Json(serde_json::json!({ "ok": true, "model": model, "pending": true })).into_response()
+}
+
+#[derive(Deserialize)]
+pub struct EffortBody {
+    pub session: String,
+    pub effort: String,
+}
+
+/// Set the effort level, as `/effort <level>` typed into the session.
+pub async fn set_effort(Json(body): Json<EffortBody>) -> Response {
+    let level = body.effort.trim().to_ascii_lowercase();
+    if !EFFORTS.contains(&level.as_str()) {
+        return bad(axum::http::StatusCode::BAD_REQUEST, "Effort is one of low, medium, high, xhigh, max.");
+    }
+    if !crate::peer::wrapper_alive(&body.session) {
+        return bad(axum::http::StatusCode::SERVICE_UNAVAILABLE, "Only a session under the wrapper can change effort; restart it after installing the wrapper.");
+    }
+    let session = body.session.clone();
+    let l = level.clone();
+    match tokio::task::spawn_blocking(move || crate::peer::set_effort_via_wrapper(&session, &l)).await {
+        Ok(Ok(())) => {
+            tracing::info!(session = %body.session, %level, "effort set from the live view");
+            Json(serde_json::json!({ "ok": true, "effort": level })).into_response()
+        }
+        Ok(Err(e)) => bad(axum::http::StatusCode::SERVICE_UNAVAILABLE, &e.to_string()),
+        Err(e) => bad(axum::http::StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    }
+}
+
 /// Stop a running turn — the live view's equivalent of the editor's stop button.
 ///
 /// Only wrapped sessions can be stopped: an interrupt is a control frame on stdin, and
@@ -1048,6 +1236,123 @@ pub async fn interrupt(Json(body): Json<InterruptBody>) -> Response {
         Ok(Err(e)) => bad(axum::http::StatusCode::SERVICE_UNAVAILABLE, &e.to_string()),
         Err(e) => bad(axum::http::StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
     }
+}
+
+#[derive(Deserialize)]
+pub struct AsideBody {
+    pub session: String,
+    pub text: String,
+}
+
+const ASIDE_PROMPT: &str = "This is a quick side question, asked from a phone while the main \
+conversation continues elsewhere. Answer it directly and briefly from what you already know \
+of this conversation. Do not use tools, do not start new work, do not restate the plan.";
+
+/// The Claude Code binary to ask a side question with: the most recently installed
+/// extension's — the real binary, not our shim, since the fork needs no control channel —
+/// or a plain install.
+fn claude_binary() -> Option<PathBuf> {
+    let newest = crate::shim::targets()
+        .into_iter()
+        .map(|t| {
+            let shim = PathBuf::from(&t.path);
+            let real = PathBuf::from(format!("{}.real", t.path));
+            if real.is_file() { real } else { shim }
+        })
+        .filter(|p| p.is_file())
+        .max_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok());
+    if newest.is_some() {
+        return newest;
+    }
+    let home = std::env::var("HOME").unwrap_or_default();
+    [format!("{home}/.local/bin/claude"), "/opt/homebrew/bin/claude".into(), "/usr/local/bin/claude".into()]
+        .into_iter()
+        .map(PathBuf::from)
+        .find(|p| p.is_file())
+}
+
+/// Put a session on the shelf without a request: for the forks a side question leaves.
+fn shelve(session_id: &str) {
+    let mut set = archived_set();
+    set.insert(session_id.to_string());
+    let mut ids: Vec<String> = set.into_iter().collect();
+    ids.sort();
+    let path = archive_path();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Ok(json) = serde_json::to_vec_pretty(&ids) {
+        let _ = std::fs::write(&path, json);
+    }
+}
+
+/// A side question — what the CLI's own `/btw` does, which the editor's stream refuses.
+/// The session is resumed *forked*: a new session id, the original untouched, no tools,
+/// a brief answer, and the fork shelved so it does not clutter the list. It costs one
+/// replay of the session's context, mostly cached.
+pub async fn aside(Json(body): Json<AsideBody>) -> Response {
+    let text = body.text.trim().to_string();
+    if text.is_empty() {
+        return bad(axum::http::StatusCode::BAD_REQUEST, "Nothing to ask.");
+    }
+    let Some(path) = transcript_path(&body.session) else {
+        return bad(axum::http::StatusCode::NOT_FOUND, "No such session.");
+    };
+    let Some(claude) = claude_binary() else {
+        return bad(axum::http::StatusCode::SERVICE_UNAVAILABLE, "No Claude Code binary on the Mac to ask with.");
+    };
+    // The fork is written under the project of the directory it runs from, so run from
+    // the session's own — or home when that directory is gone, since `--resume` finds
+    // the session either way.
+    let cwd = read_head(&path)
+        .cwd
+        .filter(|c| Path::new(c).is_dir())
+        .or_else(|| std::env::var("HOME").ok());
+    let session = body.session.clone();
+    let started = now_ms();
+    let run = tokio::task::spawn_blocking(move || {
+        let mut cmd = std::process::Command::new(&claude);
+        cmd.args(["-p", "--resume", &session, "--fork-session", "--output-format", "json",
+                  "--tools", "", "--append-system-prompt", ASIDE_PROMPT, "--", &text]);
+        if let Some(c) = &cwd {
+            cmd.current_dir(c);
+        }
+        cmd.stdin(std::process::Stdio::null());
+        cmd.output()
+    });
+    let out = match tokio::time::timeout(Duration::from_secs(180), run).await {
+        Ok(Ok(Ok(o))) => o,
+        Ok(Ok(Err(e))) => return bad(axum::http::StatusCode::SERVICE_UNAVAILABLE, &format!("could not start Claude Code: {e}")),
+        Ok(Err(e)) => return bad(axum::http::StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+        Err(_) => return bad(axum::http::StatusCode::GATEWAY_TIMEOUT, "No answer within three minutes."),
+    };
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // `--output-format json` prints one result object; be tolerant of anything around it.
+    let result = stdout
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .find(|v| v["type"] == "result")
+        .or_else(|| serde_json::from_str::<Value>(stdout.trim()).ok());
+    let Some(r) = result else {
+        let err = String::from_utf8_lossy(&out.stderr);
+        return bad(axum::http::StatusCode::BAD_GATEWAY, &format!("Claude Code gave no answer: {}", err.lines().last().unwrap_or("").trim()));
+    };
+    if r["is_error"] == true {
+        return bad(axum::http::StatusCode::BAD_GATEWAY, r["result"].as_str().unwrap_or("the side question failed"));
+    }
+    let fork = r["session_id"].as_str().unwrap_or("").to_string();
+    if !fork.is_empty() && fork != body.session {
+        shelve(&fork);
+    }
+    tracing::info!(session = %body.session, %fork, "side question answered");
+    Json(serde_json::json!({
+        "ok": true,
+        "answer": r["result"].as_str().unwrap_or(""),
+        "fork": fork,
+        "cost": r["total_cost_usd"],
+        "took_ms": now_ms() - started,
+    }))
+    .into_response()
 }
 
 #[derive(Deserialize)]
@@ -1136,7 +1441,7 @@ pub async fn stream(
             let st = status_of(&prog, quiet.max(0));
             let changed = last_status
                 .as_ref()
-                .map(|old| old.state != st.state || old.detail != st.detail)
+                .map(|old| old.state != st.state || old.detail != st.detail || old.queued != st.queued)
                 .unwrap_or(true);
             // Resend a quiet reading periodically so "waiting 4m" keeps counting up.
             if changed || quiet > 3_000 {
@@ -1153,6 +1458,89 @@ pub async fn stream(
     Sse::new(s).keep_alive(KeepAlive::default())
 }
 
+/// What to call a session in a notification: its project, and its title if it has one.
+pub fn session_label(session_id: &str) -> Option<(String, Option<String>)> {
+    let path = transcript_path(session_id)?;
+    let head = read_head(&path);
+    let project = head
+        .cwd
+        .as_deref()
+        .and_then(|c| c.rsplit('/').next())
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| "session".into());
+    Some((project, read_ai_title(&path).or(head.title)))
+}
+
+/// Transcripts written within the last `within_ms`, as (session id, path).
+pub fn recent_transcripts(within_ms: i64) -> Vec<(String, PathBuf)> {
+    let now = now_ms();
+    let Ok(dirs) = fs::read_dir(projects_root()) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for dir in dirs.flatten() {
+        let Ok(files) = fs::read_dir(dir.path()) else { continue };
+        for file in files.flatten() {
+            let path = file.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                continue;
+            }
+            let Ok(meta) = file.metadata() else { continue };
+            if now - mtime_ms(&meta) > within_ms {
+                continue;
+            }
+            if let Some(id) = path.file_stem().and_then(|s| s.to_str()) {
+                out.push((id.to_owned(), path.clone()));
+            }
+        }
+    }
+    out
+}
+
+/// The AskUserQuestion this transcript is waiting on, if any: the tool call's id and
+/// its first question. For a session with no wrapper this is the only way to know.
+pub fn pending_ask(path: &Path) -> Option<(String, String)> {
+    const TAIL: u64 = 256 * 1024;
+    let mut f = fs::File::open(path).ok()?;
+    let len = f.metadata().ok()?.len();
+    f.seek(SeekFrom::Start(len.saturating_sub(TAIL))).ok()?;
+    let mut buf = Vec::new();
+    f.take(TAIL).read_to_end(&mut buf).ok()?;
+    let text = String::from_utf8_lossy(&buf);
+    let mut open: Vec<(String, String)> = Vec::new();
+    for line in text.lines().skip(1) {
+        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        let Some(blocks) = v.get("message").and_then(|m| m.get("content")).and_then(Value::as_array) else { continue };
+        for b in blocks {
+            match b.get("type").and_then(Value::as_str) {
+                Some("tool_use") if b.get("name").and_then(Value::as_str) == Some("AskUserQuestion") => {
+                    let id = b.get("id").and_then(Value::as_str).unwrap_or_default().to_owned();
+                    let q = b
+                        .get("input")
+                        .and_then(|i| i.get("questions"))
+                        .and_then(Value::as_array)
+                        .and_then(|qs| qs.first())
+                        .and_then(|q| q.get("question"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("A question is waiting")
+                        .to_owned();
+                    if !id.is_empty() {
+                        open.push((id, q));
+                    }
+                }
+                Some("tool_result") => {
+                    if let Some(id) = b.get("tool_use_id").and_then(Value::as_str) {
+                        open.retain(|(o, _)| o != id);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    open.pop()
+}
+
 /// Single-line convenience wrapper, used by the tests.
 #[cfg(test)]
 fn project(line: &str) -> Vec<Item> {
@@ -1165,6 +1553,71 @@ fn project(line: &str) -> Vec<Item> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_interruption_ends_the_turn_and_a_prompt_starts_one() {
+        let mut p = Progress::default();
+        let call = serde_json::json!({"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{}}]}});
+        advance(&call, &mut p);
+        assert_eq!(status_of(&p, 0).state, "tool");
+        // The person hit stop: the CLI writes the marker, the tool never answers.
+        let stop = serde_json::json!({"type":"user","message":{"role":"user","content":"[Request interrupted by user for tool use]"}});
+        advance(&stop, &mut p);
+        assert_eq!(status_of(&p, 0).state, "idle", "an interrupted turn is over");
+        // The block form of the same marker, on a fresh pending call.
+        advance(&call, &mut p);
+        let stop2 = serde_json::json!({"type":"user","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]}});
+        advance(&stop2, &mut p);
+        assert_eq!(status_of(&p, 0).state, "idle");
+        // A new prompt: working until the assistant speaks.
+        let ask = serde_json::json!({"type":"user","message":{"role":"user","content":"and now do the other thing"}});
+        advance(&ask, &mut p);
+        assert_eq!(status_of(&p, 0).state, "working");
+        let said = serde_json::json!({"type":"assistant","message":{"content":[{"type":"text","text":"done"}]}});
+        advance(&said, &mut p);
+        assert_eq!(status_of(&p, 0).state, "idle");
+        // A command echo changes nothing.
+        let echo = serde_json::json!({"type":"user","message":{"role":"user","content":"<command-name>/effort</command-name>"}});
+        advance(&echo, &mut p);
+        assert_eq!(status_of(&p, 0).state, "idle");
+    }
+
+    #[test]
+    fn the_queue_is_counted_from_the_transcripts_own_bookkeeping() {
+        let mut p = Progress::default();
+        for op in ["enqueue", "enqueue", "dequeue"] {
+            advance(&serde_json::json!({"type":"queue-operation","operation":op}), &mut p);
+        }
+        assert_eq!(status_of(&p, 0).queued, 1);
+        advance(&serde_json::json!({"type":"queue-operation","operation":"remove"}), &mut p);
+        advance(&serde_json::json!({"type":"queue-operation","operation":"remove"}), &mut p);
+        assert_eq!(status_of(&p, 0).queued, 0, "never below zero");
+    }
+
+    #[test]
+    fn a_slash_commands_echo_reads_as_a_command_not_as_the_users_words() {
+        let caveat = r#"{"type":"user","message":{"role":"user","content":"<local-command-caveat>Caveat: The messages below were generated by the user while running local commands.</local-command-caveat>"}}"#;
+        assert!(project(caveat).is_empty(), "a note addressed to the model is not shown");
+        let name = r#"{"type":"user","message":{"role":"user","content":"<command-name>/model</command-name>\n<command-message>model</command-message>\n<command-args>haiku</command-args>"}}"#;
+        let it = &project(name)[0];
+        assert_eq!((it.kind.as_str(), it.text.as_deref()), ("command", Some("/model haiku")));
+        let out = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"<local-command-stdout>Set model to `haiku (claude-haiku-4-5-20251001)`</local-command-stdout>"}]}}"#;
+        let it = &project(out)[0];
+        assert_eq!((it.kind.as_str(), it.text.as_deref()), ("command", Some("Set model to `haiku (claude-haiku-4-5-20251001)`")));
+        let plain = r#"{"type":"user","message":{"role":"user","content":"please run /model for me"}}"#;
+        assert_eq!(project(plain)[0].kind, "text", "words about a command are still words");
+    }
+
+    #[test]
+    fn model_names_are_checked_before_they_reach_a_session() {
+        for ok in ["opus", "opus[1m]", "claude-opus-5-20260115", "sonnet", "fable[1m]"] {
+            assert!(valid_model(ok), "{ok}");
+        }
+        for bad in ["", "opus; rm -rf /", "a name with spaces", "x\n/exit", &"o".repeat(65)] {
+            assert!(!valid_model(bad), "{bad:?}");
+        }
+        assert!(EFFORTS.contains(&"xhigh"));
+    }
 
     #[test]
     fn a_null_per_turn_effort_falls_through_to_the_session_effort() {

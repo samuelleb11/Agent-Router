@@ -1,0 +1,7 @@
+src/**
+tsconfig.json
+node_modules/**
+out/**/*.map
+bin/.gitkeep
+.gitignore
+package.json.orig

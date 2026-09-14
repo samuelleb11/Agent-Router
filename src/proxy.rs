@@ -76,6 +76,10 @@ pub struct AppState {
     pub quota_cache: tokio::sync::RwLock<Option<crate::quota::Cached>>,
     /// The in-progress `setup-token` sign-in, if any. One at a time.
     pub login: crate::login::Shared,
+    /// The router's password, asked of callers that are not on this machine.
+    pub auth: crate::auth::Auth,
+    /// Phones to tell when a session is waiting on a person.
+    pub push: std::sync::Arc<crate::notify::Push>,
     pub capture: Sender<CaptureEvent>,
     dumps_left: AtomicUsize,
     dropped: AtomicUsize,
@@ -90,12 +94,16 @@ impl AppState {
             .build();
         let client = Client::builder(TokioExecutor::new()).build(tls);
         let dumps_left = AtomicUsize::new(config.dump_headers);
+        let auth = crate::auth::Auth::load(&config.db_path)?;
+        let push = std::sync::Arc::new(crate::notify::Push::new(&config.db_path));
         Ok(Arc::new(Self {
             client,
             config,
             active: tokio::sync::RwLock::new(None),
             quota_cache: tokio::sync::RwLock::new(None),
             login: Default::default(),
+            auth,
+            push,
             capture,
             dumps_left,
             dropped: AtomicUsize::new(0),

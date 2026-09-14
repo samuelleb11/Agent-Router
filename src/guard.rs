@@ -1,10 +1,11 @@
 //! Access guards. The router holds a live subscription credential and signs every
 //! request it forwards, so the set of callers allowed to reach it is kept as narrow
-//! as it can be without a login of its own.
+//! as it can be.
 //!
-//! Four independent layers, each closing a different hole:
+//! Five independent layers, each closing a different hole:
 //!
-//! 1. **Loopback bind** (see `config`) — the socket is never exposed off-host.
+//! 1. **Loopback bind** (see `config`) — the socket is never exposed off-host unless
+//!    `AGENT_ROUTER_BIND` says so.
 //! 2. **Peer check** — the connecting address must itself be loopback, so a port
 //!    forward or an SSH tunnel cannot smuggle a remote caller in.
 //! 3. **Host header check** — defeats DNS rebinding, where a web page resolves its
@@ -12,14 +13,21 @@
 //!    The socket and peer checks both *pass* in that attack; only this one fails it.
 //! 4. **Shape check** (see `proxy`) — only `/v1/` paths, and only for callers that
 //!    already presented a credential of their own.
+//! 5. **Password** (see `auth`) — a caller that is not on this machine, which layers
+//!    1 and 2 only admit when the bind was widened on purpose, must present the
+//!    router's password. Without one set, it is refused outright.
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
-use axum::extract::{ConnectInfo, Request};
-use axum::http::{HeaderMap, StatusCode};
+use axum::extract::{ConnectInfo, Request, State};
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
+
+use crate::auth::Verdict;
+use crate::proxy::AppState;
 
 /// Hosts a legitimate local agent will address us by.
 ///
@@ -101,6 +109,7 @@ fn host_is_ip_literal(host: &str) -> bool {
 /// bodies, which contain the user's source code, so it needs the same protection
 /// as the credential itself.
 pub async fn layer(
+    State(state): State<Arc<AppState>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     req: Request,
     next: Next,
@@ -113,7 +122,51 @@ pub async fn layer(
         tracing::warn!(%peer, "refused: {why}");
         return (StatusCode::FORBIDDEN, format!("agent-router: {why}\n")).into_response();
     }
+    // Layer 5. Health stays open: it is pid and version, and the handover probe in
+    // `lifecycle` reads it before it has anything to authenticate with.
+    if !peer.ip().is_loopback() && req.uri().path() != "/_router/health" {
+        match state.auth.check(req.headers()).await {
+            Verdict::Ok => {}
+            Verdict::NoPassword => {
+                tracing::warn!(%peer, "refused: no password is set");
+                return (
+                    StatusCode::FORBIDDEN,
+                    "agent-router: no password set — set one from the dashboard on the machine running the router\n",
+                )
+                    .into_response();
+            }
+            // A browser's first hit on a page is always this, so it is not a warning —
+            // but a client that should be presenting the password and is not looks
+            // identical, and this is the only place that can say so.
+            Verdict::Missing => {
+                tracing::info!(%peer, path = %req.uri().path(), "challenged: no password presented");
+                return challenge(req.uri().path());
+            }
+            Verdict::Wrong => {
+                tracing::warn!(%peer, path = %req.uri().path(), "refused: wrong password");
+                return challenge(req.uri().path());
+            }
+        }
+    }
     next.run(req).await
+}
+
+/// A browser gets the Basic challenge and shows its prompt. An agent path does not:
+/// nothing on `/v1/` is a browser, and the fix there is an environment variable.
+fn challenge(path: &str) -> Response {
+    if path.starts_with("/v1/") {
+        return (
+            StatusCode::UNAUTHORIZED,
+            "agent-router: this router has a password — set ANTHROPIC_AUTH_TOKEN to it\n",
+        )
+            .into_response();
+    }
+    (
+        StatusCode::UNAUTHORIZED,
+        [(header::WWW_AUTHENTICATE, "Basic realm=\"agent-router\", charset=\"UTF-8\"")],
+        "agent-router: password required\n",
+    )
+        .into_response()
 }
 
 #[cfg(test)]

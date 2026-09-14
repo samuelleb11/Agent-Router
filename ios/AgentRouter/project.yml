@@ -1,0 +1,108 @@
+# The Xcode project is generated from this file: `xcodegen generate` (brew install xcodegen).
+# The .xcodeproj itself is not committed — it is a build artefact of this spec.
+name: AgentRouter
+options:
+  bundleIdPrefix: ca.whnet
+  deploymentTarget:
+    iOS: "26.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: false
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    IPHONEOS_DEPLOYMENT_TARGET: "26.0"
+    ENABLE_USER_SCRIPT_SANDBOXING: true
+    # The team is ABCDE12345 — the id in parentheses on the certificate is the person,
+    # not the team, and pointing this at that id is what makes Xcode say "No profiles
+    # found". With no Apple ID signed into Xcode, automatic signing still works offline
+    # here because the team's wildcard development profile is already on this Mac and
+    # already lists the phone.
+    DEVELOPMENT_TEAM: ABCDE12345
+    CODE_SIGN_STYLE: Automatic
+    CODE_SIGN_IDENTITY: "Apple Development"
+targets:
+  AgentRouter:
+    type: application
+    platform: iOS
+    sources:
+      - Sources
+    # Push needs the capability on the App ID; automatic signing adds it when an Apple
+    # ID is signed into Xcode. Without one, build with CODE_SIGN_ENTITLEMENTS= (empty) and
+    # the app runs without notifications, saying so in Settings.
+    entitlements:
+      path: Sources/AgentRouter.entitlements
+      properties:
+        aps-environment: development
+    info:
+      path: Sources/Info.plist
+      properties:
+        CFBundleDisplayName: Agent Router
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        # Routers live on the LAN and speak plain HTTP; both need saying so.
+        NSLocalNetworkUsageDescription: Agent Router connects to routers running on your local network.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+        ITSAppUsesNonExemptEncryption: false
+        # The team the app is signed under, as `TEAMID.` — sent to the router when the
+        # phone registers, so an APNs key dropped beside the router needs nothing typed.
+        AppIdentifierPrefix: "$(AppIdentifierPrefix)"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ca.whnet.agent-router
+        TARGETED_DEVICE_FAMILY: "1,2"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        SWIFT_EMIT_LOC_STRINGS: true
+  AgentRouterTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests
+    dependencies:
+      - target: AgentRouter
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ca.whnet.agent-router.tests
+        # Unsigned on the simulator; on a device pass CODE_SIGNING_ALLOWED=YES, and the
+        # generated Info.plist is what lets the bundle be signed there.
+        CODE_SIGNING_ALLOWED: "NO"
+        GENERATE_INFOPLIST_FILE: "YES"
+  AgentRouterUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: UITests
+    dependencies:
+      - target: AgentRouter
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ca.whnet.agent-router.uitests
+        CODE_SIGNING_ALLOWED: "NO"
+        GENERATE_INFOPLIST_FILE: "YES"
+        TEST_TARGET_NAME: AgentRouter
+schemes:
+  AgentRouter:
+    build:
+      targets:
+        AgentRouter: all
+        AgentRouterTests: [test]
+        AgentRouterUITests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - AgentRouterTests
+        - AgentRouterUITests

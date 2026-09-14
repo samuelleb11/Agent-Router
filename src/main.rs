@@ -7,15 +7,19 @@
 mod accounts;
 mod analyze;
 mod api;
+mod apns;
+mod auth;
 mod capture;
 mod config;
 mod db;
+mod forecast;
 mod guard;
 mod lifecycle;
 mod live;
 mod peer;
 mod pricing;
 mod login;
+mod notify;
 mod proxy;
 mod quota;
 mod setup;
@@ -32,6 +36,10 @@ agent-router — a local proxy between Claude Code and Anthropic
 
 USAGE:
   agent-router                       run the router (default)
+  agent-router --ensure              run only if no router is serving, or an older
+                                     build is — then take the port over without a gap
+  agent-router --if-not-running      run only if no router is serving
+  agent-router --version             print the version
   agent-router install [OPTIONS]     point Claude Code at it, and start it at login
   agent-router uninstall             undo exactly what install changed
   agent-router status                show what is installed and what is managed
@@ -39,13 +47,25 @@ USAGE:
 INSTALL OPTIONS:
   --project <dir>   configure one project instead of every project
   --no-service      only edit the config; do not register a login item
+  --no-config       only register the login item; do not edit the config
   --port <n>        router port (default 8787)
+  --bind <addr>     address the login item listens on (default 127.0.0.1;
+                    0.0.0.0 lets the phone app connect — set a password first)
 
 Only one settings key is ever touched: env.ANTHROPIC_BASE_URL. Everything else in
 your settings file is left exactly as it is, and uninstall restores whatever was
 there before — unless you have since changed it yourself, in which case it is left
 alone.
 ";
+
+/// Where a router on this machine answers, for the flags that ask before serving.
+fn loopback_addr() -> std::net::SocketAddr {
+    let port: u16 = std::env::var("AGENT_ROUTER_PORT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(8787);
+    std::net::SocketAddr::from(([127, 0, 0, 1], port))
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -58,16 +78,33 @@ async fn main() -> anyhow::Result<()> {
             print!("{USAGE}");
             return Ok(());
         }
+        Some("--version") | Some("-V") => {
+            println!("agent-router {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
         Some("--if-not-running") => {
             // Something already serving means our job is done. Used by the shell
             // profile autostart, which runs on every new shell.
-            let port: u16 = std::env::var("AGENT_ROUTER_PORT")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(8787);
-            let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
-            if lifecycle::incumbent(addr).is_some() {
+            if lifecycle::incumbent(loopback_addr()).is_some() {
                 return Ok(());
+            }
+            return serve().await;
+        }
+        Some("--ensure") => {
+            // Serve only if nobody does, or if whoever does is an older build — then
+            // the handover replaces them without dropping a request. The editor
+            // extension runs this on every window it opens, so "nothing to do" has to
+            // be quick and quiet.
+            let ours = env!("CARGO_PKG_VERSION");
+            match lifecycle::incumbent_version(loopback_addr()) {
+                Some((pid, theirs)) if !lifecycle::is_newer(ours, &theirs) => {
+                    println!("agent-router {theirs} already serving (pid {pid}); nothing to do");
+                    return Ok(());
+                }
+                Some((pid, theirs)) => {
+                    println!("agent-router {theirs} (pid {pid}) is older than {ours}; taking over");
+                }
+                None => {}
             }
             return serve().await;
         }
@@ -101,10 +138,18 @@ fn cmd_install(args: &[String]) -> anyhow::Result<()> {
 
     if !args.iter().any(|a| a == "--no-service") {
         let exe = setup::install_binary()?;
-        match setup::service::install(&exe) {
+        // The login item listens where it is told to, so a router that serves the phone
+        // keeps doing so after a reboot, not only when started by hand.
+        let bind = flag_value(args, "--bind");
+        match setup::service::install(&exe, bind.as_deref()) {
             Ok(path) => println!("service   registered: {}", path.display()),
             Err(err) => println!("service   skipped: {err}"),
         }
+    }
+    if args.iter().any(|a| a == "--no-config") {
+        println!("config    left alone (--no-config)");
+        println!("\ndashboard {url}");
+        return Ok(());
     }
 
     let path = setup::settings_path(project.as_deref())?;
@@ -212,7 +257,6 @@ async fn serve() -> anyhow::Result<()> {
             tracing::info!("agent-router listening on http://{bind} (loopback only)");
         } else {
             tracing::warn!("agent-router listening on http://{bind} — REACHABLE FROM THE NETWORK");
-            tracing::warn!("  no route requires authentication, and the proxy signs with your credential");
         }
         tracing::info!("  dashboard:    http://{bind}");
         tracing::info!("  upstream:     {}", config.upstream);
@@ -237,6 +281,17 @@ async fn serve() -> anyhow::Result<()> {
 
     let (capture, capture_task) = capture::spawn(db_path.clone());
     let state = proxy::AppState::new(config, capture)?;
+    // Watches for prompts for the life of the process; a restart announces nothing.
+    tokio::spawn(state.push.clone().watch());
+    // Wraps every Claude Code extension VSCode adds, when the switch is on.
+    tokio::spawn(shim::watch(db_path.clone(), state.push.clone()));
+    if !bind.ip().is_loopback() {
+        if state.auth.configured().await {
+            tracing::info!("  callers from other machines must present the router password");
+        } else {
+            tracing::warn!("  no password is set: callers from other machines are refused until one is set from the dashboard on this machine");
+        }
+    }
 
     let app = Router::new()
         .route("/", get(api::index))
@@ -251,6 +306,13 @@ async fn serve() -> anyhow::Result<()> {
         .route("/api/accounts/probe", post(api::accounts_probe))
         .route("/api/accounts/remove", post(api::accounts_remove))
         .route("/api/accounts/edit", post(api::accounts_edit))
+        .route("/api/forecast", get(api::forecast))
+        .route("/api/auth", get(auth::api::status).post(auth::api::set))
+        .route("/api/push", get(notify::api::status))
+        .route("/api/push/config", post(notify::api::config))
+        .route("/api/push/register", post(notify::api::register))
+        .route("/api/push/unregister", post(notify::api::unregister))
+        .route("/api/push/test", post(notify::api::test))
         .route("/api/quota", get(quota::quota))
         .route("/api/quota/raw", get(quota::raw_usage))
         .route("/api/usage-token", post(quota::set_usage_token))
@@ -260,6 +322,7 @@ async fn serve() -> anyhow::Result<()> {
         .route("/api/setup/service", post(setup::api::service_toggle))
         .route("/api/setup/config", post(setup::api::config_toggle))
         .route("/api/setup/shim", get(shim::api::status).post(shim::api::toggle))
+        .route("/api/setup/shim/auto", post(shim::api::auto))
         .route("/live", get(live::page))
         .route("/api/live/sessions", get(live::sessions))
         .route("/api/live/stream", get(live::stream))
@@ -270,9 +333,13 @@ async fn serve() -> anyhow::Result<()> {
         .route("/api/live/answer", post(live::answer))
         .route("/api/live/archive", post(live::archive))
         .route("/api/live/project", get(live::project_stats))
+        .route("/api/live/options", get(live::options))
+        .route("/api/live/model", post(live::set_model))
+        .route("/api/live/effort", post(live::set_effort))
+        .route("/api/live/aside", post(live::aside))
         .route("/_router/health", get(api::health))
         .fallback(any(proxy::handle))
-        .layer(axum::middleware::from_fn(guard::layer))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), guard::layer))
         .with_state(state.clone());
 
     // SO_REUSEPORT: the incumbent keeps serving until it has drained, so the port is

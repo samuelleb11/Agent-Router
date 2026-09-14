@@ -301,6 +301,7 @@
   .card.archived { opacity: .55; }
   .empty { color: var(--faint); text-align: center; padding: 40px 20px; }
   .hide { display: none !important; }
+.sw { font: inherit; font-size: 12px; padding: 1px 4px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: inherit; max-width: 46vw; }
 </style>
 
 <header>
@@ -332,6 +333,9 @@ const stat = $('#stat'), statText = $('#statText'), composer = $('#composer');
 const msg = $('#msg'), sendBtn = $('#send'), note = $('#note'), stopBtn = $('#stop');
 const facts = $('#facts'), home = $('#home'), tabs = $('#tabs');
 let es = null, current = null, listScroll = 0, following = true, watcher = null, pinTo = null;
+// What a session can be switched to; one list for every UI, from the router.
+let options = { models: [], efforts: [] };
+fetch('/api/live/options').then(r => r.json()).then(o => { options = o; }).catch(() => {});
 // Pinning twice — now and after layout settles — costs nothing and covers the frame
 // in which a row changes height.
 // Show a notice above the composer, dismissible, optionally self-clearing. Text is set
@@ -386,12 +390,14 @@ function setStatus(s) {
   stat.className = s ? s.state : '';
   // Stop is only meaningful while something is running, and only a wrapped session can
   // be interrupted — so an unwrapped one keeps Send and finds out on click.
+  // Send stays: a message typed while a turn runs is queued by the session itself and
+  // taken up when the turn ends. Stop appears beside it while something is running.
   const busy = !!s && (s.state === 'tool' || s.state === 'working');
   stopBtn.classList.toggle('hide', !busy);
-  sendBtn.classList.toggle('hide', busy);
   if (!s) { statText.textContent = ''; return; }
   const quiet = s.quiet_ms > 4000 ? ' · ' + dur(s.quiet_ms) : '';
-  statText.textContent = s.detail + quiet;
+  const queued = s.queued ? ` · ${s.queued} queued` : '';
+  statText.textContent = s.detail + quiet + queued;
 }
 
 let allRows = [];
@@ -405,14 +411,26 @@ const onScreen = (r) => isCurrent(r) || !r.archived;
 async function loadSessions() {
   let rows = [];
   try { rows = await (await fetch('/api/live/sessions')).json(); }
-  catch { stat.className = ''; statText.textContent = 'offline'; return; }
+  catch (e) { stat.className = ''; statText.textContent = 'offline · ' + ((e && e.message) || 'no reply'); return; }
   allRows = rows;
+  // An extension update ships a fresh, unwrapped binary, and every session it starts is
+  // view-only with nothing to say so. Say so here, where the reader will be wondering.
+  const shim = await fetch('/api/setup/shim').then(r => r.json()).catch(() => null);
+  const newest = shim && Array.isArray(shim.targets) && shim.targets.length
+    ? shim.targets[shim.targets.length - 1] : null;
   const live = rows.filter(r => r.active).length;
   stat.className = live ? 'working' : 'idle';
   statText.textContent = live
     ? live + ' active'
     : (rows.length ? 'idle · ' + ago(Math.max(...rows.map(r => r.last_activity_ms))) : 'nothing yet');
   list.innerHTML = rows.length ? '' : '<div class="empty">No sessions in the last week.</div>';
+  if (newest && newest.state !== 'installed') {
+    const n = document.createElement('div');
+    n.className = 'empty';
+    n.textContent = `${newest.extension} is not wrapped — sessions it starts are view-only until the ` +
+      `wrapper is installed from the dashboard's Settings.`;
+    list.prepend(n);
+  }
 
   const card = (r) => {
     const el = document.createElement('div');
@@ -711,10 +729,12 @@ function render(it) {
       `<pre>${esc(it.text)}</pre>`;
     el.querySelector('.who').onclick = () => el.classList.toggle('open');
     return el;
+  } else if (it.kind === 'aside') {
+    el.innerHTML = `<div class="who">side answer${d}</div><div class="md">${md(it.text)}</div>`;
   } else if (it.kind === 'text' && it.role === 'assistant') {
     el.innerHTML = `<div class="who">${esc(who)}${d}</div><div class="md">${md(it.text)}</div>`;
   } else {
-    const label = it.kind === 'answer' ? '✓ answered' : esc(who);
+    const label = it.kind === 'answer' ? '✓ answered' : it.kind === 'command' ? '⌘ command' : esc(who);
     el.innerHTML = `<div class="who">${label}${d}</div><pre>${esc(it.text)}</pre>`;
   }
   return clampable(el);
@@ -850,8 +870,49 @@ function openSession(r, fromHistory) {
                   (p.cost != null ? ` · <b class="money">${usd(p.cost)}</b>` : '') + `</span>`);
       }
       facts.innerHTML = bits.join(' ');
+      // A wrapped session can be switched from here; a read-only one just says what it is.
+      if (r.wrapped) facts.append(' ', switcher('model', t.model), ' ', switcher('effort', t.effort));
     })
     .catch(() => { facts.classList.add('hide'); });
+}
+
+/// A <select> that changes the session's model or effort. The choice takes effect on the
+/// next turn, and the CLI's own notice — or refusal — is shown as the page's notice.
+function switcher(kind, currentValue) {
+  const sel = document.createElement('select');
+  sel.className = 'sw';
+  sel.title = kind === 'model' ? 'Switch the model for the next turn' : 'Set the effort level';
+  const list = kind === 'model' ? options.models : options.efforts;
+  const cur = (currentValue || '').replace(/^claude-/, '');
+  const values = [...new Set([cur, ...list].filter(Boolean))];
+  for (const v of values) {
+    const o = document.createElement('option');
+    o.value = v; o.textContent = (v === cur ? kind + ': ' : '') + v;
+    if (v === cur) o.selected = true;
+    sel.appendChild(o);
+  }
+  if (kind === 'model') {
+    const o = document.createElement('option');
+    o.value = '__other__'; o.textContent = 'other…';
+    sel.appendChild(o);
+  }
+  sel.onchange = async () => {
+    let value = sel.value;
+    if (value === '__other__') { value = (prompt('Model name or alias (opus, sonnet[1m], a full id…)') || '').trim(); if (!value) { sel.value = cur; return; } }
+    if (value === cur) return;
+    sel.disabled = true;
+    try {
+      const res = await fetch('/api/live/' + kind, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ session: current.session_id, [kind]: value })
+      });
+      const body = await res.json().catch(() => ({}));
+      if (res.ok) say((body.notices && body.notices.join(' ')) || (body.pending ? `${kind} sent — the session has not confirmed yet` : `${kind} set to ${value} — takes effect on the next turn`), { ok: true, for: 6000 });
+      else { say(body.reason || `Could not set the ${kind}.`); sel.value = cur; }
+    } catch (e) { say(`Could not set the ${kind} — ` + e); sel.value = cur; }
+    finally { sel.disabled = false; }
+  };
+  return sel;
 }
 
 stopBtn.onclick = async () => {
@@ -978,6 +1039,35 @@ async function deliver(text, opts = {}) {
 }
 
 sendBtn.onclick = () => deliver(msg.value.trim());
+
+// A side question: answered with the session's context, in a fork the session never
+// sees — what /btw does, which the editor's stream refuses. Shown here only.
+const btwBtn = document.createElement('button');
+btwBtn.id = 'btw'; btwBtn.className = 'btn ghost'; btwBtn.textContent = 'btw';
+btwBtn.title = 'Ask a quick side question without interrupting the session';
+stopBtn.after(btwBtn);
+btwBtn.onclick = async () => {
+  if (!current) return;
+  const q = (msg.value.trim() || prompt('Side question — answered from this session\'s context, without interrupting it') || '').trim();
+  if (!q) return;
+  btwBtn.disabled = true;
+  const asked = render({ role: 'user', kind: 'text', text: q });
+  asked.classList.add('pending'); asked.querySelector('.who').textContent = 'you · side question';
+  feed.appendChild(asked); following = true; pin();
+  msg.value = ''; msg.style.height = 'auto';
+  say('asking on the side — this replays the session once, usually under a minute', { ok: true });
+  try {
+    const res = await fetch('/api/live/aside', { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ session: current.session_id, text: q }) });
+    const body = await res.json().catch(() => ({}));
+    if (res.ok) {
+      feed.appendChild(render({ role: 'assistant', kind: 'aside', text: body.answer || '(no answer)' }));
+      say(`answered in ${dur(body.took_ms || 0)}${body.cost != null ? ' · ' + usd(body.cost) : ''}`, { ok: true, for: 6000 });
+      pin();
+    } else say(body.reason || 'The side question failed.');
+  } catch (e) { say('Side question failed — ' + e); }
+  finally { btwBtn.disabled = false; }
+};
 
 // iOS ignores interactive-widget and overlays the keyboard instead of resizing the
 // layout, so dvh alone still leaves the composer underneath it. The visual viewport is

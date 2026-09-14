@@ -327,7 +327,11 @@ pub mod api {
         let result = tokio::task::spawn_blocking(move || -> Result<()> {
             if req.enable {
                 let exe = install_binary()?;
-                service::install(&exe)?;
+                // The login item listens where this router does, so turning the service
+                // on from a router that serves the phone keeps the phone served after a
+                // reboot.
+                let bind = std::env::var("AGENT_ROUTER_BIND").ok();
+                service::install(&exe, bind.as_deref())?;
             } else {
                 service::uninstall()?;
             }
@@ -530,10 +534,14 @@ pub mod service {
         unsafe { libc::getuid() }.to_string()
     }
 
-    pub fn install(exe: &Path) -> Result<PathBuf> {
+    pub fn install(exe: &Path, bind: Option<&str>) -> Result<PathBuf> {
         let dir = data_dir()?;
         std::fs::create_dir_all(dir.join("logs"))?;
         let logs = dir.join("logs").join("router.log");
+        let bind_env = bind
+            .filter(|b| !b.trim().is_empty())
+            .map(|b| format!("    <key>AGENT_ROUTER_BIND</key><string>{}</string>\n", b.trim()))
+            .unwrap_or_default();
 
         // launchd hands a process almost no PATH, and the router shells out to
         // `claude` to identify accounts.
@@ -559,7 +567,7 @@ pub mod service {
   <key>EnvironmentVariables</key><dict>
     <key>PATH</key><string>{path_env}</string>
     <key>HOME</key><string>{home}</string>
-  </dict>
+{bind_env}  </dict>
   <key>StandardOutPath</key><string>{logs}</string>
   <key>StandardErrorPath</key><string>{logs}</string>
 </dict>
@@ -624,10 +632,14 @@ pub mod service {
         Ok(dir.join(UNIT))
     }
 
-    pub fn install(exe: &Path) -> Result<PathBuf> {
+    pub fn install(exe: &Path, bind: Option<&str>) -> Result<PathBuf> {
         let dir = data_dir()?;
         std::fs::create_dir_all(dir.join("logs"))?;
         let path_env = std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into());
+        let bind_env = bind
+            .filter(|b| !b.trim().is_empty())
+            .map(|b| format!("Environment=AGENT_ROUTER_BIND={}\n", b.trim()))
+            .unwrap_or_default();
         let unit = format!(
             "[Unit]\n\
              Description=Agent Router — local proxy between Claude Code and Anthropic\n\
@@ -638,7 +650,8 @@ pub mod service {
              # when a newer build takes the port over, and restarting would fight that.\n\
              Restart=on-failure\n\
              RestartSec=5\n\
-             Environment=PATH={path_env}\n\n\
+             Environment=PATH={path_env}\n\
+             {bind_env}\n\
              [Install]\n\
              WantedBy=default.target\n",
             exe = exe.display(),
@@ -700,7 +713,7 @@ pub mod service {
     /// restart-on-failure, which the Run registry key does not). Deliberately not
     /// written blind: it cannot be tested from here, and an untested installer that
     /// edits the registry is worse than none.
-    pub fn install(_exe: &Path) -> Result<PathBuf> {
+    pub fn install(_exe: &Path, _bind: Option<&str>) -> Result<PathBuf> {
         Err(anyhow!(
             "automatic service registration is not implemented on this platform yet — \
              the router still runs in the foreground, and `install --no-service` will \
