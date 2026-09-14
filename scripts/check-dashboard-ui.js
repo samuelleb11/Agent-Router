@@ -128,6 +128,17 @@ const WINDOWS = {
     basis: 'this-window', measured_active_hours: 5, readings: 900, expired: false,
     series: [{ t: NOW - 50 * 3600e3, u: 0.9 }],
   },
+  // The state the band exists to express: the central estimate crosses, but a quieter
+  // week does not. Amber, and worded as the coin flip it is.
+  'too close to call': {
+    used: 0.49, reset_at: (NOW + 95 * 3600e3) / 1000 | 0, window_start: (NOW - 73 * 3600e3) / 1000 | 0,
+    burn_per_active_hour: 0.0167, active_hours_left: 30.3, duty_fraction: 0.329,
+    duty: { low: 0.248, mid: 0.329, high: 0.409 }, verdict: 'tight',
+    exhausts_at: NOW + 93 * 3600e3, exhausts_at_early: NOW + 74 * 3600e3, exhausts_at_late: null,
+    resets_first: false, projected_end_util: 1, projected_end_util_low: 0.883, projected_end_util_high: 1,
+    basis: 'this-window', measured_active_hours: 29.1, readings: 7935, expired: false,
+    series: [{ t: NOW - 70 * 3600e3, u: 0.01 }, { t: NOW - 10 * 3600e3, u: 0.41 }],
+  },
   'rolled over while we were not looking': { expired: true, reset_at: (NOW - 26 * 3600e3) / 1000 | 0, seen_at: NOW - 30 * 3600e3 },
 };
 
@@ -135,8 +146,11 @@ check('every window state produces a line, and only the real trouble is red', ()
   for (const [name, w] of Object.entries(WINDOWS)) {
     const st = api.fcState(w);
     if (!st.text || /undefined|NaN|Infinity/.test(st.text)) throw new Error(`${name}: ${st.text}`);
-    const shouldShout = !!w.exhausts_at;
-    if (!!(st.tone === 'bad') !== shouldShout) throw new Error(`${name}: tone ${st.tone || 'plain'} for exhausts_at=${w.exhausts_at}`);
+    // Red is for a crossing that survives even a quiet week. A verdict of `tight` has an
+    // exhausts_at too, and must not shout about it; a payload with no verdict at all is
+    // an older router, and falls back to the boolean it does send.
+    const shouldShout = !!w.exhausts_at && w.verdict !== 'tight';
+    if (!!(st.tone === 'bad') !== shouldShout) throw new Error(`${name}: tone ${st.tone || 'plain'} for exhausts_at=${w.exhausts_at} verdict=${w.verdict}`);
     api.fcLine(w);
   }
   // With no forecast at all — the endpoint is missing, or this build predates it — the
@@ -146,6 +160,32 @@ check('every window state produces a line, and only the real trouble is red', ()
     throw new Error('an absent forecast must add no line under a meter that has a reading');
   }
   if (api.fcState(null).tone) throw new Error('an absent window must not be alarming');
+});
+
+check('a straddling band is amber and says so, and the band is disclosed', () => {
+  const st = api.fcState(WINDOWS['too close to call']);
+  if (st.tone !== 'warn') throw new Error(`a coin flip must not be red: ${st.tone}`);
+  if (!/too close to call/.test(st.text)) throw new Error(st.text);
+  if (!/quieter week it ends ≈88%/.test(st.text)) throw new Error(`the quiet end is the reassuring half: ${st.text}`);
+  const basis = api.fcBasis(WINDOWS['too close to call']);
+  if (!/25–41% across your days/.test(basis)) throw new Error(`the spread is why the wording hedges: ${basis}`);
+  // A window with no band discloses one number, not a range of one.
+  const flat = api.fcBasis(WINDOWS['resets before it fills']);
+  if (/across your days/.test(flat)) throw new Error(`no spread, nothing to disclose: ${flat}`);
+});
+
+check('a router that predates the band still renders as it always did', () => {
+  for (const k of ['runs out before the reset', 'already at the limit']) {
+    if (api.fcState(WINDOWS[k]).tone !== 'bad') throw new Error(`${k} lost its warning`);
+  }
+  if (api.fcState(WINDOWS['resets before it fills']).tone === 'bad') throw new Error('a calm window went red');
+  // And the runway draws a ray, not a cone, when there is no band to draw.
+  if (/opacity=".13"/.test(api.runwaySvg(WINDOWS['runs out before the reset'], 'var(--tok)', 300))) {
+    throw new Error('drew an uncertainty cone with no uncertainty to show');
+  }
+  if (!/opacity=".13"/.test(api.runwaySvg(WINDOWS['too close to call'], 'var(--tok)', 300))) {
+    throw new Error('a straddling band must show its cone');
+  }
 });
 
 check('the basis is disclosed, and never claims a fit it did not make', () => {

@@ -606,12 +606,20 @@ fn trailing_burn(conn: &Connection, account: &str, win: &Win, before: i64) -> Op
     None
 }
 
-/// Work ÷ clock, over a horizon chosen to match the window.
+/// How long a stretch of history counts as "your habits". The trailing window is the
+/// recent estimate; complete days older than it are the baseline that estimate shrinks
+/// toward, and what you were doing three weeks ago is not what you are doing now.
+const HABIT_DAYS: i64 = 21;
+const DAY_MS: i64 = 86_400_000;
+
+/// Work ÷ clock, over a horizon chosen to match the window — with the spread of your
+/// own days either side of it, for the windows where that spread is the whole question.
 ///
 /// A **5-hour** window is forecast against the session you are in: once you are
 /// working you tend to keep working, and the store bears that out — these windows run
 /// at 71–100% duty from the first request to the last. So the clock starts at your
-/// first request in the window.
+/// first request in the window, and the band has no width: this is a measurement of
+/// the session, not a guess about a habit.
 ///
 /// A **7-day** window is forecast against the habit, sleep included — 2.5–8.2 active
 /// hours a day here. Measuring a week the way a session is measured is the difference
@@ -619,40 +627,95 @@ fn trailing_burn(conn: &Connection, account: &str, win: &Win, before: i64) -> Op
 /// a 7-day window that opened this morning has only a session inside it, and reading
 /// 81% duty off that projects four days of solid work nobody was going to do.
 ///
-/// The long horizon divides by however much history exists, capped at the window span,
-/// rather than always by the span itself — with three days on record, dividing a week
-/// into it would halve the duty and push every date out to meet it.
-fn duty_for(
+/// The long horizon reports three numbers rather than one, because a week of long days
+/// projected flat across four more is how a dead heat ends up rendered in red:
+///
+/// * `recent` — work ÷ clock over the trailing window, exactly as this used to return.
+///   Numerator and denominator cover the same stretch, so it is unbiased as a rate.
+/// * `baseline` — the mean of every complete day on record, which is what the days
+///   ahead are more likely to look like than a hot streak is.
+/// * `mid` — the two blended, weighted by how many days each speaks for. With only a
+///   week on file there is nothing older to shrink toward, `baseline` and `recent`
+///   describe the same days, and this is the old number to the digit; the shrinkage
+///   only bites once there is genuinely older history. Recent habit never falls below
+///   a third of the weight, so a real change of pace still moves it.
+/// * the spread — the standard deviation of those daily duties, divided by the square
+///   root of the days left. The forecast averages over the days between now and the
+///   reset, so day-to-day variance shrinks accordingly, and the band tightens on its
+///   own as the reset approaches.
+fn duty_band_for(
     conn: &Connection,
     account: &str,
     win: &Win,
     readings: &[crate::forecast::Reading],
+    reset_at: i64,
     now_ms: i64,
-) -> anyhow::Result<f64> {
-    let (times, since): (Vec<i64>, i64) = if win.session_duty {
-        let Some(first) = readings.first() else { return Ok(0.0) };
-        (readings.iter().map(|r| r.at_ms).collect(), first.at_ms)
-    } else {
-        let from = now_ms - win.kind.span_ms;
-        let mut stmt = conn.prepare(
-            "SELECT started_at FROM requests
-             WHERE account_id = ?1 AND started_at >= ?2 ORDER BY started_at",
-        )?;
-        let times: Vec<i64> = stmt
-            .query_map(rusqlite::params![account, from], |r| r.get(0))?
-            .collect::<Result<_, _>>()?;
-        let first_ever: Option<i64> = conn.query_row(
-            "SELECT min(started_at) FROM requests WHERE account_id = ?1",
-            [account],
-            |r| r.get(0),
-        )?;
-        (times, first_ever.unwrap_or(from).max(from))
-    };
-    let span = (now_ms - since) as f64;
-    if span <= 0.0 {
-        return Ok(0.0);
+) -> anyhow::Result<crate::forecast::Duty> {
+    use crate::forecast::{active_ms, Duty};
+
+    if win.session_duty {
+        let Some(first) = readings.first() else { return Ok(Duty::flat(0.0)) };
+        let span = (now_ms - first.at_ms) as f64;
+        if span <= 0.0 {
+            return Ok(Duty::flat(0.0));
+        }
+        let times: Vec<i64> = readings.iter().map(|r| r.at_ms).collect();
+        return Ok(Duty::flat((active_ms(&times) as f64 / span).clamp(0.0, 1.0)));
     }
-    Ok((crate::forecast::active_ms(&times) as f64 / span).clamp(0.0, 1.0))
+
+    let from = now_ms - HABIT_DAYS * DAY_MS;
+    let mut stmt = conn.prepare(
+        "SELECT started_at FROM requests
+         WHERE account_id = ?1 AND started_at >= ?2 ORDER BY started_at",
+    )?;
+    let times: Vec<i64> = stmt
+        .query_map(rusqlite::params![account, from], |r| r.get(0))?
+        .collect::<Result<_, _>>()?;
+    let first_ever: Option<i64> = conn.query_row(
+        "SELECT min(started_at) FROM requests WHERE account_id = ?1",
+        [account],
+        |r| r.get(0),
+    )?;
+    let since = first_ever.unwrap_or(from).max(from);
+
+    let recent_from = (now_ms - win.kind.span_ms).max(since);
+    let recent_span = (now_ms - recent_from) as f64;
+    if recent_span <= 0.0 {
+        return Ok(Duty::flat(0.0));
+    }
+    let recent_times: Vec<i64> = times.iter().copied().filter(|t| *t >= recent_from).collect();
+    let recent = (active_ms(&recent_times) as f64 / recent_span).clamp(0.0, 1.0);
+
+    // Complete 24-hour days, counted back from now. Anchoring to the clock rather than
+    // the calendar dodges both timezones and the half-day at either end of the record:
+    // every bucket is a full day, and a day with no work in it is a zero — which is
+    // exactly the time off the flat estimate was pretending would not happen again.
+    let complete = (((now_ms - since) / DAY_MS) as usize).min(HABIT_DAYS as usize);
+    if complete < 3 {
+        return Ok(Duty::flat(recent));
+    }
+    let mut per_day = vec![0i64; complete];
+    for w in times.windows(2) {
+        let idx = ((now_ms - w[0]) / DAY_MS) as usize;
+        if idx < complete {
+            per_day[idx] += (w[1] - w[0]).clamp(0, crate::forecast::IDLE_GAP_MS);
+        }
+    }
+    let duties: Vec<f64> = per_day.iter().map(|ms| *ms as f64 / DAY_MS as f64).collect();
+
+    let n_recent = (win.kind.span_ms / DAY_MS).max(1) as usize;
+    let n_base = duties.len().saturating_sub(n_recent).min(2 * n_recent);
+    let baseline = duties.iter().sum::<f64>() / duties.len() as f64;
+    let mid = if n_base == 0 {
+        recent
+    } else {
+        (n_recent as f64 * recent + n_base as f64 * baseline) / (n_recent + n_base) as f64
+    };
+
+    let var = duties.iter().map(|d| (d - baseline).powi(2)).sum::<f64>() / duties.len() as f64;
+    let days_left =
+        ((reset_at.saturating_mul(1000) - now_ms) as f64 / DAY_MS as f64).max(1.0);
+    Ok(Duty::spread(mid, var.sqrt() / days_left.sqrt()))
 }
 
 /// Rate-limit windows projected to their end, for every account, with a rollup.
@@ -753,7 +816,7 @@ pub async fn forecast(State(state): State<Arc<AppState>>, Query(f): Query<Filter
                 reset,
                 now,
                 fallback,
-                duty_for(&conn, id, win, &readings, now)?,
+                duty_band_for(&conn, id, win, &readings, reset, now)?,
             );
             // A downsampled curve for the burn-down chart. The worst reading in a
             // bucket is the one that matters for headroom, so max() — the same rule

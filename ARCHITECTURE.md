@@ -99,6 +99,23 @@ alike. A 5-hour window is forecast against the session you are in (71–100% dut
 a 7-day window against the habit, sleep included (2.5–8.2 active hours a day here). Reading a
 week's duty off the session inside it projected four days of solid work nobody was going to do.
 
+Burn is a measurement; duty is a forecast, and holding one number for it constant from now to
+the reset extrapolates whatever you happened to be doing this week. On 2026-09-14 that put the
+7-day window at 49% used, 1.68%/active-hour and 32.8% duty — a crossing 2.2 hours before a
+reset 94.7 hours away, rendered in red, from a record whose complete days ran 2.1 to 11.6 hours
+of work. A 2.4% change in duty flipped the verdict.
+
+So duty is a band, not a number: the trailing week's rate, shrunk toward the mean of every
+complete day on record by how many days each speaks for, with the standard deviation of those
+days either side — divided by the square root of the days left, because the forecast averages
+over them and the band should tighten as the reset approaches. The projection runs three times,
+and the verdict is only `crosses` when even a quiet week exhausts the window; when the band
+straddles the reset it says `tight` rather than picking a side of a coin flip, and only
+`crosses` is red. With less than a week of history there is nothing older to shrink toward and
+the central estimate is the trailing rate to the digit; the shrinkage starts to bite as history
+accumulates. A 5-hour window's band has no width — that duty is a measurement of the session
+you are in, and it must not learn to hedge because the weekly one did.
+
 Utilisation arrives rounded to whole percent, so a window younger than two steps has no slope
 worth trusting; it borrows the account's own recent average and `basis` says so. The rate also
 depends on the model — Opus eats a window far faster than Haiku — and is not weighted for it.

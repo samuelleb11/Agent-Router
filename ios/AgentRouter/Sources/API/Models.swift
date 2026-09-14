@@ -139,9 +139,19 @@ struct Forecast: Decodable, Sendable {
         let burnPerActiveHour: Double?
         let activeHoursLeft: Double?
         let dutyFraction: Double?
+        /// The same figure with the spread of the account's days either side. Absent
+        /// from a router that predates the band.
+        let duty: Duty?
         let exhaustsAt: Int?
+        let exhaustsAtEarly: Int?
+        let exhaustsAtLate: Int?
         let resetsFirst: Bool?
+        /// `crosses`, `tight` or `resets-first`. Absent from an older router, where
+        /// `resetsFirst` is the whole answer.
+        let verdict: String?
         let projectedEndUtil: Double?
+        let projectedEndUtilLow: Double?
+        let projectedEndUtilHigh: Double?
         let basis: String?
         let measuredActiveHours: Double?
         let readings: Int?
@@ -152,6 +162,10 @@ struct Forecast: Decodable, Sendable {
         var resetDate: Date? { resetAt.map { Date(timeIntervalSince1970: TimeInterval($0)) } }
         var startDate: Date? { windowStart.map { Date(timeIntervalSince1970: TimeInterval($0)) } }
         var exhaustDate: Date? { exhaustsAt.map { Date(timeIntervalSince1970: TimeInterval($0) / 1000) } }
+        /// What the band says, falling back to the boolean an older router sends.
+        var call: String { verdict ?? (exhaustsAt != nil ? "crosses" : "resets-first") }
+        /// Whether there is a spread worth showing at all — a session window has none.
+        var hasBand: Bool { duty.map { $0.low < $0.high } ?? false }
 
         enum CodingKeys: String, CodingKey {
             case expired, used, basis, readings, series
@@ -159,8 +173,19 @@ struct Forecast: Decodable, Sendable {
             case burnPerActiveHour = "burn_per_active_hour", activeHoursLeft = "active_hours_left"
             case dutyFraction = "duty_fraction", exhaustsAt = "exhausts_at", resetsFirst = "resets_first"
             case projectedEndUtil = "projected_end_util", measuredActiveHours = "measured_active_hours"
-            case seenAt = "seen_at"
+            case seenAt = "seen_at", duty, verdict
+            case exhaustsAtEarly = "exhausts_at_early", exhaustsAtLate = "exhausts_at_late"
+            case projectedEndUtilLow = "projected_end_util_low"
+            case projectedEndUtilHigh = "projected_end_util_high"
         }
+    }
+
+    /// How much of the clock goes to work, as a range. `mid` is the estimate; the edges
+    /// are the spread of the days on record, which is why a tight verdict is tight.
+    struct Duty: Decodable, Sendable, Hashable {
+        let low: Double
+        let mid: Double
+        let high: Double
     }
 
     struct Point: Decodable, Sendable, Hashable {

@@ -1160,12 +1160,23 @@ const hrs = v => v == null ? '—' : v < 1 ? Math.round(v * 60) + ' min'
   : v < 10 ? v.toFixed(1) + ' h' : Math.round(v) + ' h';
 
 // What a window's projection says, and how loudly to say it.
+//
+// `verdict` is the three-state answer: red is reserved for a crossing that survives
+// even a quiet week, because a margin that lands inside the spread of your own working
+// days is a coin flip, not a finding. Routers that predate the band send no verdict —
+// fall back to the old boolean there rather than going quiet.
 function fcState(w) {
   if (!w) return { tone:'', text:'no rate-limit reading yet' };
   if (w.expired) return { tone:'', text:`window rolled over ${ago(num(w.reset_at) * 1000)} · nothing seen since` };
   if (w.basis === 'none' || w.active_hours_left == null) return { tone:'', text:'not enough burn yet to project' };
   const left = hrs(num(w.active_hours_left));
-  if (w.exhausts_at) {
+  const verdict = w.verdict || (w.exhausts_at ? 'crosses' : 'resets-first');
+  if (verdict === 'tight') {
+    const early = num(w.reset_at) * 1000 - num(w.exhausts_at);
+    const quiet = Math.round(num(w.projected_end_util_low) * 100);
+    return { tone:'warn', text:`${left} of work left · too close to call — on this pace it runs out ${dur(early)} before reset, on a quieter week it ends ≈${quiet}%` };
+  }
+  if (verdict === 'crosses') {
     const early = num(w.reset_at) * 1000 - num(w.exhausts_at);
     return { tone:'bad', text:`${left} of work left · runs out ${rel(num(w.exhausts_at) / 1000)}, ${dur(early)} before it resets` };
   }
@@ -1177,9 +1188,15 @@ function fcState(w) {
 function fcBasis(w) {
   if (!w || w.expired || w.basis === 'none' || !num(w.burn_per_active_hour)) return null;
   const rate = `${(num(w.burn_per_active_hour) * 100).toFixed(1)}% per hour of work`;
-  return w.basis === 'trailing-windows'
-    ? `${rate} · nothing burnt yet this window, so this is your recent average`
-    : `${rate}, fitted on ${hrs(num(w.measured_active_hours))} · ${Math.round(num(w.duty_fraction) * 100)}% of the clock spent working`;
+  if (w.basis === 'trailing-windows') return `${rate} · nothing burnt yet this window, so this is your recent average`;
+  const pct = v => Math.round(num(v) * 100);
+  const d = w.duty;
+  // Disclose the band where there is one — the spread of your days is why the verdict
+  // above is worded the way it is, and hiding it makes the wording look like hedging.
+  const duty = d && pct(d.low) !== pct(d.high)
+    ? `${pct(d.mid)}% of the clock spent working, ${pct(d.low)}–${pct(d.high)}% across your days`
+    : `${pct(w.duty_fraction)}% of the clock spent working`;
+  return `${rate}, fitted on ${hrs(num(w.measured_active_hours))} · ${duty}`;
 }
 
 function fcLine(w) {
@@ -1205,15 +1222,28 @@ function runwaySvg(w, color, W) {
   const now = Math.min(Date.now(), t1), used = num(w.used);
   const pts = (w.series || []).map(p => [x(num(p.t)), y(num(p.u))]).concat([[x(now), y(used)]]);
   const obs = pts.map((p, i) => `${i ? 'L' : 'M'}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join('');
-  const tgt = w.exhausts_at ? [x(num(w.exhausts_at)), y(1)] : [x(t1), y(num(w.projected_end_util))];
+  // Where one duty cycle lands: the crossing if it reaches 100%, otherwise the ceiling
+  // it stops under at the reset.
+  const ray = (at, end) => at ? [x(num(at)), y(1)] : [x(t1), y(num(end))];
+  const tgt = ray(w.exhausts_at, w.projected_end_util);
+  // The cone between a quiet week and a busy one. It is the point of the whole picture
+  // when the two straddle the ceiling — a ray alone reads as a prediction.
+  const lo = ray(w.exhausts_at_late, w.projected_end_util_low);
+  const hi = ray(w.exhausts_at_early, w.projected_end_util_high);
+  const cone = w.duty && num(w.duty.low) !== num(w.duty.high)
+    ? `<path d="M${x(now).toFixed(1)},${y(used).toFixed(1)}L${hi[0].toFixed(1)},${hi[1].toFixed(1)}L${x(t1).toFixed(1)},${hi[1].toFixed(1)}L${x(t1).toFixed(1)},${lo[1].toFixed(1)}L${lo[0].toFixed(1)},${lo[1].toFixed(1)}Z" fill="${w.verdict === 'crosses' ? 'var(--bad)' : 'var(--muted)'}" opacity=".13"/>`
+    : '';
   const rule = u => `<line x1="${L}" x2="${R}" y1="${y(u).toFixed(1)}" y2="${y(u).toFixed(1)}" stroke="var(--line)" stroke-width="1"/>`;
+  const projColor = !w.exhausts_at ? 'var(--muted)'
+    : (w.verdict || 'crosses') === 'tight' ? 'var(--warn)' : 'var(--bad)';
   const lbl = (u, t) => `<text x="${L - 5}" y="${(y(u) + 4).toFixed(1)}" text-anchor="end" font-size="10" fill="var(--muted)">${t}</text>`;
   return `<svg viewBox="0 0 ${W} ${H}" aria-hidden="true">
     ${rule(1)}${rule(0)}${lbl(1, '100%')}${lbl(0, '0')}
+    ${cone}
     <line x1="${x(now).toFixed(1)}" x2="${x(now).toFixed(1)}" y1="${top}" y2="${bot}" stroke="var(--muted)" stroke-width="1" opacity=".3"/>
     <path d="${obs}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
-    <path class="proj" d="M${x(now).toFixed(1)},${y(used).toFixed(1)}L${tgt[0].toFixed(1)},${tgt[1].toFixed(1)}" fill="none" stroke="${w.exhausts_at ? 'var(--bad)' : 'var(--muted)'}" stroke-width="2" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
-    ${w.exhausts_at ? `<circle cx="${tgt[0].toFixed(1)}" cy="${tgt[1].toFixed(1)}" r="3.5" fill="var(--bad)" stroke="var(--panel)" stroke-width="2"/>` : ''}
+    <path class="proj" d="M${x(now).toFixed(1)},${y(used).toFixed(1)}L${tgt[0].toFixed(1)},${tgt[1].toFixed(1)}" fill="none" stroke="${projColor}" stroke-width="2" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
+    ${w.exhausts_at ? `<circle cx="${tgt[0].toFixed(1)}" cy="${tgt[1].toFixed(1)}" r="3.5" fill="${projColor}" stroke="var(--panel)" stroke-width="2"/>` : ''}
     <text x="${L}" y="${H - 6}" font-size="10" fill="var(--muted)">${esc(tod(t0))}</text>
     <text x="${R}" y="${H - 6}" font-size="10" fill="var(--muted)" text-anchor="end">resets ${esc(tod(t1))}</text>
   </svg>`;

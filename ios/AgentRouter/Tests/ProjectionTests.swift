@@ -18,6 +18,29 @@ final class ProjectionTests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(p.basis).contains("fitted on 7.4 h"))
     }
 
+    /// The band's reason for existing: a crossing 2 h before a reset 95 h out, from a
+    /// record whose days ran 25–41% duty. Amber and worded as a coin flip, not red.
+    func testAStraddlingBandIsAmberAndSaysSo() throws {
+        let w = try window(#"{"used":0.49,"reset_at":1789750800,"window_start":1789146000,"burn_per_active_hour":0.0167,"active_hours_left":30.3,"duty_fraction":0.329,"duty":{"low":0.248,"mid":0.329,"high":0.409},"exhausts_at":1789743000000,"exhausts_at_early":1789674000000,"exhausts_at_late":null,"resets_first":false,"verdict":"tight","projected_end_util":1.0,"projected_end_util_low":0.883,"projected_end_util_high":1.0,"basis":"this-window","measured_active_hours":29.1,"readings":7935,"expired":false,"series":[]}"#)
+        let p = try XCTUnwrap(Projection.describe(w))
+        XCTAssertEqual(p.tone, .warn, "a coin flip must not be red")
+        XCTAssertTrue(p.text.contains("too close to call"), p.text)
+        XCTAssertTrue(p.text.contains("ends ≈88%"), "the quiet end is the reassuring half: \(p.text)")
+        XCTAssertTrue(try XCTUnwrap(p.basis).contains("25–41% across your days"), p.basis ?? "")
+    }
+
+    /// A router that predates the band sends no verdict and no duty range. Everything it
+    /// does send must still read exactly as it did.
+    func testAnOlderRouterStillRendersAsItAlwaysDid() throws {
+        let w = try window(#"{"used":0.98,"reset_at":1789308000,"window_start":1788840000,"burn_per_active_hour":0.0121,"active_hours_left":1.65,"duty_fraction":0.139,"exhausts_at":1789243200000,"resets_first":false,"projected_end_util":1.0,"basis":"this-window","measured_active_hours":7.4,"readings":2639,"expired":false,"series":[]}"#)
+        XCTAssertEqual(w.call, "crosses")
+        XCTAssertFalse(w.hasBand)
+        let p = try XCTUnwrap(Projection.describe(w))
+        XCTAssertEqual(p.tone, .bad)
+        XCTAssertTrue(try XCTUnwrap(p.basis).contains("14% of the clock spent working"), p.basis ?? "")
+        XCTAssertFalse(try XCTUnwrap(p.basis).contains("across your days"), "no spread, nothing to disclose")
+    }
+
     func testResetsFirstIsCalm() throws {
         let w = try window(#"{"used":0.06,"reset_at":1789213800,"window_start":1789195800,"burn_per_active_hour":0.0536,"active_hours_left":17.5,"duty_fraction":0.955,"exhausts_at":null,"resets_first":true,"projected_end_util":0.26,"basis":"this-window","measured_active_hours":1.1,"readings":273,"expired":false,"series":[]}"#)
         let p = try XCTUnwrap(Projection.describe(w, now: now))
