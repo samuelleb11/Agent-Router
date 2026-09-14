@@ -403,11 +403,15 @@ function setStatus(s) {
 let allRows = [];
 // A session belongs on screen if it has moved recently, or is doing something now.
 // Archiving hides it — until it shows life again, because putting something away says
-// "I am done with this", not "never show me this".
+// "I am done with this", not "never show me this". The router decides that: `archived`
+// arrives already meaning "put away, and quiet ever since", so a session you just
+// finished with goes at once and comes back by itself if it starts up again. Testing it
+// here against a window instead would hide nothing, the session having moved a moment
+// before you put it away.
 const TAB_WINDOW_MS = 12 * 3600 * 1000;
 const isCurrent = (r) => r.active || r.state === 'working' || r.state === 'ask'
   || (Date.now() - r.last_activity_ms) <= TAB_WINDOW_MS;
-const onScreen = (r) => isCurrent(r) || !r.archived;
+const onScreen = (r) => !r.archived;
 async function loadSessions() {
   let rows = [];
   try { rows = await (await fetch('/api/live/sessions')).json(); }
@@ -475,7 +479,7 @@ async function loadSessions() {
   };
 
   const now = Date.now();
-  const shelved = rows.filter(r => r.archived && !isCurrent(r));
+  const shelved = rows.filter(r => r.archived);
   const rest = rows.filter(r => !shelved.includes(r));
   const recent = rest.filter(r => now - r.last_activity_ms <= TAB_WINDOW_MS);
   const older = rest.filter(r => now - r.last_activity_ms > TAB_WINDOW_MS);

@@ -22,16 +22,20 @@ struct SessionGroups: Equatable {
     static let window: TimeInterval = 12 * 3600
 
     /// A session belongs on screen if it has moved recently or is doing something now.
-    /// Archiving hides it — until it shows life again, because putting something away
-    /// says "I am done with this", not "never show me this".
+    /// Used for ordering the visible list, not for deciding what is on the shelf.
     static func isCurrent(_ r: LiveSession, now: Date) -> Bool {
         r.active || r.state == "working" || r.state == "ask"
             || now.timeIntervalSince(r.lastActivity) <= window
     }
 
     static func build(_ rows: [LiveSession], now: Date = .now) -> SessionGroups {
-        let shelved = rows.filter { $0.archived && !isCurrent($0, now: now) }
-        let rest = rows.filter { !($0.archived && !isCurrent($0, now: now)) }
+        // `archived` arrives from the router already meaning "put away, and quiet ever
+        // since" — it clears itself the moment the session does something new. So the
+        // shelf is exactly what the router says it is. Re-testing it here against a
+        // recency window, as this once did, un-hid everything: the session you just
+        // finished with had by definition moved a moment before you put it away.
+        let shelved = rows.filter(\.archived)
+        let rest = rows.filter { !$0.archived }
         let recent = rest.filter { now.timeIntervalSince($0.lastActivity) <= window }
         let older = rest.filter { now.timeIntervalSince($0.lastActivity) > window }
         return SessionGroups(recent: group(recent), older: group(older),

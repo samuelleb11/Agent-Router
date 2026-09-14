@@ -86,13 +86,18 @@ final class LiveTests: XCTestCase {
             session("bbbb", project: "project-a", agoHours: 2, now: now),
             session("cccc", project: "project-a", agoHours: 20, now: now),
             session("dddd", project: "zeta", agoHours: 30, archived: true, now: now),
-            session("eeee", project: "project-a", agoHours: 1, active: true, archived: true, now: now),
+            session("eeee", project: "project-a", agoHours: 1, active: true, now: now),
+            // Put away a moment ago, which is the ordinary case: you archive the session
+            // you have just stopped using. The router clears `archived` by itself once it
+            // moves again, so recency must not second-guess it here.
+            session("ffff", project: "project-b", agoHours: 0.05, archived: true, now: now),
         ]
         let g = SessionGroups.build(rows, now: now)
         XCTAssertEqual(g.recent.map(\.name), ["project-a", "project-b"], "projects alphabetical, not by activity")
-        XCTAssertEqual(g.recent[0].sessions.map(\.shortId), ["eeee", "bbbb"], "newest first within a project; an archived but active session is back on screen")
+        XCTAssertEqual(g.recent[0].sessions.map(\.shortId), ["eeee", "bbbb"], "newest first within a project")
         XCTAssertEqual(g.older.flatMap { $0.sessions.map(\.shortId) }, ["cccc"])
-        XCTAssertEqual(g.archived.map(\.shortId), ["dddd"])
+        XCTAssertEqual(g.archived.map(\.shortId), ["ffff", "dddd"], "on the shelf however recently it moved, newest first")
+        XCTAssertFalse(g.recent.flatMap(\.sessions).contains { $0.shortId == "ffff" }, "and not also on screen")
         XCTAssertTrue(g.recent[1].live)
         XCTAssertEqual(rows[0].projectName, "project-b")
         XCTAssertEqual(rows[0].label, "aaaa")

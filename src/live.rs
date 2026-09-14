@@ -35,8 +35,6 @@ use serde_json::Value;
 
 /// A session counts as "active" if its transcript grew this recently.
 const ACTIVE_WITHIN_MS: i64 = 120_000;
-/// The window that counts as "current" — matches what the view puts on screen.
-const LISTED_RECENT_MS: i64 = 12 * 60 * 60 * 1000;
 /// Sessions older than this are not offered at all.
 const LISTED_WITHIN_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 /// Where the archive list lives. A session id in here is one the reader has finished
@@ -47,12 +45,44 @@ fn archive_path() -> PathBuf {
         .join("archived.json")
 }
 
-fn archived_set() -> std::collections::HashSet<String> {
-    std::fs::read_to_string(archive_path())
-        .ok()
-        .and_then(|raw| serde_json::from_str::<Vec<String>>(&raw).ok())
-        .map(|v| v.into_iter().collect())
+/// Sessions put away, each with the moment it was put away.
+///
+/// Archiving means "I am done with this", not "never show me this", so a session comes
+/// back the moment it does something *new*. Knowing when it was shelved is what makes
+/// "new" mean anything: without it the only available test is "moved lately", which is
+/// true of the session you just finished with and so hides nothing.
+///
+/// The file used to be a bare list of ids, with no times. Those entries are read as
+/// shelved since the end of time, which keeps them exactly where their reader left
+/// them — nothing is known about when they were put away, and guessing would either
+/// resurrect them at random or hide them for good.
+fn archived_set() -> std::collections::HashMap<String, i64> {
+    let Ok(raw) = std::fs::read_to_string(archive_path()) else {
+        return Default::default();
+    };
+    if let Ok(map) = serde_json::from_str::<std::collections::HashMap<String, i64>>(&raw) {
+        return map;
+    }
+    serde_json::from_str::<Vec<String>>(&raw)
+        .map(|v| v.into_iter().map(|id| (id, i64::MAX)).collect())
         .unwrap_or_default()
+}
+
+/// Whether a session is on the shelf *now*: put away, and quiet ever since.
+fn is_shelved(archived: &std::collections::HashMap<String, i64>, session_id: &str, last_activity_ms: i64) -> bool {
+    archived.get(session_id).is_some_and(|at| last_activity_ms <= *at)
+}
+
+/// Write the shelf back, sorted so the file reads the same way twice.
+fn write_archived(set: &std::collections::HashMap<String, i64>) -> std::io::Result<usize> {
+    let ordered: std::collections::BTreeMap<&String, &i64> = set.iter().collect();
+    let path = archive_path();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let json = serde_json::to_vec_pretty(&ordered).map_err(std::io::Error::other)?;
+    std::fs::write(&path, json)?;
+    Ok(set.len())
 }
 
 /// Most sessions listed, newest first.
@@ -165,7 +195,7 @@ pub fn discover() -> Vec<LiveSession> {
             // below must not read "ask" off a prompt nobody is waiting on.
             let wrapped = crate::peer::wrapper_alive(&session_id);
             LiveSession {
-                archived: archived.contains(&session_id),
+                archived: is_shelved(&archived, &session_id, m),
                 state: tail_state(&path, &session_id, now - m).to_string(),
                 wrapped,
                 title: read_ai_title(&path).or(head.title),
@@ -962,7 +992,6 @@ pub async fn project_stats(Query(q): Query<ProjectQuery>) -> Response {
     let cwd = q.cwd.clone();
     let out = tokio::task::spawn_blocking(move || {
         let archived = archived_set();
-        let now = now_ms();
         let mut total = Stats::default();
         let mut spend = 0.0f64;
         let mut sessions = 0i64;
@@ -972,9 +1001,7 @@ pub async fn project_stats(Query(q): Query<ProjectQuery>) -> Response {
             if s.cwd.as_deref() != Some(cwd.as_str()) {
                 continue;
             }
-            let current = s.active || s.state == "working" || s.state == "ask"
-                || now - s.last_activity_ms <= LISTED_RECENT_MS;
-            if archived.contains(&s.session_id) && !current {
+            if is_shelved(&archived, &s.session_id, s.last_activity_ms) {
                 continue;
             }
             let Some(path) = transcript_path(&s.session_id) else {
@@ -1035,18 +1062,12 @@ pub async fn archive(Json(body): Json<ArchiveBody>) -> Response {
     let done = tokio::task::spawn_blocking(move || -> anyhow::Result<usize> {
         let mut set = archived_set();
         if body.archived {
-            set.insert(body.session);
+            // Stamped now: anything this session does after this moment brings it back.
+            set.insert(body.session, now_ms());
         } else {
             set.remove(&body.session);
         }
-        let mut ids: Vec<String> = set.into_iter().collect();
-        ids.sort();
-        let path = archive_path();
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        std::fs::write(&path, serde_json::to_vec_pretty(&ids)?)?;
-        Ok(ids.len())
+        Ok(write_archived(&set)?)
     })
     .await;
 
@@ -1274,16 +1295,8 @@ fn claude_binary() -> Option<PathBuf> {
 /// Put a session on the shelf without a request: for the forks a side question leaves.
 fn shelve(session_id: &str) {
     let mut set = archived_set();
-    set.insert(session_id.to_string());
-    let mut ids: Vec<String> = set.into_iter().collect();
-    ids.sort();
-    let path = archive_path();
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    if let Ok(json) = serde_json::to_vec_pretty(&ids) {
-        let _ = std::fs::write(&path, json);
-    }
+    set.insert(session_id.to_string(), now_ms());
+    let _ = write_archived(&set);
 }
 
 /// A side question — what the CLI's own `/btw` does, which the editor's stream refuses.
@@ -1753,6 +1766,42 @@ mod tests {
         // A naive byte slice here would panic on the multi-byte boundary.
         let s = "é".repeat(10);
         assert_eq!(clip(&s, 4), "ééé é".replace(' ', "") + "…");
+    }
+
+    #[test]
+    fn a_shelved_session_comes_back_only_when_it_moves_again() {
+        let mut shelf = std::collections::HashMap::new();
+        shelf.insert("s-1".to_string(), 1_000i64);
+
+        // Put away at 1000: everything it did up to then is why you put it away.
+        assert!(is_shelved(&shelf, "s-1", 900), "older activity keeps it on the shelf");
+        assert!(is_shelved(&shelf, "s-1", 1_000), "the moment itself is not new activity");
+        assert!(!is_shelved(&shelf, "s-1", 1_001), "one millisecond later it is awake again");
+        assert!(!is_shelved(&shelf, "never-shelved", 900));
+    }
+
+    #[test]
+    fn the_old_bare_list_of_ids_still_reads() {
+        let dir = std::env::temp_dir().join(format!("ar-shelf-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".agent-router")).unwrap();
+        let path = dir.join(".agent-router").join("archived.json");
+
+        // The format before this had no times at all.
+        std::fs::write(&path, br#"["old-1","old-2"]"#).unwrap();
+        let legacy: std::collections::HashMap<String, i64> =
+            serde_json::from_str::<Vec<String>>(&std::fs::read_to_string(&path).unwrap())
+                .map(|v| v.into_iter().map(|id| (id, i64::MAX)).collect())
+                .unwrap();
+        assert_eq!(legacy.len(), 2);
+        assert!(is_shelved(&legacy, "old-1", now_ms()), "a timeless entry stays put away");
+
+        // And the format with them round-trips.
+        std::fs::write(&path, br#"{"s-1":1000}"#).unwrap();
+        let map: std::collections::HashMap<String, i64> =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(map.get("s-1"), Some(&1000));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
