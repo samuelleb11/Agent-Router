@@ -12,6 +12,7 @@ mod auth;
 mod capture;
 mod config;
 mod db;
+mod fcm;
 mod forecast;
 mod guard;
 mod lifecycle;

@@ -20,6 +20,7 @@ use rusqlite::{params, Connection, OpenFlags};
 use serde_json::{json, Value};
 
 use crate::apns::{Apns, Delivery, Key, SendError};
+use crate::fcm::Fcm;
 
 const PENDING_DIR: &str = "/tmp/agent-router-sessions";
 const POLL: Duration = Duration::from_secs(1);
@@ -36,6 +37,8 @@ const BUNDLE_KEY: &str = "push_bundle_id";
 #[derive(serde::Serialize, Clone)]
 pub struct Device {
     pub token: String,
+    /// Whose push service this token belongs to: `apns` or `fcm`.
+    pub platform: String,
     pub name: Option<String>,
     pub environment: String,
     pub router_ref: Option<String>,
@@ -106,14 +109,21 @@ impl OrElse for String {
 
 pub struct Push {
     apns: Apns,
+    fcm: Fcm,
     db_path: PathBuf,
     seen: Mutex<(HashSet<String>, VecDeque<String>)>,
+    /// What Apple last said, and what Google last said. Two slots, not one: a working
+    /// iPhone clearing the field would quietly erase a standing Android failure.
     pub last_error: Mutex<Option<String>>,
+    pub fcm_last_error: Mutex<Option<String>>,
     pub last_sent: Mutex<Option<(i64, String)>>,
     /// The key file dropped beside the database: what was found, and what it waits on.
     pub key_file: Mutex<Option<String>>,
-    /// The (file name, mtime) whose import failed outright, so it is not retried every second.
+    pub fcm_key_file: Mutex<Option<String>>,
+    /// The (file name, mtime) whose import failed outright, so it is not retried every
+    /// second. One per file, because they are two different files.
     tried: Mutex<Option<(String, std::time::SystemTime)>>,
+    fcm_tried: Mutex<Option<(String, std::time::SystemTime)>>,
     /// Prompts announced to a phone that are still waiting, as key -> session: what a
     /// banner may be up for, and so what a dismissal is owed for.
     announced: Mutex<HashMap<String, String>>,
@@ -123,18 +133,32 @@ impl Push {
     pub fn new(db_path: &Path) -> Self {
         Self {
             apns: Apns::new(),
+            fcm: Fcm::new(),
             db_path: db_path.to_path_buf(),
             seen: Mutex::new((HashSet::new(), VecDeque::new())),
             last_error: Mutex::new(None),
+            fcm_last_error: Mutex::new(None),
             last_sent: Mutex::new(None),
             key_file: Mutex::new(None),
+            fcm_key_file: Mutex::new(None),
             tried: Mutex::new(None),
+            fcm_tried: Mutex::new(None),
             announced: Mutex::new(HashMap::new()),
         }
     }
 
-    pub fn key(&self) -> Option<Key> {
+    pub fn apns_key(&self) -> Option<Key> {
         crate::accounts::push_key().map(|k| Key { team_id: k.team_id, key_id: k.key_id, p8: k.p8 })
+    }
+
+    pub fn fcm_key(&self) -> Option<crate::fcm::Key> {
+        crate::accounts::fcm_key().map(|k| crate::fcm::Key {
+            project_id: k.project_id,
+            client_email: k.client_email,
+            private_key: k.private_key,
+            private_key_id: k.private_key_id,
+            token_uri: k.token_uri,
+        })
     }
 
     pub fn topic(&self) -> String {
@@ -145,8 +169,18 @@ impl Push {
             .unwrap_or_else(|| DEFAULT_TOPIC.into())
     }
 
+    pub fn apns_configured(&self) -> bool {
+        self.apns_key().is_some()
+    }
+
+    pub fn fcm_configured(&self) -> bool {
+        self.fcm_key().is_some()
+    }
+
+    /// Whether any phone at all can be told — what `watch` turns on. Either service
+    /// being set up is enough; a router may well only ever see one kind of phone.
     pub fn configured(&self) -> bool {
-        self.key().is_some()
+        self.apns_configured() || self.fcm_configured()
     }
 
     /// Keep what the app says about itself at registration.
@@ -165,12 +199,63 @@ impl Push {
         Some(note)
     }
 
+    fn note_fcm_key_file(&self, note: String) -> Option<String> {
+        *self.fcm_key_file.lock().unwrap() = Some(note.clone());
+        Some(note)
+    }
+
+    /// The service account as the Firebase console hands it out, dropped beside the
+    /// database. Any `*.json` there that says it is one is taken in — the project read
+    /// out of the file itself, so nothing is typed — and the file then made private.
+    ///
+    /// Simpler than its Apple counterpart in one way: a service account is self-contained,
+    /// so there is nothing to wait for a phone to tell us, and this can run at startup.
+    /// Unlike Apple's key it can also be re-issued at will, so losing one costs a click.
+    pub fn import_service_account_file(&self) -> Option<String> {
+        if self.fcm_configured() {
+            return None;
+        }
+        let dir = self.db_path.parent()?;
+        let (path, key) = service_account_in(dir)?;
+        let name = path.file_name()?.to_string_lossy().into_owned();
+        let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok()?;
+        if self.fcm_tried.lock().unwrap().as_ref() == Some(&(name.clone(), mtime)) {
+            return self.fcm_key_file.lock().unwrap().clone();
+        }
+        let failed = |why: String| {
+            *self.fcm_tried.lock().unwrap() = Some((name.clone(), mtime));
+            tracing::warn!(file = %name, "service account not taken: {why}");
+            self.note_fcm_key_file(format!("{name}: {why}"))
+        };
+        if let Err(e) = crate::fcm::mint_jwt(&key, crate::db::now_ms() / 1000) {
+            return failed(format!("does not sign: {e}"));
+        }
+        let stored = crate::accounts::FcmKey {
+            project_id: key.project_id.clone(),
+            client_email: key.client_email.clone(),
+            private_key: key.private_key.clone(),
+            private_key_id: key.private_key_id.clone(),
+            token_uri: key.token_uri.clone(),
+        };
+        if let Err(e) = crate::accounts::store_fcm_key(Some(stored)) {
+            return failed(format!("could not store: {e}"));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        }
+        self.fcm_forget();
+        tracing::info!(file = %path.display(), project = %key.project_id, "service account imported; Android phones can be told");
+        self.note_fcm_key_file(format!("imported from {name} · project {}", key.project_id))
+    }
+
     /// The key as the file Apple hands out, `AuthKey_<key id>.p8`, dropped beside the
     /// database. Taken in once the team is known — the app says which when it registers
     /// — so nothing is typed. The file stays where it is, made private: Apple never
     /// hands the same key out twice. Returns what was done, or what is still waited on.
     pub fn import_key_file(&self) -> Option<String> {
-        if self.configured() {
+        if self.apns_configured() {
             return None;
         }
         let dir = self.db_path.parent()?;
@@ -221,7 +306,7 @@ impl Push {
             return Vec::new();
         };
         let Ok(mut stmt) = conn.prepare(
-            "SELECT token, name, environment, router_ref, registered_at, last_seen_at, last_result
+            "SELECT token, platform, name, environment, router_ref, registered_at, last_seen_at, last_result
              FROM push_devices ORDER BY registered_at",
         ) else {
             return Vec::new();
@@ -229,31 +314,45 @@ impl Push {
         stmt.query_map([], |r| {
             Ok(Device {
                 token: r.get(0)?,
-                name: r.get(1)?,
-                environment: r.get(2)?,
-                router_ref: r.get(3)?,
-                registered_at: r.get(4)?,
-                last_seen_at: r.get(5)?,
-                last_result: r.get(6)?,
+                platform: r.get(1)?,
+                name: r.get(2)?,
+                environment: r.get(3)?,
+                router_ref: r.get(4)?,
+                registered_at: r.get(5)?,
+                last_seen_at: r.get(6)?,
+                last_result: r.get(7)?,
             })
         })
         .map(|rows| rows.filter_map(Result::ok).collect())
         .unwrap_or_default()
     }
 
-    pub fn register(&self, token: &str, name: Option<&str>, environment: &str, router_ref: Option<&str>) -> anyhow::Result<()> {
+    pub fn register(
+        &self,
+        token: &str,
+        platform: &str,
+        name: Option<&str>,
+        environment: &str,
+        router_ref: Option<&str>,
+    ) -> anyhow::Result<()> {
         let now = crate::db::now_ms();
         self.open()?.execute(
-            "INSERT INTO push_devices (token, name, environment, router_ref, registered_at, last_seen_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?5)
-             ON CONFLICT(token) DO UPDATE SET name = ?2, environment = ?3, router_ref = ?4, last_seen_at = ?5",
-            params![token, name, environment, router_ref, now],
+            "INSERT INTO push_devices (token, platform, name, environment, router_ref, registered_at, last_seen_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
+             ON CONFLICT(token) DO UPDATE SET platform = ?2, name = ?3, environment = ?4, router_ref = ?5, last_seen_at = ?6",
+            params![token, platform, name, environment, router_ref, now],
         )?;
         Ok(())
     }
 
+    /// Forget a phone. Either spelling of the token: Apple's is hex and was stored
+    /// lowercased from the start, Google's is case-sensitive and is stored as given, and
+    /// a caller holding one cannot be expected to know which it has.
     pub fn unregister(&self, token: &str) -> anyhow::Result<()> {
-        self.open()?.execute("DELETE FROM push_devices WHERE token = ?1", [token])?;
+        self.open()?.execute(
+            "DELETE FROM push_devices WHERE token = ?1 OR token = ?2",
+            params![token, token.to_ascii_lowercase()],
+        )?;
         Ok(())
     }
 
@@ -266,38 +365,60 @@ impl Push {
         }
     }
 
-    /// Send one message to every registered phone, and keep what Apple said about each.
-    /// The payload is built per device, because each is told which router this came from.
-    /// Returns one line per device.
+    /// Send one message to every registered phone, by whichever service that phone
+    /// belongs to, and keep what that service said about each. Both payloads are built
+    /// per device, because each is told which router this came from — and the two
+    /// services want different words for the same message, so each is written where it
+    /// is read rather than translated out of the other. Returns one line per device.
     async fn fan_out(
         &self,
         delivery: Delivery<'_>,
-        payload: impl Fn(&Device) -> Value,
+        apns_payload: impl Fn(&Device) -> Value,
+        fcm_data: impl Fn(&Device) -> Value,
     ) -> Vec<(String, Result<(), String>)> {
-        let Some(key) = self.key() else {
+        let apns_key = self.apns_key();
+        let fcm_key = self.fcm_key();
+        if apns_key.is_none() && fcm_key.is_none() {
             return Vec::new();
-        };
+        }
         let topic = self.topic();
         let mut out = Vec::new();
         for d in self.devices() {
-            let body = payload(&d);
             let tail = d.token.chars().rev().take(6).collect::<String>().chars().rev().collect::<String>();
-            match self.apns.send(&key, &d.token, &d.environment, &topic, delivery, &body).await {
+            let android = d.platform == "fcm";
+            // Flattened to (forget this phone, why) so the bookkeeping below is written
+            // once, for two services that know nothing about each other. A phone whose
+            // service has no credential is skipped rather than reported: a router that
+            // only ever had iPhones should not start announcing Android failures.
+            let outcome: Result<(), (bool, String)> = if android {
+                let Some(key) = fcm_key.as_ref() else { continue };
+                self.fcm
+                    .send(key, &d.token, delivery, &fcm_data(&d))
+                    .await
+                    .map_err(|e| (matches!(e, SendError::Unregistered), e.to_string()))
+            } else {
+                let Some(key) = apns_key.as_ref() else { continue };
+                self.apns
+                    .send(key, &d.token, &d.environment, &topic, delivery, &apns_payload(&d))
+                    .await
+                    .map_err(|e| (matches!(e, SendError::Unregistered), e.to_string()))
+            };
+            let slot = if android { &self.fcm_last_error } else { &self.last_error };
+            match outcome {
                 Ok(()) => {
                     self.record(&d.token, "delivered");
-                    *self.last_error.lock().unwrap() = None;
+                    *slot.lock().unwrap() = None;
                     out.push((tail, Ok(())));
                 }
-                Err(SendError::Unregistered) => {
-                    tracing::info!(token = %tail, "phone unregistered by Apple; forgetting it");
+                Err((true, _)) => {
+                    tracing::info!(token = %tail, platform = %d.platform, "phone unregistered upstream; forgetting it");
                     let _ = self.unregister(&d.token);
                     out.push((tail, Err("no longer registered".into())));
                 }
-                Err(e) => {
-                    let why = e.to_string();
-                    tracing::warn!(token = %tail, error = %why, "push failed");
+                Err((false, why)) => {
+                    tracing::warn!(token = %tail, platform = %d.platform, error = %why, "push failed");
                     self.record(&d.token, &why);
-                    *self.last_error.lock().unwrap() = Some(why.clone());
+                    *slot.lock().unwrap() = Some(why.clone());
                     out.push((tail, Err(why)));
                 }
             }
@@ -308,17 +429,31 @@ impl Push {
     /// Tell every registered phone. Returns one line per device.
     pub async fn notify(&self, title: &str, subtitle: &str, body: &str, session: Option<&str>, collapse: &str) -> Vec<(String, Result<(), String>)> {
         let out = self
-            .fan_out(Delivery::Alert(collapse), |d| {
-                let mut alert = json!({ "title": title });
-                if !subtitle.is_empty() { alert["subtitle"] = json!(subtitle); }
-                if !body.is_empty() { alert["body"] = json!(body); }
-                json!({
-                    "aps": { "alert": alert, "sound": "default", "thread-id": session.unwrap_or("router"), "category": "PROMPT" },
+            .fan_out(
+                Delivery::Alert(collapse),
+                |d| {
+                    let mut alert = json!({ "title": title });
+                    if !subtitle.is_empty() { alert["subtitle"] = json!(subtitle); }
+                    if !body.is_empty() { alert["body"] = json!(body); }
+                    json!({
+                        "aps": { "alert": alert, "sound": "default", "thread-id": session.unwrap_or("router"), "category": "PROMPT" },
+                        "session": session,
+                        "router_ref": d.router_ref,
+                        "request_id": collapse,
+                    })
+                },
+                // Android draws its own notification, so it is handed the parts rather
+                // than a rendered alert: whose session it is, what is being asked, and
+                // the detail that goes under it. Empty ones are dropped on the way out.
+                |d| json!({
+                    "title": title,
+                    "head": subtitle,
+                    "detail": body,
                     "session": session,
                     "router_ref": d.router_ref,
                     "request_id": collapse,
-                })
-            })
+                }),
+            )
             .await;
         if out.iter().any(|(_, r)| r.is_ok()) {
             *self.last_sent.lock().unwrap() = Some((crate::db::now_ms(), format!("{title}: {body}")));
@@ -337,13 +472,20 @@ impl Push {
         if answered.is_empty() {
             return Vec::new();
         }
-        self.fan_out(Delivery::Background, |d| {
-            json!({
+        self.fan_out(
+            Delivery::Background,
+            |d| json!({
                 "aps": { "content-available": 1 },
                 "dismiss": answered,
                 "router_ref": d.router_ref,
-            })
-        })
+            }),
+            // FCM carries strings and nothing else, so the list crosses as JSON in one
+            // value; the app parses it back out.
+            |d| json!({
+                "dismiss": answered,
+                "router_ref": d.router_ref,
+            }),
+        )
         .await
     }
 
@@ -413,10 +555,14 @@ impl Push {
             self.mark(&key);
         }
         self.import_key_file();
+        self.import_service_account_file();
         loop {
             tokio::time::sleep(POLL).await;
+            // Each importer is a no-op once its own service is set up, so a router that
+            // already has one credential still notices the other being dropped in.
+            self.import_key_file();
+            self.import_service_account_file();
             if !self.configured() {
-                self.import_key_file();
                 continue;
             }
             let waiting = self.waiting();
@@ -468,10 +614,73 @@ fn still_waiting(key: &str, session: &str) -> bool {
     }
 }
 
+/// Which push service a token belongs to, or `None` if it is not a device token at all.
+///
+/// The app says which it is, and is believed when it does — the shape is only how an
+/// older build that says nothing is still placed. Apple's is checked first, because a
+/// 64-character hex string satisfies Google's character set too.
+pub fn platform_of(token: &str, declared: Option<&str>) -> Option<&'static str> {
+    match declared.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
+        Some("apns") => is_apns_token(token).then_some("apns"),
+        Some("fcm") => is_fcm_token(token).then_some("fcm"),
+        // A service we do not speak is an error, not something to guess around.
+        Some(other) if !other.is_empty() => None,
+        _ if is_apns_token(token) => Some("apns"),
+        _ if is_fcm_token(token) => Some("fcm"),
+        _ => None,
+    }
+}
+
+/// Apple's: hex, and an even number of digits. Sixty-four today, but Apple asks that no
+/// exact length be assumed and has lengthened it before, so only the shape is checked.
+fn is_apns_token(t: &str) -> bool {
+    t.len() >= 64 && t.len().is_multiple_of(2) && t.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// Google's: long, case-sensitive, and drawn from the URL-safe alphabet plus the colon
+/// that separates the instance id from the token proper. The colon is not required —
+/// the `<iid>:APA91b…` form is usual but not guaranteed across SDK versions — and the
+/// length is bounded only to keep a paste accident out of the database.
+fn is_fcm_token(t: &str) -> bool {
+    (64..=4096).contains(&t.len())
+        && t.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, ':' | '_' | '-' | '.' | '%'))
+}
+
 /// The key id Apple puts in the file name: `AuthKey_<ten alphanumerics>.p8`.
 pub fn key_id_of(name: &str) -> Option<String> {
     let id = name.strip_prefix("AuthKey_")?.strip_suffix(".p8")?;
     (id.len() == 10 && id.chars().all(|c| c.is_ascii_alphanumeric())).then(|| id.to_string())
+}
+
+/// The newest service account in a directory, and the key read out of it.
+///
+/// Chosen by what is inside rather than by name: Apple's file name carries the key id,
+/// where Firebase's (`<project>-firebase-adminsdk-<hash>-<hash>.json`) carries nothing
+/// worth matching on.
+fn service_account_in(dir: &Path) -> Option<(PathBuf, crate::fcm::Key)> {
+    /// Ample for a service account, and small enough that a stray JSON left in the
+    /// directory is not read off the disk once a second.
+    const CAP: u64 = 64 * 1024;
+    std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .filter_map(|e| {
+            let path = e.path();
+            let name = path.file_name()?.to_string_lossy().into_owned();
+            // The router's own secrets file lives in this directory. Never read it back in.
+            if !name.ends_with(".json") || name.starts_with("credentials.json") {
+                return None;
+            }
+            let meta = e.metadata().ok()?;
+            if meta.len() > CAP {
+                return None;
+            }
+            let text = std::fs::read_to_string(&path).ok()?;
+            let key = crate::fcm::parse_service_account(&text).ok()?;
+            Some((meta.modified().ok()?, path, key))
+        })
+        .max_by_key(|(modified, ..)| *modified)
+        .map(|(_, path, key)| (path, key))
 }
 
 /// The newest key file in a directory, with its key id.
@@ -501,6 +710,13 @@ pub mod api {
 
     #[derive(Deserialize)]
     pub struct ConfigBody {
+        /// Which credential this is about. Absent means Apple's, so the existing form
+        /// posts exactly as it did.
+        #[serde(default)]
+        pub platform: Option<String>,
+        /// The service-account JSON, whole, as the Firebase console downloads it.
+        #[serde(default)]
+        pub service_account: Option<String>,
         #[serde(default)]
         pub team_id: String,
         #[serde(default)]
@@ -516,6 +732,10 @@ pub mod api {
     #[derive(Deserialize)]
     pub struct RegisterBody {
         pub token: String,
+        /// Which service the token belongs to: `apns` or `fcm`. Absent means the shape
+        /// of the token decides, so an iPhone build that predates Android still registers.
+        #[serde(default)]
+        pub platform: Option<String>,
         #[serde(default)]
         pub name: Option<String>,
         #[serde(default)]
@@ -543,17 +763,32 @@ pub mod api {
             .map(|d| {
                 json!({
                     "token_tail": d.token.chars().rev().take(6).collect::<String>().chars().rev().collect::<String>(),
+                    "platform": d.platform,
                     "name": d.name, "environment": d.environment, "router_ref": d.router_ref,
                     "registered_at": d.registered_at, "last_seen_at": d.last_seen_at, "last_result": d.last_result,
                 })
             })
             .collect();
+        let fcm = crate::accounts::fcm_key();
         Json(json!({
+            // These keep meaning Apple, so the dashboard's key form needs no changes.
             "configured": key.is_some(),
             "team_id": key.as_ref().map(|k| k.team_id.clone()),
             "key_id": key.as_ref().map(|k| k.key_id.clone()),
             "bundle_id": push.topic(),
             "key_file": push.key_file.lock().unwrap().clone(),
+            // The other service. `private_key_id` is an id, not a key, and is the only
+            // way to tell two service accounts apart at a glance.
+            "fcm": {
+                "configured": fcm.is_some(),
+                "project_id": fcm.as_ref().map(|k| k.project_id.clone()),
+                "client_email": fcm.as_ref().map(|k| k.client_email.clone()),
+                "private_key_id": fcm.as_ref().map(|k| k.private_key_id.clone()),
+                "key_file": push.fcm_key_file.lock().unwrap().clone(),
+                "last_error": push.fcm_last_error.lock().unwrap().clone(),
+            },
+            // What the UI should ask before offering a test: either service will do.
+            "any_configured": push.configured(),
             "devices": devices,
             "last_error": push.last_error.lock().unwrap().clone(),
             "last_sent": push.last_sent.lock().unwrap().clone().map(|(at, what)| json!({ "at": at, "what": what })),
@@ -561,6 +796,9 @@ pub mod api {
     }
 
     pub async fn config(State(state): State<Arc<AppState>>, Json(req): Json<ConfigBody>) -> Json<Value> {
+        if req.platform.as_deref() == Some("fcm") {
+            return fcm_config(state, req);
+        }
         if req.clear {
             return match crate::accounts::store_push_key(None) {
                 Ok(()) => { state.push.apns_forget(); Json(json!({ "ok": true, "configured": false })) }
@@ -585,24 +823,75 @@ pub mod api {
         }
     }
 
+    /// The Firebase half of `/api/push/config`. Takes the console's file whole rather
+    /// than four fields: it is what the user actually has in hand, it cannot drift
+    /// between fields, and one parse gives one precise complaint instead of four.
+    fn fcm_config(state: Arc<AppState>, req: ConfigBody) -> Json<Value> {
+        if req.clear {
+            return match crate::accounts::store_fcm_key(None) {
+                Ok(()) => {
+                    state.push.fcm_forget();
+                    Json(json!({ "ok": true, "configured": false }))
+                }
+                Err(e) => Json(json!({ "error": e.to_string() })),
+            };
+        }
+        let text = req.service_account.unwrap_or_default();
+        let text = text.trim();
+        if text.is_empty() {
+            return Json(json!({ "error": "paste the service-account JSON the Firebase console downloads" }));
+        }
+        let key = match crate::fcm::parse_service_account(text) {
+            Ok(k) => k,
+            Err(e) => return Json(json!({ "error": format!("that is not a service account: {e}") })),
+        };
+        // Prove the key signs before keeping it — the same gate the `.p8` gets.
+        if let Err(e) = crate::fcm::mint_jwt(&key, crate::db::now_ms() / 1000) {
+            return Json(json!({ "error": format!("that key does not sign: {e}") }));
+        }
+        let stored = crate::accounts::FcmKey {
+            project_id: key.project_id.clone(),
+            client_email: key.client_email,
+            private_key: key.private_key,
+            private_key_id: key.private_key_id,
+            token_uri: key.token_uri,
+        };
+        match crate::accounts::store_fcm_key(Some(stored)) {
+            Ok(()) => {
+                state.push.fcm_forget();
+                Json(json!({ "ok": true, "configured": true, "project_id": key.project_id }))
+            }
+            Err(e) => Json(json!({ "error": e.to_string() })),
+        }
+    }
+
     pub async fn register(State(state): State<Arc<AppState>>, Json(req): Json<RegisterBody>) -> Json<Value> {
         let token = req.token.trim();
-        if token.is_empty() || !token.chars().all(|c| c.is_ascii_hexdigit()) {
+        let Some(platform) = super::platform_of(token, req.platform.as_deref()) else {
             return Json(json!({ "error": "that is not a device token" }));
-        }
+        };
+        // Apple's token is hex and case-insensitive, and has been stored lowercased from
+        // the start; Google's is neither, and has to be kept exactly as the phone gave it.
+        let stored = if platform == "apns" { token.to_ascii_lowercase() } else { token.to_string() };
         let env = req.environment.as_deref().unwrap_or("development");
-        match state.push.register(&token.to_ascii_lowercase(), req.name.as_deref(), env, req.router_ref.as_deref()) {
+        match state.push.register(&stored, platform, req.name.as_deref(), env, req.router_ref.as_deref()) {
             Ok(()) => {
-                state.push.remember_app(req.team_id.as_deref(), req.bundle_id.as_deref());
-                let key_file = state.push.import_key_file();
-                Json(json!({ "ok": true, "configured": state.push.configured(), "key_file": key_file }))
+                let (key_file, configured) = if platform == "apns" {
+                    // The team and bundle id are Apple's, and naming a topic after an
+                    // Android package would poison every push to every iPhone.
+                    state.push.remember_app(req.team_id.as_deref(), req.bundle_id.as_deref());
+                    (state.push.import_key_file(), state.push.apns_configured())
+                } else {
+                    (state.push.import_service_account_file(), state.push.fcm_configured())
+                };
+                Json(json!({ "ok": true, "platform": platform, "configured": configured, "key_file": key_file }))
             }
             Err(e) => Json(json!({ "error": e.to_string() })),
         }
     }
 
     pub async fn unregister(State(state): State<Arc<AppState>>, Json(req): Json<TokenBody>) -> Json<Value> {
-        match state.push.unregister(&req.token.trim().to_ascii_lowercase()) {
+        match state.push.unregister(req.token.trim()) {
             Ok(()) => Json(json!({ "ok": true })),
             Err(e) => Json(json!({ "error": e.to_string() })),
         }
@@ -625,7 +914,7 @@ pub mod api {
 
     pub async fn test(State(state): State<Arc<AppState>>, body: Option<Json<TestBody>>) -> Json<Value> {
         if !state.push.configured() {
-            return Json(json!({ "error": "no APNs key is set" }));
+            return Json(json!({ "error": "no push credentials are set" }));
         }
         let session = body.and_then(|Json(b)| b.session).filter(|s| !s.trim().is_empty());
         let results = match &session {
@@ -651,11 +940,60 @@ impl Push {
     pub fn apns_forget(&self) {
         self.apns.forget_token();
     }
+
+    /// Likewise: a new service account means the held access token belongs to nobody.
+    pub fn fcm_forget(&self) {
+        self.fcm.forget_token();
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A real one of each, so the two are told apart on the shapes that actually occur.
+    const APNS: &str = "740f4707bebcf74f9b7c25d48e3358945f6aa01da5ddb387462c7eaf61bb78ad";
+    const FCM: &str = "cjE9vT2zRk6mQq1sLp0aBc:APA91bH-x_9Kd3fQz7YwVn2pRt5uXsA0bCdEfGhIjKlMnOpQrStUvWxYz01234567890abcdefghijklmnopqrstuvwxyzAB";
+
+    #[test]
+    fn a_phone_is_placed_by_what_it_says_it_is_or_by_the_shape_of_its_token() {
+        // Said outright, and believed.
+        assert_eq!(platform_of(APNS, Some("apns")), Some("apns"));
+        assert_eq!(platform_of(FCM, Some("fcm")), Some("fcm"));
+        assert_eq!(platform_of(FCM, Some("FCM")), Some("fcm"), "however it is spelt");
+
+        // Unsaid — an iPhone build that predates Android says nothing, and still lands.
+        assert_eq!(platform_of(APNS, None), Some("apns"));
+        assert_eq!(platform_of(FCM, None), Some("fcm"));
+        assert_eq!(platform_of(APNS, Some("")), Some("apns"), "an empty claim is no claim");
+
+        // Hex is checked first: Apple's token also satisfies Google's character set,
+        // and guessing the wrong way round would send it to the wrong service forever.
+        assert_eq!(platform_of(APNS, None), Some("apns"));
+
+        // Claimed as something it is not.
+        assert_eq!(platform_of(FCM, Some("apns")), None, "not hex, so not Apple's");
+        assert_eq!(platform_of("short", Some("fcm")), None);
+        assert_eq!(platform_of(APNS, Some("webpush")), None, "a service we do not speak");
+    }
+
+    #[test]
+    fn what_is_not_a_device_token_is_refused() {
+        for junk in ["", "   ", "hello", "req:not-a-token", &"a".repeat(63), &"0".repeat(4097)] {
+            assert_eq!(platform_of(junk, None), None, "{junk:?} is not a token");
+        }
+        // Hex but an odd number of digits is not Apple's, and an app that claims Apple
+        // is told so.
+        assert_eq!(platform_of(&"a".repeat(65), Some("apns")), None);
+
+        // What this check cannot do, stated plainly: an FCM token is opaque, so any long
+        // enough run of the right characters passes — including that odd-length hex, and
+        // including a run of z's. Nothing local can tell a real one from a plausible one;
+        // Google's UNREGISTERED is what settles it, and the device is forgotten then. The
+        // point here is to keep a stray paste out of the table, not to authenticate a phone.
+        assert_eq!(platform_of(&"z".repeat(64), None), Some("fcm"));
+        assert_eq!(platform_of(&"a".repeat(65), None), Some("fcm"));
+    }
 
     #[test]
     fn a_pending_file_becomes_prompts_and_prompts_become_words() {

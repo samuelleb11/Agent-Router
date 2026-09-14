@@ -241,6 +241,20 @@ mod secrets {
         pub bundle_id: Option<String>,
     }
 
+    /// The Firebase service account — what lets the router tell an Android phone a
+    /// session is waiting. Kept beside the APNs key rather than folded into it: the two
+    /// are set, replaced and cleared independently, and widening `PushKey` would make
+    /// "an Apple key with no key in it" a thing the type allows.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct FcmKey {
+        pub project_id: String,
+        pub client_email: String,
+        /// The service account's `private_key`, PEM.
+        pub private_key: String,
+        pub private_key_id: String,
+        pub token_uri: String,
+    }
+
     #[derive(Debug, Default, Serialize, Deserialize)]
     struct File {
         version: u32,
@@ -248,6 +262,8 @@ mod secrets {
         accounts: BTreeMap<String, Entry>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         push: Option<PushKey>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fcm: Option<FcmKey>,
     }
 
     pub fn push_key() -> Option<PushKey> {
@@ -258,6 +274,17 @@ mod secrets {
         let mut file = load()?;
         file.version = 1;
         file.push = key;
+        store(&file)
+    }
+
+    pub fn fcm_key() -> Option<FcmKey> {
+        load().ok().and_then(|f| f.fcm)
+    }
+
+    pub fn store_fcm_key(key: Option<FcmKey>) -> Result<()> {
+        let mut file = load()?;
+        file.version = 1;
+        file.fcm = key;
         store(&file)
     }
 
@@ -325,7 +352,7 @@ mod secrets {
     }
 }
 
-pub use secrets::PushKey;
+pub use secrets::{FcmKey, PushKey};
 
 pub fn push_key() -> Option<PushKey> {
     secrets::push_key()
@@ -333,6 +360,14 @@ pub fn push_key() -> Option<PushKey> {
 
 pub fn store_push_key(key: Option<PushKey>) -> Result<()> {
     secrets::store_push_key(key)
+}
+
+pub fn fcm_key() -> Option<FcmKey> {
+    secrets::fcm_key()
+}
+
+pub fn store_fcm_key(key: Option<FcmKey>) -> Result<()> {
+    secrets::store_fcm_key(key)
 }
 
 pub fn store_token(account_id: &str, token: &str) -> Result<()> {

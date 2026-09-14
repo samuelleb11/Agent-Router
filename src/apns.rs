@@ -33,13 +33,16 @@ pub struct Key {
     pub p8: String,
 }
 
+/// How a send failed. Shared with `fcm`, which fails in exactly these three ways, so the
+/// wording names no vendor: wherever one of these is shown the device's `platform` is
+/// alongside it, and "Apple refused" over a Google error would be worse than saying less.
 #[derive(Debug)]
 pub enum SendError {
-    /// Apple says this token is gone for good; forget the device.
+    /// The service says this token is gone for good; forget the device.
     Unregistered,
-    /// Apple said no, and why.
+    /// The service said no, and why.
     Rejected(u16, String),
-    /// Apple was never reached.
+    /// The service was never reached.
     Transport(String),
 }
 
@@ -47,8 +50,8 @@ impl std::fmt::Display for SendError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SendError::Unregistered => write!(f, "device token no longer valid"),
-            SendError::Rejected(code, why) => write!(f, "Apple refused ({code}): {why}"),
-            SendError::Transport(why) => write!(f, "could not reach Apple: {why}"),
+            SendError::Rejected(code, why) => write!(f, "the push service refused ({code}): {why}"),
+            SendError::Transport(why) => write!(f, "could not reach the push service: {why}"),
         }
     }
 }
@@ -83,7 +86,7 @@ impl Delivery<'_> {
     /// Collapsing is for banners. A background push must not carry the id of the banner
     /// it is chasing: Apple would treat the two as one message, and whichever arrived
     /// second would replace — not follow — the first.
-    fn collapse_id(&self) -> Option<&str> {
+    pub(crate) fn collapse_id(&self) -> Option<&str> {
         match self {
             Delivery::Alert(id) => Some(&id[..id.len().min(64)]),
             Delivery::Background => None,
@@ -92,7 +95,7 @@ impl Delivery<'_> {
 
     /// How long the message is still worth delivering. A prompt is worth announcing
     /// whenever the phone next appears; "that prompt is answered" is worth five minutes.
-    fn life_secs(&self) -> Option<i64> {
+    pub(crate) fn life_secs(&self) -> Option<i64> {
         match self {
             Delivery::Alert(_) => None,
             Delivery::Background => Some(5 * 60),
@@ -258,7 +261,7 @@ pub fn pem_to_der(pem: &str) -> Option<Vec<u8>> {
     crate::auth::base64_decode(&body)
 }
 
-fn b64url(bytes: &[u8]) -> String {
+pub(crate) fn b64url(bytes: &[u8]) -> String {
     const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     let mut out = String::with_capacity((bytes.len() + 2) / 3 * 4);
     for chunk in bytes.chunks(3) {

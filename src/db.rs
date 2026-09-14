@@ -126,11 +126,13 @@ CREATE TABLE IF NOT EXISTS settings (
   updated_at INTEGER NOT NULL
 );
 
--- Phones that asked to be told when a session is waiting on a person. The token is
--- Apple's; `router_ref` is what the phone calls this router, echoed back so a tap
+-- Phones that asked to be told when a session is waiting on a person. `platform` says
+-- whose push service the token belongs to, and so which of the two the router speaks to
+-- for this row; `router_ref` is what the phone calls this router, echoed back so a tap
 -- opens the right session in the right place.
 CREATE TABLE IF NOT EXISTS push_devices (
   token         TEXT PRIMARY KEY,
+  platform      TEXT NOT NULL DEFAULT 'apns',
   name          TEXT,
   environment   TEXT NOT NULL DEFAULT 'development',
   router_ref    TEXT,
@@ -160,6 +162,9 @@ impl Db {
         // Lightweight forward migration so an existing store upgrades in place.
         ensure_column(&conn, "requests", "agent_id", "TEXT")?;
         ensure_column(&conn, "requests", "account_email", "TEXT")?;
+        // Every phone registered before there was a second push service was an iPhone,
+        // which is exactly what the default backfills.
+        ensure_column(&conn, "push_devices", "platform", "TEXT NOT NULL DEFAULT 'apns'")?;
         for (col, ty) in [
             ("source", "TEXT NOT NULL DEFAULT 'keychain'"),
             ("profile_dir", "TEXT"),
