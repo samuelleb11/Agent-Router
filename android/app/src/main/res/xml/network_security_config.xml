@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The router speaks plain HTTP on the LAN — that is its own trust model, stated at the top
+  of the iOS client too: one password over a network you control, no certificate to manage.
+  Android has blocked cleartext by default since API 28, so it has to be allowed back here.
+
+  It is allowed for everything rather than a fixed list, because a router is whatever LAN
+  address the user types into the form; there is no domain to enumerate ahead of time.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

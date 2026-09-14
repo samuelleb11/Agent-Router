@@ -1,0 +1,110 @@
+// The handful of shapes every screen is built from.
+
+package ca.whnet.agentrouter.ui
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import ca.whnet.agentrouter.data.StateColor
+
+/**
+ * A titled group with an explanatory line under it.
+ *
+ * The iPhone app leans on grouped-list sections that carry both a header and a footer, in
+ * about twenty places, and those footers are real explanatory copy rather than decoration.
+ * Material has no single component for that, so this is it: header above, content on a
+ * surface card, footer below in the muted style.
+ */
+@Composable
+fun SettingsSection(
+    header: String? = null,
+    footer: String? = null,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit,
+) {
+    Column(modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+        if (header != null) {
+            Text(
+                header.uppercase(),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(start = 4.dp, bottom = 6.dp),
+            )
+        }
+        Card(
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(Modifier.fillMaxWidth()) { content() }
+        }
+        if (footer != null) {
+            Text(
+                footer,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 4.dp, end = 4.dp, top = 6.dp),
+            )
+        }
+    }
+}
+
+/** The coloured dot that says what a session or a router is doing. */
+@Composable
+fun StateDot(state: String?, size: Int = 10, modifier: Modifier = Modifier) {
+    Box(modifier.size(size.dp).background(dotColor(state), CircleShape))
+}
+
+@Composable
+fun dotColor(state: String?): Color = when (StateColor.of(state)) {
+    StateColor.GREEN -> Color(0xFF34C759)
+    StateColor.ORANGE -> Color(0xFFFF9F0A)
+    StateColor.YELLOW -> Color(0xFFFFD60A)
+    StateColor.RED -> MaterialTheme.colorScheme.error
+    StateColor.PURPLE -> Color(0xFFBF5AF2)
+    StateColor.GRAY -> MaterialTheme.colorScheme.outline
+}
+
+/** What a screen shows when it has nothing to show, and why. */
+@Composable
+fun EmptyState(
+    title: String,
+    detail: String? = null,
+    modifier: Modifier = Modifier,
+    action: (@Composable () -> Unit)? = null,
+) {
+    Box(modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(title, style = MaterialTheme.typography.titleMedium, textAlign = TextAlign.Center)
+            if (detail != null) {
+                Text(
+                    detail,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                )
+            }
+            if (action != null) action()
+        }
+    }
+}
+
+val ScreenPadding = PaddingValues(bottom = 24.dp)

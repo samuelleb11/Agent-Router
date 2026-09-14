@@ -1,0 +1,361 @@
+package ca.whnet.agentrouter.ui
+
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.AssistChipDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.unit.dp
+import ca.whnet.agentrouter.api.LiveSession
+import ca.whnet.agentrouter.data.AppState
+import ca.whnet.agentrouter.data.Router
+import ca.whnet.agentrouter.feed.LiveFeed
+import kotlinx.coroutines.launch
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SessionScreen(app: AppState, router: Router, opened: LiveSession, onBack: () -> Unit) {
+    val state = app.state(router)
+    // Switching between sessions in the same project happens in place, so which session
+    // is open is state here rather than a navigation argument.
+    var session by remember(opened.sessionId) { mutableStateOf(opened) }
+    val feed = remember(session.sessionId) { LiveFeed(session, state.liveClient) }
+    val scope = rememberCoroutineScope()
+    val listState = rememberLazyListState()
+    val snackbar = remember { SnackbarHostState() }
+    var composing by remember { mutableStateOf("") }
+    var menu by remember { mutableStateOf(false) }
+    var asking by remember { mutableStateOf(false) }
+    var asideText by remember { mutableStateOf("") }
+    var asideAnswer by remember { mutableStateOf<String?>(null) }
+    var asideRunning by remember { mutableStateOf(false) }
+    val clipboard = LocalClipboardManager.current
+
+    // Following is a state, not a per-append test: once the reader has scrolled up to
+    // read something, new rows must not yank them back down. Only a scroll that has
+    // *settled* changes it — the backfill arrives as a burst that grows the content under
+    // a still offset, and judging "at the bottom" during that growth stops the feed
+    // following before the first pin ever happens. That bug was found on iOS; the fix is
+    // the same shape here.
+    var following by remember(session.sessionId) { mutableStateOf(true) }
+    LaunchedEffect(listState.isScrollInProgress) {
+        if (listState.isScrollInProgress) return@LaunchedEffect
+        val info = listState.layoutInfo
+        val last = info.visibleItemsInfo.lastOrNull()
+        following = last == null || last.index >= info.totalItemsCount - 2
+    }
+
+    val siblings = state.sessions.filter { it.projectName == session.projectName }
+
+    LaunchedEffect(session.sessionId) {
+        scope.launch { feed.loadFacts() }
+        feed.run()
+    }
+
+    LaunchedEffect(feed.rows.size) {
+        if (feed.rows.isNotEmpty() && following) listState.scrollToItem(feed.rows.size - 1)
+    }
+
+    LaunchedEffect(feed.notice) {
+        feed.notice?.let { snackbar.showSnackbar(it.text) }
+    }
+
+    Scaffold(
+        snackbarHost = { SnackbarHost(snackbar) },
+        topBar = {
+            TopAppBar(
+                title = {
+                    Column {
+                        Text(session.label, style = MaterialTheme.typography.titleMedium, maxLines = 1)
+                        val s = feed.status
+                        Text(
+                            when {
+                                s == null && !feed.connected -> "connecting…"
+                                s == null -> session.projectName
+                                else -> s.detail.ifEmpty { s.state }
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                },
+                navigationIcon = {
+                    IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
+                },
+                actions = {
+                    if (feed.status?.isBusy == true && session.wrapped) {
+                        TextButton(enabled = !feed.stopping, onClick = { scope.launch { feed.interrupt() } }) {
+                            Text("Stop")
+                        }
+                    }
+                    StateDot(feed.status?.state ?: session.state)
+                    IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, "More") }
+                    DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                        feed.stats?.let { st ->
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        "${st.model ?: "model unknown"} · ${Fmt.compact(st.total)} tokens · ${Fmt.usd(st.cost)}",
+                                        style = MaterialTheme.typography.labelMedium,
+                                    )
+                                },
+                                onClick = {},
+                                enabled = false,
+                            )
+                        }
+                        feed.project?.let { pr ->
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        "project: ${pr.sessions} sessions · ${Fmt.usd(pr.cost)}",
+                                        style = MaterialTheme.typography.labelMedium,
+                                    )
+                                },
+                                onClick = {},
+                                enabled = false,
+                            )
+                        }
+                        HorizontalDivider()
+
+                        // Switching model or effort needs the wrapper: both are control
+                        // frames on the CLI's stdin, which only the wrapper holds.
+                        if (session.wrapped) {
+                            feed.options?.models?.forEach { m ->
+                                DropdownMenuItem(
+                                    text = { Text(m) },
+                                    trailingIcon = {
+                                        if (feed.stats?.model == m) Text("·", style = MaterialTheme.typography.titleMedium)
+                                    },
+                                    onClick = { menu = false; scope.launch { feed.setModel(m) } },
+                                )
+                            }
+                            if (feed.options?.efforts?.isNotEmpty() == true) HorizontalDivider()
+                            feed.options?.efforts?.forEach { e ->
+                                DropdownMenuItem(
+                                    text = { Text("effort: $e") },
+                                    trailingIcon = {
+                                        if (feed.stats?.effort == e) Text("·", style = MaterialTheme.typography.titleMedium)
+                                    },
+                                    onClick = { menu = false; scope.launch { feed.setEffort(e) } },
+                                )
+                            }
+                            HorizontalDivider()
+                        }
+                        DropdownMenuItem(
+                            text = { Text("Ask on the side") },
+                            onClick = { menu = false; asking = true },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Put away") },
+                            onClick = {
+                                menu = false
+                                scope.launch { state.archive(session, true); onBack() }
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Copy session id") },
+                            onClick = {
+                                menu = false
+                                clipboard.setText(AnnotatedString(session.sessionId))
+                            },
+                        )
+                    }
+                },
+            )
+        },
+        bottomBar = {
+            Surface(tonalElevation = 3.dp) {
+                Row(
+                    Modifier.fillMaxWidth().imePadding().padding(10.dp),
+                    verticalAlignment = Alignment.Bottom,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    OutlinedTextField(
+                        value = composing,
+                        onValueChange = { composing = it },
+                        placeholder = { Text(if (session.wrapped) "Message" else "Message (not wrapped)") },
+                        modifier = Modifier.weight(1f),
+                        maxLines = 5,
+                    )
+                    IconButton(
+                        enabled = composing.isNotBlank() && !feed.sending,
+                        onClick = {
+                            val text = composing
+                            composing = ""
+                            scope.launch { if (!feed.send(text)) composing = text }
+                        },
+                    ) { Icon(Icons.AutoMirrored.Filled.Send, "Send") }
+                }
+            }
+        },
+    ) { pad ->
+        Column(Modifier.fillMaxSize().padding(pad)) {
+        if (siblings.size > 1) {
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                siblings.forEach { s ->
+                    val on = s.sessionId == session.sessionId
+                    AssistChip(
+                        onClick = { if (!on) { composing = ""; session = s } },
+                        label = { Text(s.label, maxLines = 1, style = MaterialTheme.typography.labelMedium) },
+                        leadingIcon = { StateDot(s.state, size = 8) },
+                        colors = AssistChipDefaults.assistChipColors(
+                            containerColor = if (on) MaterialTheme.colorScheme.secondaryContainer
+                            else MaterialTheme.colorScheme.surface,
+                        ),
+                    )
+                }
+            }
+            HorizontalDivider()
+        }
+        feed.stats?.let { st ->
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 14.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                FactChip("model", st.model ?: "—")
+                st.effort?.let { FactChip("effort", it) }
+                FactChip("tokens", Fmt.compact(st.total))
+                FactChip("turns", st.turns.toString())
+                FactChip("cost", Fmt.usd(st.cost))
+                feed.project?.let { FactChip("project", "${it.sessions} sessions · ${Fmt.usd(it.cost)}") }
+            }
+            HorizontalDivider()
+        }
+        LazyColumn(
+            Modifier.fillMaxSize(),
+            state = listState,
+            contentPadding = ScreenPadding,
+        ) {
+            items(feed.rows, key = { it.id }) { row ->
+                FeedRow(row) { answers, parts ->
+                    scope.launch { feed.answer(answers, parts, row.id) }
+                }
+            }
+        }
+        }
+    }
+
+    if (asking) {
+        AlertDialog(
+            onDismissRequest = { if (!asideRunning) { asking = false; asideAnswer = null } },
+            title = { Text("Ask on the side") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        "Asks a forked copy of this session, with no tools. The session itself " +
+                            "is not disturbed and never sees the question.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    OutlinedTextField(
+                        value = asideText,
+                        onValueChange = { asideText = it },
+                        enabled = !asideRunning,
+                        label = { Text("Question") },
+                        modifier = Modifier.fillMaxWidth(),
+                        maxLines = 4,
+                    )
+                    if (asideRunning) {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            CircularProgressIndicator(Modifier.padding(2.dp), strokeWidth = 2.dp)
+                            Text("Forking the session — this can take a minute.",
+                                style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                    asideAnswer?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = asideText.isNotBlank() && !asideRunning,
+                    onClick = {
+                        asideRunning = true
+                        asideAnswer = null
+                        scope.launch {
+                            val reply = feed.aside(asideText)
+                            asideAnswer = reply?.answer ?: reply?.reason ?: "No answer came back."
+                            asideRunning = false
+                        }
+                    },
+                ) { Text("Ask") }
+            },
+            dismissButton = {
+                TextButton(enabled = !asideRunning, onClick = { asking = false; asideAnswer = null }) {
+                    Text("Close")
+                }
+            },
+        )
+    }
+}
+
+
+/**
+ * Ask a forked copy of the session something without disturbing it.
+ *
+ * The router runs `claude --resume --fork-session` with no tools, which can take a while —
+ * up to three minutes before it gives up — so this says so rather than looking hung.
+ */
+
+
+/** One fact from the session's stats strip. */
+@Composable
+private fun FactChip(label: String, value: String) {
+    Column {
+        Text(value, style = MaterialTheme.typography.labelLarge)
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}

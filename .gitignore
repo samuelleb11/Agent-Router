@@ -42,6 +42,20 @@ xcuserdata/
 DerivedData/
 *.xcresult
 
+# Android: Gradle's build output and caches, the local SDK path, and the Firebase client
+# config. `google-services.json` is not a secret — it ships inside the APK — but it names
+# one person's Firebase project, so it is supplied per machine rather than committed.
+/android/.gradle
+/android/build
+/android/app/build
+/android/local.properties
+/android/app/google-services.json
+/android/app/release
+*.iml
+.kotlin/
+# The wrapper jar and properties ARE committed: without them `./gradlew` cannot bootstrap
+# and the build is not reproducible on another machine.
+
 # VS Code extension and packaging: dependencies, the compiled extension, the bundled
 # binaries per platform and the VSIX files
 node_modules/
