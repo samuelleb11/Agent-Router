@@ -1500,6 +1500,17 @@ pub fn recent_transcripts(within_ms: i64) -> Vec<(String, PathBuf)> {
 
 /// The AskUserQuestion this transcript is waiting on, if any: the tool call's id and
 /// its first question. For a session with no wrapper this is the only way to know.
+/// Whether this session is still waiting on this particular question — asked of its
+/// transcript directly, with no recency filter. `recent_transcripts` only reads sessions
+/// that moved lately, and a session sitting on a question does not move: after a while
+/// it stops being listed as waiting although nobody has answered it. Anything that acts
+/// on a prompt *leaving* the waiting set has to tell those two apart.
+pub fn still_asking(session_id: &str, ask_id: &str) -> bool {
+    transcript_path(session_id)
+        .and_then(|path| pending_ask(&path))
+        .is_some_and(|(id, _)| id == ask_id)
+}
+
 pub fn pending_ask(path: &Path) -> Option<(String, String)> {
     const TAIL: u64 = 256 * 1024;
     let mut f = fs::File::open(path).ok()?;

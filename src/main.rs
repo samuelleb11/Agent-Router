@@ -313,6 +313,7 @@ async fn serve() -> anyhow::Result<()> {
         .route("/api/push/register", post(notify::api::register))
         .route("/api/push/unregister", post(notify::api::unregister))
         .route("/api/push/test", post(notify::api::test))
+        .route("/api/push/pending", get(notify::api::pending))
         .route("/api/quota", get(quota::quota))
         .route("/api/quota/raw", get(quota::raw_usage))
         .route("/api/usage-token", post(quota::set_usage_token))

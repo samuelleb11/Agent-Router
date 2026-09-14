@@ -43,7 +43,50 @@ final class NotificationTapUITests: XCTestCase {
         assertSessionOpen(app)
     }
 
+    /// The other half of a notification's life: the prompt behind it is answered
+    /// somewhere else, and the banner has to go. Nothing can push to a simulator, so
+    /// what is exercised here is the sweep the app runs whenever it comes to the front
+    /// — it asks the router what is still waiting, and `req:ui-test` never is.
+    func testABannerGoesWhenItsPromptIsNoLongerWaiting() throws {
+        let session = try firstSessionId()
+        ensureRouter()
+        let app = launch(notifying: session, bogusRouter: false)
+        allowNotificationsIfAsked()
+        XCUIDevice.shared.press(.home)
+        XCTAssertTrue(banner.waitForExistence(timeout: 22), "no banner was raised, so none can be taken down")
+
+        // First that it is really there to be found, so the check after the sweep is
+        // about the banner and not about a Notification Center that failed to open.
+        openNotificationCenter()
+        shoot(springboard, "notification centre before the sweep")
+        XCTAssertTrue(banner.exists, "the banner is not in Notification Center to begin with")
+        XCUIDevice.shared.press(.home)
+
+        app.activate()
+        XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10), "the app did not come forward")
+        XCUIDevice.shared.press(.home)
+        openNotificationCenter()
+        shoot(springboard, "notification centre after the sweep")
+        XCTAssertFalse(banner.exists, "the banner outlived the prompt it was raised for")
+    }
+
     // MARK: - steps
+
+    /// SpringBoard's own view of the notification: on screen as a banner, and in
+    /// Notification Center once it has scrolled away.
+    private var banner: XCUIElement {
+        springboard.descendants(matching: .any)
+            .matching(NSPredicate(format: "label CONTAINS[c] %@", "UI test prompt")).firstMatch
+    }
+
+    /// Dragged from the top *left*: the middle is the Dynamic Island, and the right
+    /// half opens Control Center instead.
+    private func openNotificationCenter() {
+        let top = springboard.coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.0))
+        top.press(forDuration: 0.2, thenDragTo: springboard.coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.8)))
+        _ = banner.waitForExistence(timeout: 5)
+    }
+
 
     private func launch(notifying session: String, bogusRouter: Bool) -> XCUIApplication {
         let app = XCUIApplication()
@@ -83,13 +126,10 @@ final class NotificationTapUITests: XCTestCase {
     /// The banner is SpringBoard's; its label carries the notification's text. A banner
     /// that was missed is still in Notification Center, which a drag from the top opens.
     private func tapNotification() {
-        let cell = springboard.descendants(matching: .any)
-            .matching(NSPredicate(format: "label CONTAINS[c] %@", "UI test prompt")).firstMatch
+        let cell = banner
         if !cell.waitForExistence(timeout: 22) {
             shoot(springboard, "no banner on screen; opening Notification Center")
-            let top = springboard.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.02))
-            top.press(forDuration: 0.1, thenDragTo: springboard.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.75)))
-            _ = cell.waitForExistence(timeout: 5)
+            openNotificationCenter()
         }
         shoot(springboard, "about to tap the notification")
         XCTAssertTrue(cell.exists, "the notification is nowhere on screen")

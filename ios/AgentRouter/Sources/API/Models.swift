@@ -793,6 +793,11 @@ struct PushConfigBody: Encodable, Sendable {
     let clear: Bool?
     enum CodingKeys: String, CodingKey { case p8, clear, teamId = "team_id", keyId = "key_id", bundleId = "bundle_id" }
 }
+/// `/api/push/pending`: the prompts the router says are still waiting for a person.
+struct PendingReply: Decodable, Sendable {
+    let waiting: [String]
+}
+
 struct PushRegisterBody: Encodable, Sendable {
     let token: String
     let name: String

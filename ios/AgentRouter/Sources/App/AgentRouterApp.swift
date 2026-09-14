@@ -4,6 +4,7 @@ import UserNotifications
 @main
 struct AgentRouterApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var delegate
+    @Environment(\.scenePhase) private var scenePhase
     @State private var store: RouterStore
 
     init() {
@@ -27,6 +28,12 @@ struct AgentRouterApp: App {
                     #if DEBUG
                     await UITestHooks.run(store: store)
                     #endif
+                }
+                // Whatever the background push missed: banners for prompts that are no
+                // longer waiting go as soon as the app is looked at.
+                .onChange(of: scenePhase, initial: true) { _, phase in
+                    guard phase == .active else { return }
+                    Task { await Notifications.reconcile(store: store) }
                 }
         }
     }
@@ -52,7 +59,9 @@ enum UITestHooks {
         content.title = "Agent Router"
         content.body = "UI test prompt"
         content.sound = .default
-        content.userInfo = ["router_ref": ref, "session": session, "request_id": "ui-test"]
+        // Keyed as a router's own push is — `req:<request id>` — so the notification is
+        // eligible for the sweep that takes answered prompts down.
+        content.userInfo = ["router_ref": ref, "session": session, "request_id": "req:ui-test"]
         // Late enough for the test to answer the permission alert and leave the app first.
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 12, repeats: false)
         do {
@@ -106,6 +115,26 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
                                             withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
         let done = OnMain(completionHandler)
         DispatchQueue.main.async { done.call([.banner, .sound, .list]) }
+    }
+
+    /// A background push naming prompts that have since been answered. Nothing is shown;
+    /// the banners those prompts raised are taken down. Apple may never deliver this —
+    /// see `Notifications` for what covers that.
+    nonisolated func application(_ application: UIApplication,
+                                 didReceiveRemoteNotification userInfo: [AnyHashable: Any],
+                                 fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void) {
+        // Read it here, on whatever thread this arrives on: the dictionary is not
+        // Sendable, the strings in it are.
+        let answered = Set(userInfo["dismiss"] as? [String] ?? [])
+        let done = OnMain(completionHandler)
+        guard !answered.isEmpty else {
+            DispatchQueue.main.async { done.call(.noData) }
+            return
+        }
+        Task {
+            await Notifications.takeDown(answered: answered)
+            DispatchQueue.main.async { done.call(.newData) }
+        }
     }
 
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,

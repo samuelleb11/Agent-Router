@@ -253,12 +253,19 @@ password guard) and the UI tests, which drive add-router → sessions → a chat
 router on `127.0.0.1:8799`, and tap a notification carrying a router push's payload with
 the app in front, in the background, and not running, checking that each lands on the
 session (`--ui-test-notify` schedules it locally, since nothing can push to a simulator).
+One more checks the opposite: a notification whose prompt the router no longer lists as
+waiting is gone from Notification Center once the app has been to the front.
 
 **Notifications.** The router tells the phone the moment a session waits on a person —
 a permission, an AskUserQuestion — through Apple's push service, once per prompt; a tap
-opens that session. Everything the feature needs is built in: the app carries the push
-entitlement, the router speaks to Apple, and the app tells the router its team and
-bundle id when it registers. What cannot be built in is Apple's part. A push-enabled
+opens that session. Answer it anywhere else — the terminal, the editor, another phone —
+and the notification takes itself down: the prompt leaves the router's waiting set, and
+the router wakes the app with a silent push naming it. Apple drops a push like that
+whenever the app has been force quit, so the app also asks `/api/push/pending` what is
+still waiting every time it comes to the front, and clears up whatever the push missed.
+Everything the feature needs is built in: the app carries the push entitlement, the
+router speaks to Apple, and the app tells the router its team and bundle id when it
+registers. What cannot be built in is Apple's part. A push-enabled
 App ID and a signing key are issued only to the account holder, by the developer
 portal, and no API or Xcode feature creates the key. Two one-time steps, both on the
 account holder's login:

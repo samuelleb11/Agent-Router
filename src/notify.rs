@@ -7,9 +7,11 @@
 //! watched once a second; each prompt is announced once, keyed by its request id.
 //!
 //! Nothing here can unblock the session: that is the phone's job, and what the app
-//! opens to when the notification is tapped.
+//! opens to when the notification is tapped. What *does* happen here is the other half
+//! of that: a prompt answered anywhere — the terminal, the editor, another phone —
+//! leaves the waiting set, and the banner it raised is taken down again.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -17,7 +19,7 @@ use std::time::Duration;
 use rusqlite::{params, Connection, OpenFlags};
 use serde_json::{json, Value};
 
-use crate::apns::{Apns, Key, SendError};
+use crate::apns::{Apns, Delivery, Key, SendError};
 
 const PENDING_DIR: &str = "/tmp/agent-router-sessions";
 const POLL: Duration = Duration::from_secs(1);
@@ -112,6 +114,9 @@ pub struct Push {
     pub key_file: Mutex<Option<String>>,
     /// The (file name, mtime) whose import failed outright, so it is not retried every second.
     tried: Mutex<Option<(String, std::time::SystemTime)>>,
+    /// Prompts announced to a phone that are still waiting, as key -> session: what a
+    /// banner may be up for, and so what a dismissal is owed for.
+    announced: Mutex<HashMap<String, String>>,
 }
 
 impl Push {
@@ -124,6 +129,7 @@ impl Push {
             last_sent: Mutex::new(None),
             key_file: Mutex::new(None),
             tried: Mutex::new(None),
+            announced: Mutex::new(HashMap::new()),
         }
     }
 
@@ -260,28 +266,25 @@ impl Push {
         }
     }
 
-    /// Tell every registered phone. Returns one line per device.
-    pub async fn notify(&self, title: &str, subtitle: &str, body: &str, session: Option<&str>, collapse: &str) -> Vec<(String, Result<(), String>)> {
+    /// Send one message to every registered phone, and keep what Apple said about each.
+    /// The payload is built per device, because each is told which router this came from.
+    /// Returns one line per device.
+    async fn fan_out(
+        &self,
+        delivery: Delivery<'_>,
+        payload: impl Fn(&Device) -> Value,
+    ) -> Vec<(String, Result<(), String>)> {
         let Some(key) = self.key() else {
             return Vec::new();
         };
         let topic = self.topic();
         let mut out = Vec::new();
         for d in self.devices() {
-            let mut alert = json!({ "title": title });
-            if !subtitle.is_empty() { alert["subtitle"] = json!(subtitle); }
-            if !body.is_empty() { alert["body"] = json!(body); }
-            let payload = json!({
-                "aps": { "alert": alert, "sound": "default", "thread-id": session.unwrap_or("router"), "category": "PROMPT" },
-                "session": session,
-                "router_ref": d.router_ref,
-                "request_id": collapse,
-            });
+            let body = payload(&d);
             let tail = d.token.chars().rev().take(6).collect::<String>().chars().rev().collect::<String>();
-            match self.apns.send(&key, &d.token, &d.environment, &topic, collapse, &payload).await {
+            match self.apns.send(&key, &d.token, &d.environment, &topic, delivery, &body).await {
                 Ok(()) => {
                     self.record(&d.token, "delivered");
-                    *self.last_sent.lock().unwrap() = Some((crate::db::now_ms(), format!("{title}: {body}")));
                     *self.last_error.lock().unwrap() = None;
                     out.push((tail, Ok(())));
                 }
@@ -302,6 +305,48 @@ impl Push {
         out
     }
 
+    /// Tell every registered phone. Returns one line per device.
+    pub async fn notify(&self, title: &str, subtitle: &str, body: &str, session: Option<&str>, collapse: &str) -> Vec<(String, Result<(), String>)> {
+        let out = self
+            .fan_out(Delivery::Alert(collapse), |d| {
+                let mut alert = json!({ "title": title });
+                if !subtitle.is_empty() { alert["subtitle"] = json!(subtitle); }
+                if !body.is_empty() { alert["body"] = json!(body); }
+                json!({
+                    "aps": { "alert": alert, "sound": "default", "thread-id": session.unwrap_or("router"), "category": "PROMPT" },
+                    "session": session,
+                    "router_ref": d.router_ref,
+                    "request_id": collapse,
+                })
+            })
+            .await;
+        if out.iter().any(|(_, r)| r.is_ok()) {
+            *self.last_sent.lock().unwrap() = Some((crate::db::now_ms(), format!("{title}: {body}")));
+        }
+        out
+    }
+
+    /// These prompts are answered; the banners they raised can come down. Nothing is
+    /// shown — the phone is woken to take them out of its notification centre.
+    ///
+    /// Apple may drop a message like this one, and does whenever the app has been force
+    /// quit. That is survivable and not worked around here: the app asks
+    /// `/api/push/pending` what is still waiting whenever it comes to the front, and
+    /// clears up anything this missed.
+    pub async fn dismiss(&self, answered: &[String]) -> Vec<(String, Result<(), String>)> {
+        if answered.is_empty() {
+            return Vec::new();
+        }
+        self.fan_out(Delivery::Background, |d| {
+            json!({
+                "aps": { "content-available": 1 },
+                "dismiss": answered,
+                "router_ref": d.router_ref,
+            })
+        })
+        .await
+    }
+
     fn seen(&self, id: &str) -> bool {
         self.seen.lock().unwrap().0.contains(id)
     }
@@ -314,6 +359,25 @@ impl Push {
                 if let Some(old) = g.1.pop_front() { g.0.remove(&old); }
             }
         }
+    }
+
+    /// The key of everything waiting for a person right now — what a phone checks its
+    /// own notification centre against.
+    ///
+    /// Everything `waiting()` finds, plus anything already announced that is still
+    /// unanswered. The second half matters: a session that has sat on a question for
+    /// longer than `RECENT_MS` is no longer read, and a phone told only the first half
+    /// would take down a banner for a question nobody has answered.
+    pub fn waiting_keys(&self) -> Vec<String> {
+        let mut keys: HashSet<String> = self.waiting().into_iter().map(|(key, ..)| key).collect();
+        for (key, session) in self.announced.lock().unwrap().iter() {
+            if !keys.contains(key) && still_waiting(key, session) {
+                keys.insert(key.clone());
+            }
+        }
+        let mut out: Vec<String> = keys.into_iter().collect();
+        out.sort();
+        out
     }
 
     /// Everything currently waiting, as (dedupe key, session id, headline, detail).
@@ -355,9 +419,29 @@ impl Push {
                 self.import_key_file();
                 continue;
             }
-            let fresh: Vec<_> = self.waiting().into_iter().filter(|(k, ..)| !self.seen(k)).collect();
+            let waiting = self.waiting();
+            let still: HashSet<&str> = waiting.iter().map(|(k, ..)| k.as_str()).collect();
+            // Gone from the sweep is not the same as answered — see `still_waiting`.
+            let answered: Vec<String> = {
+                let mut announced = self.announced.lock().unwrap();
+                let gone: Vec<String> = announced
+                    .iter()
+                    .filter(|(key, session)| !still.contains(key.as_str()) && !still_waiting(key, session))
+                    .map(|(key, _)| key.clone())
+                    .collect();
+                for key in &gone {
+                    announced.remove(key);
+                }
+                gone
+            };
+            if !answered.is_empty() {
+                tracing::info!(prompts = answered.len(), "answered elsewhere; taking the banners down");
+                self.dismiss(&answered).await;
+            }
+            let fresh: Vec<_> = waiting.into_iter().filter(|(k, ..)| !self.seen(k)).collect();
             for (key, session, head, detail) in fresh {
                 self.mark(&key);
+                self.announced.lock().unwrap().insert(key.clone(), session.clone());
                 let (project, title) = crate::live::session_label(&session).unwrap_or_else(|| ("session".into(), None));
                 let name = match title {
                     Some(t) => format!("{project} · {}", clip(&t, 40)),
@@ -367,6 +451,20 @@ impl Push {
                 self.notify(&name, &head, &detail, Some(&session), &key).await;
             }
         }
+    }
+}
+
+/// Whether a prompt that has left the sweep is nonetheless still waiting for someone.
+///
+/// A wrapper's `.pending` file is authoritative and never filtered by time, so a `req:`
+/// key that is gone really is answered — or its wrapper died, and nothing can answer it
+/// either way. An `ask:` key is read off a transcript that is only looked at while the
+/// session is moving, and a session waiting on a question does not move; that one has to
+/// be asked about directly.
+fn still_waiting(key: &str, session: &str) -> bool {
+    match key.strip_prefix("ask:") {
+        Some(ask_id) => crate::live::still_asking(session, ask_id),
+        None => false,
     }
 }
 
@@ -510,6 +608,13 @@ pub mod api {
         }
     }
 
+    /// What is waiting for a person right now, keyed as the notifications are. A phone
+    /// compares this against the banners it has up and clears the rest — which is what
+    /// makes a dropped background push harmless.
+    pub async fn pending(State(state): State<Arc<AppState>>) -> Json<Value> {
+        Json(json!({ "waiting": state.push.waiting_keys() }))
+    }
+
     /// A notification that says nothing but "it works", to every phone.
     #[derive(Deserialize, Default)]
     pub struct TestBody {
@@ -583,6 +688,16 @@ mod tests {
         // what is checkable here is that nothing is imported from beside a database
         // that does not exist.
         assert!(push.import_key_file().is_none());
+    }
+
+    #[test]
+    fn a_question_nobody_answered_keeps_its_banner() {
+        // A wrapper's prompt is answered the moment it leaves the pending file.
+        assert!(!still_waiting("req:r-1", "s-1"));
+        // A question is asked of the session itself, and a session with no transcript
+        // is waiting on nothing.
+        assert!(!still_waiting("ask:toolu_1", "no-such-session"));
+        assert!(!still_waiting("ask:toolu_1", "../etc/passwd"), "an id that is not one reads as gone");
     }
 
     #[test]

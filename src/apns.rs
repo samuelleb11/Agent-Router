@@ -53,6 +53,53 @@ impl std::fmt::Display for SendError {
     }
 }
 
+/// What Apple should do with a message: show it to a person, or wake the app quietly.
+#[derive(Clone, Copy, Debug)]
+pub enum Delivery<'a> {
+    /// A banner, replacing any earlier one carrying the same collapse id.
+    Alert(&'a str),
+    /// Nothing is shown; the app is woken to tidy up after itself. Apple throttles
+    /// these, withholds them while the app is force-quit or Low Power Mode is on, and
+    /// promises nothing about when one arrives — so nothing may *depend* on one.
+    Background,
+}
+
+impl Delivery<'_> {
+    fn push_type(&self) -> &'static str {
+        match self {
+            Delivery::Alert(_) => "alert",
+            Delivery::Background => "background",
+        }
+    }
+
+    /// Apple rejects a background push sent at 10.
+    fn priority(&self) -> &'static str {
+        match self {
+            Delivery::Alert(_) => "10",
+            Delivery::Background => "5",
+        }
+    }
+
+    /// Collapsing is for banners. A background push must not carry the id of the banner
+    /// it is chasing: Apple would treat the two as one message, and whichever arrived
+    /// second would replace — not follow — the first.
+    fn collapse_id(&self) -> Option<&str> {
+        match self {
+            Delivery::Alert(id) => Some(&id[..id.len().min(64)]),
+            Delivery::Background => None,
+        }
+    }
+
+    /// How long the message is still worth delivering. A prompt is worth announcing
+    /// whenever the phone next appears; "that prompt is answered" is worth five minutes.
+    fn life_secs(&self) -> Option<i64> {
+        match self {
+            Delivery::Alert(_) => None,
+            Delivery::Background => Some(5 * 60),
+        }
+    }
+}
+
 pub struct Apns {
     client: H2Client,
     /// (key id, token, minted at ms).
@@ -101,20 +148,27 @@ impl Apns {
         device: &str,
         environment: &str,
         topic: &str,
-        collapse_id: &str,
+        delivery: Delivery<'_>,
         payload: &Value,
     ) -> Result<(), SendError> {
         let bearer = self
             .bearer(key)
             .map_err(|e| SendError::Transport(format!("signing key: {e}")))?;
         let uri = format!("https://{}/3/device/{}", Self::host(environment), device);
-        let req = hyper::Request::post(uri)
+        let mut req = hyper::Request::post(uri)
             .header("authorization", format!("bearer {bearer}"))
             .header("apns-topic", topic)
-            .header("apns-push-type", "alert")
-            .header("apns-priority", "10")
-            .header("apns-collapse-id", &collapse_id[..collapse_id.len().min(64)])
-            .header("content-type", "application/json")
+            .header("apns-push-type", delivery.push_type())
+            .header("apns-priority", delivery.priority())
+            .header("content-type", "application/json");
+        if let Some(id) = delivery.collapse_id() {
+            req = req.header("apns-collapse-id", id);
+        }
+        if let Some(secs) = delivery.life_secs() {
+            // A message worth nothing later should not wake a phone that was off.
+            req = req.header("apns-expiration", (crate::db::now_ms() / 1000 + secs).to_string());
+        }
+        let req = req
             .body(Full::new(Bytes::from(payload.to_string())))
             .map_err(|e| SendError::Transport(e.to_string()))?;
         let resp = tokio::time::timeout(Duration::from_secs(15), self.client.request(req))
@@ -262,6 +316,22 @@ mod tests {
         assert!(pem_to_der("").is_none());
         assert!(pem_to_der("AAAA").is_some(), "bare base64 is accepted too");
         assert!(pem_to_der("not base64 at all").is_none());
+    }
+
+    #[test]
+    fn a_banner_and_a_tidy_up_are_sent_on_different_terms() {
+        let alert = Delivery::Alert("req:abc");
+        assert_eq!((alert.push_type(), alert.priority()), ("alert", "10"));
+        assert_eq!(alert.collapse_id(), Some("req:abc"));
+        assert_eq!(alert.life_secs(), None, "a waiting prompt keeps waiting");
+
+        let quiet = Delivery::Background;
+        assert_eq!((quiet.push_type(), quiet.priority()), ("background", "5"));
+        assert_eq!(quiet.collapse_id(), None, "it must not replace the banner it chases");
+        assert_eq!(quiet.life_secs(), Some(300));
+
+        let long = format!("req:{}", "x".repeat(200));
+        assert_eq!(Delivery::Alert(&long).collapse_id().unwrap().len(), 64, "Apple's limit");
     }
 
     #[test]
