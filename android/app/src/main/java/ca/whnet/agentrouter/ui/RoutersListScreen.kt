@@ -1,12 +1,16 @@
 package ca.whnet.agentrouter.ui
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
@@ -20,7 +24,9 @@ import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.VerticalDivider
 import androidx.compose.material3.rememberTopAppBarState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -43,6 +49,8 @@ fun RoutersListScreen(
     app: AppState,
     onOpen: (Router) -> Unit,
     onAdd: () -> Unit,
+    /** Rendered beside the list when the window is wide enough for two panes. */
+    detail: (@Composable (Router) -> Unit)? = null,
 ) {
     val routers = app.routers
     var refreshing by remember { mutableStateOf(false) }
@@ -55,6 +63,28 @@ fun RoutersListScreen(
             routers.forEach { app.state(it).refresh() }
             kotlinx.coroutines.delay(15_000)
         }
+    }
+
+    // On a wide window the list keeps its own selection and shows it alongside, rather
+    // than navigating away and leaving half the screen empty.
+    val wide = twoPane() && detail != null
+    var selected by remember { mutableStateOf<String?>(null) }
+    val chosen = routers.firstOrNull { it.id == selected } ?: routers.firstOrNull()
+    if (wide && chosen != null) {
+        Row(Modifier.fillMaxSize()) {
+            Box(Modifier.width(listPaneWidth()).fillMaxHeight()) {
+                RouterListPane(app, routers, chosen.id, refreshing, { r -> selected = r.id }, onAdd) {
+                    scope.launch {
+                        refreshing = true
+                        routers.forEach { app.state(it).refresh() }
+                        refreshing = false
+                    }
+                }
+            }
+            VerticalDivider()
+            Box(Modifier.weight(1f).fillMaxHeight()) { detail(chosen) }
+        }
+        return
     }
 
     Scaffold(
@@ -88,7 +118,7 @@ fun RoutersListScreen(
             },
             modifier = Modifier.fillMaxSize().padding(pad),
         ) {
-            LazyColumn(Modifier.fillMaxSize(), contentPadding = ScreenPadding) {
+            LazyColumn(Modifier.fillMaxSize(), contentPadding = screenPadding()) {
                 items(routers, key = { it.id }) { router ->
                     RouterRow(app, router, onOpen)
                     HorizontalDivider()
@@ -99,7 +129,12 @@ fun RoutersListScreen(
 }
 
 @Composable
-private fun RouterRow(app: AppState, router: Router, onOpen: (Router) -> Unit) {
+private fun RouterRow(
+    app: AppState,
+    router: Router,
+    onOpen: (Router) -> Unit,
+    selected: Boolean = false,
+) {
     val state = app.state(router)
     val status = when {
         state.failure != null -> "failed"
@@ -107,7 +142,12 @@ private fun RouterRow(app: AppState, router: Router, onOpen: (Router) -> Unit) {
         else -> null
     }
     Row(
-        Modifier.fillMaxWidth().clickable { onOpen(router) }.padding(16.dp),
+        Modifier.fillMaxWidth()
+            .background(
+                if (selected) MaterialTheme.colorScheme.secondaryContainer
+                else androidx.compose.ui.graphics.Color.Transparent
+            )
+            .clickable { onOpen(router) }.padding(16.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
@@ -125,6 +165,40 @@ private fun RouterRow(app: AppState, router: Router, onOpen: (Router) -> Unit) {
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        }
+    }
+}
+
+
+/** The list on its own, for the wide layout's left-hand pane. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun RouterListPane(
+    app: AppState,
+    routers: List<Router>,
+    selectedId: String?,
+    refreshing: Boolean,
+    onSelect: (Router) -> Unit,
+    onAdd: () -> Unit,
+    onRefresh: () -> Unit,
+) {
+    Scaffold(
+        topBar = { TopAppBar(title = { Text("Routers") }) },
+        floatingActionButton = {
+            FloatingActionButton(onClick = onAdd) { Icon(Icons.Default.Add, "Add a router") }
+        },
+    ) { pad ->
+        PullToRefreshBox(
+            isRefreshing = refreshing,
+            onRefresh = onRefresh,
+            modifier = Modifier.fillMaxSize().padding(pad),
+        ) {
+            LazyColumn(Modifier.fillMaxSize(), contentPadding = screenPadding()) {
+                items(routers, key = { it.id }) { router ->
+                    RouterRow(app, router, onSelect, selected = router.id == selectedId)
+                    HorizontalDivider()
+                }
+            }
         }
     }
 }

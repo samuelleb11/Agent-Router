@@ -81,7 +81,7 @@ fun SettingsScreen(app: AppState, router: Router, onBack: () -> Unit, onEdit: ()
             )
         },
     ) { pad ->
-        Column(Modifier.fillMaxSize().padding(pad).verticalScroll(rememberScrollState())) {
+        Column(Modifier.fillMaxSize().padding(pad).readableWidth(760.dp).bottomInset().verticalScroll(rememberScrollState())) {
 
             SettingsSection(
                 header = "Notifications",

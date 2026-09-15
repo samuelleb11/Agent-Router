@@ -86,7 +86,7 @@ fun UsageScreen(
             )
         },
     ) { pad ->
-        Column(Modifier.fillMaxSize().padding(pad).verticalScroll(rememberScrollState())) {
+        Column(Modifier.fillMaxSize().padding(pad).readableWidth(900.dp).bottomInset().verticalScroll(rememberScrollState())) {
 
             Row(
                 Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
@@ -116,24 +116,21 @@ fun UsageScreen(
             val since = sinceFor(range)
 
             SettingsSection(header = "Totals") {
-                Column(Modifier.padding(horizontal = 12.dp)) {
-                    Row(Modifier.fillMaxWidth()) {
-                        StatTile("Spend", Fmt.usd(t.cost), modifier = Modifier.weight(1f))
-                        StatTile("Requests", Fmt.compact(t.requests.toLong()), modifier = Modifier.weight(1f))
-                        StatTile("Sessions", Fmt.compact(t.sessions.toLong()), modifier = Modifier.weight(1f))
-                    }
-                    Row(Modifier.fillMaxWidth()) {
-                        StatTile("Read", Fmt.compact(t.promptTokens.toLong()), modifier = Modifier.weight(1f))
-                        StatTile("Written", Fmt.compact(t.outputTokens.toLong()), modifier = Modifier.weight(1f))
-                        StatTile(
-                            "Errors",
-                            Fmt.compact(t.errors.toLong()),
-                            detail = if (t.subagentRequests > 0)
+                StatTiles(
+                    listOf(
+                        Triple("Spend", Fmt.usd(t.cost), null),
+                        Triple("Requests", Fmt.compact(t.requests.toLong()), null),
+                        Triple("Sessions", Fmt.compact(t.sessions.toLong()), null),
+                        Triple("Read", Fmt.compact(t.promptTokens.toLong()), null),
+                        Triple("Written", Fmt.compact(t.outputTokens.toLong()), null),
+                        Triple(
+                            "Errors", Fmt.compact(t.errors.toLong()),
+                            if (t.subagentRequests > 0)
                                 "${Fmt.compact(t.subagentRequests.toLong())} subagent" else null,
-                            modifier = Modifier.weight(1f),
-                        )
-                    }
-                }
+                        ),
+                    ),
+                    Modifier.padding(horizontal = 12.dp),
+                )
             }
 
             if (s.timeline.rows.isNotEmpty()) {
@@ -215,17 +212,16 @@ fun UsageScreen(
                     footer = "Time to the first byte is what the session feels as a pause; the " +
                         "total is how long the turn took to finish streaming.",
                 ) {
-                    Column(Modifier.padding(horizontal = 12.dp)) {
-                        Row(Modifier.fillMaxWidth()) {
-                            StatTile("First byte p50", l.ttfbP50?.let { Fmt.duration(it.toLong()) } ?: "—", modifier = Modifier.weight(1f))
-                            StatTile("p95", l.ttfbP95?.let { Fmt.duration(it.toLong()) } ?: "—", modifier = Modifier.weight(1f))
-                        }
-                        Row(Modifier.fillMaxWidth()) {
-                            StatTile("Turn p50", l.durationP50?.let { Fmt.duration(it.toLong()) } ?: "—", modifier = Modifier.weight(1f))
-                            StatTile("p95", l.durationP95?.let { Fmt.duration(it.toLong()) } ?: "—", modifier = Modifier.weight(1f))
-                            StatTile("longest", l.durationMax?.let { Fmt.duration(it.toLong()) } ?: "—", modifier = Modifier.weight(1f))
-                        }
-                    }
+                    StatTiles(
+                        listOf(
+                            Triple("First byte p50", l.ttfbP50?.let { Fmt.duration(it.toLong()) } ?: "—", null),
+                            Triple("first byte p95", l.ttfbP95?.let { Fmt.duration(it.toLong()) } ?: "—", null),
+                            Triple("Turn p50", l.durationP50?.let { Fmt.duration(it.toLong()) } ?: "—", null),
+                            Triple("turn p95", l.durationP95?.let { Fmt.duration(it.toLong()) } ?: "—", null),
+                            Triple("longest", l.durationMax?.let { Fmt.duration(it.toLong()) } ?: "—", null),
+                        ),
+                        Modifier.padding(horizontal = 12.dp),
+                    )
                 }
             }
 

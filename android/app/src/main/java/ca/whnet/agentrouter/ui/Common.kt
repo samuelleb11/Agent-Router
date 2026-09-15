@@ -6,6 +6,11 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -20,6 +25,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import ca.whnet.agentrouter.data.StateColor
 
@@ -64,10 +70,20 @@ fun SettingsSection(
     }
 }
 
-/** The coloured dot that says what a session or a router is doing. */
+/**
+ * The coloured dot that says what a session or a router is doing. An `active` one wears a
+ * faint halo: the colour says what it is doing, the ring says it is doing it *now*.
+ */
 @Composable
-fun StateDot(state: String?, size: Int = 10, modifier: Modifier = Modifier) {
-    Box(modifier.size(size.dp).background(dotColor(state), CircleShape))
+fun StateDot(state: String?, size: Int = 10, modifier: Modifier = Modifier, active: Boolean = false) {
+    val color = dotColor(state)
+    Box(
+        modifier.size((size + if (active) 6 else 0).dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (active) Box(Modifier.size((size + 6).dp).background(color.copy(alpha = 0.3f), CircleShape))
+        Box(Modifier.size(size.dp).background(color, CircleShape))
+    }
 }
 
 @Composable
@@ -107,4 +123,17 @@ fun EmptyState(
     }
 }
 
-val ScreenPadding = PaddingValues(bottom = 24.dp)
+
+
+/**
+ * Room at the end of a scrolling surface for the system's bottom furniture.
+ *
+ * A `Scaffold` pads its content for the bars it knows about, but not for the gesture pill
+ * or the three-button bar: those are drawn over the window because the app is edge to edge.
+ * Without this the last row of every page sits underneath them.
+ */
+@Composable
+fun Modifier.bottomInset(extra: Dp = 16.dp): Modifier {
+    val bars = WindowInsets.navigationBars.asPaddingValues()
+    return this.padding(bottom = bars.calculateBottomPadding() + extra)
+}

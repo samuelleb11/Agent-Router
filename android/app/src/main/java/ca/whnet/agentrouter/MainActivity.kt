@@ -77,6 +77,19 @@ private fun Root(app: AppState) {
                 app = app,
                 onOpen = { nav.navigate(RouterDetailRoute(it.id)) },
                 onAdd = { nav.navigate(RouterFormRoute(null)) },
+                // Wide windows keep the list and show the router beside it; the callbacks
+                // still navigate, because those destinations are full screens either way.
+                detail = { router ->
+                    RouterDetailScreen(
+                        app = app,
+                        router = router,
+                        onBack = null,
+                        onSessions = { nav.navigate(SessionsRoute(router.id)) },
+                        onUsage = { nav.navigate(UsageRoute(router.id)) },
+                        onAccounts = { nav.navigate(AccountsRoute(router.id)) },
+                        onSettings = { nav.navigate(SettingsRoute(router.id)) },
+                    )
+                },
             )
         }
         composable<RouterFormRoute> { entry ->
@@ -145,6 +158,7 @@ private fun Root(app: AppState) {
                 onBack = { nav.popBackStack() },
                 onOpen = { nav.navigate(SessionRoute(router.id, it.sessionId)) },
                 onSettings = { nav.navigate(SettingsRoute(router.id)) },
+                detail = { session -> SessionScreen(app, router, session, onBack = null) },
             )
         }
         composable<SessionRoute> { entry ->

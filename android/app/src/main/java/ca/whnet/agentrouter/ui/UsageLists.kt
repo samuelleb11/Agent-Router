@@ -92,7 +92,7 @@ private fun ListScaffold(title: String, onBack: () -> Unit, content: @Composable
             )
         },
     ) { pad ->
-        Column(Modifier.fillMaxSize().padding(pad).verticalScroll(rememberScrollState())) { content() }
+        Column(Modifier.fillMaxSize().padding(pad).readableWidth(900.dp).bottomInset().verticalScroll(rememberScrollState())) { content() }
     }
 }
 

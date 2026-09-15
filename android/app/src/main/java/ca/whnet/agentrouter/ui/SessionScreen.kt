@@ -55,7 +55,7 @@ import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SessionScreen(app: AppState, router: Router, opened: LiveSession, onBack: () -> Unit) {
+fun SessionScreen(app: AppState, router: Router, opened: LiveSession, onBack: (() -> Unit)?) {
     val state = app.state(router)
     // Switching between sessions in the same project happens in place, so which session
     // is open is state here rather than a navigation argument.
@@ -121,7 +121,9 @@ fun SessionScreen(app: AppState, router: Router, opened: LiveSession, onBack: ()
                     }
                 },
                 navigationIcon = {
-                    IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
+                    if (onBack != null) {
+                        IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
+                    }
                 },
                 actions = {
                     if (feed.status?.isBusy == true && session.wrapped) {
@@ -190,7 +192,9 @@ fun SessionScreen(app: AppState, router: Router, opened: LiveSession, onBack: ()
                             text = { Text("Put away") },
                             onClick = {
                                 menu = false
-                                scope.launch { state.archive(session, true); onBack() }
+                                // In a pane there is nothing to go back to; the list beside
+                                // it simply stops showing the session as current.
+                                scope.launch { state.archive(session, true); onBack?.invoke() }
                             },
                         )
                         DropdownMenuItem(
@@ -207,7 +211,9 @@ fun SessionScreen(app: AppState, router: Router, opened: LiveSession, onBack: ()
         bottomBar = {
             Surface(tonalElevation = 3.dp) {
                 Row(
-                    Modifier.fillMaxWidth().imePadding().padding(10.dp),
+                    // imePadding for the keyboard, bottomBarInsets for the gesture pill or
+                    // the three-button bar underneath it.
+                    Modifier.fillMaxWidth().imePadding().bottomBarInsets().padding(10.dp),
                     verticalAlignment = Alignment.Bottom,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
@@ -270,7 +276,7 @@ fun SessionScreen(app: AppState, router: Router, opened: LiveSession, onBack: ()
         LazyColumn(
             Modifier.fillMaxSize(),
             state = listState,
-            contentPadding = ScreenPadding,
+            contentPadding = screenPadding(),
         ) {
             items(feed.rows, key = { it.id }) { row ->
                 FeedRow(row) { answers, parts ->

@@ -73,7 +73,7 @@ fun AccountsScreen(app: AppState, router: Router, onBack: () -> Unit) {
             )
         },
     ) { pad ->
-        Column(Modifier.fillMaxSize().padding(pad).verticalScroll(rememberScrollState())) {
+        Column(Modifier.fillMaxSize().padding(pad).readableWidth(760.dp).bottomInset().verticalScroll(rememberScrollState())) {
             notice?.let {
                 SettingsSection { Text(it, Modifier.padding(16.dp), style = MaterialTheme.typography.bodyMedium) }
             }
@@ -166,7 +166,7 @@ fun AccountsScreen(app: AppState, router: Router, onBack: () -> Unit) {
             title = { Text("Edit ${acc.title}") },
             text = {
                 Column(
-                    Modifier.verticalScroll(rememberScrollState()),
+                    Modifier.bottomInset().verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     OutlinedTextField(

@@ -46,6 +46,28 @@ fun StatTile(label: String, value: String, detail: String? = null, modifier: Mod
     }
 }
 
+/**
+ * A row of tiles that reflows instead of squeezing. Six across on a tablet, three on a
+ * phone: the tiles keep a sensible minimum and wrap when they run out of room, so neither
+ * screen gets a row of unreadably narrow columns or a row with half the width unused.
+ */
+@Composable
+fun StatTiles(tiles: List<Triple<String, String, String?>>, modifier: Modifier = Modifier) {
+    val perRow = (windowWidthDp() / 170).coerceIn(2, 6)
+    Column(modifier.fillMaxWidth()) {
+        tiles.chunked(perRow).forEach { row ->
+            Row(Modifier.fillMaxWidth()) {
+                row.forEach { (label, value, detail) ->
+                    StatTile(label, value, detail, Modifier.weight(1f))
+                }
+                // Keep the last row's tiles the same width as the rest rather than letting
+                // two survivors stretch across the screen.
+                repeat(perRow - row.size) { Box(Modifier.weight(1f)) }
+            }
+        }
+    }
+}
+
 /** A labelled proportion, for "what filled the context window" and its kin. */
 @Composable
 fun ShareBar(label: String, fraction: Double, value: String, color: Color? = null) {

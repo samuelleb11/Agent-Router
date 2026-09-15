@@ -88,7 +88,7 @@ fun RouterFormScreen(
         },
     ) { pad ->
         Column(
-            Modifier.fillMaxSize().padding(pad).verticalScroll(rememberScrollState()),
+            Modifier.fillMaxSize().padding(pad).readableWidth(640.dp).bottomInset().verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             SettingsSection(

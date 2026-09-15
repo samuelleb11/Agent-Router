@@ -42,7 +42,7 @@ import kotlin.math.roundToInt
 fun RouterDetailScreen(
     app: AppState,
     router: Router,
-    onBack: () -> Unit,
+    onBack: (() -> Unit)?,
     onSessions: () -> Unit,
     onUsage: () -> Unit,
     onAccounts: () -> Unit,
@@ -60,14 +60,19 @@ fun RouterDetailScreen(
             LargeTopAppBar(
                 title = { Text(router.name) },
                 navigationIcon = {
-                    IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
+                    if (onBack != null) {
+                        IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
+                    }
                 },
                 actions = { TextButton(onClick = onSettings) { Text("Settings") } },
                 scrollBehavior = bar,
             )
         },
     ) { pad ->
-        Column(Modifier.fillMaxSize().padding(pad).verticalScroll(rememberScrollState())) {
+        Column(
+            Modifier.fillMaxSize().padding(pad).readableWidth(820.dp)
+                .bottomInset().verticalScroll(rememberScrollState())
+        ) {
 
             state.failure?.let { f ->
                 SettingsSection(footer = "Everything below is whatever was last seen.") {
@@ -165,12 +170,15 @@ fun RouterDetailScreen(
                     header = "Across all accounts",
                     footer = g.pace30d?.let { "Pace over 30 days, ${it.basis}." },
                 ) {
-                    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
-                        StatTile("Spend", Fmt.usd(g.cost), modifier = Modifier.weight(1f))
-                        StatTile("Requests", Fmt.compact(g.requests.toLong()), modifier = Modifier.weight(1f))
-                        StatTile("Read", Fmt.compact(g.promptTokens.toLong()), modifier = Modifier.weight(1f))
-                        StatTile("Written", Fmt.compact(g.outputTokens.toLong()), modifier = Modifier.weight(1f))
-                    }
+                    StatTiles(
+                        listOf(
+                            Triple("Spend", Fmt.usd(g.cost), null),
+                            Triple("Requests", Fmt.compact(g.requests.toLong()), null),
+                            Triple("Read", Fmt.compact(g.promptTokens.toLong()), null),
+                            Triple("Written", Fmt.compact(g.outputTokens.toLong()), null),
+                        ),
+                        Modifier.padding(horizontal = 12.dp),
+                    )
                 }
             }
 
