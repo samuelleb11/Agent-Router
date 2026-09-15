@@ -71,7 +71,7 @@ fun RouterDetailScreen(
     ) { pad ->
         Column(
             Modifier.fillMaxSize().padding(pad).readableWidth(820.dp)
-                .bottomInset().verticalScroll(rememberScrollState())
+                .verticalScroll(rememberScrollState())
         ) {
 
             state.failure?.let { f ->

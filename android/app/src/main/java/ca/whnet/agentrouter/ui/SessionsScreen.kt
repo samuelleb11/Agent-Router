@@ -46,6 +46,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -76,7 +77,7 @@ fun SessionsScreen(
     val state = app.state(router)
     val scope = rememberCoroutineScope()
     var refreshing by remember { mutableStateOf(false) }
-    var selectedId by remember(router.id) { mutableStateOf<String?>(null) }
+    var selectedId by rememberSaveable(router.id) { mutableStateOf<String?>(null) }
 
     LaunchedEffect(router.id) {
         while (true) {
@@ -148,8 +149,8 @@ private fun SessionsList(
     onOpen: (LiveSession) -> Unit,
     onArchive: (LiveSession, Boolean) -> Unit,
 ) {
-    var showOlder by remember { mutableStateOf(false) }
-    var showArchived by remember { mutableStateOf(false) }
+    var showOlder by rememberSaveable { mutableStateOf(false) }
+    var showArchived by rememberSaveable { mutableStateOf(false) }
     val olderCount = groups.older.sumOf { it.sessions.size }
 
     LazyColumn(Modifier.fillMaxSize(), contentPadding = screenPadding()) {

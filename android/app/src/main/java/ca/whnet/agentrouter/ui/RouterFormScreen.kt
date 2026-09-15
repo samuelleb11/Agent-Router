@@ -27,6 +27,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
@@ -50,9 +51,9 @@ fun RouterFormScreen(
     onDone: () -> Unit,
     onRemoved: () -> Unit = onDone,
 ) {
-    var name by remember { mutableStateOf(existing?.name ?: "") }
-    var host by remember { mutableStateOf(existing?.host ?: "") }
-    var port by remember { mutableStateOf((existing?.port ?: 8787).toString()) }
+    var name by rememberSaveable { mutableStateOf(existing?.name ?: "") }
+    var host by rememberSaveable { mutableStateOf(existing?.host ?: "") }
+    var port by rememberSaveable { mutableStateOf((existing?.port ?: 8787).toString()) }
     var password by remember { mutableStateOf("") }
     var probe by remember { mutableStateOf<String?>(null) }
     var probeOk by remember { mutableStateOf(false) }
@@ -88,7 +89,7 @@ fun RouterFormScreen(
         },
     ) { pad ->
         Column(
-            Modifier.fillMaxSize().padding(pad).readableWidth(640.dp).bottomInset().verticalScroll(rememberScrollState()),
+            Modifier.fillMaxSize().padding(pad).readableWidth(640.dp).verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             SettingsSection(

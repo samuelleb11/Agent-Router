@@ -28,6 +28,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -55,7 +56,7 @@ fun UsageScreen(
     onList: (kind: String, since: String?) -> Unit,
 ) {
     val state = app.state(router)
-    var range by remember { mutableStateOf(1) }
+    var range by rememberSaveable { mutableStateOf(1) }
     var summary by remember { mutableStateOf<Summary?>(null) }
     var failure by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(true) }
@@ -86,7 +87,7 @@ fun UsageScreen(
             )
         },
     ) { pad ->
-        Column(Modifier.fillMaxSize().padding(pad).readableWidth(900.dp).bottomInset().verticalScroll(rememberScrollState())) {
+        Column(Modifier.fillMaxSize().padding(pad).readableWidth(900.dp).verticalScroll(rememberScrollState())) {
 
             Row(
                 Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())

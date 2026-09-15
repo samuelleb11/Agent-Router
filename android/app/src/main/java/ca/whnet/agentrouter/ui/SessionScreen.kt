@@ -41,6 +41,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.Saver
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -59,12 +61,16 @@ fun SessionScreen(app: AppState, router: Router, opened: LiveSession, onBack: ((
     val state = app.state(router)
     // Switching between sessions in the same project happens in place, so which session
     // is open is state here rather than a navigation argument.
-    var session by remember(opened.sessionId) { mutableStateOf(opened) }
-    val feed = remember(session.sessionId) { LiveFeed(session, state.liveClient) }
+    var session by rememberSaveable(opened.sessionId, stateSaver = LiveSessionSaver) {
+        mutableStateOf(opened)
+    }
+    // From the view model, so a rotation does not drop the stream and replay the backfill.
+    val feed = app.feed(router, session)
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
     val snackbar = remember { SnackbarHostState() }
-    var composing by remember { mutableStateOf("") }
+    // Survives rotation: a half-typed message is the last thing that should be lost.
+    var composing by rememberSaveable(session.sessionId) { mutableStateOf("") }
     var menu by remember { mutableStateOf(false) }
     var asking by remember { mutableStateOf(false) }
     var asideText by remember { mutableStateOf("") }
@@ -86,12 +92,16 @@ fun SessionScreen(app: AppState, router: Router, opened: LiveSession, onBack: ((
         following = last == null || last.index >= info.totalItemsCount - 2
     }
 
-    val siblings = state.sessions.filter { it.projectName == session.projectName }
-
-    LaunchedEffect(session.sessionId) {
-        scope.launch { feed.loadFacts() }
-        feed.run()
+    // A session restored across a rotation, or opened from a notification, carries only
+    // its id — so its title reads as the short id until the router's listing catches up.
+    LaunchedEffect(state.sessions, session.sessionId) {
+        if (session.title == null) {
+            state.sessions.firstOrNull { it.sessionId == session.sessionId }
+                ?.let { session = it }
+        }
     }
+
+    val siblings = state.sessions.filter { it.projectName == session.projectName }
 
     LaunchedEffect(feed.rows.size) {
         if (feed.rows.isNotEmpty() && following) listState.scrollToItem(feed.rows.size - 1)
@@ -365,3 +375,13 @@ private fun FactChip(label: String, value: String) {
         )
     }
 }
+
+
+/**
+ * Which session is open, kept across a rotation. Only the id is worth saving — the row
+ * itself is re-read from the router's listing a second later.
+ */
+private val LiveSessionSaver: Saver<LiveSession, String> = Saver(
+    save = { it.sessionId },
+    restore = { LiveSession(sessionId = it, wrapped = true) },
+)

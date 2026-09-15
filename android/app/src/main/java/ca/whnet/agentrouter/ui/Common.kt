@@ -122,18 +122,3 @@ fun EmptyState(
         }
     }
 }
-
-
-
-/**
- * Room at the end of a scrolling surface for the system's bottom furniture.
- *
- * A `Scaffold` pads its content for the bars it knows about, but not for the gesture pill
- * or the three-button bar: those are drawn over the window because the app is edge to edge.
- * Without this the last row of every page sits underneath them.
- */
-@Composable
-fun Modifier.bottomInset(extra: Dp = 16.dp): Modifier {
-    val bars = WindowInsets.navigationBars.asPaddingValues()
-    return this.padding(bottom = bars.calculateBottomPadding() + extra)
-}

@@ -113,19 +113,16 @@ fun ListDetail(
 
 
 /**
- * Padding for the bottom of a scrolling list, leaving room for whatever the system draws
- * over the window — the gesture pill, or the three-button bar, which is taller.
+ * A little room at the end of a list, and nothing more.
  *
- * The app draws edge to edge, which is what makes the background run under the status bar
- * rather than stopping in a grey stripe. The cost is that every scrolling surface has to
- * say where the system's furniture is, or the last row sits underneath it.
+ * Deliberately not an inset: `Scaffold` already pads its content for the system bars, and
+ * adding a second copy on top of `innerPadding` padded every page twice over.
  */
-@Composable
-fun screenPadding(extra: Dp = 24.dp): PaddingValues {
-    val bars = WindowInsets.navigationBars.asPaddingValues()
-    return PaddingValues(bottom = bars.calculateBottomPadding() + extra)
-}
+fun screenPadding(): PaddingValues = PaddingValues(bottom = 12.dp)
 
-/** The same room, as a modifier, for a bar pinned to the bottom. */
+/**
+ * Room for the system's bottom furniture, for a bar Scaffold places *below* its content —
+ * the one place the padding is not already applied.
+ */
 @Composable
 fun Modifier.bottomBarInsets(): Modifier = this.windowInsetsPadding(WindowInsets.navigationBars)

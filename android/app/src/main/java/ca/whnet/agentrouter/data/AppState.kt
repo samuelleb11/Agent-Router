@@ -4,6 +4,10 @@ package ca.whnet.agentrouter.data
 
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import ca.whnet.agentrouter.feed.LiveFeed
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -32,6 +36,44 @@ class AppState(app: Application) : AndroidViewModel(app) {
     // inside a composition, and making them observable would mean a read that also
     // writes — the same trap the iOS app documents around its own per-router caches.
     private val states = mutableMapOf<String, RouterState>()
+
+    /**
+     * Open feeds, and the coroutines streaming them.
+     *
+     * They live here rather than in the screen because rotating the device destroys and
+     * rebuilds every composable: a feed owned by the screen would drop its connection,
+     * clear its rows and start the backfill again, which is exactly the "it reset" you see.
+     * Owned by the ViewModel, the stream simply carries on through the rotation.
+     */
+    private val feeds = mutableMapOf<String, LiveFeed>()
+    private val feedJobs = mutableMapOf<String, Job>()
+
+    /** How many session feeds to keep streaming at once. */
+    private val keepFeeds = 3
+
+    fun feed(router: Router, session: ca.whnet.agentrouter.api.LiveSession): LiveFeed {
+        feeds[session.sessionId]?.let { return it }
+        val created = LiveFeed(session, store.client(router))
+        feeds[session.sessionId] = created
+        feedJobs[session.sessionId] = viewModelScope.launch {
+            launch { created.loadFacts() }
+            created.run()
+        }
+        // Oldest first, so switching between a few sessions does not accumulate streams.
+        while (feeds.size > keepFeeds) {
+            val oldest = feeds.keys.first()
+            feedJobs.remove(oldest)?.cancel()
+            feeds.remove(oldest)
+        }
+        return created
+    }
+
+    override fun onCleared() {
+        feedJobs.values.forEach { it.cancel() }
+        feedJobs.clear()
+        feeds.clear()
+        super.onCleared()
+    }
 
     val routers: List<Router> get() { revision; return store.routers }
 

@@ -30,6 +30,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -63,7 +64,7 @@ fun SettingsScreen(app: AppState, router: Router, onBack: () -> Unit, onEdit: ()
     var registering by remember { mutableStateOf(false) }
     var newPassword by remember { mutableStateOf("") }
     var passwordNotice by remember { mutableStateOf<String?>(null) }
-    var projectPath by remember { mutableStateOf("") }
+    var projectPath by rememberSaveable { mutableStateOf("") }
     var routeNotice by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(router.id) {
@@ -81,7 +82,7 @@ fun SettingsScreen(app: AppState, router: Router, onBack: () -> Unit, onEdit: ()
             )
         },
     ) { pad ->
-        Column(Modifier.fillMaxSize().padding(pad).readableWidth(760.dp).bottomInset().verticalScroll(rememberScrollState())) {
+        Column(Modifier.fillMaxSize().padding(pad).readableWidth(760.dp).verticalScroll(rememberScrollState())) {
 
             SettingsSection(
                 header = "Notifications",
