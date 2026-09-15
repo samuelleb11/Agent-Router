@@ -21,6 +21,8 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LargeTopAppBar
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -142,31 +144,72 @@ private fun RouterRow(
         state.isReachable -> "working"
         else -> null
     }
-    Row(
+    Column(
         Modifier.fillMaxWidth()
-            .background(
-                if (selected) MaterialTheme.colorScheme.secondaryContainer
-                else androidx.compose.ui.graphics.Color.Transparent
-            )
-            .clickable { onOpen(router) }.padding(16.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
+            .background(if (selected) MaterialTheme.colorScheme.secondaryContainer else androidx.compose.ui.graphics.Color.Transparent)
+            .clickable { onOpen(router) }
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        StateDot(status, size = 12)
-        Column(Modifier.weight(1f)) {
-            Text(router.name, style = MaterialTheme.typography.titleMedium)
-            val detail = state.failure?.message
-                ?: if (state.isReachable) {
-                    val n = state.activeSessions
-                    router.address + " · " + if (n == 0) "nothing running" else
-                        "$n session${if (n == 1) "" else "s"} active"
-                } else "checking…"
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            StateDot(status, size = 8)
+            Text(router.name, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
             Text(
-                detail,
+                router.address,
+                style = MaterialTheme.typography.labelSmall,
+                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        val failure = state.failure
+        val account = state.activeAccount
+        when {
+            failure != null -> Text(
+                failure.message ?: "unreachable",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+                maxLines = 2,
+            )
+            account != null -> {
+                Text(account.title, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    MiniGauge("5h", account.fiveHour, Modifier.weight(1f, fill = false))
+                    MiniGauge("7d", account.sevenDay, Modifier.weight(1f, fill = false))
+                }
+                val n = state.activeSessions
+                if (n > 0) {
+                    Text(
+                        "$n active session${if (n == 1) "" else "s"}",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = Tint.green,
+                    )
+                }
+            }
+            else -> Text(
+                if (state.isReachable) "connected" else "checking…",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
+    }
+}
+
+/** A window's fill at a glance, small enough for a list row. */
+@Composable
+private fun MiniGauge(label: String, window: ca.whnet.agentrouter.api.Forecast.Window?, modifier: Modifier = Modifier) {
+    val live = window != null && !window.isExpired
+    val value = if (live) (window!!.used ?: 0.0).coerceIn(0.0, 1.0) else 0.0
+    Column(modifier.widthIn(max = 140.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+        Row(Modifier.fillMaxWidth()) {
+            Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
+            Text(if (live) Fmt.percent(value) else "—", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        LinearProgressIndicator(
+            progress = { value.toFloat() },
+            color = quotaTint(value, live),
+            trackColor = MaterialTheme.colorScheme.surfaceVariant,
+            modifier = Modifier.fillMaxWidth(),
+        )
     }
 }
 

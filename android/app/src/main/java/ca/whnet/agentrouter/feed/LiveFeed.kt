@@ -47,7 +47,8 @@ class LiveFeed(val session: LiveSession, private val client: RouterClient?) {
         val answered: Boolean = false,
     )
 
-    data class Notice(val text: String, val ok: Boolean)
+    /** `at` makes two identical notices in a row distinct, so the second one still shows. */
+    data class Notice(val text: String, val ok: Boolean, val at: Long = System.nanoTime())
 
     val rows = mutableStateListOf<Row>()
     var status: LiveStatus? by mutableStateOf(null)

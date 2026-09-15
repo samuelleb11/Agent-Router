@@ -69,6 +69,12 @@ object Fmt {
         return "in ${span(d)}"
     }
 
+    /** A clock time, in the phone's own format: "3:45 PM" or "15:45". */
+    fun clock(atMs: Long): String =
+        java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT).format(java.util.Date(atMs))
+
+    fun percent(fraction: Double): String = "${(fraction * 100).toInt()}%"
+
     fun bytes(n: Long): String = when {
         n < 1024 -> "$n B"
         n < 1024 * 1024 -> String.format(Locale.US, "%.0f KB", n / 1024.0)

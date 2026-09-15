@@ -22,6 +22,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberTopAppBarState
 import androidx.compose.runtime.Composable
@@ -57,16 +58,23 @@ fun RouterDetailScreen(
     Scaffold(
         modifier = Modifier.fillMaxSize().nestedScroll(bar.nestedScrollConnection),
         topBar = {
-            LargeTopAppBar(
-                title = { Text(router.name) },
-                navigationIcon = {
-                    if (onBack != null) {
+            if (onBack != null) {
+                LargeTopAppBar(
+                    title = { Text(router.name) },
+                    navigationIcon = {
                         IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
-                    }
-                },
-                actions = { TextButton(onClick = onSettings) { Text("Settings") } },
-                scrollBehavior = bar,
-            )
+                    },
+                    actions = { TextButton(onClick = onSettings) { Text("Settings") } },
+                    scrollBehavior = bar,
+                )
+            } else {
+                // Beside its list there is nothing to go back to, and a tall bar would
+                // spend a fifth of the pane on a name the list already shows.
+                TopAppBar(
+                    title = { Text(router.name) },
+                    actions = { TextButton(onClick = onSettings) { Text("Settings") } },
+                )
+            }
         },
     ) { pad ->
         Column(
@@ -86,9 +94,23 @@ fun RouterDetailScreen(
 
             SettingsSection(header = "Now") {
                 Column {
-                    NavRow("Sessions", "${state.activeSessions} active · ${state.sessions.size} this week", onSessions)
+                    NavRow(
+                        "Sessions",
+                        when {
+                            !state.sessionsLoaded -> if (state.failure == null) "connecting…" else "no data"
+                            state.sessions.isEmpty() -> "none this week"
+                            state.activeSessions > 0 -> "${state.activeSessions} active · ${state.sessions.size} this week"
+                            else -> "${state.sessions.size} this week"
+                        },
+                        onSessions,
+                    )
                     HorizontalDivider()
-                    NavRow("Usage", "Spend, tokens and what filled the context", onUsage)
+                    NavRow(
+                        "Usage",
+                        state.forecast?.global?.let { "${Fmt.usd(it.cost)} · spend, tokens and what filled the context" }
+                            ?: "Spend, tokens and what filled the context",
+                        onUsage,
+                    )
                     HorizontalDivider()
                     NavRow(
                         "Accounts",

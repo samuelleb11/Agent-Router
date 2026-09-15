@@ -15,6 +15,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
@@ -177,7 +178,7 @@ fun SessionScreen(app: AppState, router: Router, opened: LiveSession, onBack: ((
                                 DropdownMenuItem(
                                     text = { Text(m) },
                                     trailingIcon = {
-                                        if (feed.stats?.model == m) Text("·", style = MaterialTheme.typography.titleMedium)
+                                        if (feed.stats?.model == m) Icon(Icons.Default.Check, "current")
                                     },
                                     onClick = { menu = false; scope.launch { feed.setModel(m) } },
                                 )
@@ -187,7 +188,7 @@ fun SessionScreen(app: AppState, router: Router, opened: LiveSession, onBack: ((
                                 DropdownMenuItem(
                                     text = { Text("effort: $e") },
                                     trailingIcon = {
-                                        if (feed.stats?.effort == e) Text("·", style = MaterialTheme.typography.titleMedium)
+                                        if (feed.stats?.effort == e) Icon(Icons.Default.Check, "current")
                                     },
                                     onClick = { menu = false; scope.launch { feed.setEffort(e) } },
                                 )

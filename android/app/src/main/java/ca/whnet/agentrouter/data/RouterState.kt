@@ -55,6 +55,9 @@ class RouterState(router: Router, private val store: RouterStore) {
     var lastRefresh: Long? by mutableStateOf(null)
     var refreshing: Boolean by mutableStateOf(false)
 
+    /** Whether the session list has been fetched at all — "empty" and "not yet" differ. */
+    var sessionsLoaded: Boolean by mutableStateOf(false)
+
     val isReachable: Boolean get() = health?.ok == true && failure == null
     val activeSessions: Int get() = sessions.count { it.active }
     val activeAccount: Forecast.ForecastAccount? get() = forecast?.accounts?.firstOrNull { it.isActive }
@@ -96,6 +99,7 @@ class RouterState(router: Router, private val store: RouterStore) {
                 s.await()
                     .onSuccess { sessions = it; sessionsFailure = null }
                     .onFailure { sessionsFailure = describe(it) }
+                sessionsLoaded = true
 
                 // `/api/accounts` makes the router resolve every credential, so it is
                 // asked for less often than the rest — on demand, and once a minute.
@@ -125,6 +129,7 @@ class RouterState(router: Router, private val store: RouterStore) {
         runCatching { c.get<List<LiveSession>>("/api/live/sessions") }
             .onSuccess { sessions = it; sessionsFailure = null }
             .onFailure { sessionsFailure = describe(it) }
+        sessionsLoaded = true
     }
 
     /** Returns what went wrong, or null. */

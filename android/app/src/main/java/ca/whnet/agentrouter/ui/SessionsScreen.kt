@@ -26,6 +26,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -191,10 +192,15 @@ private fun SessionsList(
 
         if (state.sessions.isEmpty() && state.sessionsFailure == null) {
             item {
-                EmptyState(
-                    "No sessions this week",
-                    "The router lists transcripts written in the last seven days.",
-                )
+                // "Nothing" and "not asked yet" are different claims; only make the first
+                // once the router has actually answered.
+                if (state.sessionsLoaded) {
+                    EmptyState("No sessions this week", "The router lists transcripts written in the last seven days.")
+                } else {
+                    Row(Modifier.fillMaxWidth().padding(32.dp), horizontalArrangement = Arrangement.Center) {
+                        CircularProgressIndicator()
+                    }
+                }
             }
         }
 

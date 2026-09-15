@@ -235,3 +235,44 @@ class FeedRowKindTest {
         assertEquals("prose", classify("other", "system"))
     }
 }
+
+/** The styling inside a line, which the feed showed literally until this existed. */
+class InlineTest {
+    private fun runs(s: String) = ca.whnet.agentrouter.data.Inline.parse(s)
+    private fun R(text: String, bold: Boolean = false, italic: Boolean = false, code: Boolean = false, url: String? = null) =
+        ca.whnet.agentrouter.data.Inline.Run(text, bold, italic, code, url)
+
+    @Test
+    fun `bold italic code and links become runs`() {
+        assertEquals(
+            listOf(R("Archiving "), R("was", italic = true), R(" recording "), R("correctly", bold = true), R(" — see "), R("832daf9", code = true), R(".")),
+            runs("Archiving *was* recording **correctly** — see `832daf9`."),
+        )
+        assertEquals(
+            listOf(R("see "), R("the docs", url = "https://x.test/d"), R(" now")),
+            runs("see [the docs](https://x.test/d) now"),
+        )
+        assertEquals(
+            listOf(R("at "), R("https://x.test/a", url = "https://x.test/a"), R(", then")),
+            runs("at https://x.test/a, then"),
+        )
+    }
+
+    @Test
+    fun `what is not markdown is left as typed`() {
+        // A glob, a snake_case name, an unclosed emphasis, an unclosed backtick.
+        assertEquals(listOf(R("rm -rf *.rs")), runs("rm -rf *.rs"))
+        assertEquals(listOf(R("set snake_case_name here")), runs("set snake_case_name here"))
+        assertEquals(listOf(R("a * b")), runs("a * b"))
+        assertEquals(listOf(R("this `is not closed")), runs("this `is not closed"))
+        assertEquals(listOf(R("2 ** 8")), runs("2 ** 8"))
+    }
+
+    @Test
+    fun `code inside emphasis and emphasis inside links keep their styles`() {
+        assertEquals(
+            listOf(R("run ", bold = true), R("cargo test", bold = true, code = true), R(" first", bold = true)),
+            runs("**run `cargo test` first**"),
+        )
+    }
+}

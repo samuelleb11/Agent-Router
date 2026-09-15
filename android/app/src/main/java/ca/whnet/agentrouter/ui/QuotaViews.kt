@@ -18,10 +18,19 @@ import ca.whnet.agentrouter.api.Quota
 import ca.whnet.agentrouter.data.Projection
 import kotlin.math.roundToInt
 
+/** A window's fill at a glance: the same 70/90 thresholds as the dashboard. */
+@Composable
+fun quotaTint(fraction: Double, live: Boolean): Color = when {
+    !live -> MaterialTheme.colorScheme.outline
+    fraction >= 0.9 -> MaterialTheme.colorScheme.error
+    fraction >= 0.7 -> Tint.orange
+    else -> MaterialTheme.colorScheme.primary
+}
+
 @Composable
 fun toneColor(tone: Projection.Tone): Color = when (tone) {
     Projection.Tone.BAD -> MaterialTheme.colorScheme.error
-    Projection.Tone.WARN -> Color(0xFFFF9F0A)
+    Projection.Tone.WARN -> Tint.orange
     Projection.Tone.PLAIN -> MaterialTheme.colorScheme.primary
 }
 
@@ -36,29 +45,33 @@ fun QuotaRow(
     projection: Projection?,
     modifier: Modifier = Modifier,
 ) {
+    val live = window?.utilization != null
     val fraction = window?.fraction ?: 0.0
-    val tone = projection?.tone ?: Projection.Tone.PLAIN
+    val fill = quotaTint(fraction, live)
     Column(modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text(title, Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
             Text(
-                window?.utilization?.let { "${it.roundToInt()}%" } ?: "—",
+                if (live) "${(window!!.utilization ?: 0.0).roundToInt()}%" else "—",
                 style = MaterialTheme.typography.titleSmall,
-                color = toneColor(tone),
+                color = fill,
             )
         }
         LinearProgressIndicator(
             progress = { fraction.toFloat() },
-            color = toneColor(tone),
+            color = fill,
             trackColor = MaterialTheme.colorScheme.surfaceVariant,
             modifier = Modifier.fillMaxWidth(),
         )
         window?.resetMs?.let {
             Text(
-                "resets ${Fmt.relative(it)}",
+                "resets ${Fmt.relative(it)} · ${Fmt.clock(it)}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        }
+        if (window == null) {
+            Text("No rate-limit reading yet", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         if (projection != null) {
             Text(
