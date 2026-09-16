@@ -4,46 +4,105 @@
   "description": "Runs the Agent Router proxy on this machine, keeps it current, points Claude Code at it, and shows your quota in the status bar.",
   "version": "0.1.0",
   "publisher": "whnet",
-  "license": "SEE LICENSE IN ../LICENSE",
-  "engines": { "vscode": "^1.94.0" },
-  "categories": ["Other"],
-  "keywords": ["claude", "claude code", "anthropic", "proxy", "quota"],
-  "extensionKind": ["ui"],
-  "activationEvents": ["onStartupFinished"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/samuelleb11/agent-router.git"
+  },
+  "bugs": {
+    "url": "https://github.com/samuelleb11/agent-router/issues"
+  },
+  "homepage": "https://github.com/samuelleb11/agent-router#readme",
+  "engines": {
+    "vscode": "^1.94.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "claude",
+    "claude code",
+    "anthropic",
+    "proxy",
+    "quota"
+  ],
+  "extensionKind": [
+    "ui"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "main": "./out/extension.js",
   "capabilities": {
-    "untrustedWorkspaces": { "supported": true, "description": "Nothing here reads the workspace." }
+    "untrustedWorkspaces": {
+      "supported": true,
+      "description": "Nothing here reads the workspace."
+    }
   },
   "contributes": {
     "commands": [
-      { "command": "agentRouter.openDashboard", "title": "Open Dashboard", "category": "Agent Router" },
-      { "command": "agentRouter.openLive", "title": "Open Live Sessions", "category": "Agent Router" },
-      { "command": "agentRouter.ensure", "title": "Start or Update the Router", "category": "Agent Router" },
-      { "command": "agentRouter.setUp", "title": "Set Up on This Machine", "category": "Agent Router" },
-      { "command": "agentRouter.remove", "title": "Remove from This Machine", "category": "Agent Router" },
-      { "command": "agentRouter.showLog", "title": "Show Log", "category": "Agent Router" }
+      {
+        "command": "agentRouter.openDashboard",
+        "title": "Open Dashboard",
+        "category": "Agent Router"
+      },
+      {
+        "command": "agentRouter.openLive",
+        "title": "Open Live Sessions",
+        "category": "Agent Router"
+      },
+      {
+        "command": "agentRouter.ensure",
+        "title": "Start or Update the Router",
+        "category": "Agent Router"
+      },
+      {
+        "command": "agentRouter.setUp",
+        "title": "Set Up on This Machine",
+        "category": "Agent Router"
+      },
+      {
+        "command": "agentRouter.remove",
+        "title": "Remove from This Machine",
+        "category": "Agent Router"
+      },
+      {
+        "command": "agentRouter.showLog",
+        "title": "Show Log",
+        "category": "Agent Router"
+      }
     ],
     "configuration": {
       "title": "Agent Router",
       "properties": {
         "agentRouter.port": {
-          "type": "number", "default": 8787, "scope": "machine",
+          "type": "number",
+          "default": 8787,
+          "scope": "machine",
           "description": "Port the router serves on. Claude Code is pointed at this port."
         },
         "agentRouter.listenOnNetwork": {
-          "type": "boolean", "default": false, "scope": "machine",
+          "type": "boolean",
+          "default": false,
+          "scope": "machine",
           "description": "Listen on every interface so the phone app can reach the router. Set a router password in the dashboard first; only other devices are ever asked for it."
         },
         "agentRouter.manageService": {
-          "type": "boolean", "default": true, "scope": "machine",
+          "type": "boolean",
+          "default": true,
+          "scope": "machine",
           "description": "Register the router as a login item (launchd on macOS, a systemd user unit on Linux) so it is up before any editor window is."
         },
         "agentRouter.configureClaudeCode": {
-          "type": "boolean", "default": true, "scope": "machine",
+          "type": "boolean",
+          "default": true,
+          "scope": "machine",
           "description": "Point Claude Code at the router (ANTHROPIC_BASE_URL in ~/.claude/settings.json) and launch it through the router's wrapper (claudeCode.claudeProcessWrapper), which is what makes sessions followable from the phone."
         },
         "agentRouter.showStatusBar": {
-          "type": "boolean", "default": true, "scope": "machine",
+          "type": "boolean",
+          "default": true,
+          "scope": "machine",
           "description": "Show the 5-hour and 7-day quota in the status bar."
         }
       }

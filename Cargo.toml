@@ -5,6 +5,9 @@ members = ["menubar", "wrapper"]
 name = "agent-router"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+description = "A local proxy between Claude Code and Anthropic: several accounts on one machine, and exact per-session token accounting."
+repository = "https://github.com/samuelleb11/agent-router"
 
 [dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "process", "time"] }

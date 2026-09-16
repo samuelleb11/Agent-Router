@@ -21,7 +21,10 @@ printf '%s\n' "$VERSION" > bin/VERSION
 # The manifest version follows the router; edited in place and restored after.
 cp package.json package.json.orig
 node -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync("package.json"));p.version=process.argv[1];fs.writeFileSync("package.json",JSON.stringify(p,null,2)+"\n")' "$VERSION"
-trap 'mv -f package.json.orig package.json' EXIT
+# vsce packages only this directory, so the licence has to be inside it. Open VSX
+# refuses a package without one, and the Marketplace shows "no license" otherwise.
+cp ../LICENSE LICENSE
+trap 'mv -f package.json.orig package.json; rm -f LICENSE' EXIT
 
 [ -d node_modules ] || npm ci --no-audit --no-fund
 npm run --silent compile
