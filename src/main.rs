@@ -347,13 +347,37 @@ async fn serve() -> anyhow::Result<()> {
     // SO_REUSEPORT: the incumbent keeps serving until it has drained, so the port is
     // never unbound and no agent sees a refused connection.
     let listener = lifecycle::bind_reuseport(bind)?;
+    let mut departing = None;
     if let Some(pid) = incumbent {
         // Signalled here, but only watched in the background: we must reach the accept
         // loop below immediately, or connections the kernel steers to our socket sit
         // unread while we wait.
         if lifecycle::signal_incumbent(pid) {
             lifecycle::watch_incumbent(pid);
+            departing = Some(pid);
         }
+    }
+
+    // Captured bodies moved out of the main store into their own file. The move waits
+    // for the outgoing router to finish draining, because until it exits it is still
+    // writing the very table this drops — see `db::migrate_bodies_if_needed`. Off the
+    // startup path either way: it is housekeeping, and the port is already being served.
+    {
+        let db_path = db_path.clone();
+        tokio::task::spawn_blocking(move || {
+            if let Some(pid) = departing {
+                if !lifecycle::has_exited_within(pid, Duration::from_secs(60)) {
+                    tracing::warn!(pid, "previous router still running; leaving the bodies where they are");
+                    return;
+                }
+            }
+            match db::migrate_bodies_if_needed(&db_path) {
+                Ok(()) => {}
+                // Nothing is lost by failing: the rows stay in the main store and the
+                // next start tries again. New bodies already go to the sidecar.
+                Err(err) => tracing::warn!(%err, "could not move the captured bodies yet"),
+            }
+        });
     }
 
     axum::serve(

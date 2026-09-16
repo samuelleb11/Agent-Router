@@ -76,12 +76,27 @@ pub fn ensure_table(db: &Connection) -> rusqlite::Result<()> {
     }
     drop(stmt);
 
-    // Cost is derived, never stored. A rate corrected today should restate every
-    // request ever captured, which a column written at capture time cannot do.
-    //
     // The model a request carries is a wire name — dated, suffixed, sometimes prefixed
     // — so it is matched against the longest table key it contains, the same rule the
     // Rust lookup uses, because `claude-opus-4` is a substring of `claude-opus-4-1`.
+    //
+    // That match is a property of the *name*, not of the rates, so it is resolved once
+    // per distinct model and kept here. Doing it inside the view instead made the join
+    // a correlated subquery — a scan and a sort of the rate table for every request row
+    // — which SQLite could only answer by materialising the whole view, once for every
+    // statement that mentioned it. See `resolve_models`.
+    db.execute_batch(
+        "CREATE TABLE IF NOT EXISTS model_rate (
+             model TEXT PRIMARY KEY,
+             key   TEXT
+         );",
+    )?;
+    resolve_models(db)?;
+
+    // Cost is derived, never stored. A rate corrected today should restate every
+    // request ever captured, which a column written at capture time cannot do — so the
+    // rates are still read from `pricing` when the query runs. Only the name-to-key
+    // match above is precomputed, and `resolve_models` redoes it whenever rates change.
     db.execute_batch(
         "DROP VIEW IF EXISTS request_cost;
          CREATE VIEW request_cost AS
@@ -92,12 +107,57 @@ pub fn ensure_table(db: &Connection) -> rusqlite::Result<()> {
                 + u.cache_read_tokens        * p.cache_read
                 + u.output_tokens            * p.output ) / 1000000.0 AS cost
          FROM requests r
-         JOIN usage u ON u.request_id = r.id
-         JOIN pricing p ON p.model = (
-             SELECT p2.model FROM pricing p2
-             WHERE instr(lower(r.model), p2.model) > 0
-             ORDER BY length(p2.model) DESC LIMIT 1
-         );",
+         JOIN usage u      ON u.request_id = r.id
+         JOIN model_rate m ON m.model = r.model
+         JOIN pricing p    ON p.model = m.key;",
+    )?;
+    Ok(())
+}
+
+/// Match every model name the request log has seen against the rate table, and store the
+/// answer. Cheap: the work is per *distinct* model — six of them against twenty thousand
+/// requests on a real store — and the whole table is rewritten each time, so a rate added
+/// or corrected today re-prices the history that was unpriced yesterday.
+///
+/// A name that matches nothing is kept with a NULL key. That is not a gap to retry: it
+/// records that the name was looked at and has no rate, and the view's join drops it, so
+/// an unpriced model contributes nothing rather than counting as free.
+pub fn resolve_models(db: &Connection) -> rusqlite::Result<()> {
+    // The rate table is set up independently of the request log and may be opened before
+    // it, or without it at all. Nothing to resolve against is not an error.
+    let has_requests: bool = db.query_row(
+        "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'requests'",
+        [],
+        |r| r.get::<_, i64>(0),
+    )? > 0;
+    if !has_requests {
+        return Ok(());
+    }
+    db.execute_batch(
+        "INSERT INTO model_rate (model, key)
+         SELECT DISTINCT r.model,
+                (SELECT p.model FROM pricing p
+                 WHERE instr(lower(r.model), p.model) > 0
+                 ORDER BY length(p.model) DESC LIMIT 1)
+         FROM requests r
+         WHERE r.model IS NOT NULL
+         ON CONFLICT(model) DO UPDATE SET key = excluded.key;",
+    )
+}
+
+/// Resolve one model name as it arrives, so a model first seen today is priced on the
+/// next query rather than at the next restart. Same rule, same table, one row.
+///
+/// A name already resolved is left alone — this sits in the capture path, and re-pricing
+/// is `resolve_models`' job at startup, not something to redo on every request.
+pub fn resolve_one(db: &Connection, model: &str) -> rusqlite::Result<()> {
+    db.execute(
+        "INSERT INTO model_rate (model, key)
+         VALUES (?1, (SELECT p.model FROM pricing p
+                      WHERE instr(lower(?1), p.model) > 0
+                      ORDER BY length(p.model) DESC LIMIT 1))
+         ON CONFLICT(model) DO NOTHING",
+        [model],
     )?;
     Ok(())
 }
@@ -207,6 +267,72 @@ mod tests {
             .query_row("SELECT count(*) FROM request_cost WHERE request_id = 1", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 0, "an unpriced model must be absent, not counted as free");
+    }
+
+    /// The resolution table is what the view prices through, so a model that never got
+    /// an entry would read as unpriced — silently, and as zero in every total. A model
+    /// first seen after startup has to be resolved as it arrives.
+    #[test]
+    fn a_model_first_seen_after_startup_is_still_priced() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE requests (id INTEGER PRIMARY KEY, model TEXT);
+             CREATE TABLE usage (request_id INTEGER, input_tokens INT, output_tokens INT,
+                 cache_read_tokens INT, cache_creation_5m_tokens INT, cache_creation_1h_tokens INT);",
+        )
+        .unwrap();
+        ensure_table(&db).unwrap(); // nothing captured yet, so nothing resolved
+
+        // A request arrives for a model the store has never seen.
+        db.execute_batch(
+            "INSERT INTO requests VALUES (1, 'claude-sonnet-5-20260210');
+             INSERT INTO usage VALUES (1, 1000, 2000, 0, 0, 0);",
+        )
+        .unwrap();
+        resolve_one(&db, "claude-sonnet-5-20260210").unwrap();
+
+        let from_view: f64 = db
+            .query_row("SELECT cost FROM request_cost WHERE request_id = 1", [], |r| r.get(0))
+            .unwrap();
+        let t = load(&db).unwrap();
+        let from_code = cost(
+            rate_for(&t, "claude-sonnet-5-20260210").unwrap(),
+            &Tokens { input: 1000, output: 2000, ..Default::default() },
+        );
+        assert!((from_view - from_code).abs() < 1e-9, "view {from_view} vs code {from_code}");
+    }
+
+    /// The whole point of leaving cost derived: correct a rate and every request ever
+    /// captured restates. The resolution table must not freeze yesterday's answer.
+    #[test]
+    fn a_rate_added_today_prices_what_was_captured_yesterday() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE requests (id INTEGER PRIMARY KEY, model TEXT);
+             CREATE TABLE usage (request_id INTEGER, input_tokens INT, output_tokens INT,
+                 cache_read_tokens INT, cache_creation_5m_tokens INT, cache_creation_1h_tokens INT);
+             INSERT INTO requests VALUES (1, 'claude-newmodel-9');
+             INSERT INTO usage VALUES (1, 1000000, 0, 0, 0, 0);",
+        )
+        .unwrap();
+        ensure_table(&db).unwrap();
+        let n: i64 = db
+            .query_row("SELECT count(*) FROM request_cost", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0, "no rate yet, so it must not be priced at all");
+
+        // Someone adds the rate, and the router restarts.
+        db.execute(
+            "INSERT INTO pricing VALUES ('claude-newmodel-9', 7.0, 8.0, 9.0, 1.0, 20.0, 'by hand')",
+            [],
+        )
+        .unwrap();
+        ensure_table(&db).unwrap();
+
+        let c: f64 = db
+            .query_row("SELECT cost FROM request_cost WHERE request_id = 1", [], |r| r.get(0))
+            .unwrap();
+        assert!((c - 7.0).abs() < 1e-9, "a million input tokens at $7/M is $7, got {c}");
     }
 
     #[test]

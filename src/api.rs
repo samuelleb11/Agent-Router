@@ -1,10 +1,12 @@
 //! Read API for the dashboard, plus the embedded UI itself.
 //!
-//! Reads open their own short-lived connection. SQLite in WAL mode takes concurrent
-//! readers alongside the capture task's single writer, and a local dashboard polling
-//! every few seconds is nowhere near the point where pooling would earn its keep.
+//! Reads come from a small pool of long-lived connections. SQLite in WAL mode takes
+//! concurrent readers alongside the capture task's single writer, so the pool is only
+//! about what a connection carries: its page cache and its prepared statements. Opening
+//! one per request threw both away every time, which against a multi-gigabyte store and
+//! a handful of clients each polling every second or two cost more than the queries did.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use axum::extract::{Query, State};
 use axum::http::{header, StatusCode};
@@ -126,17 +128,133 @@ impl IntoResponse for ApiError {
     }
 }
 
-fn open(state: &AppState) -> anyhow::Result<Connection> {
-    let conn = Connection::open_with_flags(
-        &state.config.db_path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
-    )?;
-    Ok(conn)
+/// A few read-only connections, handed out and put back. Small on purpose: these queries
+/// are CPU-bound on one core each, so more connections than there are cores buys queueing
+/// rather than throughput.
+pub struct ReadPool {
+    path: std::path::PathBuf,
+    idle: Mutex<Vec<Connection>>,
+    max: usize,
+}
+
+impl ReadPool {
+    pub fn new(path: impl Into<std::path::PathBuf>) -> Self {
+        Self { path: path.into(), idle: Mutex::new(Vec::new()), max: 8 }
+    }
+
+    fn make(&self) -> anyhow::Result<Connection> {
+        let conn = Connection::open_with_flags(
+            &self.path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
+        )?;
+        // A connection's page cache is per connection, and the default holds about eight
+        // megabytes against a store measured in gigabytes. Memory-mapped reads spare the
+        // copy out of the page cache on the way in, and keeping temporary b-trees — which
+        // the aggregates here do build — in memory keeps a big GROUP BY off the disk.
+        conn.pragma_update(None, "cache_size", -65536)?; // 64 MB, negative means KiB
+        conn.pragma_update(None, "mmap_size", 268_435_456i64)?; // 256 MB
+        conn.pragma_update(None, "temp_store", "MEMORY")?;
+        Ok(conn)
+    }
+
+    pub fn get(&self) -> anyhow::Result<Pooled<'_>> {
+        let held = self.idle.lock().unwrap().pop();
+        let conn = match held {
+            Some(c) => c,
+            None => self.make()?,
+        };
+        Ok(Pooled { pool: self, conn: Some(conn) })
+    }
+}
+
+/// A connection borrowed from the pool, returned when it goes out of scope.
+pub struct Pooled<'a> {
+    pool: &'a ReadPool,
+    conn: Option<Connection>,
+}
+
+impl std::ops::Deref for Pooled<'_> {
+    type Target = Connection;
+    fn deref(&self) -> &Connection {
+        self.conn.as_ref().expect("connection is taken only on drop")
+    }
+}
+
+impl Drop for Pooled<'_> {
+    fn drop(&mut self) {
+        if let Some(conn) = self.conn.take() {
+            let mut idle = self.pool.idle.lock().unwrap();
+            if idle.len() < self.pool.max {
+                idle.push(conn);
+            }
+        }
+    }
+}
+
+fn open(state: &AppState) -> anyhow::Result<Pooled<'_>> {
+    state.reads.get()
+}
+
+/// A rendered answer, kept for a moment.
+///
+/// The dashboard, the menubar app and every phone ask the same handful of questions on
+/// their own timers, and the expensive answers are aggregates over the whole store. One
+/// client asking twice a second and twenty clients asking once each cost the same thing
+/// here: the first caller computes, the rest read what it left. The window is shorter
+/// than the fastest poll on the page, so nothing shown is staler than it already was.
+///
+/// The per-key lock is held across the computation on purpose — that is what makes a
+/// crowd of identical requests one query instead of a stampede of them.
+pub struct Memo {
+    ttl: std::time::Duration,
+    slots: Mutex<std::collections::HashMap<String, Arc<Mutex<Option<Fresh>>>>>,
+}
+
+type Fresh = (std::time::Instant, Arc<Value>);
+
+impl Memo {
+    pub fn new(ttl: std::time::Duration) -> Self {
+        Self { ttl, slots: Mutex::new(std::collections::HashMap::new()) }
+    }
+
+    pub fn get_or_fill(
+        &self,
+        key: &str,
+        fill: impl FnOnce() -> anyhow::Result<Value>,
+    ) -> anyhow::Result<Value> {
+        let slot = {
+            let mut slots = self.slots.lock().unwrap();
+            // Keys are filter combinations, so the set is small in practice but not
+            // bounded by anything the router controls. Dropping the lot is fine: it
+            // costs one recomputation each, not correctness.
+            if slots.len() > 256 {
+                slots.clear();
+            }
+            slots.entry(key.to_owned()).or_default().clone()
+        };
+        let mut held = slot.lock().unwrap();
+        if let Some((at, value)) = held.as_ref() {
+            if at.elapsed() < self.ttl {
+                return Ok((**value).clone());
+            }
+        }
+        let value = Arc::new(fill()?);
+        *held = Some((std::time::Instant::now(), value.clone()));
+        Ok((*value).clone())
+    }
+}
+
+/// Everything that changes an answer, and nothing that does not.
+fn memo_key(name: &str, f: &Filter) -> String {
+    format!(
+        "{name}|{:?}|{:?}|{:?}|{:?}|{:?}",
+        f.project, f.session, f.since, f.account, f.tz
+    )
 }
 
 /// Run a query and return its rows as JSON objects keyed by column name.
 fn rows(conn: &Connection, sql: &str, params: &[&dyn rusqlite::ToSql]) -> anyhow::Result<Value> {
-    let mut stmt = conn.prepare(sql)?;
+    let mut stmt = conn.prepare_cached(sql)?;
     let names: Vec<String> = stmt.column_names().into_iter().map(str::to_owned).collect();
     let out = stmt
         .query_map(params, |row| {
@@ -172,12 +290,19 @@ fn one(conn: &Connection, sql: &str, params: &[&dyn rusqlite::ToSql]) -> anyhow:
 /// agrees with every other. Quota is the exception: it belongs to the account, not
 /// the project, so it always describes the active account.
 pub async fn summary(State(state): State<Arc<AppState>>, Query(mut f): Query<Filter>) -> ApiResult {
-    let conn = open(&state)?;
     // Clamp once, on the Filter itself, so every query below binds the same sane value:
     // the timeline does arithmetic on it, and i64::MAX would overflow (panic in debug).
+    // Doing it before the key is built also keeps two spellings of "now" off separate
+    // cache slots.
+    f.since = f.since.map(|s| s.clamp(0, crate::db::now_ms()));
+    let key = memo_key("summary", &f);
+    Ok(Json(state.memo.get_or_fill(&key, || summary_inner(&state, &f))?))
+}
+
+fn summary_inner(state: &AppState, f: &Filter) -> anyhow::Result<Value> {
+    let conn = open(state)?;
     let now = crate::db::now_ms();
-    f.since = f.since.map(|s| s.clamp(0, now));
-    let p = scope_params(&f);
+    let p = scope_params(f);
     let totals = one(
         &conn,
         &format!(
@@ -228,13 +353,17 @@ pub async fn summary(State(state): State<Arc<AppState>>, Query(mut f): Query<Fil
                     -- Priced as if each component were paid once as fresh input. It is
                     -- a floor: whatever stays in the context is re-read every later
                     -- turn, and this table cannot know how many turns that was.
-                    coalesce(sum(c.est_tokens * (
-                        SELECT p2.input FROM pricing p2
-                        WHERE instr(lower(coalesce(r.model,'')), p2.model) > 0
-                        ORDER BY length(p2.model) DESC LIMIT 1)) / 1000000.0, 0) AS est_cost_once,
+                    --
+                    -- Priced through `model_rate` rather than by matching the rate table
+                    -- against the model name here: this sums a row per component per
+                    -- request, so a match written inline runs tens of thousands of times
+                    -- for the handful of distinct models it can produce.
+                    coalesce(sum(c.est_tokens * p.input) / 1000000.0, 0) AS est_cost_once,
                     count(DISTINCT c.request_id) AS requests
              FROM context c
              JOIN requests r       ON r.id = c.request_id
+             LEFT JOIN model_rate m ON m.model = r.model
+             LEFT JOIN pricing p    ON p.model = m.key
              LEFT JOIN sessions s  ON s.id = r.session_id
              WHERE {SCOPE}
              GROUP BY c.component ORDER BY est_tokens DESC"
@@ -389,7 +518,7 @@ pub async fn summary(State(state): State<Arc<AppState>>, Query(mut f): Query<Fil
         }
         None => (Value::Array(vec![]), Value::Array(vec![]), 0),
     };
-    Ok(Json(json!({
+    Ok(json!({
         "totals": totals, "quota": quota, "account": account, "context": context,
         "models": models, "threads": threads, "latency": latency,
         "stop_reasons": stop_reasons, "by_account": by_account,
@@ -398,14 +527,19 @@ pub async fn summary(State(state): State<Arc<AppState>>, Query(mut f): Query<Fil
             "bucket_ms": bucket, "rows": timeline,
         },
         "quota_history": quota_history,
-    })))
+    }))
 }
 
 /// The project navigator. Never narrowed by project or session (it is how you pick
 /// one), but it does honour the time range.
 pub async fn projects(State(state): State<Arc<AppState>>, Query(f): Query<Filter>) -> ApiResult {
-    let conn = open(&state)?;
-    Ok(Json(rows(
+    let key = memo_key("projects", &f);
+    Ok(Json(state.memo.get_or_fill(&key, || projects_inner(&state, &f))?))
+}
+
+fn projects_inner(state: &AppState, f: &Filter) -> anyhow::Result<Value> {
+    let conn = open(state)?;
+    Ok(rows(
         &conn,
         "SELECT s.cwd AS project,
                 count(DISTINCT s.id) AS sessions,
@@ -427,12 +561,17 @@ pub async fn projects(State(state): State<Arc<AppState>>, Query(f): Query<Filter
            AND (?2 IS NULL OR r.account_id = ?2)
          GROUP BY s.cwd ORDER BY prompt_tokens DESC",
         &[&f.since, &f.account],
-    )?))
+    )?)
 }
 
 /// The session navigator: narrowed by project and time range, never by session.
 pub async fn sessions(State(state): State<Arc<AppState>>, Query(f): Query<Filter>) -> ApiResult {
-    let conn = open(&state)?;
+    let key = memo_key("sessions", &f);
+    Ok(Json(state.memo.get_or_fill(&key, || sessions_inner(&state, &f))?))
+}
+
+fn sessions_inner(state: &AppState, f: &Filter) -> anyhow::Result<Value> {
+    let conn = open(state)?;
     let sql = "SELECT s.id, s.cwd AS project, s.git_branch, s.entrypoint,
                       s.started_at, s.last_seen_at,
                       count(*) AS requests,
@@ -453,11 +592,16 @@ pub async fn sessions(State(state): State<Arc<AppState>>, Query(f): Query<Filter
                WHERE (?1 IS NULL OR s.cwd = ?1) AND (?2 IS NULL OR r.started_at >= ?2)
                  AND (?3 IS NULL OR r.account_id = ?3)
                GROUP BY s.id ORDER BY s.last_seen_at DESC LIMIT 200";
-    Ok(Json(rows(&conn, sql, &[&f.project, &f.since, &f.account])?))
+    Ok(rows(&conn, sql, &[&f.project, &f.since, &f.account])?)
 }
 
 pub async fn requests(State(state): State<Arc<AppState>>, Query(f): Query<Filter>) -> ApiResult {
-    let conn = open(&state)?;
+    let key = memo_key("requests", &f);
+    Ok(Json(state.memo.get_or_fill(&key, || requests_inner(&state, &f))?))
+}
+
+fn requests_inner(state: &AppState, f: &Filter) -> anyhow::Result<Value> {
+    let conn = open(state)?;
     let sql = format!(
         "SELECT r.id, r.request_id, r.session_id, s.cwd AS project, r.model, r.status,
                 r.ttfb_ms, r.duration_ms, r.stop_reason, r.is_sidechain, r.agent_id,
@@ -478,11 +622,16 @@ pub async fn requests(State(state): State<Arc<AppState>>, Query(f): Query<Filter
          WHERE {SCOPE}
          ORDER BY r.started_at DESC LIMIT 300"
     );
-    Ok(Json(rows(&conn, &sql, &scope_params(&f))?))
+    Ok(rows(&conn, &sql, &scope_params(f))?)
 }
 
 pub async fn tools(State(state): State<Arc<AppState>>, Query(f): Query<Filter>) -> ApiResult {
-    let conn = open(&state)?;
+    let key = memo_key("tools", &f);
+    Ok(Json(state.memo.get_or_fill(&key, || tools_inner(&state, &f))?))
+}
+
+fn tools_inner(state: &AppState, f: &Filter) -> anyhow::Result<Value> {
+    let conn = open(state)?;
     // Results are keyed by tool_use_id and carry their own session and timestamp, so
     // they scope directly rather than through the request that first carried them.
     let produced = rows(
@@ -522,7 +671,7 @@ pub async fn tools(State(state): State<Arc<AppState>>, Query(f): Query<Filter>) 
         ),
         &scope_params(&f),
     )?;
-    Ok(Json(json!({ "produced": produced, "called": called })))
+    Ok(json!({ "produced": produced, "called": called }))
 }
 
 // ---------------------------------------------------------------------------
@@ -723,10 +872,16 @@ fn duty_band_for(
 /// Unlike every other read in this file, this one ignores `project` and `session`
 /// entirely: a quota belongs to an account, not to whatever you happened to spend it
 /// on. Only the usage figures honour `since`.
-pub async fn forecast(State(state): State<Arc<AppState>>, Query(f): Query<Filter>) -> ApiResult {
-    let conn = open(&state)?;
+pub async fn forecast(State(state): State<Arc<AppState>>, Query(mut f): Query<Filter>) -> ApiResult {
+    f.since = f.since.map(|s| s.clamp(0, crate::db::now_ms()));
+    let key = memo_key("forecast", &f);
+    Ok(Json(state.memo.get_or_fill(&key, || forecast_inner(&state, &f))?))
+}
+
+fn forecast_inner(state: &AppState, f: &Filter) -> anyhow::Result<Value> {
+    let conn = open(state)?;
     let now = crate::db::now_ms();
-    let since = f.since.map(|s| s.clamp(0, now));
+    let since = f.since;
     let week_ago = now - 7 * 86_400_000;
 
     // Driven from `accounts` but unioned with anything the request log references, so a
@@ -858,12 +1013,12 @@ pub async fn forecast(State(state): State<Arc<AppState>>, Query(f): Query<Filter
         out.push(row);
     }
 
-    Ok(Json(json!({
+    Ok(json!({
         "generated_at": now,
         "since": since,
         "accounts": out,
         "global": global_rollup(&out, now),
-    })))
+    }))
 }
 
 /// What totals across accounts and what does not.

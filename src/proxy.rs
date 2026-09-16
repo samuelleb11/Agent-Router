@@ -81,6 +81,11 @@ pub struct AppState {
     /// Phones to tell when a session is waiting on a person.
     pub push: std::sync::Arc<crate::notify::Push>,
     pub capture: Sender<CaptureEvent>,
+    /// Read-only connections for the dashboard API, kept warm. See `api::ReadPool`.
+    pub reads: crate::api::ReadPool,
+    /// The expensive dashboard answers, held for a moment so a room full of clients
+    /// polling the same figures costs one computation. See `api::Memo`.
+    pub memo: crate::api::Memo,
     dumps_left: AtomicUsize,
     dropped: AtomicUsize,
 }
@@ -96,6 +101,10 @@ impl AppState {
         let dumps_left = AtomicUsize::new(config.dump_headers);
         let auth = crate::auth::Auth::load(&config.db_path)?;
         let push = std::sync::Arc::new(crate::notify::Push::new(&config.db_path));
+        let reads = crate::api::ReadPool::new(&config.db_path);
+        // Shorter than the fastest thing the dashboard polls (1.5s), so the page is no
+        // less live than it was before there was a cache here.
+        let memo = crate::api::Memo::new(std::time::Duration::from_millis(1000));
         Ok(Arc::new(Self {
             client,
             config,
@@ -105,6 +114,8 @@ impl AppState {
             auth,
             push,
             capture,
+            reads,
+            memo,
             dumps_left,
             dropped: AtomicUsize::new(0),
         }))

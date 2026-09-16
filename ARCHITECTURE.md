@@ -187,9 +187,17 @@ the other. Routed accounts are therefore managed only in the router's UI.
 
 ## Storage model
 
-A single SQLite file. The rule is **keep the structure, cap the content**: every message, block
+Two SQLite files. The rule is **keep the structure, cap the content**: every message, block
 type, tool name, byte count and token count is retained forever, while large text bodies (tool
 results, file contents) are truncated to a configurable cap with the true size recorded.
+
+The structure lives in `agent-router.db` and is what every query reads. The capped bodies
+live beside it in `agent-router-bodies.db`, attached as `bodies_db`. They were split
+because the bodies had grown to 95% of a 1.87 GB store while nothing read them back, which
+made every check-point, backup and vacuum pay for data no query touched; the structure on
+its own is ~17 MB. Both files travel together — a copy or a backup that takes only the
+first silently leaves the bodies behind, and a foreign key cannot span the two, so the
+cascade from `requests` no longer reaches them.
 
 ```
 accounts   (id, label, subject, expires_at, active, created_at)   -- tokens live in Keychain
@@ -203,7 +211,8 @@ usage      (request_id, input_tokens, output_tokens, thinking_tokens,
 context    (request_id, component, char_count, est_tokens)        -- system | tools | history | tool_results
 tool_calls (id, request_id, ordinal, name, input_chars,
             result_chars_true, result_chars_stored, est_tokens)
-bodies     (request_id, direction, content, truncated_at, true_bytes)
+bodies     (request_id, direction, content, truncated_at, true_bytes)  -- in bodies_db
+model_rate (model, key)                                           -- wire name -> pricing key
 ```
 
 `requests.session_id` is nullable: a request whose transcript does not exist yet lands

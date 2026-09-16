@@ -135,6 +135,22 @@ pub fn watch_incumbent(pid: i32) {
     });
 }
 
+/// Block until `pid` is gone, or until `within` elapses. Returns whether it went.
+///
+/// The watching above is for the log; this is for work that must not start while the
+/// outgoing process is still touching shared state — see `db::migrate_bodies_if_needed`.
+pub fn has_exited_within(pid: i32, within: Duration) -> bool {
+    let deadline = std::time::Instant::now() + within;
+    while std::time::Instant::now() < deadline {
+        // SAFETY: signal 0 only tests for the process's existence.
+        if unsafe { libc::kill(pid, 0) } != 0 {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    false
+}
+
 /// Resolves when the process is asked to stop, either way.
 pub async fn shutdown_signal() -> &'static str {
     use tokio::signal::unix::{signal, SignalKind};
