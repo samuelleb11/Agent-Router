@@ -75,7 +75,7 @@ the window reset* but *does the way you are working get you to 100% first*. Answ
 a burn rate, and the obvious one — utilisation against wall-clock time — is wrong in a way the
 store itself demonstrates.
 
-In the 7-day window that reset on 2026-09-11, `an-account` sat between `u=0.97` and
+In the 7-day window that reset on 2026-09-11, one account sat between `u=0.97` and
 `u=0.98` for **31.4 hours with no requests at all**. That is sleep, not slow burn. Fitted
 against the clock, that window predicted exhaustion 15–33 hours early at every point before
 the gap, then flipped to "idle, never" once the gap was inside the lookback — a wall-clock
@@ -243,7 +243,7 @@ A project opts in by carrying a gitignored `.claude/settings.local.json`:
 That is the whole configuration — the same three lines in every project. Deleting the file puts
 the project straight back to talking to Anthropic directly.
 
-**Test project.** `/path/to/test-project` is the designated guinea pig. It has no
+**Test project.** A small project elsewhere on disk is the designated guinea pig. It has no
 `.claude/` directory yet; the settings file goes in during Phase 1, along with a
 `.claude/settings.local.json` entry in its `.gitignore`.
 
@@ -370,7 +370,7 @@ and clears the wrapper setting.
 
 | Phase | Deliverable |
 | --- | --- |
-| 1 | ✅ **Done.** Proxy listener, credential swap, byte-faithful streaming, path/credential guards. Verified end to end from `test-project`: subscription OAuth works over a custom base URL, and `x-claude-code-session-id` gives exact session attribution for free. |
+| 1 | ✅ **Done.** Proxy listener, credential swap, byte-faithful streaming, path/credential guards. Verified end to end from a real project: subscription OAuth works over a custom base URL, and `x-claude-code-session-id` gives exact session attribution for free. |
 | 2 | ✅ **Done.** Capture tee, SQLite schema, SSE usage parsing through gzip, context composition, tool attribution, quota headroom, session→project resolution. Verified against a live tool-using session. |
 | 3 | ✅ **Done.** Account registry with three sources, Keychain storage, live switching, and the accounts page. Verified by switching to a deliberately invalid credential mid-flight (200 → 401 → 200 with nothing restarted). |
 | 4 | ✅ **Done.** Embedded read-only dashboard: quota, projects, sessions, context composition, thread split, tools, requests. A single HTML file compiled into the binary — no build step and no node toolchain, which keeps the "one static binary" promise intact. Account management joins it in Phase 3. |

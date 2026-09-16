@@ -13,12 +13,16 @@ settings:
     SWIFT_STRICT_CONCURRENCY: complete
     IPHONEOS_DEPLOYMENT_TARGET: "26.0"
     ENABLE_USER_SCRIPT_SANDBOXING: true
-    # The team is ABCDE12345 — the id in parentheses on the certificate is the person,
-    # not the team, and pointing this at that id is what makes Xcode say "No profiles
-    # found". With no Apple ID signed into Xcode, automatic signing still works offline
-    # here because the team's wildcard development profile is already on this Mac and
-    # already lists the phone.
-    DEVELOPMENT_TEAM: ABCDE12345
+    # Supplied by the environment so the team id stays out of the repo; xcodegen
+    # expands ${...} unless you pass --no-env. Export DEVELOPMENT_TEAM before
+    # generating — see "Building the iPhone app" in the README.
+    #
+    # The id in parentheses on the signing certificate is the PERSON, not the team.
+    # Pointing this at that id is what makes Xcode report "No profiles found".
+    # With no Apple ID signed into Xcode, automatic signing still works offline
+    # provided the team's wildcard development profile is on the Mac and lists the
+    # phone.
+    DEVELOPMENT_TEAM: ${DEVELOPMENT_TEAM}
     CODE_SIGN_STYLE: Automatic
     CODE_SIGN_IDENTITY: "Apple Development"
 targets:

@@ -13,7 +13,7 @@ infrastructure and time, and most of them are already carried.
   --azure-credential`). A setup change, not a cost.
 - **Verified publisher badge:** free, gated by time. The extension must have been
   listed for six months and the domain registered for six months, proven by a DNS TXT
-  record; review within five business days. example.com qualifies on age already.
+  record; review within five business days.
 - **Open VSX:** free. An Eclipse Foundation account linked to GitHub, a namespace
   matching the publisher id, and a license file in the package.
 

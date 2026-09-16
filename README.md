@@ -3,25 +3,62 @@
 A local proxy that sits between Claude Code and Anthropic, so you can
 
 * **keep several Claude accounts separate on one machine** and pick which one is
-  serving, without `/login` and without restarting your agent; and
+  serving, without `/login` and without restarting your agent;
 * **see where your tokens actually go** — per project, per session, per model, per
-  tool, and what filled the context window.
+  tool, and what filled the context window; and
+* **follow and steer your sessions from your phone** — read the live feed, answer a
+  permission prompt, send a message, switch the model.
 
 Everything is local: one Rust binary, one SQLite file, no cloud, no telemetry, and a
-socket that only ever listens on loopback.
+socket that only ever listens on loopback until you tell it otherwise.
 
-> **Status:** proxy, capture, dashboard and multi-account switching are all working.
-> See [ARCHITECTURE.md](ARCHITECTURE.md).
+> **Status:** working, and used daily by its author. Proxy, capture, dashboard,
+> multi-account switching, live sessions, the VS Code extension and both phone apps
+> are all in place. See [ARCHITECTURE.md](ARCHITECTURE.md) for how it fits together.
 
-## Use it
+## Platforms
 
-**1. Build.**
+| | macOS | Linux | Windows |
+| --- | --- | --- | --- |
+| Router and dashboard | yes | yes | not built |
+| Credential store | Keychain, via `/usr/bin/security` | `~/.claude/.credentials.json` | — |
+| Run at login | launchd agent | systemd user service | — |
+| VS Code extension | arm64, x64 | x64, arm64 (static musl) | — |
+
+Windows is deliberately absent rather than half-written: it would need a per-user logon
+task, and an untested installer that edits the registry is worse than none.
+
+The phone apps are **iOS 26+** (SwiftUI) and **Android 10+** (API 29, Jetpack Compose).
+Either one can watch any number of routers.
+
+## Install
+
+### From source
 
 ```sh
 cargo build --release
+./target/release/agent-router
 ```
 
-**2. Run it.** Leave it running in a terminal, or background it.
+### As a VS Code extension
+
+The extension bundles the router and the wrapper for your platform, keeps a current
+router running, shows quota in the status bar, and opens the dashboard and the live
+page in editor tabs. Build one with `scripts/package-vsix.sh` (see
+[Building and packaging](#building-and-packaging)), then:
+
+```sh
+code --install-extension dist/agent-router-0.1.0-darwin-arm64.vsix
+```
+
+The extension is not the router. Every editor window runs its own copy of the
+extension, so each one only makes sure a current router is serving on this machine —
+`agent-router --ensure` exits when a same-or-newer build already answers, and takes the
+port over without dropping a request when an older one does.
+
+## Quick start
+
+**1. Run the router.** Leave it in a terminal, or background it.
 
 ```sh
 ./target/release/agent-router
@@ -38,7 +75,7 @@ agent-router listening on http://127.0.0.1:8787 (loopback only)
 capture started db=/Users/you/.agent-router/agent-router.db
 ```
 
-**3. Point a project at it.** Create `.claude/settings.local.json` in the project:
+**2. Point a project at it.** Create `.claude/settings.local.json` in the project:
 
 ```json
 {
@@ -50,23 +87,27 @@ capture started db=/Users/you/.agent-router/agent-router.db
 
 Add that file to the project's `.gitignore` — it is machine-local. The same three
 lines work in every project; there is nothing per-project to configure. Both the CLI
-and the VSCode extension read it.
+and the VS Code extension read it.
 
-**4. Use Claude Code normally.** Nothing else changes. Delete the settings file and
+**3. Use Claude Code normally.** Nothing else changes. Delete the settings file and
 the project goes straight back to talking to Anthropic directly.
 
-**5. Open the dashboard** at <http://127.0.0.1:8787>.
+**4. Open the dashboard** at <http://127.0.0.1:8787>.
+
+## The dashboard
 
 Quota headroom for the active account with its history, the totals for whatever you
-have scoped (prompt and output tokens, cache hit rate, time to first token, errors),
-activity over time stacked by model, what the model read from cache versus paid in
+have scoped (prompt and output tokens, spend, cache hit rate, time to first token,
+errors), activity over time stacked by model, what the model read from cache versus paid in
 full, what filled the context window, the main-thread / subagent split, tokens per
 project and per session, which tools flood the context, and every request as an
-expandable row. Click a project or a session and the whole page rescopes to it; the
-breadcrumb and the time range (1h / 24h / 7d / 30d / all) sit in a sticky bar at the
-top and are mirrored in the URL, so a link keeps its scope. It refreshes every five
-seconds without flicker and is served from the same binary — no build step, no node
-toolchain, no network, and it works down to phone width.
+expandable row.
+
+Click a project or a session and the whole page rescopes to it; the breadcrumb and the
+time range (1h / 24h / 7d / 30d / all) sit in a sticky bar at the top and are mirrored
+in the URL, so a link keeps its scope. It refreshes every five seconds without flicker
+and is served from the same binary — no build step, no node toolchain, no network, and
+it works down to phone width.
 
 For anything the dashboard does not answer, the store is plain SQLite:
 
@@ -89,8 +130,8 @@ and git branch.
 ### One number worth looking at first
 
 On a normal Claude Code turn, **tool definitions are around three quarters of the
-context window** — far more than the conversation. Run the "where the context
-actually goes" query and see what your own split looks like.
+context window** — far more than the conversation. Run the "where the context actually
+goes" query and see what your own split looks like.
 
 ## Accounts
 
@@ -106,12 +147,12 @@ configure. To add another, open the dashboard and use **+ add an account**:
   only Claude Code can renew it, so the dashboard shows its expiry.
 
 Switching is a click, takes effect on the **next request**, and needs no restart of the
-router or of Claude Code. Tokens are held in the macOS Keychain, never in the database.
+router or of Claude Code.
 
 An isolated profile cannot disturb your main login: a fresh `CLAUDE_CONFIG_DIR` reports
 "not logged in" even with the default profile's `.claude.json` copied into it.
 
-## Upgrading without breaking sessions
+## Upgrading without dropping sessions
 
 Build the new binary and just start it — no need to stop the old one:
 
@@ -133,10 +174,14 @@ failures, and a 58-second streaming response begun on the old instance completed
 | `AGENT_ROUTER_DB` | `~/.agent-router/agent-router.db` | Store location |
 | `AGENT_ROUTER_BODY_CAP` | `65536` | Bytes of each body kept; true size is always recorded |
 | `AGENT_ROUTER_UPSTREAM` | `https://api.anthropic.com` | Upstream API |
-| `AGENT_ROUTER_ACCESS_TOKEN` | *(unset)* | Use this token instead of the Keychain one |
+| `AGENT_ROUTER_ACCESS_TOKEN` | *(unset)* | Use this token instead of the stored one |
 | `AGENT_ROUTER_LOG` | `agent_router=info` | `tracing` filter |
 | `AGENT_ROUTER_DUMP_HEADERS` | `1` | Requests to dump full headers for, at startup |
 | `AGENT_ROUTER_BIND` | *(unset — loopback)* | An IP to listen on instead, to follow sessions from another device. Turns the password on; see below |
+
+`agent-router install` registers the login item. `--bind <addr>` writes the listen
+address into it, so a router that serves your phone keeps doing so after a reboot, and
+`--no-config` registers the login item without touching Claude Code's settings.
 
 ## Security
 
@@ -153,6 +198,9 @@ so reaching it is kept as hard as it can be:
    credential of their own, so nothing can borrow the token by simply finding the port.
 5. Anything that is not on this machine must present the **router password**.
 
+Inbound `authorization` and `x-api-key` headers are discarded, never stored. Captured
+bodies may contain your source code — the database is local and gitignored.
+
 ### The password
 
 Only devices other than this one are ever asked; Claude Code, the menubar app and your
@@ -168,8 +216,10 @@ Settings → Password. Until one is set, other devices are refused outright.
 It is stored hashed (PBKDF2-HMAC-SHA256, 600k rounds), never in the clear. It *travels*
 in the clear: this is HTTP, and the network bind already assumes a network you trust.
 
-Tokens live in the macOS Keychain and are never written to the database or to config.
-They are read and written through `/usr/bin/security`, and the items the router creates
+### Where tokens live
+
+Tokens are never written to the database or to config. On macOS they are held in the
+Keychain, read and written through `/usr/bin/security`, and the items the router creates
 trust it (`-T /usr/bin/security`). That is a deliberate trade. A locally built binary is
 ad-hoc signed, so every `cargo build` produces a new code identity, "Always Allow"
 whitelists only the build that asked, and the prompt returns on the next rebuild — with
@@ -178,167 +228,206 @@ items through `security` without a prompt, which is the same footing as Claude C
 credential entry. If you would rather have a per-binary ACL, sign the binary with a
 stable identity (`codesign -s <your-cert> target/release/agent-router`) and the Security
 framework path becomes practical again.
-Inbound `authorization` and `x-api-key` headers are discarded, never stored. Captured
-bodies may contain your source code — the database is local and gitignored.
 
-## The iPhone app
+On Linux there is no Keychain; the router reads Claude Code's own
+`~/.claude/.credentials.json`, which is that platform's existing store, and only ever
+reads it.
 
-`ios/AgentRouter/` is a SwiftUI app for iOS 26 that watches any number of routers from
-your phone: each router's quota and forecast, every account it holds, spend across
-accounts, and a switcher to change which account serves — the same
-`POST /api/accounts/activate` the dashboard uses, so a switch takes effect on the next
-request. It talks to the router over the network bind and authenticates with the router
-password (HTTP Basic; kept in the phone's Keychain).
+## The phone apps
 
-It is also the dashboard in your pocket. Router → **Usage** is the dashboard page — the
-range buttons, the totals tiles, activity over time, what the model read, what fills the
+Two apps, the same job: watch any number of routers, and steer the sessions running
+through them. `ios/AgentRouter/` is SwiftUI for iOS 26; `android/` is Jetpack Compose
+for Android 10 and up. They talk to the router over the network bind and authenticate
+with the router password — kept in the iOS Keychain, and on Android encrypted with an
+AES-GCM key held in the AndroidKeyStore (hardware-backed where the phone has a TEE,
+never extractable either way) into ordinary `SharedPreferences`.
+
+**The dashboard in your pocket.** Router → **Usage** is the dashboard page — the range
+buttons, the totals tiles, activity over time, what the model read, what fills the
 context window, models, main thread vs subagents, accounts — with Projects, Sessions,
 Tools and Requests beneath it, each narrowing the page when tapped. **Manage accounts**
 and **Settings** are the settings modal: add an account (sign in through the router,
 paste a token, or point at a profile), rename, rotate, remove; the login item, routing,
 per-project routes, the wrapper per extension (and whether the router keeps it
-installed on its own), and the password.
+installed on its own), and the password. Switching which account serves is the same
+`POST /api/accounts/activate` the dashboard uses, so it takes effect on the next request.
 
-It is also the `/live` page in your pocket. Router → Live sessions lists every session
-on that Mac the way the web view does (by project, recent first, older and archived
-folded away); open one and the feed streams as it happens — prose, tool calls and their
-output, thinking, and questions. A session marked **live** runs under the wrapper and
-takes a typed message, answers to an AskUserQuestion from the form the prompt renders,
-and a Stop beside Send while it is working — Send stays, because a message typed while
-a turn runs is queued by the session itself and taken up when the turn ends (the status
-line counts what is waiting); one marked **view** is read-only, which is what every
-session started before the wrapper was installed (or after an extension update) is,
-until it is restarted. The strip above the feed switches between a project's sessions,
-the clock button recalls what you already sent, and the menu archives the session — or
-changes its **model** and **effort** for the next turn, from the phone or from the web
-page's facts strip. The model goes in as the editor's own `set_model` control request,
-and the CLI's confirmation or refusal is what you see; effort is `/effort <level>` typed
-into the session. Both need the wrapper.
+**The `/live` page in your pocket.** Router → Live sessions lists every session on that
+machine the way the web view does (by project, recent first, older and archived folded
+away); open one and the feed streams as it happens — prose, tool calls and their output,
+thinking, and questions.
 
-**Side questions.** The menu's **Ask on the side…** (the **btw** button on the web page)
-is `/btw` for a session you are not sitting at: the CLI's own `/btw` is an interactive
-command the editor's stream refuses, so the router does what it does instead — resumes
-the session *forked*, with no tools and an instruction to answer briefly, and shows you
-the answer. The session never sees the question or the answer; nothing is interrupted
-and nothing is queued. It costs one replay of the session's context (mostly cached, so
-a few cents and about ten seconds on a small session, longer on a big one), and the
-fork it leaves is shelved so the list stays clean.
+A session marked **live** runs under the wrapper and takes a typed message, answers to
+an AskUserQuestion from the form the prompt renders, and a Stop beside Send while it is
+working — Send stays, because a message typed while a turn runs is queued by the session
+itself and taken up when the turn ends (the status line counts what is waiting). One
+marked **view** is read-only, which is what every session started before the wrapper was
+installed (or after an extension update) is, until it is restarted.
 
-**The wrapper keeps itself installed.** An extension update lands a fresh binary the
-wrapper is not in, and every session the new version starts is view-only until it is.
-Settings → Wrapper → **Manage it automatically** (dashboard) or **Manage automatically**
-(phone) has the router watch the extension directory and wrap any version's binary it is not
-in — a fresh update included — once the download has settled. The switch lives in the router's database — flipped
-once, it holds across router restarts and app versions, and it is off until you turn it
-on. Sessions already running keep the binary they started with; the reload the extension
-asks for after an update is the only step left, and new sessions after it are live. The
-phone is told each time it happens, and the Setup section keeps the log.
+The strip above the feed switches between a project's sessions, the clock button recalls
+what you already sent, and the menu archives the session — or changes its **model** and
+**effort** for the next turn, from the phone or from the web page's facts strip. The
+model goes in as the editor's own `set_model` control request, and the CLI's confirmation
+or refusal is what you see; effort is `/effort <level>` typed into the session. Both need
+the wrapper.
 
-The Xcode project is generated from `project.yml`, so the `.xcodeproj` is not committed:
+### Side questions
 
-```
-brew install xcodegen
-cd ios/AgentRouter && xcodegen generate
-xcodebuild -scheme AgentRouter -destination 'platform=iOS,id=<device id>' -derivedDataPath build build
-xcrun devicectl device install app --device <device id> build/Build/Products/Debug-iphoneos/AgentRouter.app
-xcrun devicectl device process launch --device <device id> ca.whnet.agent-router
-```
+The menu's **Ask on the side…** (the **btw** button on the web page) is `/btw` for a
+session you are not sitting at: the CLI's own `/btw` is an interactive command the
+editor's stream refuses, so the router does what it does instead — resumes the session
+*forked*, with no tools and an instruction to answer briefly, and shows you the answer.
+The session never sees the question or the answer; nothing is interrupted and nothing is
+queued. It costs one replay of the session's context (mostly cached, so a few cents and
+about ten seconds on a small session, longer on a big one), and the fork it leaves is
+shelved so the list stays clean.
 
-`xcrun devicectl list devices` prints the device id. Unit tests run on the simulator:
-`xcodebuild test -scheme AgentRouter -destination 'platform=iOS Simulator,name=iPhone 17 Pro'`.
-Two of them talk to a real router: `LiveNetworkTests` (the app's own networking, stream
-included — set `TEST_RUNNER_ROUTER_BASE`, `_PASSWORD` and `_SESSION`, and run it on the
-phone with `-destination 'platform=iOS,id=…' CODE_SIGNING_ALLOWED=YES` to cross the
-password guard) and the UI tests, which drive add-router → sessions → a chat against a
-router on `127.0.0.1:8799`, and tap a notification carrying a router push's payload with
-the app in front, in the background, and not running, checking that each lands on the
-session (`--ui-test-notify` schedules it locally, since nothing can push to a simulator).
-One more checks the opposite: a notification whose prompt the router no longer lists as
-waiting is gone from Notification Center once the app has been to the front.
+### The wrapper keeps itself installed
 
-**Notifications.** The router tells the phone the moment a session waits on a person —
-a permission, an AskUserQuestion — through Apple's push service, once per prompt; a tap
-opens that session. Answer it anywhere else — the terminal, the editor, another phone —
-and the notification takes itself down: the prompt leaves the router's waiting set, and
-the router wakes the app with a silent push naming it. Apple drops a push like that
-whenever the app has been force quit, so the app also asks `/api/push/pending` what is
-still waiting every time it comes to the front, and clears up whatever the push missed.
-Everything the feature needs is built in: the app carries the push entitlement, the
-router speaks to Apple, and the app tells the router its team and bundle id when it
-registers. What cannot be built in is Apple's part. A push-enabled
-App ID and a signing key are issued only to the account holder, by the developer
-portal, and no API or Xcode feature creates the key. Two one-time steps, both on the
-account holder's login:
+An extension update lands a fresh binary the wrapper is not in, and every session the new
+version starts is view-only until it is. Settings → Wrapper → **Manage it automatically**
+(dashboard) or **Manage automatically** (phone) has the router watch the extension
+directory and wrap any version's binary it is not in — a fresh update included — once the
+download has settled. The switch lives in the router's database, so once flipped it holds
+across router restarts and app versions, and it is off until you turn it on. Sessions
+already running keep the binary they started with; the reload the extension asks for
+after an update is the only step left, and new sessions after it are live. The phone is
+told each time it happens, and the Setup section keeps the log.
+
+### Notifications
+
+The router tells the phone the moment a session waits on a person — a permission, an
+AskUserQuestion — once per prompt; a tap opens that session. Answer it anywhere else —
+the terminal, the editor, another phone — and the notification takes itself down: the
+prompt leaves the router's waiting set, and the router wakes the app with a silent push
+naming it. A silent push is dropped whenever the app has been force quit, so the app also
+asks `/api/push/pending` what is still waiting every time it comes to the front, and
+clears up whatever the push missed.
+
+Everything on this side is built in: both apps carry the push entitlement, the router
+speaks to Apple (`src/apns.rs`) and to Google (`src/fcm.rs`), and the app tells the router
+its team and bundle id when it registers. What cannot be built in is the platform's part.
+
+**Apple** issues a push-enabled App ID and a signing key only to the account holder,
+through the developer portal; no API or Xcode feature creates the key. Two one-time steps:
 
 1. Sign into Xcode with the Apple ID (Xcode → Settings → Accounts). Automatic signing
-   then registers the App ID `ca.whnet.agent-router` with the Push Notifications
-   capability and fetches a profile that carries it — the team's wildcard profile
-   already on the Mac cannot. Until then, `PUSH=0 ios/AgentRouter/scripts/device-build.sh`
-   builds and installs a variant without the entitlement (a build-setting override is
-   not enough — Xcode also reads the capability off the project), and the app says so
-   under Settings → Notifications. To keep the Apple ID out of Xcode altogether, do the
-   same by hand in the portal instead — Identifiers → + → App → explicit
-   `ca.whnet.agent-router` → Push Notifications → Register; then Profiles → + → iOS App
-   Development → that App ID, the Mac's Apple Development certificate, the phone →
-   Generate → Download, double-click it — and build with
+   then registers the App ID with the Push Notifications capability and fetches a profile
+   that carries it — a team's plain wildcard profile cannot. Until then,
+   `PUSH=0 ios/AgentRouter/scripts/device-build.sh` builds and installs a variant without
+   the entitlement (a build-setting override is not enough — Xcode also reads the
+   capability off the project), and the app says so under Settings → Notifications.
+   To keep the Apple ID out of Xcode altogether, do the same by hand in the portal —
+   Identifiers → + → App → an explicit bundle id → Push Notifications → Register; then
+   Profiles → + → iOS App Development → that App ID, the Mac's Apple Development
+   certificate, the phone → Generate → Download, double-click it — and build with
    `PROFILE="<its name>" ios/AgentRouter/scripts/device-build.sh`.
 2. Make one APNs key: developer.apple.com → Certificates, IDs & Profiles → Keys → + →
-   tick Apple Push Notifications service → Register → Download. Apple hands the `.p8`
-   out exactly once, so keep the file. Drop it, name unchanged (`AuthKey_<key id>.p8`),
-   into `~/.agent-router/` on the Mac: the router takes it in by itself — the key id
-   from the file name, the team id from the app's first registration — and says so in
-   the dashboard and under Settings → Notifications on the phone. Pasting it into either
-   still works. Either way it stays in the router's secrets file and never comes back
-   out. One key serves every app on the team, sandbox and production, and does not
-   expire; the older per-app push certificate has none of those properties and is not
+   tick Apple Push Notifications service → Register → Download. **Apple hands the `.p8`
+   out exactly once**, so keep the file somewhere safe. Drop it, name unchanged
+   (`AuthKey_<key id>.p8`), into `~/.agent-router/`: the router takes it in by itself —
+   the key id from the file name, the team id from the app's first registration — and
+   says so in the dashboard and under Settings → Notifications on the phone. Pasting it
+   into either still works. Either way it stays in the router's secrets file and never
+   comes back out. One key serves every app on the team, sandbox and production, and does
+   not expire; the older per-app push certificate has none of those properties and is not
    supported.
+
+**Google** is shorter, and free and re-issuable throughout: a Firebase project on the
+Spark plan, `google-services.json` into `android/app/`, and a service-account key dropped
+into `~/.agent-router/` — the router imports any `*.json` there whose `"type"` is
+`"service_account"`, reads the project id out of it, and makes the file `0600`. Without
+`google-services.json` the Android app still builds and runs, and says so under
+Settings → Notifications.
 
 Then Settings → Notifications → Enable on the phone, and "Send test".
 
-Signing is automatic under team `ABCDE12345`. It needs no Apple ID in Xcode as long as
-the team's wildcard development profile is on the Mac and lists the phone (it is, and it
-does); see the comment in `project.yml` for the one wrong turn that makes Xcode report
-"No profiles found".
+See [docs/apple-push-requirements.md](docs/apple-push-requirements.md) and
+[docs/google-push-requirements.md](docs/google-push-requirements.md) for the full
+account of what each platform requires and why.
 
-## Building and packaging for Mac and Linux
+### Building the iPhone app
 
-The router builds for four platforms and ships as a VS Code extension per platform,
-with the router and the wrapper inside the package. The extension is not the router:
-every editor window runs its own copy of the extension, so each one only makes sure a
-current router is serving on this machine — `agent-router --ensure` exits when a
-same-or-newer build already answers, and takes the port over without dropping a
-request when an older one does — then shows the quota in the status bar and opens the
-dashboard and the live page in an editor tab. Claude Code is pointed at the router
-through its settings file and launched through the wrapper by way of Claude Code's own
-`claudeCode.claudeProcessWrapper` setting, so nothing inside Anthropic's extension is
-ever touched.
+The Xcode project is generated from `project.yml`, so the `.xcodeproj` is not committed.
+Two values are **not** kept in the repo and must come from the environment — your Apple
+Developer team id, and the UDID of the device you are installing to:
 
+```sh
+export DEVELOPMENT_TEAM=<your team id>       # developer.apple.com → Membership
+export DEVICE=<udid>                         # xcrun devicectl list devices
+
+brew install xcodegen
+cd ios/AgentRouter && xcodegen generate
+scripts/device-build.sh                      # build, install and launch on $DEVICE
 ```
+
+`xcodegen` expands `${DEVELOPMENT_TEAM}` in `project.yml` unless you pass `--no-env`.
+Signing is automatic and needs no Apple ID in Xcode as long as the team's wildcard
+development profile is on the Mac and lists the phone; see the comment in `project.yml`
+for the one wrong turn that makes Xcode report "No profiles found".
+
+Unit tests run on the simulator:
+
+```sh
+xcodebuild test -scheme AgentRouter -destination 'platform=iOS Simulator,name=iPhone 17 Pro'
+```
+
+Two suites talk to a real router. `LiveNetworkTests` covers the app's own networking,
+stream included — set `TEST_RUNNER_ROUTER_BASE`, `_PASSWORD` and `_SESSION`, and run it
+on the phone with `-destination 'platform=iOS,id=…' CODE_SIGNING_ALLOWED=YES` to cross
+the password guard. The UI tests drive add-router → sessions → a chat against a router on
+`127.0.0.1:8799`, and tap a notification carrying a router push's payload with the app in
+front, in the background, and not running, checking that each lands on the session
+(`--ui-test-notify` schedules it locally, since nothing can push to a simulator). One
+more checks the opposite: a notification whose prompt the router no longer lists as
+waiting is gone from Notification Center once the app has been to the front.
+
+### Building the Android app
+
+Gradle needs a JDK 17+ and an Android SDK with `compileSdk 37`. `scripts/device-build.sh`
+falls back to the JDK that Android Studio ships and writes `local.properties` for you:
+
+```sh
+cd android
+scripts/device-build.sh            # build, install and launch on whatever adb sees
+scripts/device-build.sh test       # unit tests only
+DEVICE=<serial> scripts/device-build.sh
+```
+
+Firebase is optional — see Notifications above.
+
+## Building and packaging
+
+The router builds for four platforms and ships as a VS Code extension per platform, with
+the router and the wrapper inside the package:
+
+```sh
 scripts/build-target.sh aarch64-apple-darwin        # or x86_64-apple-darwin,
-scripts/package-vsix.sh darwin-arm64                #    x86_64-unknown-linux-musl, aarch64-unknown-linux-musl
-code --install-extension dist/agent-router-0.1.0-darwin-arm64.vsix
+scripts/package-vsix.sh darwin-arm64                #    x86_64-unknown-linux-musl,
+                                                    #    aarch64-unknown-linux-musl
 ```
 
 Linux builds are static (musl). From a Mac they cross-build through `cargo zigbuild`
 (`brew install zig && cargo install cargo-zigbuild`) or a musl cross compiler; on Linux
-they build natively. `.gitlab-ci.yml` does all four on a tag — the Linux job in Docker
-through zig, the Mac job on a shell runner tagged `macos` that has rustup, node and zig
-— puts the VSIX files in the package registry, makes a release, and publishes to the
-Marketplace and Open VSX when the `VSCE_PAT` and `OVSX_PAT` variables are set. The
-extension's manifest lives in `vscode/`; its version follows `Cargo.toml`. The publisher
-id in it, `whnet`, must match the Marketplace publisher you create.
+they build natively.
 
-`agent-router install` grew two options for the same reason: `--bind <addr>` writes the
-listen address into the login item, so a router that serves the phone keeps doing so
-after a reboot, and `--no-config` registers the login item without touching Claude
-Code's settings.
+Claude Code is pointed at the router through its settings file and launched through the
+wrapper by way of Claude Code's own `claudeCode.claudeProcessWrapper` setting, so nothing
+inside Anthropic's extension is ever touched.
+
+`.gitlab-ci.yml` does all four on a tag — the Linux job in Docker through zig, the Mac
+job on a shell runner tagged `macos` that has rustup, node and zig — puts the VSIX files
+in the package registry, makes a release, and publishes to the Marketplace and Open VSX
+when the `VSCE_PAT` and `OVSX_PAT` variables are set. The extension's manifest lives in
+`vscode/`; its version follows `Cargo.toml`. **Change the `publisher` id in it to your
+own** before publishing — it must match the Marketplace publisher you create.
 
 ## Findings and research
 
-Research and decisions that are not descriptions of the code — what Apple push needs,
-how the router can ship as a VS Code extension and what that costs, the product
-assessment — live in [docs/](docs/README.md), one dated document per finding with its
-sources.
+Research and decisions that are not descriptions of the code — what Apple and Google push
+need, how the router can ship as a VS Code extension and what that costs, where the
+subscription quota actually goes — live in [docs/](docs/README.md), one dated document
+per finding with its sources.
 
 ## Current limitations
 
@@ -346,9 +435,11 @@ sources.
   program and produces no output when driven headlessly, so the router cannot run it
   inside the page. It sets everything up either side of that one command and detects
   when you finish.
-* **No cost figures.** `usage.cost` is nullable and unset — there is no pricing table
-  yet, and on a subscription the quota utilization the router already records is the
-  more meaningful number.
 * **Context composition is an estimate.** Totals are exact; the split across system /
   tools / history / tool results apportions that exact total by character share,
   because there is no local tokenizer for current Claude models.
+* **No Windows build.** See [Platforms](#platforms).
+
+## License
+
+MIT — see [LICENSE](LICENSE).

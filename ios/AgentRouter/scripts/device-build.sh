@@ -1,6 +1,9 @@
 #!/bin/sh
 # Build, install and launch the app on the paired iPhone.
 #
+# DEVICE and DEVELOPMENT_TEAM must be set; neither is kept in the repo.
+#   xcrun devicectl list devices     # to find a UDID
+#
 #   scripts/device-build.sh          # with push (needs an Apple ID signed into Xcode)
 #   PUSH=0 scripts/device-build.sh   # without the push entitlement, for a Mac that has none
 #   PROFILE="name" scripts/device-build.sh
@@ -14,7 +17,8 @@
 # setting override, which Xcode's signing checks ignore.
 set -e
 cd "$(dirname "$0")/.."
-DEV="${DEVICE:-00000000-0000-0000-0000-000000000000}"
+DEV="${DEVICE:?set DEVICE to the target iPhone's UDID (xcrun devicectl list devices)}"
+: "${DEVELOPMENT_TEAM:?set DEVELOPMENT_TEAM to your Apple Developer team id}"
 if [ "${PUSH:-1}" = "0" ]; then
   python3 - <<'PY'
 import re

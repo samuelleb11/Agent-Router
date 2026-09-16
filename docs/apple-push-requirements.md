@@ -14,7 +14,7 @@ holder's login only.
 
 Facts established along the way:
 
-- The team (ABCDE12345) is a paid Apple Developer Program membership: 365-day
+- The team is a paid Apple Developer Program membership: 365-day
   profiles and App Store profiles exist. A free personal team cannot use push at all.
 - Token-based auth (one `.p8` key) serves every app on the team, sandbox and
   production, and does not expire; the older per-app push certificate does none of

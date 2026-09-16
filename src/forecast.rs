@@ -521,7 +521,7 @@ mod tests {
     }
 
     /// The backtest, as a test. Readings taken from the real window that reached 100%
-    /// (`an-account`, 7-day, reset 2026-09-11 13:00): burn fitted during the
+    /// (one account, 7-day window, reset 2026-09-11 13:00): burn fitted during the
     /// session on 09-09/09-10 must still be predicting the truth 34 hours later.
     #[test]
     fn the_window_that_really_filled_is_predicted_within_an_hour_of_work() {

@@ -312,7 +312,7 @@ fun SettingsScreen(app: AppState, router: Router, onBack: () -> Unit, onEdit: ()
                             value = projectPath,
                             onValueChange = { projectPath = it },
                             label = { Text("Route a single project") },
-                            placeholder = { Text("/path/to/code/something") },
+                            placeholder = { Text("/Users/you/code/some-project") },
                             singleLine = true,
                             modifier = Modifier.fillMaxWidth(),
                         )
