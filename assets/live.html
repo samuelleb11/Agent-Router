@@ -209,6 +209,20 @@
   .ev.interrupt .who { display: none; }
   .ev.answer pre { color: var(--dim); font-size: 12px; }
 
+  /* A session blocked on a permission request. Above the composer because it is the
+     thing to deal with first: nothing typed below will run until it is answered. */
+  #perm:empty { display: none; }
+  #perm {
+    border: 1px solid var(--warn, #b7791f); border-radius: 10px;
+    padding: 10px 12px; margin-bottom: 8px; background: color-mix(in srgb, var(--warn, #b7791f) 10%, transparent);
+  }
+  #perm .what { font-weight: 600; margin-bottom: 2px; }
+  #perm code { display: block; overflow-x: auto; white-space: pre-wrap; word-break: break-word;
+               font-size: 12px; margin: 6px 0; opacity: .85; }
+  #perm .row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  #perm button { padding: 5px 10px; border-radius: 8px; font-size: 13px; }
+  #perm .deny { opacity: .85; }
+
   /* ---- composer ---- */
   #composer {
     flex: none; background: var(--bg); border-top: 1px solid var(--line);
@@ -875,7 +889,8 @@ function openSession(r, fromHistory) {
       }
       facts.innerHTML = bits.join(' ');
       // A wrapped session can be switched from here; a read-only one just says what it is.
-      if (r.wrapped) facts.append(' ', switcher('model', t.model), ' ', switcher('effort', t.effort));
+      if (r.wrapped) facts.append(' ', switcher('model', t.model), ' ', switcher('effort', t.effort),
+                                  ' ', switcher('mode', t.mode));
     })
     .catch(() => { facts.classList.add('hide'); });
 }
@@ -885,13 +900,21 @@ function openSession(r, fromHistory) {
 function switcher(kind, currentValue) {
   const sel = document.createElement('select');
   sel.className = 'sw';
-  sel.title = kind === 'model' ? 'Switch the model for the next turn' : 'Set the effort level';
-  const list = kind === 'model' ? options.models : options.efforts;
+  sel.title = kind === 'model' ? 'Switch the model for the next turn'
+            : kind === 'effort' ? 'Set the effort level'
+            : 'Change what this session stops to ask about';
+  // Models and efforts are bare strings; modes carry their own labels, so that the
+  // wording lives in the router and not in three clients.
+  const modes = options.modes || [];
+  const list = kind === 'model' ? options.models
+             : kind === 'effort' ? options.efforts
+             : modes.map(m => m.value);
+  const labelOf = v => kind === 'mode' ? ((modes.find(m => m.value === v) || {}).label || v) : v;
   const cur = (currentValue || '').replace(/^claude-/, '');
   const values = [...new Set([cur, ...list].filter(Boolean))];
   for (const v of values) {
     const o = document.createElement('option');
-    o.value = v; o.textContent = (v === cur ? kind + ': ' : '') + v;
+    o.value = v; o.textContent = (v === cur ? kind + ': ' : '') + labelOf(v);
     if (v === cur) o.selected = true;
     sel.appendChild(o);
   }
@@ -904,6 +927,12 @@ function switcher(kind, currentValue) {
     let value = sel.value;
     if (value === '__other__') { value = (prompt('Model name or alias (opus, sonnet[1m], a full id…)') || '').trim(); if (!value) { sel.value = cur; return; } }
     if (value === cur) return;
+    // One tap here would otherwise stop this session asking about anything at all —
+    // on a machine the person holding the phone may not be sitting at.
+    if (kind === 'mode' && value === 'bypassPermissions' &&
+        !confirm('Bypass permissions?\n\nThis session will stop asking before it runs commands or edits files.')) {
+      sel.value = cur; return;
+    }
     sel.disabled = true;
     try {
       const res = await fetch('/api/live/' + kind, {
@@ -918,6 +947,90 @@ function switcher(kind, currentValue) {
   };
   return sel;
 }
+
+// ---------- permission prompts ----------
+// A permission request is a control frame between the CLI and its editor, not a
+// transcript entry, so it can never arrive on the stream the feed is built from: it has
+// to be asked for. A question (AskUserQuestion) is left alone here — that one *is* in
+// the transcript, and askForm already renders it.
+const perm = $('#perm');
+let permSeen = null;
+
+function permSummary(input) {
+  if (!input || typeof input !== 'object') return '';
+  const one = input.command || input.file_path || input.path || input.url || input.pattern;
+  return one ? String(one) : JSON.stringify(input);
+}
+
+function drawPerm(p) {
+  perm.replaceChildren();
+  const what = document.createElement('div');
+  what.className = 'what';
+  what.textContent = (p.display_name || p.tool || 'A tool') + ' is waiting for permission';
+  perm.appendChild(what);
+  if (p.description) {
+    const d = document.createElement('div');
+    d.textContent = p.description;
+    perm.appendChild(d);
+  }
+  const body = permSummary(p.input);
+  if (body) {
+    const c = document.createElement('code');
+    c.textContent = body.length > 400 ? body.slice(0, 400) + '…' : body;
+    perm.appendChild(c);
+  }
+  const row = document.createElement('div');
+  row.className = 'row';
+  const button = (text, cls, body, done) => {
+    const b = document.createElement('button');
+    b.textContent = text;
+    if (cls) b.className = cls;
+    b.onclick = () => answerPerm(body, done, row);
+    row.appendChild(b);
+  };
+  button('Allow', '', { allow: true }, 'Allowed.');
+  // Only ever what this prompt offered; the router refuses anything else, and the
+  // editor on the other end would drop it too.
+  for (const s of p.suggestions || []) {
+    button(s.label, '', { allow: true, suggestion: s.index }, s.label + '.');
+  }
+  button('Deny', 'deny', { allow: false, message: 'Declined from the live view.' }, 'Declined.');
+  perm.appendChild(row);
+}
+
+async function answerPerm(body, done, row) {
+  for (const b of row.querySelectorAll('button')) b.disabled = true;
+  try {
+    const res = await fetch('/api/live/answer', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ session: current.session_id, ...body })
+    });
+    const j = await res.json().catch(() => ({}));
+    if (res.ok && j.ok !== false) { perm.replaceChildren(); permSeen = null; say(done, { ok: true, for: 5000 }); }
+    else { say(j.reason || 'Could not answer that prompt.'); for (const b of row.querySelectorAll('button')) b.disabled = false; }
+  } catch (e) {
+    say('Could not answer that prompt — ' + e);
+    for (const b of row.querySelectorAll('button')) b.disabled = false;
+  }
+}
+
+async function pollPrompt() {
+  if (!current || feed.classList.contains('hide')) {
+    if (permSeen) { perm.replaceChildren(); permSeen = null; }
+    return;
+  }
+  try {
+    const res = await fetch('/api/live/prompt?session=' + encodeURIComponent(current.session_id));
+    const p = await res.json();
+    if (!p.pending || p.question) {
+      // Answered, withdrawn, or a question the feed itself renders.
+      if (permSeen) { perm.replaceChildren(); permSeen = null; }
+      return;
+    }
+    if (permSeen !== p.request_id) { permSeen = p.request_id; drawPerm(p); }
+  } catch { /* a poll that fails is a poll that tries again in two seconds */ }
+}
+setInterval(pollPrompt, 2000);
 
 stopBtn.onclick = async () => {
   if (!current) return;

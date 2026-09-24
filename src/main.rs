@@ -372,6 +372,7 @@ async fn serve() -> anyhow::Result<()> {
         .route("/api/live/options", get(live::options))
         .route("/api/live/model", post(live::set_model))
         .route("/api/live/effort", post(live::set_effort))
+        .route("/api/live/mode", post(live::set_mode))
         .route("/api/live/aside", post(live::aside))
         .route("/_router/health", get(api::health))
         .fallback(any(proxy::handle))

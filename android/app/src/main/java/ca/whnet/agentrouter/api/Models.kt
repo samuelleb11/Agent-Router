@@ -115,6 +115,8 @@ data class LiveReply(
 data class SessionStats(
     val model: String? = null,
     val effort: String? = null,
+    /** The permission mode in force, as the session last stamped it on a turn. */
+    val mode: String? = null,
     val input: Long = 0,
     val output: Long = 0,
     @SerialName("cache_read") val cacheRead: Long = 0,
@@ -140,13 +142,51 @@ data class ProjectStats(
 data class LiveOptions(
     val models: List<String> = emptyList(),
     val efforts: List<String> = emptyList(),
+    /** Empty against an older router, which sends no modes. */
+    val modes: List<LiveMode> = emptyList(),
 )
+
+/**
+ * A permission mode and the wording for it. The label comes from the router so the three
+ * clients cannot drift apart on what to call these.
+ */
+@Serializable
+data class LiveMode(val value: String, val label: String) {
+    /** This one stops the session asking about anything, so every client confirms first. */
+    val isBypass: Boolean get() = value == "bypassPermissions"
+}
+
+/**
+ * `GET /api/live/prompt`: what the session is blocked on. A question carries its own
+ * options and is answered from the feed; anything else is a request for permission.
+ */
+@Serializable
+data class LivePrompt(
+    val pending: Boolean = false,
+    @SerialName("request_id") val requestId: String? = null,
+    val tool: String? = null,
+    val question: Boolean = false,
+    @SerialName("display_name") val displayName: String? = null,
+    val description: String? = null,
+    val reason: String? = null,
+    val suggestions: List<PromptSuggestion> = emptyList(),
+) {
+    val isPermission: Boolean get() = pending && !question
+}
+
+/**
+ * One of the prompt's own offers. Only ever these: the router refuses an index it did
+ * not offer, and the editor on the far end drops anything it did not suggest.
+ */
+@Serializable
+data class PromptSuggestion(val index: Int, val label: String)
 
 @Serializable
 data class SwitchReply(
     val ok: Boolean = false,
     val model: String? = null,
     val effort: String? = null,
+    val mode: String? = null,
     val pending: Boolean? = null,
     val notices: List<String> = emptyList(),
     val reason: String? = null,
@@ -176,11 +216,23 @@ data class OkReply(
 // ---------------------------------------------------------------- request bodies
 
 @Serializable data class SendBody(val session: String, val text: String)
-@Serializable data class AnswerBody(val session: String, val answers: Map<String, String>)
+/**
+ * `answers` alone is how a question is answered, and how this app always spoke. The rest
+ * is a permission request: let it through, optionally taking one of the offers the
+ * prompt itself made, or refuse it with a reason.
+ */
+@Serializable data class AnswerBody(
+    val session: String,
+    val answers: Map<String, String> = emptyMap(),
+    val allow: Boolean? = null,
+    val suggestion: Int? = null,
+    val message: String? = null,
+)
 @Serializable data class SessionBody(val session: String)
 @Serializable data class ArchiveBody(val session: String, val archived: Boolean)
 @Serializable data class ModelBody(val session: String, val model: String)
 @Serializable data class EffortBody(val session: String, val effort: String)
+@Serializable data class ModeBody(val session: String, val mode: String)
 @Serializable data class AsideBody(val session: String, val text: String)
 
 // ---------------------------------------------------------------- notifications

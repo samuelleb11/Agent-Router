@@ -350,6 +350,8 @@ struct LiveReply: Decodable, Sendable {
 struct SessionStats: Decodable, Sendable {
     let model: String?
     let effort: String?
+    /// The permission mode in force, as the session last stamped it on a turn.
+    let mode: String?
     let input: Int
     let output: Int
     let cacheRead: Int
@@ -359,7 +361,7 @@ struct SessionStats: Decodable, Sendable {
     let turns: Int
 
     enum CodingKeys: String, CodingKey {
-        case model, effort, input, output, cost, total, turns
+        case model, effort, mode, input, output, cost, total, turns
         case cacheRead = "cache_read", cacheWrite = "cache_write"
     }
 }
@@ -845,14 +847,59 @@ struct PushTestReply: Decodable, Sendable {
 struct LiveOptions: Decodable, Sendable {
     let models: [String]
     let efforts: [String]
+    /// Optional so an older router, which sends no modes, still decodes.
+    let modes: [LiveMode]?
+}
+
+/// A permission mode and the wording for it. The label comes from the router so the
+/// three clients cannot drift apart on what to call these.
+struct LiveMode: Decodable, Sendable, Hashable {
+    let value: String
+    let label: String
+    /// Turning this one on stops the session asking about anything, so every client
+    /// confirms first.
+    var isBypass: Bool { value == "bypassPermissions" }
+}
+
+/// `GET /api/live/prompt`: what the session is blocked on, if anything. A question
+/// carries its own options and is answered from the feed; anything else is a request
+/// for permission, answered here.
+struct LivePrompt: Decodable, Sendable {
+    let pending: Bool
+    let requestId: String?
+    let tool: String?
+    let question: Bool?
+    let displayName: String?
+    let description: String?
+    let reason: String?
+    let suggestions: [PromptSuggestion]?
+
+    var isPermission: Bool { pending && question != true }
+
+    enum CodingKeys: String, CodingKey {
+        case pending, tool, question, description, reason, suggestions
+        case requestId = "request_id"
+        case displayName = "display_name"
+    }
+}
+
+/// One of the prompt's own offers — "always allow this, for the rest of the session".
+/// Only ever these: the router refuses an index it did not offer, and the editor on the
+/// far end drops anything it did not suggest.
+struct PromptSuggestion: Decodable, Sendable, Hashable, Identifiable {
+    let index: Int
+    let label: String
+    var id: Int { index }
 }
 struct ModelBody: Encodable, Sendable { let session: String; let model: String }
 struct EffortBody: Encodable, Sendable { let session: String; let effort: String }
+struct ModeBody: Encodable, Sendable { let session: String; let mode: String }
 /// The answer to a model or effort change.
 struct SwitchReply: Decodable, Sendable {
     let ok: Bool
     let model: String?
     let effort: String?
+    let mode: String?
     let notices: [String]?
     let pending: Bool?
     let reason: String?

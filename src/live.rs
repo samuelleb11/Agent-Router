@@ -87,6 +87,9 @@ fn write_archived(set: &std::collections::HashMap<String, i64>) -> std::io::Resu
 
 /// Most sessions listed, newest first.
 const MAX_LISTED: usize = 60;
+/// The one tool whose prompt is a question with its own options, rather than a request
+/// for permission to do something.
+const ASK_TOOL: &str = "AskUserQuestion";
 /// How far back to read when backfilling a stream, in bytes.
 const BACKFILL_BYTES: u64 = 512 * 1024;
 /// Longest tool result or text we send to the browser. Generous, because the UI
@@ -375,8 +378,10 @@ fn tail_state(path: &Path, session_id: &str, quiet_ms: i64) -> &'static str {
     const STALLED_AFTER_MS: i64 = 10 * 60 * 1000;
     const TAIL: u64 = 256 * 1024;
 
-    // A wrapped session waiting on a prompt is a fact, not an inference.
-    if crate::peer::pending_prompt(session_id, "AskUserQuestion").is_some() {
+    // A wrapped session waiting on a prompt is a fact, not an inference. Any prompt:
+    // a Bash approval blocks a session exactly as hard as a question does, and showing
+    // it as "running Bash" instead of "waiting on you" is how it gets left blocked.
+    if live_prompt(session_id).is_some() {
         return "ask";
     }
 
@@ -874,6 +879,8 @@ fn first_event_ms(path: &Path) -> Option<i64> {
 pub struct Stats {
     pub model: Option<String>,
     pub effort: Option<String>,
+    /// The permission mode in force, as the session last stamped it on a turn.
+    pub mode: Option<String>,
     pub input: i64,
     pub output: i64,
     pub cache_read: i64,
@@ -923,6 +930,12 @@ fn scan_stats(path: &Path) -> Stats {
             .or_else(|| v.get("effort").and_then(|x| x.as_str()))
         {
             st.effort = Some(e.to_string());
+        }
+        // Stamped on each turn the same way, so the last one is the mode in force now.
+        // This is why showing the mode needs no wrapper change: a mode changed with
+        // shift+tab in the editor lands here too, not only one we set ourselves.
+        if let Some(m) = v.get("permissionMode").and_then(|x| x.as_str()) {
+            st.mode = Some(m.to_string());
         }
         let Some(m) = v.get("message") else { continue };
         if let Some(model) = m.get("model").and_then(|x| x.as_str()) {
@@ -1081,51 +1094,220 @@ pub async fn archive(Json(body): Json<ArchiveBody>) -> Response {
 #[derive(Deserialize)]
 pub struct AnswerBody {
     pub session: String,
-    /// Question text -> the answer chosen for it.
+    /// Question text -> the answer chosen for it. An AskUserQuestion is answered this
+    /// way and always has been, so a client that knows nothing of the fields below
+    /// keeps working unchanged.
+    #[serde(default)]
     pub answers: std::collections::HashMap<String, String>,
+    /// A permission request: let it through, or refuse it. Absent means "this is a
+    /// question", which is how the older clients speak.
+    #[serde(default)]
+    pub allow: Option<bool>,
+    /// Which of the prompt's own offered suggestions to also apply, by index.
+    #[serde(default)]
+    pub suggestion: Option<usize>,
+    /// What to tell the model when refusing.
+    #[serde(default)]
+    pub message: Option<String>,
 }
 
 /// What the session is waiting to be asked, so the UI can answer the live prompt rather
 /// than the one its transcript happened to record.
 pub async fn prompt(Query(q): Query<StreamQuery>) -> Response {
     let session = q.session.clone();
-    match tokio::task::spawn_blocking(move || {
-        crate::peer::pending_prompt(&session, "AskUserQuestion")
-    })
-    .await
-    {
-        Ok(Some(v)) => Json(serde_json::json!({
-            "pending": true,
-            "request_id": v["request_id"],
-            "input": v["request"]["input"],
-        }))
-        .into_response(),
+    match tokio::task::spawn_blocking(move || live_prompt(&session)).await {
+        Ok(Some(v)) => {
+            let req = &v["request"];
+            let tool = req["tool_name"].as_str().unwrap_or_default().to_string();
+            // Two kinds of prompt reach the same place. A question carries its own
+            // options and is answered by choosing among them; everything else is a
+            // permission request, answered by allowing or refusing it.
+            let question = tool == ASK_TOOL;
+            let offered = req["permission_suggestions"].as_array().cloned().unwrap_or_default();
+            let suggestions: Vec<serde_json::Value> = offered
+                .iter()
+                .enumerate()
+                .map(|(i, s)| serde_json::json!({ "index": i, "label": suggestion_label(s) }))
+                .collect();
+            Json(serde_json::json!({
+                "pending": true,
+                "request_id": v["request_id"],
+                "tool": tool,
+                "question": question,
+                // What the editor puts in its dialog: the tool's own summary of what it
+                // is about to do, and why it had to ask.
+                "display_name": req["display_name"],
+                "description": req["description"],
+                "reason": req["decision_reason"],
+                "input": req["input"],
+                // Only ever what the prompt offered; see `peer::allow_prompt`.
+                "suggestions": suggestions,
+            }))
+            .into_response()
+        }
         Ok(None) => Json(serde_json::json!({ "pending": false })).into_response(),
         Err(e) => bad(axum::http::StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
     }
 }
 
+/// Whether the tool call a prompt was asking about has already been resolved.
+///
+/// A prompt clears from `<session>.pending` when the wrapper sees the answer go past on
+/// stdin — but an answer can happen out of its sight: a tool call cancelled by the
+/// harness, or a client that answered over a channel of its own. The transcript settles
+/// it either way, because a resolved call always ends with a `tool_result` carrying its
+/// `tool_use_id`, whether it was allowed, refused or cancelled.
+///
+/// Without this a prompt that is long gone keeps a session showing as waiting and offers
+/// buttons that answer nothing.
+///
+/// The whole file is read, not the tail: the result sits beside its *request*, which may
+/// be hours and megabytes back. Two memos keep that affordable. A settled id never
+/// unsettles, so it is remembered outright. An unsettled one is remembered against the
+/// file length it was checked at — and a session that is genuinely blocked writes
+/// nothing more, so its length does not change and the scan happens exactly once.
+fn tool_settled(path: &Path, tool_use_id: &str) -> bool {
+    use std::collections::{HashMap, HashSet};
+    use std::io::BufRead;
+    use std::sync::{Mutex, OnceLock};
+
+    static SEEN: OnceLock<Mutex<(HashSet<String>, HashMap<String, u64>)>> = OnceLock::new();
+    let seen = SEEN.get_or_init(|| Mutex::new((HashSet::new(), HashMap::new())));
+    let len = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    {
+        let mut memo = seen.lock().unwrap_or_else(|e| e.into_inner());
+        if memo.0.contains(tool_use_id) {
+            return true;
+        }
+        if memo.1.get(tool_use_id) == Some(&len) {
+            return false;
+        }
+        // A router runs for weeks; neither memo is allowed to grow without bound.
+        if memo.0.len() > 512 {
+            memo.0.clear();
+        }
+        if memo.1.len() > 512 {
+            memo.1.clear();
+        }
+    }
+
+    let Ok(f) = fs::File::open(path) else { return false };
+    let mut found = false;
+    for line in std::io::BufReader::new(f).lines().map_while(Result::ok) {
+        // Cheap reject first: almost no line mentions this id at all.
+        if !line.contains(tool_use_id) {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
+        let blocks = v["message"]["content"].as_array().map(|a| a.as_slice()).unwrap_or_default();
+        if blocks.iter().any(|b| b["tool_use_id"] == tool_use_id) {
+            found = true;
+            break;
+        }
+    }
+
+    let mut memo = seen.lock().unwrap_or_else(|e| e.into_inner());
+    if found {
+        memo.0.insert(tool_use_id.to_string());
+    } else {
+        memo.1.insert(tool_use_id.to_string(), len);
+    }
+    found
+}
+
+/// The prompt a session is genuinely blocked on: recorded as pending, and not already
+/// answered somewhere the wrapper could not see.
+fn live_prompt(session_id: &str) -> Option<Value> {
+    let v = crate::peer::pending_prompt(session_id, None)?;
+    if let Some(id) = v["request"]["tool_use_id"].as_str() {
+        if let Some(path) = transcript_path(session_id) {
+            if tool_settled(&path, id) {
+                return None;
+            }
+        }
+    }
+    Some(v)
+}
+
+/// A human sentence for one of the prompt's own `permission_suggestions`, so three
+/// clients do not each invent their own wording for the same offer.
+fn suggestion_label(s: &Value) -> String {
+    let scope = match s["destination"].as_str() {
+        Some("session") => "for the rest of this session",
+        Some("localSettings") => "in this project",
+        Some("projectSettings") => "in this project, for everyone",
+        Some("userSettings") => "everywhere",
+        _ => "from now on",
+    };
+    match s["type"].as_str() {
+        Some("addRules") => {
+            let rules = s["rules"].as_array().map(|a| a.as_slice()).unwrap_or_default();
+            let what = rules
+                .iter()
+                .map(|r| match (r["toolName"].as_str(), r["ruleContent"].as_str()) {
+                    (Some(t), Some(c)) => format!("{t}({c})"),
+                    (Some(t), None) => t.to_string(),
+                    _ => "this tool".to_string(),
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            let verb = if s["behavior"] == "deny" { "Never allow" } else { "Always allow" };
+            format!("{verb} {what} {scope}")
+        }
+        Some("setMode") => {
+            format!("Switch to {} mode {scope}", s["mode"].as_str().unwrap_or("another"))
+        }
+        Some("addDirectories") => format!("Allow these directories {scope}"),
+        _ => format!("Remember this choice {scope}"),
+    }
+}
+
 /// Answer the pending question — the editor's Submit, from anywhere.
 pub async fn answer(Json(body): Json<AnswerBody>) -> Response {
-    const TOOL: &str = "AskUserQuestion";
     let session = body.session.clone();
     let answers = body.answers.clone();
+    let allow = body.allow;
+    let suggestion = body.suggestion;
+    let message = body.message.clone();
 
     let done = tokio::task::spawn_blocking(move || {
-        let req = crate::peer::pending_prompt(&session, TOOL).ok_or_else(|| {
-            anyhow::anyhow!("That session isn't waiting on a question right now.")
-        })?;
+        // Whatever it is waiting on, not only a question: a Bash approval left
+        // unanswered is the case this exists for.
+        let req = live_prompt(&session)
+            .ok_or_else(|| anyhow::anyhow!("That session isn't waiting on anything right now."))?;
         let request_id = req["request_id"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("the pending request has no id"))?
             .to_string();
+        let tool = req["request"]["tool_name"].as_str().unwrap_or_default().to_string();
 
-        // The answers ride inside the tool's own input, beside the questions they
-        // answer — the shape the tool reads when it builds its result.
+        // A refusal needs no input at all, so it is decided first.
+        if allow == Some(false) {
+            let why = message.as_deref().unwrap_or("Declined from the live view.");
+            return crate::peer::deny_prompt(&session, &request_id, why).map(|()| request_id);
+        }
+
+        // Only a suggestion the prompt itself offered may be sent back; anything else
+        // is discarded by the client that receives it, so refusing here says so plainly.
+        let updates = match suggestion {
+            None => None,
+            Some(i) => Some(
+                req["request"]["permission_suggestions"]
+                    .get(i)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("this prompt does not offer that option"))?,
+            ),
+        };
+
         let mut input = req["request"]["input"].clone();
-        input["answers"] = serde_json::to_value(&answers)?;
-
-        crate::peer::answer_prompt(&session, &request_id, input, TOOL).map(|()| request_id)
+        if tool == ASK_TOOL {
+            // The answers ride inside the tool's own input, beside the questions they
+            // answer — the shape the tool reads when it builds its result.
+            input["answers"] = serde_json::to_value(&answers)?;
+        }
+        // Every other tool gets its input back untouched, which is plain approval.
+        crate::peer::allow_prompt(&session, &request_id, input, &tool, updates)
+            .map(|()| request_id)
     })
     .await;
 
@@ -1148,6 +1330,24 @@ pub struct InterruptBody {
 /// the CLI for models that do not offer it.
 pub const EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 
+/// The permission modes the CLI accepts, with the label to show for each. Taken from
+/// the CLI itself, which names them when it refuses one it does not know: `acceptEdits,
+/// auto, bypassPermissions, default, dontAsk, plan`.
+///
+/// Two can be refused at the moment they are asked for, whatever is listed here:
+/// `bypassPermissions` unless the session was launched with
+/// `--dangerously-skip-permissions` (or it is disabled by settings), and `auto` when its
+/// gate is off. Both refusals come back from the CLI with a reason, which is why
+/// `set_mode` waits for the answer instead of assuming.
+pub const MODES: [(&str, &str); 6] = [
+    ("default", "Ask"),
+    ("acceptEdits", "Accept edits"),
+    ("auto", "Auto"),
+    ("dontAsk", "Don't ask"),
+    ("plan", "Plan"),
+    ("bypassPermissions", "Bypass"),
+];
+
 /// The aliases the CLI's model picker knows; each also takes a `[1m]` suffix for the
 /// million-token context. A full model id works too.
 pub const MODEL_ALIASES: [&str; 6] = ["opus", "sonnet", "haiku", "fable", "mythos", "opusplan"];
@@ -1167,7 +1367,11 @@ pub async fn options() -> Json<serde_json::Value> {
         models.push(a.to_string());
         models.push(format!("{a}[1m]"));
     }
-    Json(serde_json::json!({ "models": models, "efforts": EFFORTS }))
+    let modes: Vec<serde_json::Value> = MODES
+        .iter()
+        .map(|(value, label)| serde_json::json!({ "value": value, "label": label }))
+        .collect();
+    Json(serde_json::json!({ "models": models, "efforts": EFFORTS, "modes": modes }))
 }
 
 #[derive(Deserialize)]
@@ -1240,6 +1444,52 @@ pub async fn set_effort(Json(body): Json<EffortBody>) -> Response {
         Ok(Err(e)) => bad(axum::http::StatusCode::SERVICE_UNAVAILABLE, &e.to_string()),
         Err(e) => bad(axum::http::StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
     }
+}
+
+#[derive(Deserialize)]
+pub struct ModeBody {
+    pub session: String,
+    pub mode: String,
+}
+
+/// Change a running session's permission mode — what shift+tab cycles in the terminal.
+///
+/// The CLI can refuse: `bypassPermissions` needs the session to have been launched with
+/// `--dangerously-skip-permissions`, and `auto` can be gated. So the answer is waited
+/// for and the CLI's own sentence is passed back, rather than reporting a success the
+/// session did not agree to.
+pub async fn set_mode(Json(body): Json<ModeBody>) -> Response {
+    let mode = body.mode.trim().to_string();
+    if !MODES.iter().any(|(v, _)| *v == mode) {
+        return bad(axum::http::StatusCode::BAD_REQUEST, "That is not a permission mode.");
+    }
+    if !crate::peer::wrapper_alive(&body.session) {
+        return bad(axum::http::StatusCode::SERVICE_UNAVAILABLE, "Only a session under the wrapper can change mode; restart it after installing the wrapper.");
+    }
+    let session = body.session.clone();
+    let m = mode.clone();
+    let sent =
+        tokio::task::spawn_blocking(move || crate::peer::set_mode_via_wrapper(&session, &m)).await;
+    let request_id = match sent {
+        Ok(Ok(id)) => id,
+        Ok(Err(e)) => return bad(axum::http::StatusCode::SERVICE_UNAVAILABLE, &e.to_string()),
+        Err(e) => return bad(axum::http::StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    };
+    for _ in 0..12 {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        if let Some(r) = crate::peer::control_response(&body.session, &request_id) {
+            if r["subtype"] == "success" {
+                // The CLI echoes the mode it actually took, so the clients can show it
+                // at once instead of waiting for the next turn to stamp the transcript.
+                let took = r["response"]["mode"].as_str().unwrap_or(&mode).to_string();
+                tracing::info!(session = %body.session, mode = %took, "permission mode switched from the live view");
+                return Json(serde_json::json!({ "ok": true, "mode": took })).into_response();
+            }
+            let why = r["error"].as_str().unwrap_or("the session refused that mode").to_string();
+            return bad(axum::http::StatusCode::UNPROCESSABLE_ENTITY, &why);
+        }
+    }
+    Json(serde_json::json!({ "ok": true, "mode": mode, "pending": true })).into_response()
 }
 
 /// Stop a running turn — the live view's equivalent of the editor's stop button.

@@ -29,6 +29,9 @@ final class LiveFeed {
     var stats: SessionStats?
     var project: ProjectStats?
     var options: LiveOptions?
+    /// Set only while the session is blocked on a permission request; a question is
+    /// left to the feed, which has it from the transcript.
+    var pendingPrompt: LivePrompt?
     var switching = false
     var sending = false
     var stopping = false
@@ -166,6 +169,50 @@ final class LiveFeed {
         await loadFacts()
     }
 
+    /// Change what the session stops to ask about. The CLI can refuse — `bypassPermissions`
+    /// needs the session to have been launched with `--dangerously-skip-permissions`, and
+    /// `auto` can be gated — so its own sentence is what gets shown.
+    func setMode(_ mode: String) async {
+        guard let client else { return }
+        switching = true
+        defer { switching = false }
+        do {
+            let r: SwitchReply = try await client.post("/api/live/mode", ModeBody(session: session.sessionId, mode: mode))
+            let took = r.mode ?? mode
+            notice = Notice(text: r.pending == true ? "Mode sent — the session has not confirmed yet."
+                                                    : "Now \(took).", ok: true)
+        } catch {
+            notice = Notice(text: Self.describe(error), ok: false)
+        }
+        await loadFacts()
+    }
+
+    /// What the session is blocked on, when it is a permission request rather than a
+    /// question. It arrives as a control frame between the CLI and its editor, so it is
+    /// never in the transcript the feed is built from and has to be asked for.
+    func loadPrompt() async {
+        guard let client else { return }
+        guard let p: LivePrompt = try? await client.get("/api/live/prompt?session=\(session.sessionId)") else { return }
+        pendingPrompt = p.isPermission ? p : nil
+    }
+
+    /// Allow the waiting tool, optionally taking one of the prompt's own standing
+    /// offers, or refuse it.
+    func answerPermission(allow: Bool, suggestion: Int? = nil, said: String) async {
+        guard let client else { return }
+        switching = true
+        defer { switching = false }
+        do {
+            let body = AnswerBody(session: session.sessionId, allow: allow, suggestion: suggestion,
+                                  message: allow ? nil : "Declined from the phone.")
+            let _: LiveReply = try await client.post("/api/live/answer", body)
+            pendingPrompt = nil
+            notice = Notice(text: said, ok: true)
+        } catch {
+            notice = Notice(text: Self.describe(error), ok: false)
+        }
+    }
+
     func setEffort(_ level: String) async {
         guard let client else { return }
         switching = true
@@ -198,5 +245,14 @@ final class LiveFeed {
 
 struct SendBody: Encodable, Sendable { let session: String; let text: String }
 struct InterruptBody: Encodable, Sendable { let session: String }
-struct AnswerBody: Encodable, Sendable { let session: String; let answers: [String: String] }
+/// `answers` alone is how a question is answered, and how this app always spoke. The
+/// rest is a permission request: let it through, optionally applying one of the offers
+/// the prompt itself made, or refuse it with a reason.
+struct AnswerBody: Encodable, Sendable {
+    let session: String
+    var answers: [String: String] = [:]
+    var allow: Bool? = nil
+    var suggestion: Int? = nil
+    var message: String? = nil
+}
 struct ArchiveBody: Encodable, Sendable { let session: String; let archived: Bool }

@@ -12,9 +12,11 @@ import ca.whnet.agentrouter.api.AsideReply
 import ca.whnet.agentrouter.api.EffortBody
 import ca.whnet.agentrouter.api.LiveItem
 import ca.whnet.agentrouter.api.LiveOptions
+import ca.whnet.agentrouter.api.LivePrompt
 import ca.whnet.agentrouter.api.LiveReply
 import ca.whnet.agentrouter.api.LiveSession
 import ca.whnet.agentrouter.api.LiveStatus
+import ca.whnet.agentrouter.api.ModeBody
 import ca.whnet.agentrouter.api.ModelBody
 import ca.whnet.agentrouter.api.ProjectStats
 import ca.whnet.agentrouter.api.RouterClient
@@ -57,6 +59,11 @@ class LiveFeed(val session: LiveSession, private val client: RouterClient?) {
     var stats: SessionStats? by mutableStateOf(null)
     var project: ProjectStats? by mutableStateOf(null)
     var options: LiveOptions? by mutableStateOf(null)
+    /**
+     * Set only while the session is blocked on a permission request; a question is left
+     * to the feed, which has it from the transcript.
+     */
+    var pendingPrompt: LivePrompt? by mutableStateOf(null)
     var sending: Boolean by mutableStateOf(false)
     var stopping: Boolean by mutableStateOf(false)
 
@@ -184,6 +191,56 @@ class LiveFeed(val session: LiveSession, private val client: RouterClient?) {
                     else -> Notice("Now on ${r.model ?: model}.", true)
                 }
                 loadFacts()
+            }
+            .onFailure { notice = Notice(RouterState.describe(it), false) }
+    }
+
+    /**
+     * Change what the session stops to ask about. The CLI can refuse — `bypassPermissions`
+     * needs the session to have been launched with `--dangerously-skip-permissions`, and
+     * `auto` can be gated — so its own sentence is what gets shown.
+     */
+    suspend fun setMode(mode: String) {
+        val c = client ?: return
+        runCatching { c.post<ModeBody, SwitchReply>("/api/live/mode", ModeBody(session.sessionId, mode)) }
+            .onSuccess { r ->
+                notice = when {
+                    !r.ok -> Notice(r.reason ?: "The session refused that mode.", false)
+                    r.pending == true -> Notice("Asked for $mode; it has not confirmed yet.", true)
+                    else -> Notice("Now ${r.mode ?: mode}.", true)
+                }
+                loadFacts()
+            }
+            .onFailure { notice = Notice(RouterState.describe(it), false) }
+    }
+
+    /**
+     * What the session is blocked on, when it is a permission request rather than a
+     * question. It arrives as a control frame between the CLI and its editor, so it is
+     * never in the transcript the feed is built from and has to be asked for.
+     */
+    suspend fun loadPrompt() {
+        val c = client ?: return
+        runCatching { c.get<LivePrompt>("/api/live/prompt?session=${'$'}{session.sessionId}") }
+            .onSuccess { pendingPrompt = if (it.isPermission) it else null }
+    }
+
+    /**
+     * Allow the waiting tool, optionally taking one of the prompt's own standing offers,
+     * or refuse it.
+     */
+    suspend fun answerPermission(allow: Boolean, suggestion: Int? = null, said: String) {
+        val c = client ?: return
+        val body = AnswerBody(
+            session = session.sessionId,
+            allow = allow,
+            suggestion = suggestion,
+            message = if (allow) null else "Declined from the phone.",
+        )
+        runCatching { c.post<AnswerBody, LiveReply>("/api/live/answer", body) }
+            .onSuccess { r ->
+                if (r.ok) { pendingPrompt = null; notice = Notice(said, true) }
+                else notice = Notice(r.reason ?: "Could not answer that prompt.", false)
             }
             .onFailure { notice = Notice(RouterState.describe(it), false) }
     }

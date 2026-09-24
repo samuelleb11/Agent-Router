@@ -20,6 +20,7 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -28,6 +29,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -50,10 +52,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
+import ca.whnet.agentrouter.api.LivePrompt
 import ca.whnet.agentrouter.api.LiveSession
 import ca.whnet.agentrouter.data.AppState
 import ca.whnet.agentrouter.data.Router
 import ca.whnet.agentrouter.feed.LiveFeed
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -77,6 +81,7 @@ fun SessionScreen(app: AppState, router: Router, opened: LiveSession, onBack: ((
     var asideText by remember { mutableStateOf("") }
     var asideAnswer by remember { mutableStateOf<String?>(null) }
     var asideRunning by remember { mutableStateOf(false) }
+    var confirmBypass by remember { mutableStateOf(false) }
     val clipboard = LocalClipboardManager.current
 
     // Following is a state, not a per-append test: once the reader has scrolled up to
@@ -106,6 +111,15 @@ fun SessionScreen(app: AppState, router: Router, opened: LiveSession, onBack: ((
 
     LaunchedEffect(feed.rows.size) {
         if (feed.rows.isNotEmpty() && following) listState.scrollToItem(feed.rows.size - 1)
+    }
+
+    // A permission request is a control frame between the CLI and its editor, never a
+    // transcript entry, so it cannot arrive on the stream the feed is built from.
+    LaunchedEffect(session.sessionId) {
+        while (true) {
+            feed.loadPrompt()
+            delay(2000)
+        }
     }
 
     LaunchedEffect(feed.notice) {
@@ -193,6 +207,22 @@ fun SessionScreen(app: AppState, router: Router, opened: LiveSession, onBack: ((
                                     onClick = { menu = false; scope.launch { feed.setEffort(e) } },
                                 )
                             }
+                            if (feed.options?.modes?.isNotEmpty() == true) HorizontalDivider()
+                            feed.options?.modes?.forEach { m ->
+                                DropdownMenuItem(
+                                    text = { Text("mode: ${'$'}{m.label}") },
+                                    trailingIcon = {
+                                        if (feed.stats?.mode == m.value) Icon(Icons.Default.Check, "current")
+                                    },
+                                    onClick = {
+                                        menu = false
+                                        // One tap would otherwise stop this session asking
+                                        // about anything, on a Mac nobody may be sitting at.
+                                        if (m.isBypass) confirmBypass = true
+                                        else scope.launch { feed.setMode(m.value) }
+                                    },
+                                )
+                            }
                             HorizontalDivider()
                         }
                         DropdownMenuItem(
@@ -221,6 +251,10 @@ fun SessionScreen(app: AppState, router: Router, opened: LiveSession, onBack: ((
         },
         bottomBar = {
             Surface(tonalElevation = 3.dp) {
+              Column(Modifier.fillMaxWidth()) {
+                feed.pendingPrompt?.let { p -> PermissionCard(p) { allow, suggestion, said ->
+                    scope.launch { feed.answerPermission(allow, suggestion, said) }
+                } }
                 Row(
                     // imePadding for the keyboard, bottomBarInsets for the gesture pill or
                     // the three-button bar underneath it.
@@ -244,6 +278,7 @@ fun SessionScreen(app: AppState, router: Router, opened: LiveSession, onBack: ((
                         },
                     ) { Icon(Icons.AutoMirrored.Filled.Send, "Send") }
                 }
+              }
             }
         },
     ) { pad ->
@@ -277,6 +312,9 @@ fun SessionScreen(app: AppState, router: Router, opened: LiveSession, onBack: ((
             ) {
                 FactChip("model", st.model ?: "—")
                 st.effort?.let { FactChip("effort", it) }
+                st.mode?.let { value ->
+                    FactChip("mode", feed.options?.modes?.firstOrNull { it.value == value }?.label ?: value)
+                }
                 FactChip("tokens", Fmt.compact(st.total))
                 FactChip("turns", st.turns.toString())
                 FactChip("cost", Fmt.usd(st.cost))
@@ -296,6 +334,21 @@ fun SessionScreen(app: AppState, router: Router, opened: LiveSession, onBack: ((
             }
         }
         }
+    }
+
+    if (confirmBypass) {
+        AlertDialog(
+            onDismissRequest = { confirmBypass = false },
+            title = { Text("Bypass permissions?") },
+            text = { Text("This session will stop asking before it runs commands or edits files.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmBypass = false
+                    scope.launch { feed.setMode("bypassPermissions") }
+                }) { Text("Bypass") }
+            },
+            dismissButton = { TextButton(onClick = { confirmBypass = false }) { Text("Cancel") } },
+        )
     }
 
     if (asking) {
@@ -386,3 +439,32 @@ private val LiveSessionSaver: Saver<LiveSession, String> = Saver(
     save = { it.sessionId },
     restore = { LiveSession(sessionId = it, wrapped = true) },
 )
+
+/**
+ * What the session is blocked on, and the ways out of it.
+ *
+ * The offers come from the prompt itself — the router refuses an index it did not offer,
+ * and the editor on the far end drops anything it was not asked to suggest.
+ */
+@Composable
+private fun PermissionCard(p: LivePrompt, answer: (Boolean, Int?, String) -> Unit) {
+    Column(
+        Modifier.fillMaxWidth().padding(horizontal = 10.dp).padding(top = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Text(
+            "${p.displayName ?: p.tool ?: "A tool"} is waiting for permission",
+            style = MaterialTheme.typography.titleSmall,
+        )
+        p.description?.takeIf { it.isNotBlank() }?.let {
+            Text(it, style = MaterialTheme.typography.bodySmall)
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = { answer(true, null, "Allowed.") }) { Text("Allow") }
+            OutlinedButton(onClick = { answer(false, null, "Declined.") }) { Text("Deny") }
+        }
+        p.suggestions.forEach { s ->
+            TextButton(onClick = { answer(true, s.index, s.label + ".") }) { Text(s.label) }
+        }
+    }
+}

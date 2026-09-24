@@ -336,7 +336,10 @@ fn write_via_wrapper(session_id: &str, frame: &serde_json::Value) -> anyhow::Res
 ///
 /// Written by the wrapper, which sees the control traffic between the CLI and whatever
 /// hosts it. Only the newest is returned: a session waits on one prompt at a time.
-pub fn pending_prompt(session_id: &str, tool: &str) -> Option<serde_json::Value> {
+/// `tool` narrows it to one tool; `None` means whatever the session is actually
+/// waiting on. A permission request for `Bash` blocks a session exactly as hard as an
+/// `AskUserQuestion` does, so the general case is the useful one.
+pub fn pending_prompt(session_id: &str, tool: Option<&str>) -> Option<serde_json::Value> {
     // A prompt recorded by a wrapper that is gone is not pending; it is history.
     if !wrapper_alive(session_id) {
         return None;
@@ -345,21 +348,36 @@ pub fn pending_prompt(session_id: &str, tool: &str) -> Option<serde_json::Value>
     let body = std::fs::read_to_string(path).ok()?;
     body.lines()
         .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
-        .filter(|v| v["request"]["tool_name"] == tool)
+        .filter(|v| tool.is_none_or(|t| v["request"]["tool_name"] == t))
         .next_back()
 }
 
-/// Answer a pending tool-permission request — what the editor does when someone picks
-/// an option and hits Submit.
+/// Let a pending tool-permission request through — what the editor does when someone
+/// picks an option and hits Submit.
 ///
 /// An AskUserQuestion is a permission request whose answer rides in `updatedInput`:
 /// allowing the tool with an `answers` map is what turns the prompt into a tool result.
-pub fn answer_prompt(
+/// For every other tool the input goes back untouched, which is plain approval.
+///
+/// `updates` carries a standing permission change, so the same tool is not asked about
+/// again — but only ever one the prompt itself offered in its `permission_suggestions`.
+/// The editor filters anything else out ("Dropping permission update(s) the prompt did
+/// not offer"), so inventing one here would be silently discarded at best.
+pub fn allow_prompt(
     session_id: &str,
     request_id: &str,
     updated_input: serde_json::Value,
     tool: &str,
+    updates: Option<serde_json::Value>,
 ) -> anyhow::Result<()> {
+    let mut response = serde_json::json!({
+        "behavior": "allow",
+        "updatedInput": updated_input,
+        "tool_name": tool,
+    });
+    if let Some(updates) = updates {
+        response["updatedPermissions"] = serde_json::json!([updates]);
+    }
     write_via_wrapper(
         session_id,
         &serde_json::json!({
@@ -367,14 +385,44 @@ pub fn answer_prompt(
             "response": {
                 "subtype": "success",
                 "request_id": request_id,
-                "response": {
-                    "behavior": "allow",
-                    "updatedInput": updated_input,
-                    "tool_name": tool,
-                },
+                "response": response,
             },
         }),
     )
+}
+
+/// Refuse a pending tool-permission request. The message is what the model is told, so
+/// it reads as the reason a person declined rather than as a failure.
+pub fn deny_prompt(session_id: &str, request_id: &str, message: &str) -> anyhow::Result<()> {
+    write_via_wrapper(
+        session_id,
+        &serde_json::json!({
+            "type": "control_response",
+            "response": {
+                "subtype": "success",
+                "request_id": request_id,
+                "response": { "behavior": "deny", "message": message },
+            },
+        }),
+    )
+}
+
+/// Switch the session's permission mode — what shift+tab cycles in the terminal. A
+/// `set_permission_mode` control request, answered on the control channel like
+/// `set_model`, because it can be refused: `bypassPermissions` needs the session to
+/// have been launched with `--dangerously-skip-permissions`, and `auto` can be gated
+/// too. Returns the request id to look for.
+pub fn set_mode_via_wrapper(session_id: &str, mode: &str) -> anyhow::Result<String> {
+    let request_id = uuid_v4();
+    write_via_wrapper(
+        session_id,
+        &serde_json::json!({
+            "type": "control_request",
+            "request_id": request_id,
+            "request": { "subtype": "set_permission_mode", "mode": mode },
+        }),
+    )?;
+    Ok(request_id)
 }
 
 /// Push a user message into a live session's input queue.
