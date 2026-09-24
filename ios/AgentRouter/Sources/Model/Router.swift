@@ -37,6 +37,9 @@ struct RequestRoute: Hashable {
     let request: RequestRow
 }
 struct AccountsRoute: Hashable { let routerId: UUID }
+/// Search is per router: the index belongs to one store, and there is nothing to ask
+/// for a view across several.
+struct SearchRoute: Hashable { let routerId: UUID }
 struct SettingsRoute: Hashable { let routerId: UUID }
 /// A session named only by id — what a notification carries; the view looks it up.
 struct SessionByIdRoute: Hashable {

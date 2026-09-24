@@ -42,6 +42,9 @@ struct RoutersListView: View {
             .navigationDestination(for: RequestRoute.self) { route in
                 RequestDetailView(r: route.request)
             }
+            .navigationDestination(for: SearchRoute.self) { route in
+                if let state = store.state(id: route.routerId) { SearchView(state: state) }
+            }
             .navigationDestination(for: AccountsRoute.self) { route in
                 if let state = store.state(id: route.routerId) { AccountsView(state: state) }
             }

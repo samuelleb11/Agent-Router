@@ -48,6 +48,7 @@ fun RouterDetailScreen(
     onUsage: () -> Unit,
     onAccounts: () -> Unit,
     onSettings: () -> Unit,
+    onSearch: () -> Unit,
 ) {
     val state = app.state(router)
     val scope = rememberCoroutineScope()
@@ -116,6 +117,12 @@ fun RouterDetailScreen(
                         "Accounts",
                         state.activeAccount?.title ?: "${state.accounts.size} configured",
                         onAccounts,
+                    )
+                    HorizontalDivider()
+                    NavRow(
+                        "Search",
+                        "Every message, tool call and result ever recorded",
+                        onSearch,
                     )
                 }
             }

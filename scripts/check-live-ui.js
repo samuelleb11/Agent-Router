@@ -47,7 +47,7 @@ const mkEl = (tag = 'div') => {
     append: (...c) => el.children.push(...c),
     querySelector: () => mkEl(), querySelectorAll: () => [],
     addEventListener() {}, closest: () => mkEl(), setSelectionRange() {},
-    after() {}, remove() {}, focus() {},
+    after() {}, remove() {}, focus() {}, select() {},
   };
   return el;
 };
@@ -72,9 +72,26 @@ const SESSIONS = [
   { session_id: 'ccc-3', cwd: '/code/project-b', project: 'p2', title: 'Elsewhere',
     created_ms: 3000, last_activity_ms: 3000, active: false, wrapped: false, state: 'failed' },
 ];
+// A search reply, as the router spells it. The marker pair is what the page splits on.
+const SEARCH = {
+  query: 'kestrel', expression: 'kestrel',
+  sessions: [{ session_id: 'aaaaaaaa-1111-2222-3333-444444444444', project: '/code/agent-router',
+               blocks: 2, hits: 3, first_at: Date.now() - 6e5, last_at: Date.now() - 1e4 }],
+  hits: [
+    { block_id: 1, kind: 'tool_use', role: 'assistant', ordinal: 4, at: Date.now() - 1e4,
+      session_id: 'aaaaaaaa-1111-2222-3333-444444444444', project: '/code/agent-router',
+      snippet: 'where does the \u2039kestrel\u203a roost', rank: -8 },
+    // A stray opening marker with no close: it may shift the emphasis, never break out.
+    { block_id: 2, kind: 'text', role: 'user', ordinal: 0, at: Date.now() - 6e5,
+      session_id: 'bbbbbbbb-1111-2222-3333-444444444444', project: '/code/other',
+      snippet: 'a stray \u2039marker and no close', rank: -7 },
+  ],
+};
 global.fetch = (url = '') => Promise.resolve({
   ok: true,
-  json: () => Promise.resolve(String(url).includes('/api/live/sessions') ? SESSIONS : {}),
+  json: () => Promise.resolve(
+    String(url).includes('/api/search') ? SEARCH
+      : String(url).includes('/api/live/sessions') ? SESSIONS : {}),
 });
 global.requestAnimationFrame = (f) => setTimeout(f, 0);
 global.cancelAnimationFrame = () => {};
@@ -86,7 +103,8 @@ check('script evaluates', () => { new Function(js)(); });
 
 const api = new Function(
   js + '\n; return { render, md, openSession, showList, say, askForm, clampable, loadSessions,' +
-       ' tabLabels: () => [...tabs.children].map(t => (t._label || \'\')) };'
+       ' tabLabels: () => [...tabs.children].map(t => (t._label || \'\')),' +
+       ' openFind, closeFind, drawFind, findMark, findRows, findPane };'
 )();
 
 check('a local does not shadow a browser global the page uses', () => {
@@ -171,6 +189,50 @@ if (captured && fs.existsSync(captured)) {
     console.log(`        (${n} events)`);
   });
 }
+
+// The feed can only ever show the tail of a transcript, so this pane is the only way to
+// the rest of it. It has to survive opening from either mode and drawing real rows.
+check('find opens from the list and from a session, and closes back to where it was', () => {
+  api.showList(true);
+  api.openFind();
+  if (api.findPane._cls.has('hide')) throw new Error('the pane stayed hidden');
+  api.closeFind();
+  if (!api.findPane._cls.has('hide')) throw new Error('the pane stayed open');
+  api.openSession(SESSIONS[0], true);
+  api.openFind();
+  api.closeFind();
+});
+
+check('a hit renders, and one already in the open session is not a link to it', () => {
+  api.showList(true);
+  api.drawFind(SEARCH, 'kestrel');
+  const html = api.findRows.innerHTML;
+  if (!html.includes('<mark>kestrel</mark>')) throw new Error('the match was not marked');
+  if (!html.includes('tool call')) throw new Error("the kind was not put into the reader's words");
+  if ([...html.matchAll(/data-open="([^"]+)"/g)].length !== 2) {
+    throw new Error('from the list, every hit should open its session');
+  }
+  api.openSession(SESSIONS[0], true);
+  api.drawFind({ hits: [{ ...SEARCH.hits[0], session_id: SESSIONS[0].session_id }] }, 'kestrel');
+  if (api.findRows.innerHTML.includes('data-open')) {
+    throw new Error('a hit in the session already open was offered as a link to it');
+  }
+});
+
+check('a stray marker cannot leave a tag open, and snippet text is escaped', () => {
+  const out = api.findMark('a \u2039b\u203a c \u2039d');
+  const opens = (out.match(/<mark>/g) || []).length;
+  const closes = (out.match(/<\/mark>/g) || []).length;
+  if (opens !== closes) throw new Error(`unbalanced: ${opens} open, ${closes} close`);
+  if (api.findMark('<script>x</script>').includes('<script>')) {
+    throw new Error('snippet text reached the page as markup');
+  }
+});
+
+check('an empty result says so rather than showing nothing', () => {
+  api.drawFind({ hits: [] }, 'nothing');
+  if (!api.findRows.innerHTML.includes('Nothing matched')) throw new Error('an empty answer was silent');
+});
 
 console.log(failures ? `\n  ${failures} check(s) failed` : '\n  all checks passed');
 process.exit(failures ? 1 : 0);

@@ -90,6 +90,10 @@ struct RouterDetailView: View {
                         .accessibilityIdentifier("usage")
                 }
             }
+            NavigationLink(value: SearchRoute(routerId: state.router.id)) {
+                Label("Search", systemImage: "magnifyingglass")
+                    .accessibilityIdentifier("search")
+            }
         }
     }
 

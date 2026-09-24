@@ -58,13 +58,38 @@
   @keyframes pulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: .35; transform: scale(.75); } }
   @media (prefers-reduced-motion: reduce) { #stat .pip { animation: none !important; } }
 
-  /* The two panes are interchangeable: whichever is visible owns the scroll. */
-  #list, #feed {
+  /* The three panes are interchangeable: whichever is visible owns the scroll. */
+  #list, #feed, #find {
     flex: 1 1 auto; min-height: 0; overflow-y: auto;
     -webkit-overflow-scrolling: touch; overscroll-behavior: contain;
   }
   #list { padding: 12px; display: grid; grid-template-columns: minmax(0, 1fr);
           gap: 8px; align-content: start; }
+  /* ---- find: the indexed history, which the feed itself cannot reach ---- */
+  #find { padding: 12px; display: grid; grid-template-columns: minmax(0, 1fr);
+          gap: 8px; align-content: start; }
+  .findbar { position: sticky; top: -12px; z-index: 2; display: grid; gap: 8px;
+             background: var(--bg); padding: 12px 0 8px; margin-top: -12px; }
+  .findbar input { font: inherit; width: 100%; color: var(--fg); background: var(--panel);
+                   border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+  .findbar input:focus { outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+                         outline-offset: 1px; border-color: var(--accent); }
+  .scope { display: flex; gap: 6px; }
+  .scope button { font-size: 12px; padding: 5px 10px; color: var(--dim); }
+  .scope button[aria-pressed="true"] { color: var(--fg); border-color: var(--accent);
+                                       background: color-mix(in srgb, var(--accent) 16%, var(--panel2)); }
+  .hit { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+         padding: 11px 12px; display: grid; gap: 5px; }
+  .hit.open { cursor: pointer; }
+  .hit.open:active { background: var(--panel2); }
+  .hit .top { display: flex; gap: 8px; align-items: center; font-size: 11px; color: var(--faint); }
+  .hit .tag { border: 1px solid var(--line); border-radius: 99px; padding: 1px 7px; }
+  .hit .snip { font-size: 13.5px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere;
+               display: -webkit-box; -webkit-line-clamp: 5; -webkit-box-orient: vertical; overflow: hidden; }
+  .hit mark { background: color-mix(in srgb, var(--accent) 32%, transparent); color: inherit;
+              border-radius: 3px; padding: 0 2px; }
+  .findnote { color: var(--dim); font-size: 12px; padding: 2px 2px 0; }
+
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
           padding: 12px 13px; cursor: pointer; display: grid; gap: 5px; }
   .card:active { background: var(--panel2); }
@@ -323,6 +348,7 @@
   <button id="back" class="hide">‹</button>
   <h1 id="heading">Live sessions</h1>
   <span class="sp"></span>
+  <button id="findBtn" class="chip" title="Search everything this router has recorded">Find</button>
   <span id="stat"><span class="pip"></span><span id="statText"></span></span>
 </header>
 
@@ -330,8 +356,19 @@
 <div id="facts" class="hide"></div>
 <div id="list"></div>
 <div id="feed" class="hide"></div>
+<div id="find" class="hide">
+  <div class="findbar">
+    <input id="q" type="search" autocomplete="off" spellcheck="false" placeholder="A word, a phrase, an identifier">
+    <div class="scope" id="scope">
+      <button data-s="session" aria-pressed="true">This session</button>
+      <button data-s="all" aria-pressed="false">Everywhere</button>
+    </div>
+  </div>
+  <div id="findRows"></div>
+</div>
 
 <div id="composer" class="hide">
+  <div id="perm"></div>
   <div id="note"></div>
   <div class="cbox">
     <textarea id="msg" rows="1" placeholder="Send a message to this session…"></textarea>
@@ -1068,6 +1105,139 @@ async function showList(fromHistory) {
 }
 
 back.onclick = () => showList(false);
+
+// ---------- find ----------
+// The feed can only ever show the tail of a transcript: the stream backfills a fixed
+// number of bytes and there is no scrolling further up. The router's index has the whole
+// of it, so this is the only way to reach a session's earlier turns from this page.
+//
+// Nothing here touches the stream. The feed stays connected and keeps receiving while
+// the results are on screen, so coming back from a search does not lose the live view.
+// `findPane`, not `find`: a top-level `const find` would shadow window.find, and
+// `scopeRow` rather than leaning on the id-as-global for a name this common.
+const findPane = $('#find'), scopeRow = $('#scope');
+const qbox = $('#q'), findRows = $('#findRows'), findBtn = $('#findBtn');
+let findOpen = false, findScope = 'session', findTimer = 0, findSeq = 0;
+
+// Split on the pair rather than substituting into it: a marker the conversation itself
+// contained can then only mis-highlight, never leave a tag open and swallow the rest.
+const findMark = t => String(t ?? '').split(/[\u2039\u203a]/)
+  .map((part, i) => (i % 2 ? '<mark>' + esc(part) + '</mark>' : esc(part))).join('');
+
+const KIND_NAME = { text: 'message', tool_use: 'tool call', tool_result: 'tool result',
+                    thinking: 'thinking', system: 'system prompt' };
+
+function openFind() {
+  findOpen = true;
+  // Scoping to the open session is the point of having this here rather than on the
+  // dashboard; with no session open there is nothing to scope to.
+  findScope = current ? 'session' : 'all';
+  drawScope();
+  list.classList.add('hide'); feed.classList.add('hide'); composer.classList.add('hide');
+  tabs.classList.add('hide'); facts.classList.add('hide'); home.classList.add('hide');
+  back.classList.remove('hide');
+  findPane.classList.remove('hide');
+  heading.textContent = 'Find';
+  qbox.focus(); qbox.select();
+  runFind();
+}
+
+function closeFind() {
+  findOpen = false;
+  findPane.classList.add('hide');
+  if (current) {
+    feed.classList.remove('hide'); composer.classList.remove('hide');
+    tabs.classList.remove('hide'); facts.classList.remove('hide');
+    back.classList.remove('hide');
+    heading.textContent = base(current.cwd) || current.project;
+    pin();
+  } else {
+    list.classList.remove('hide'); home.classList.remove('hide');
+    back.classList.add('hide');
+    heading.textContent = 'Live sessions';
+  }
+}
+
+function drawScope() {
+  for (const b of scopeRow.querySelectorAll('button')) {
+    b.setAttribute('aria-pressed', String(b.dataset.s === findScope));
+    // With no session open there is nothing to narrow to.
+    b.disabled = b.dataset.s === 'session' && !current;
+  }
+  qbox.placeholder = findScope === 'session' && current
+    ? 'Find anywhere in this session' : 'Find in every session';
+}
+
+findBtn.onclick = () => (findOpen ? closeFind() : openFind());
+scopeRow.onclick = e => {
+  const b = e.target.closest('button');
+  if (!b || b.disabled) return;
+  findScope = b.dataset.s;
+  drawScope();
+  runFind();
+};
+qbox.addEventListener('input', () => { clearTimeout(findTimer); findTimer = setTimeout(runFind, 200); });
+addEventListener('keydown', e => { if (e.key === 'Escape' && findOpen) closeFind(); });
+
+async function runFind() {
+  const q = qbox.value.trim(), seq = ++findSeq;
+  if (!q) { findRows.innerHTML = ''; return; }
+  const p = new URLSearchParams({ q, limit: '30' });
+  if (findScope === 'session' && current) p.set('session', current.session_id);
+  let d;
+  try {
+    d = await fetch('/api/search?' + p).then(r => r.json());
+  } catch {
+    if (seq === findSeq) findRows.innerHTML = '<div class="findnote">Could not reach the router.</div>';
+    return;
+  }
+  if (seq !== findSeq) return;  // a later keystroke has already answered
+  drawFind(d, q);
+}
+
+function drawFind(d, q) {
+  const hits = d.hits || [];
+  if (!hits.length) {
+    findRows.innerHTML = '<div class="findnote">Nothing matched ' + esc(q)
+      + (findScope === 'session' ? ' in this session.' : '.') + '</div>';
+    return;
+  }
+  const parts = [];
+  // Only worth saying when the router ran something other than what was typed.
+  if (d.expression && d.expression !== q) {
+    parts.push('<div class="findnote">Searched for ' + esc(d.expression) + '</div>');
+  }
+  for (const h of hits) {
+    // A hit already in the open session has nowhere to go — the feed cannot scroll to a
+    // turn it never loaded — so only a hit elsewhere is a link.
+    const elsewhere = !current || h.session_id !== current.session_id;
+    parts.push(
+      '<div class="hit' + (elsewhere ? ' open' : '') + '"' +
+      (elsewhere ? ' data-open="' + esc(h.session_id) + '"' : '') + '>' +
+        '<div class="top">' +
+          '<span class="tag">' + esc(KIND_NAME[h.kind] || h.kind) + '</span>' +
+          '<span>' + esc(h.role || '') + '</span>' +
+          '<span class="sp"></span>' +
+          '<span>' + ago(h.at) + '</span>' +
+        '</div>' +
+        '<div class="snip">' + findMark(h.snippet) + '</div>' +
+        (elsewhere ? '<div class="top">' + esc(base(h.project) || '—') + ' · '
+                   + esc(String(h.session_id).slice(0, 8)) + ' · open</div>' : '') +
+      '</div>');
+  }
+  findRows.innerHTML = parts.join('');
+}
+
+findRows.onclick = async e => {
+  const card = e.target.closest('.hit[data-open]');
+  if (!card) return;
+  const id = card.dataset.open;
+  const rows = await fetchSessions();
+  const row = rows.find(r => r.session_id === id);
+  if (!row) { say('That session is no longer listed.'); return; }
+  closeFind();
+  openSession(row, false);
+};
 
 // Browser back moves between the list and a session rather than leaving the page.
 addEventListener('popstate', async (e) => {

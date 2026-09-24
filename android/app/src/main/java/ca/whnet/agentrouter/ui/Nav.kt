@@ -13,5 +13,8 @@ import kotlinx.serialization.Serializable
 @Serializable data class SettingsRoute(val id: String)
 @Serializable data class UsageRoute(val id: String)
 @Serializable data class AccountsRoute(val id: String)
+// Search is per router: the index belongs to one store, and there is nothing to ask for
+// a view across several.
+@Serializable data class SearchRoute(val id: String)
 @Serializable data class UsageListRoute(val id: String, val kind: String, val since: String?)
 @Serializable object RequestDetailRoute
