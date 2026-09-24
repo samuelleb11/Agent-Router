@@ -85,7 +85,7 @@
           "type": "boolean",
           "default": false,
           "scope": "machine",
-          "description": "Listen on every interface so the phone app can reach the router. Set a router password in the dashboard first; only other devices are ever asked for it."
+          "description": "Listen on every interface so the phone app can reach the router. Set a router password in the dashboard first; only other devices are ever asked for it. Leave this alone to let the router keep its own setting, which the dashboard's Listen-on-your-network switch writes; setting it either way here overrides that on every start."
         },
         "agentRouter.manageService": {
           "type": "boolean",

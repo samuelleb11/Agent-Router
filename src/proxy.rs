@@ -78,6 +78,9 @@ pub struct AppState {
     pub login: crate::login::Shared,
     /// The router's password, asked of callers that are not on this machine.
     pub auth: crate::auth::Auth,
+    /// Whether we also listen beyond loopback, and the lever that changes it while
+    /// the router runs. See `network`.
+    pub network: crate::network::Switch,
     /// Phones to tell when a session is waiting on a person.
     pub push: std::sync::Arc<crate::notify::Push>,
     pub capture: Sender<CaptureEvent>,
@@ -91,7 +94,11 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(config: Config, capture: Sender<CaptureEvent>) -> anyhow::Result<Arc<Self>> {
+    pub fn new(
+        config: Config,
+        capture: Sender<CaptureEvent>,
+        network: crate::network::Switch,
+    ) -> anyhow::Result<Arc<Self>> {
         let tls = hyper_rustls::HttpsConnectorBuilder::new()
             .with_webpki_roots()
             .https_only()
@@ -112,6 +119,7 @@ impl AppState {
             quota_cache: tokio::sync::RwLock::new(None),
             login: Default::default(),
             auth,
+            network,
             push,
             capture,
             reads,

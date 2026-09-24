@@ -339,7 +339,11 @@ and clears the wrapper setting.
 
 ## Security
 
-- Binds to `127.0.0.1` unless `AGENT_ROUTER_BIND` widens it deliberately — and then every
+- Always binds `127.0.0.1`, and adds a second listener on a wider address only when it is
+  widened deliberately — the dashboard switch, which stores the answer, or
+  `AGENT_ROUTER_BIND`, which overrides it for one run (`network.rs`). `SO_REUSEPORT` lets
+  the two share the port and the kernel steers by most-specific match, so the switch can
+  be thrown mid-session without unbinding anything. Widened, every
   caller that is not on this machine must present the router's password (`auth.rs`): as
   HTTP Basic from a browser, or as `Authorization: Bearer <password>` from an agent, which
   is what a Claude Code elsewhere sends when `ANTHROPIC_AUTH_TOKEN` is set to it. With no

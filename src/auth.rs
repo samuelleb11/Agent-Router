@@ -310,12 +310,18 @@ pub mod api {
         State(state): State<Arc<AppState>>,
         ConnectInfo(peer): ConnectInfo<SocketAddr>,
     ) -> Json<Value> {
-        Json(json!({
+        let mut body = json!({
             "configured":    state.auth.configured().await,
             "updated_at":    state.auth.updated_at().await,
-            "remote_bind":   !state.config.bind.ip().is_loopback(),
             "from_loopback": peer.ip().is_loopback(),
-        }))
+        });
+        // `remote_bind` and the rest of the socket's story come from `network`, which
+        // owns the answer — it can change while the router runs. Both phone apps read
+        // it from here, so here is where it stays.
+        body.as_object_mut()
+            .expect("just built as an object")
+            .extend(crate::network::report(&state));
+        Json(body)
     }
 
     pub async fn set(State(state): State<Arc<AppState>>, Json(req): Json<SetReq>) -> Json<Value> {

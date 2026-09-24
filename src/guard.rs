@@ -4,8 +4,8 @@
 //!
 //! Five independent layers, each closing a different hole:
 //!
-//! 1. **Loopback bind** (see `config`) — the socket is never exposed off-host unless
-//!    `AGENT_ROUTER_BIND` says so.
+//! 1. **Loopback bind** (see `config` and `network`) — the socket is never exposed
+//!    off-host unless the stored setting or `AGENT_ROUTER_BIND` says so.
 //! 2. **Peer check** — the connecting address must itself be loopback, so a port
 //!    forward or an SSH tunnel cannot smuggle a remote caller in.
 //! 3. **Host header check** — defeats DNS rebinding, where a web page resolves its
@@ -56,9 +56,10 @@ fn host_is_local(host: &str) -> bool {
     bare.parse::<IpAddr>().map(|ip| ip.is_loopback()).unwrap_or(false)
 }
 
-/// Set once at startup from the bind address. When the socket is deliberately bound
-/// off-loopback, layers 2 and 3 cannot demand loopback or they would refuse the very
-/// callers the operator just chose to allow.
+/// Follows the socket: set at startup from the bind address, and again whenever the
+/// switch in `network` adds or removes the wider listener. When the socket is
+/// deliberately off-loopback, layers 2 and 3 cannot demand loopback or they would
+/// refuse the very callers the operator just chose to allow.
 static OFF_HOST: AtomicBool = AtomicBool::new(false);
 
 pub fn allow_off_host(on: bool) {

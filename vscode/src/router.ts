@@ -15,7 +15,17 @@ export interface Bundled { version: string; router: string; wrapper: string }
 
 const cfg = () => vscode.workspace.getConfiguration('agentRouter');
 export const port = (): number => cfg().get<number>('port', 8787);
-export const bind = (): string => (cfg().get<boolean>('listenOnNetwork', false) ? '0.0.0.0' : '127.0.0.1');
+/** Where to listen, but only when the user has actually said.
+ *
+ *  The router stores this itself now, and the dashboard's switch writes it. An
+ *  untouched default here must not outvote that: `AGENT_ROUTER_BIND` wins over the
+ *  stored setting, so passing one on every start would silently undo the switch the
+ *  next time a window opened. Undefined means "whatever the router already decided". */
+export const bind = (): string | undefined => {
+  const set = cfg().inspect<boolean>('listenOnNetwork');
+  const chosen = set?.workspaceFolderValue ?? set?.workspaceValue ?? set?.globalValue;
+  return chosen === undefined ? undefined : chosen ? '0.0.0.0' : '127.0.0.1';
+};
 export const base = (): string => `http://127.0.0.1:${port()}`;
 export const dataDir = (): string => path.join(os.homedir(), '.agent-router');
 export const binDir = (): string => path.join(dataDir(), 'bin');
@@ -76,13 +86,15 @@ function run(exe: string, args: string[], env: NodeJS.ProcessEnv): Promise<strin
 }
 
 function routerEnv(): NodeJS.ProcessEnv {
-  return { ...process.env, HOME: os.homedir(), AGENT_ROUTER_PORT: String(port()), AGENT_ROUTER_BIND: bind() };
+  const b = bind();
+  return { ...process.env, HOME: os.homedir(), AGENT_ROUTER_PORT: String(port()), ...(b ? { AGENT_ROUTER_BIND: b } : {}) };
 }
 
 /** Register the login item and point Claude Code's settings file at the router — the
  *  router's own `install` subcommand, which is also what undoes it. */
 export async function setUp(log: vscode.OutputChannel): Promise<void> {
-  const args = ['install', '--port', String(port()), '--bind', bind()];
+  const b = bind();
+  const args = ['install', '--port', String(port()), ...(b ? ['--bind', b] : [])];
   if (!cfg().get<boolean>('manageService', true)) { args.push('--no-service'); }
   if (!cfg().get<boolean>('configureClaudeCode', true)) { args.push('--no-config'); }
   log.appendLine(`> agent-router ${args.join(' ')}`);

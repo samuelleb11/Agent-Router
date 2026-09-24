@@ -177,18 +177,32 @@ failures, and a 58-second streaming response begun on the old instance completed
 | `AGENT_ROUTER_ACCESS_TOKEN` | *(unset)* | Use this token instead of the stored one |
 | `AGENT_ROUTER_LOG` | `agent_router=info` | `tracing` filter |
 | `AGENT_ROUTER_DUMP_HEADERS` | `1` | Requests to dump full headers for, at startup |
-| `AGENT_ROUTER_BIND` | *(unset — loopback)* | An IP to listen on instead, to follow sessions from another device. Turns the password on; see below |
+| `AGENT_ROUTER_BIND` | *(unset)* | An IP to also listen on, overriding the stored setting for this run. See below |
 
-`agent-router install` registers the login item. `--bind <addr>` writes the listen
-address into it, so a router that serves your phone keeps doing so after a reboot, and
-`--no-config` registers the login item without touching Claude Code's settings.
+### Listening on your network
+
+The router always answers on `127.0.0.1`. To let your phone — or a Claude Code on
+another machine — reach it, turn on **Listen on your network** in the dashboard's
+settings. It adds a second listener beside the loopback one, so it takes effect at
+once: nothing restarts, and no session in flight is cut. The answer is stored, so it
+survives a reboot whatever starts the router next — a login item is handed almost no
+environment, which is why a variable alone was never enough.
+
+A password must be set first; without one, callers from other machines are refused
+anyway. `AGENT_ROUTER_BIND` still works and still wins, for a hand-launch or a dev box,
+but it only lasts as long as that process.
+
+`agent-router install` registers the login item. `--bind <addr>` writes the same stored
+setting the switch does (`127.0.0.1` puts it back), and `--no-config` registers the
+login item without touching Claude Code's settings.
 
 ## Security
 
 Agent Router holds a live subscription credential and signs everything it forwards,
 so reaching it is kept as hard as it can be:
 
-1. The socket binds to `127.0.0.1` unless `AGENT_ROUTER_BIND` says otherwise.
+1. The socket binds to `127.0.0.1` only, unless you widen it deliberately — the switch
+   in the dashboard, or `AGENT_ROUTER_BIND`.
 2. The connecting peer must itself be on loopback — again, unless the bind was widened.
 3. The `Host` header must parse as a loopback address, or a bare IP when the bind was
    widened. This is what defeats DNS rebinding — a web page that resolves its own domain

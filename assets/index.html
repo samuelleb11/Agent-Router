@@ -580,6 +580,13 @@ pre.cmd { background:var(--bg); border:1px solid var(--line); border-radius:7px;
       through Apple's push service. That needs an APNs key from your developer account (Keys → + → Apple Push Notifications
       service); paste the <code>.p8</code> here once. It stays in the router's secrets file, never in the database.</p>
 
+    <h4 class="modal-sec next">Listen on your network<span class="h2sub" id="netsub"></span></h4>
+    <div id="netbox"></div>
+    <p class="note" style="margin-top:8px">Off, the router answers only on this Mac. On, it also listens on your local
+      network, so the phone apps — and a Claude Code on another machine — can reach it; every one of them is asked for
+      the password below. It takes effect at once, with nothing restarted and no session dropped, and it is remembered
+      across a reboot.</p>
+
     <h4 class="modal-sec next">Password<span class="h2sub" id="pwsub"></span></h4>
     <div id="pw-settings"></div>
     <p class="note" style="margin-top:8px">Asked of any device that is not this Mac — a browser gets the usual prompt (any
@@ -2224,6 +2231,52 @@ function pwForm(root, firstBoot) {
     h('div', { class:'formrow', style:'align-items:center' }, ...actions, msg));
 }
 
+// The socket itself: loopback only, or loopback and the network. Throwing this adds or
+// removes a second listener in the running router — see src/network.rs — so it takes
+// effect on the spot, and it is stored, so a reboot comes back the same way.
+function netForm(info) {
+  const root = document.getElementById('netbox');
+  const on = !!info.remote_bind;
+  const msg = h('span', { class:'note', style:'margin:0' });
+  const btn = h('button', { class:'btn sm' + (on ? ' danger' : ''), text: on ? 'Turn off' : 'Turn on' });
+  // Without a password every caller from another machine is refused anyway, so turning
+  // this on would be exposure for nothing. Off is always allowed.
+  btn.disabled = !on && !info.configured;
+  btn.onclick = async () => {
+    btn.disabled = true;
+    setText(msg, 'working…');
+    try {
+      const r = await post('/api/network', { enable: !on });
+      if (r.error) throw new Error(r.error);
+      await renderAuth(true);
+    } catch (e) { setText(msg, e.message); btn.disabled = false; }
+  };
+
+  const where = on
+    ? (info.lan_url ? h('span', {}, 'Reachable at ', h('code', { text: info.lan_url }))
+                    : h('span', { text: 'Reachable from your network.' })
+      )
+    : h('span', {}, 'This Mac only.',
+        info.lan_url ? h('span', { class:'muted', text: ` Turning it on would put it at ${info.lan_url}.` }) : null);
+
+  root.replaceChildren(
+    h('div', { class:'row', style:'padding:6px 0' },
+      h('span', {},
+        h('b', { text: on ? 'On' : 'Off' }), h('br'),
+        h('span', { class:'muted' }, where)),
+      h('span', {}, btn)),
+    h('div', { class:'formrow', style:'align-items:center' },
+      msg,
+      !on && !info.configured
+        ? h('span', { class:'note', style:'margin:0', text:'Set a password below first — until one exists, other devices are refused anyway.' })
+        : null,
+      // The environment wins over the setting at startup, so a router launched by hand
+      // with the variable set would come back up its own way whatever this says.
+      info.env_override
+        ? h('span', { class:'note', style:'margin:0', text:'AGENT_ROUTER_BIND is set in this router’s environment; it decides the next time the router starts.' })
+        : null));
+}
+
 function applyAuth(info) {
   authInfo = info;
   const chip = document.getElementById('remote'), dot = document.getElementById('remotedot');
@@ -2237,10 +2290,16 @@ function applyAuth(info) {
   }
   setText(document.getElementById('pwsub'), info.configured
     ? `set${info.updated_at ? ' · changed ' + ago(info.updated_at) : ''}`
-    : info.remote_bind ? 'not set — other devices are refused' : 'not set — only matters with AGENT_ROUTER_BIND');
+    : info.remote_bind ? 'not set — other devices are refused' : 'not set — only matters on the network');
+  setText(document.getElementById('netsub'), info.remote_bind ? 'on' : 'this Mac only');
   const sroot = document.getElementById('pw-settings');
   const sig = JSON.stringify([info.configured, info.remote_bind]);
   if (sroot._sig !== sig) { sroot._sig = sig; pwForm(sroot, false); }
+  // Its own signature: a half-typed password must not be swept away because the
+  // machine picked up a new address on the network.
+  const nroot = document.getElementById('netbox');
+  const nsig = JSON.stringify([info.configured, info.remote_bind, info.lan_url, info.env_override]);
+  if (nroot._sig !== nsig) { nroot._sig = nsig; netForm(info); }
   // First boot: ask once, from this machine, while the network can reach us and nothing
   // guards it yet. Never over the top of the settings dialog.
   if (info.remote_bind && !info.configured && info.from_loopback && !pwDismissed && !pwDialog.open && !settings.open) {

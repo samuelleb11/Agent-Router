@@ -327,11 +327,10 @@ pub mod api {
         let result = tokio::task::spawn_blocking(move || -> Result<()> {
             if req.enable {
                 let exe = install_binary()?;
-                // The login item listens where this router does, so turning the service
-                // on from a router that serves the phone keeps the phone served after a
-                // reboot.
-                let bind = std::env::var("AGENT_ROUTER_BIND").ok();
-                service::install(&exe, bind.as_deref())?;
+                // Nothing about the bind here: it is a stored setting, so the login
+                // item comes back up listening wherever this router does, whether or
+                // not the switch was thrown before the service was registered.
+                service::install(&exe)?;
             } else {
                 service::uninstall()?;
             }
@@ -523,6 +522,11 @@ pub const SERVICE_LABEL: &str = "ca.whnet.agent-router";
 pub mod service {
     use super::*;
 
+    /// The file launchd reads at boot. Public so `forget_bind_env` can rewrite it.
+    pub fn path() -> Result<PathBuf> {
+        plist_path()
+    }
+
     fn plist_path() -> Result<PathBuf> {
         let dir = home_dir()?.join("Library").join("LaunchAgents");
         std::fs::create_dir_all(&dir)?;
@@ -534,14 +538,10 @@ pub mod service {
         unsafe { libc::getuid() }.to_string()
     }
 
-    pub fn install(exe: &Path, bind: Option<&str>) -> Result<PathBuf> {
+    pub fn install(exe: &Path) -> Result<PathBuf> {
         let dir = data_dir()?;
         std::fs::create_dir_all(dir.join("logs"))?;
         let logs = dir.join("logs").join("router.log");
-        let bind_env = bind
-            .filter(|b| !b.trim().is_empty())
-            .map(|b| format!("    <key>AGENT_ROUTER_BIND</key><string>{}</string>\n", b.trim()))
-            .unwrap_or_default();
 
         // launchd hands a process almost no PATH, and the router shells out to
         // `claude` to identify accounts.
@@ -564,10 +564,12 @@ pub mod service {
   <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
   <key>ThrottleInterval</key><integer>5</integer>
   <key>ProcessType</key><string>Background</string>
+  <!-- Where to listen is not here: it is a setting in the store, so the dashboard can
+       change it without rewriting this file. See src/network.rs. -->
   <key>EnvironmentVariables</key><dict>
     <key>PATH</key><string>{path_env}</string>
     <key>HOME</key><string>{home}</string>
-{bind_env}  </dict>
+  </dict>
   <key>StandardOutPath</key><string>{logs}</string>
   <key>StandardErrorPath</key><string>{logs}</string>
 </dict>
@@ -626,20 +628,21 @@ pub mod service {
 
     pub const UNIT: &str = "agent-router.service";
 
+    /// The file systemd reads at boot. Public so `forget_bind_env` can rewrite it.
+    pub fn path() -> Result<PathBuf> {
+        unit_path()
+    }
+
     fn unit_path() -> Result<PathBuf> {
         let dir = home_dir()?.join(".config").join("systemd").join("user");
         std::fs::create_dir_all(&dir)?;
         Ok(dir.join(UNIT))
     }
 
-    pub fn install(exe: &Path, bind: Option<&str>) -> Result<PathBuf> {
+    pub fn install(exe: &Path) -> Result<PathBuf> {
         let dir = data_dir()?;
         std::fs::create_dir_all(dir.join("logs"))?;
         let path_env = std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into());
-        let bind_env = bind
-            .filter(|b| !b.trim().is_empty())
-            .map(|b| format!("Environment=AGENT_ROUTER_BIND={}\n", b.trim()))
-            .unwrap_or_default();
         let unit = format!(
             "[Unit]\n\
              Description=Agent Router — local proxy between Claude Code and Anthropic\n\
@@ -651,7 +654,9 @@ pub mod service {
              Restart=on-failure\n\
              RestartSec=5\n\
              Environment=PATH={path_env}\n\
-             {bind_env}\n\
+             # Where to listen is not here: it is a setting in the store, so the\n\
+             # dashboard can change it without rewriting this file. See src/network.rs.\n\
+             \n\
              [Install]\n\
              WantedBy=default.target\n",
             exe = exe.display(),
@@ -713,7 +718,7 @@ pub mod service {
     /// restart-on-failure, which the Run registry key does not). Deliberately not
     /// written blind: it cannot be tested from here, and an untested installer that
     /// edits the registry is worse than none.
-    pub fn install(_exe: &Path, _bind: Option<&str>) -> Result<PathBuf> {
+    pub fn install(_exe: &Path) -> Result<PathBuf> {
         Err(anyhow!(
             "automatic service registration is not implemented on this platform yet — \
              the router still runs in the foreground, and `install --no-service` will \
@@ -727,6 +732,79 @@ pub mod service {
 
     pub fn is_registered() -> bool {
         false
+    }
+
+    pub fn path() -> Result<PathBuf> {
+        Err(anyhow!("no service file on this platform"))
+    }
+}
+
+/// Take `AGENT_ROUTER_BIND` out of the login item, if one registered by an older build
+/// still carries it.
+///
+/// Where to listen is a stored setting now, and the environment outranks it — so a
+/// variable left behind in the service file would quietly outvote the switch on the
+/// next boot, which is the exact trap this whole change exists to close.
+///
+/// A rewrite and nothing more: the file is only read at boot, and `launchctl bootout`
+/// would kill the very router making the change.
+pub fn forget_bind_env() -> bool {
+    let Ok(path) = service::path() else { return false };
+    let Ok(text) = std::fs::read_to_string(&path) else { return false };
+    if !text.contains("AGENT_ROUTER_BIND") {
+        return false;
+    }
+    match write_atomic(&path, &without_bind_env(&text)) {
+        Ok(()) => {
+            tracing::info!(
+                path = %path.display(),
+                "removed AGENT_ROUTER_BIND from the login item; the stored setting decides now"
+            );
+            true
+        }
+        Err(err) => {
+            tracing::warn!(%err, "could not rewrite the login item to drop AGENT_ROUTER_BIND");
+            false
+        }
+    }
+}
+
+/// Every line mentioning the variable, gone. One line each in both formats — a plist
+/// `<key>`/`<string>` pair on one line, a systemd `Environment=` line — and nothing
+/// else in either file mentions it.
+fn without_bind_env(text: &str) -> String {
+    text.lines()
+        .filter(|line| !line.contains("AGENT_ROUTER_BIND"))
+        .map(|line| format!("{line}\n"))
+        .collect()
+}
+
+#[cfg(test)]
+mod bind_env_tests {
+    use super::without_bind_env;
+
+    #[test]
+    fn the_variable_goes_and_the_rest_of_the_file_stays() {
+        let plist = "<dict>\n  <key>PATH</key><string>/usr/bin</string>\n    \
+                     <key>AGENT_ROUTER_BIND</key><string>0.0.0.0</string>\n  \
+                     <key>HOME</key><string>/Users/u</string>\n</dict>\n";
+        let cleaned = without_bind_env(plist);
+        assert!(!cleaned.contains("AGENT_ROUTER_BIND"));
+        assert!(cleaned.contains("<key>PATH</key>"));
+        assert!(cleaned.contains("<key>HOME</key>"));
+
+        let unit = "[Service]\nExecStart=/x\nEnvironment=PATH=/usr/bin\n\
+                    Environment=AGENT_ROUTER_BIND=0.0.0.0\n\n[Install]\n";
+        let cleaned = without_bind_env(unit);
+        assert!(!cleaned.contains("AGENT_ROUTER_BIND"));
+        assert!(cleaned.contains("Environment=PATH=/usr/bin"));
+        assert!(cleaned.contains("[Install]"));
+    }
+
+    #[test]
+    fn a_file_without_it_is_left_byte_for_byte() {
+        let unit = "[Service]\nExecStart=/x\nEnvironment=PATH=/usr/bin\n";
+        assert_eq!(without_bind_env(unit), unit);
     }
 }
 

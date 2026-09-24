@@ -46,7 +46,7 @@ struct RouterFormView: View {
                 } header: {
                     Text("Router")
                 } footer: {
-                    Text("The Mac running Agent Router, as this phone can reach it. The router must be listening beyond loopback (AGENT_ROUTER_BIND).")
+                    Text("The Mac running Agent Router, as this phone can reach it. Turn on Listen on your network in the router's dashboard settings first.")
                 }
                 Section {
                     SecureField(editing == nil ? "Password" : "New password (leave blank to keep)", text: $password)

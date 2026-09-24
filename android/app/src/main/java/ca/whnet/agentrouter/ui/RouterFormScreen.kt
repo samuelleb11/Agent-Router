@@ -215,7 +215,7 @@ private suspend fun testConnection(host: String, port: Int, password: String?): 
             }
         }
     if (!auth.remoteBind) {
-        return false to "Agent Router ${health.version} answered, but it only listens on the Mac itself — restart it with AGENT_ROUTER_BIND=0.0.0.0"
+        return false to "Agent Router ${health.version} answered, but it only listens on the Mac itself — turn on Listen on your network in its dashboard settings"
     }
     return true to "Agent Router ${health.version} answered, and the password is right"
 }
