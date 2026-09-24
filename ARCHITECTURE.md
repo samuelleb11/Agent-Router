@@ -212,11 +212,43 @@ context    (request_id, component, char_count, est_tokens)        -- system | to
 tool_calls (id, request_id, ordinal, name, input_chars,
             result_chars_true, result_chars_stored, est_tokens)
 bodies     (request_id, direction, content, truncated_at, true_bytes)  -- in bodies_db
+blocks     (id, hash, kind, chars, text)                          -- in bodies_db; the search corpus
+block_sites(block_id, session_id, ordinal, role, request_id, at)  -- in bodies_db; where each copy sat
+blocks_fts (text)                                                 -- in bodies_db; FTS5 over blocks
 model_rate (model, key)                                           -- wire name -> pricing key
 ```
 
 `requests.session_id` is nullable: a request whose transcript does not exist yet lands
 unattributed and is resolved on a later request in the same session.
+
+## Search
+
+`GET /api/search?q=…` finds every session and message whose text matches, over a corpus
+that is extracted rather than captured.
+
+The captured bodies cannot serve this. They are cut at `body_cap`, and because `messages`
+is the first field of the request JSON that cap keeps the *oldest* part of a conversation
+and drops the newest — on a real store, 98.7% of request bodies were truncated, so the
+recent turns of every long session were never stored at all. So the corpus is taken in
+`analyze_request`, from the full body, in the same parse that already measures the context
+split: one parse, two outputs.
+
+What makes indexing the uncapped text affordable is that it is mostly the same text.
+Every request replays the whole conversation, so a session's requests restate each other
+end to end: measured over one store, 51.7 GB of request bytes crossed the wire carrying
+about 0.2 GB of distinct content. `blocks` therefore holds each piece of text once, keyed
+by a hash of its kind and content, and `block_sites` — cheap rows of integers — carries
+the repetition. The index costs less than the truncated copies already do.
+
+`blocks_fts` is an external-content FTS5 index: it stores the terms and reads the text back
+out of `blocks`, so the corpus is never held twice. Blocks are insert-only, so a single
+`AFTER INSERT` trigger is the whole of the synchronisation. The tokenizer keeps `_` inside
+a token, so `body_cap` survives as one term while `analyze.rs` is found by either half.
+
+Typed text is offered to FTS5 verbatim, so `"exact phrase"`, `term*`, `NEAR(a b)` and
+`a OR b` work; anything FTS5 rejects — `don't`, a bare `AND`, an unclosed bracket — is
+retried once as a plain AND of quoted words, which is always valid, so a search box never
+answers a stray apostrophe with an error.
 
 **Why `tool_calls` is keyed by `tool_use_id`.** Every request in a session replays the entire
 conversation, so the same tool result appears in request N, N+1, N+2 and so on. Keying the

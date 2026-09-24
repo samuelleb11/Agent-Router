@@ -334,6 +334,7 @@ async fn serve() -> anyhow::Result<()> {
         .route("/api/projects", get(api::projects))
         .route("/api/sessions", get(api::sessions))
         .route("/api/requests", get(api::requests))
+        .route("/api/search", get(api::search))
         .route("/api/tools", get(api::tools))
         .route("/api/accounts", get(api::accounts_list).post(api::accounts_add))
         .route("/api/accounts/activate", post(api::accounts_activate))
@@ -410,7 +411,16 @@ async fn serve() -> anyhow::Result<()> {
                 Ok(()) => {}
                 // Nothing is lost by failing: the rows stay in the main store and the
                 // next start tries again. New bodies already go to the sidecar.
-                Err(err) => tracing::warn!(%err, "could not move the captured bodies yet"),
+                Err(err) => {
+                    tracing::warn!(%err, "could not move the captured bodies yet");
+                    return;
+                }
+            }
+            // Only once every body is in the sidecar, because the backfill reads from
+            // there and remembers how far it got: run it over a half-moved store and it
+            // would mark the rows still sitting in the main file as already seen.
+            if let Err(err) = db::backfill_blocks(&db_path) {
+                tracing::warn!(%err, "could not finish indexing the bodies captured before the index");
             }
         });
     }

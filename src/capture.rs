@@ -22,15 +22,19 @@ pub struct StoredBody {
 }
 
 impl StoredBody {
-    pub fn new(bytes: &[u8], cap: usize) -> Self {
-        let truncated = bytes.len() > cap;
-        Self {
-            stored: bytes[..bytes.len().min(cap)].to_vec(),
-            truncated,
-            true_bytes: bytes.len() as i64,
-        }
+    /// For a body capped as it streamed in: `stored` is already no longer than the cap,
+    /// and `true_bytes` was counted separately as the bytes went past.
+    ///
+    /// Both numbers have to be carried, because the buffer cannot report on itself. A
+    /// constructor that measures what it is handed against the cap always finds them
+    /// equal — the buffer stopped growing there — and so calls every truncated response
+    /// complete, with the cap itself as the true size. That is exactly what happened:
+    /// 6,082 rows in the live store were cut and recorded as whole.
+    pub fn streamed(stored: Vec<u8>, true_bytes: i64) -> Self {
+        Self { truncated: true_bytes > stored.len() as i64, stored, true_bytes }
     }
 }
+
 
 /// Quota headroom, straight off the response. On a subscription this matters more
 /// than a dollar figure: it is the scarce resource actually being spent.
@@ -85,7 +89,9 @@ pub struct CaptureEvent {
     pub usage: Usage,
     pub tool_calls: Vec<String>,
     pub shape: Option<RequestShape>,
-    pub request_body: StoredBody,
+    /// No request body: the conversation inside it is indexed as blocks instead, in
+    /// full rather than capped, and `request_bytes` still records how big it was. See
+    /// `Db::record`.
     pub response_body: StoredBody,
     pub request_bytes: i64,
     pub response_bytes: i64,
@@ -167,7 +173,6 @@ pub struct Pending {
     pub streaming_requested: bool,
     pub rl: RateLimit,
     pub shape: Option<RequestShape>,
-    pub request_body: StoredBody,
     pub request_bytes: i64,
 }
 
@@ -188,6 +193,9 @@ pub struct Tee {
     scanner: crate::analyze::SseScanner,
     raw: Vec<u8>,
     body_cap: usize,
+    /// Every decoded byte that arrived, whether or not it fitted under the cap. The
+    /// length of `raw` cannot stand in for this — it stops growing at the cap.
+    plain_bytes: i64,
     wire_bytes: i64,
     is_sse: bool,
     started: std::time::Instant,
@@ -210,6 +218,7 @@ impl Tee {
             scanner: Default::default(),
             raw: Vec::new(),
             body_cap,
+            plain_bytes: 0,
             wire_bytes: 0,
             is_sse,
             started,
@@ -232,6 +241,7 @@ impl Tee {
         if plain.is_empty() {
             return;
         }
+        self.plain_bytes += plain.len() as i64;
         if self.raw.len() < self.body_cap {
             let room = self.body_cap - self.raw.len();
             self.raw.extend_from_slice(&plain[..plain.len().min(room)]);
@@ -278,8 +288,7 @@ impl Drop for Tee {
             rl: p.rl,
             usage: self.scanner.usage.clone(),
             tool_calls: self.scanner.tool_calls.clone(),
-            request_body: p.request_body,
-            response_body: StoredBody::new(&self.raw, self.body_cap),
+            response_body: StoredBody::streamed(std::mem::take(&mut self.raw), self.plain_bytes),
             request_bytes: p.request_bytes,
             response_bytes: self.wire_bytes,
             shape: p.shape,
@@ -351,15 +360,18 @@ mod tests {
         assert_eq!(out, plain);
     }
 
+    /// A response longer than the cap must say so. It is capped as it streams, so the
+    /// buffer alone cannot tell — which is why 6,082 rows in the live store claimed to
+    /// be complete at exactly the cap before this was counted separately.
     #[test]
-    fn body_truncation_records_the_true_size() {
-        let b = StoredBody::new(&vec![b'x'; 100], 10);
-        assert_eq!(b.stored.len(), 10);
-        assert!(b.truncated);
-        assert_eq!(b.true_bytes, 100);
+    fn a_streamed_body_reports_the_size_it_had_before_the_cap() {
+        let cut = StoredBody::streamed(vec![b'x'; 64], 4096);
+        assert!(cut.truncated);
+        assert_eq!(cut.true_bytes, 4096, "the size before the cap, not after it");
+        assert_eq!(cut.stored.len(), 64);
 
-        let b = StoredBody::new(b"short", 10);
-        assert!(!b.truncated);
-        assert_eq!(b.true_bytes, 5);
+        let whole = StoredBody::streamed(vec![b'x'; 64], 64);
+        assert!(!whole.truncated, "a body that fitted is not truncated");
+        assert_eq!(whole.true_bytes, 64);
     }
 }

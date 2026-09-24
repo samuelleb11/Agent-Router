@@ -22,7 +22,7 @@ use hyper_util::rt::TokioExecutor;
 use tokio::sync::mpsc::Sender;
 
 use crate::analyze::analyze_request;
-use crate::capture::{CaptureEvent, Pending, RateLimit, StoredBody, Tee};
+use crate::capture::{CaptureEvent, Pending, RateLimit, Tee};
 use crate::accounts::{self, token_kind};
 use crate::config::Config;
 use crate::db::now_ms;
@@ -326,7 +326,6 @@ async fn forward(state: Arc<AppState>, req: Request<Body>) -> anyhow::Result<Res
         status,
         streaming_requested: shape.as_ref().map(|s| s.streaming).unwrap_or(false),
         rl,
-        request_body: StoredBody::new(&request_bytes, state.config.body_cap),
         request_bytes: request_bytes.len() as i64,
         shape,
     };

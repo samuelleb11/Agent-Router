@@ -14,7 +14,20 @@ use crate::analyze::RequestShape;
 
 pub struct Db {
     conn: Connection,
+    /// Conversation blocks already written by this process, keyed by where they sat.
+    ///
+    /// Every request replays the whole history, so without this each of a session's
+    /// several hundred requests would re-offer every block that came before it — a few
+    /// hundred thousand no-op statements a day. Correctness never rests on it: the
+    /// unique hash and the site primary key reject a duplicate either way, and a miss
+    /// only costs the statement it would have skipped. Bounded, and cleared wholesale
+    /// rather than evicted, because a cold cache is merely slower for a moment.
+    seen_blocks: std::collections::HashSet<u64>,
 }
+
+/// How many block sites to remember before starting over. At roughly forty bytes a
+/// entry this is a few tens of megabytes at worst, against a store measured in gigabytes.
+const SEEN_BLOCKS_MAX: usize = 1_000_000;
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS accounts (
@@ -154,7 +167,7 @@ CREATE TABLE IF NOT EXISTS push_devices (
 "#;
 
 /// Where the bodies live: beside the main store, under its own name.
-fn bodies_path(main: &Path) -> PathBuf {
+pub fn bodies_path(main: &Path) -> PathBuf {
     let stem = main.file_stem().and_then(|s| s.to_str()).unwrap_or("agent-router");
     main.with_file_name(format!("{stem}-bodies.db"))
 }
@@ -195,6 +208,58 @@ fn create_bodies_table(conn: &Connection) -> Result<()> {
            true_bytes   INTEGER NOT NULL,
            PRIMARY KEY (request_id, direction)
          );",
+    )?;
+    create_search_tables(conn)?;
+    Ok(())
+}
+
+/// The search index, in the sidecar because it is content, not structure.
+///
+/// `blocks` holds each distinct piece of conversation text exactly once; `block_sites`
+/// says where every copy of it appeared. That split is the whole design: a session's
+/// requests replay the same history end to end, so the text is written once and the
+/// sites — cheap rows of integers — carry the repetition.
+///
+/// `blocks_fts` is an external-content index: it stores the terms and reads the text
+/// back out of `blocks`, so the corpus is not held twice. Blocks are only ever inserted,
+/// never updated or deleted, which is why one `AFTER INSERT` trigger is the whole of the
+/// synchronisation — there is no `_bd`/`_bu` pair to keep honest.
+///
+/// The tokenizer keeps `_` inside a token so `body_cap` and `seen_blocks` survive as
+/// single terms; `.` and `-` stay separators, so `analyze.rs` is found by the phrase
+/// "analyze rs" and by either half on its own.
+fn create_search_tables(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        r#"CREATE TABLE IF NOT EXISTS bodies_db.blocks (
+             id    INTEGER PRIMARY KEY,
+             hash  BLOB NOT NULL UNIQUE,
+             kind  TEXT NOT NULL,
+             chars INTEGER NOT NULL,
+             text  TEXT NOT NULL
+           );
+
+           CREATE TABLE IF NOT EXISTS bodies_db.block_sites (
+             block_id   INTEGER NOT NULL,
+             session_id TEXT NOT NULL,
+             ordinal    INTEGER NOT NULL,
+             role       TEXT NOT NULL,
+             request_id INTEGER NOT NULL,
+             at         INTEGER NOT NULL,
+             PRIMARY KEY (block_id, session_id, ordinal)
+           );
+           CREATE INDEX IF NOT EXISTS bodies_db.block_sites_session
+             ON block_sites(session_id, ordinal);
+
+           CREATE VIRTUAL TABLE IF NOT EXISTS bodies_db.blocks_fts USING fts5(
+             text,
+             content='blocks',
+             content_rowid='id',
+             tokenize="unicode61 remove_diacritics 2 tokenchars '_'"
+           );
+
+           CREATE TRIGGER IF NOT EXISTS bodies_db.blocks_ai AFTER INSERT ON blocks BEGIN
+             INSERT INTO blocks_fts(rowid, text) VALUES (new.id, new.text);
+           END;"#,
     )?;
     Ok(())
 }
@@ -308,7 +373,7 @@ impl Db {
         ] {
             ensure_column(&conn, "accounts", col, ty)?;
         }
-        Ok(Self { conn })
+        Ok(Self { conn, seen_blocks: Default::default() })
     }
 
     /// Record the account Claude Code is already logged into. Called once at startup;
@@ -476,24 +541,200 @@ impl Db {
             )?;
         }
 
-        for (direction, body) in [("request", &ev.request_body), ("response", &ev.response_body)] {
-            tx.execute(
-                "INSERT INTO bodies_db.bodies
-                     (request_id, direction, content, truncated_at, true_bytes)
-                 VALUES (?1,?2,?3,?4,?5)",
-                params![
-                    row_id,
-                    direction,
-                    body.stored.as_slice(),
-                    if body.truncated { Some(body.stored.len() as i64) } else { None },
-                    body.true_bytes,
-                ],
-            )?;
+        // The conversation, split into blocks and stored once each. Skipped when the
+        // request carries no session: a block with nowhere to have been is not findable
+        // and not worth a row.
+        if let (Some(shape), Some(session_id)) = (&ev.shape, ev.session_id.as_deref()) {
+            write_blocks(&tx, &mut self.seen_blocks, &shape.blocks, session_id, row_id, ev.started_at_ms)?;
         }
+
+        // Only the response. The request body used to be kept here capped at
+        // `body_cap`, which — because `messages` is its first field — preserved the
+        // oldest part of a conversation and dropped the newest, and which nothing ever
+        // read back. What was worth keeping in it is now in `blocks`, uncapped and
+        // stored once instead of once per replay, and `requests.request_bytes` still
+        // records the size. Rows written by older builds stay where they are.
+        let body = &ev.response_body;
+        tx.execute(
+            "INSERT INTO bodies_db.bodies
+                 (request_id, direction, content, truncated_at, true_bytes)
+             VALUES (?1,'response',?2,?3,?4)",
+            params![
+                row_id,
+                body.stored.as_slice(),
+                if body.truncated { Some(body.stored.len() as i64) } else { None },
+                body.true_bytes,
+            ],
+        )?;
 
         tx.commit()?;
         Ok(())
     }
+}
+
+/// Write a request's blocks and the places they sat.
+///
+/// Shared by the live capture path and the backfill so the two cannot drift on what a
+/// block is or how a repeat is refused. Neither correctness nor completeness rests on
+/// `seen`: the unique hash and the site primary key reject a duplicate anyway, and a
+/// cache miss costs only the statement it would have saved.
+fn write_blocks(
+    tx: &Connection,
+    seen: &mut std::collections::HashSet<u64>,
+    blocks: &[crate::analyze::Block],
+    session_id: &str,
+    request_row_id: i64,
+    at: i64,
+) -> Result<()> {
+    if seen.len() > SEEN_BLOCKS_MAX {
+        seen.clear();
+    }
+    for b in blocks {
+        if !seen.insert(site_key(session_id, b.ordinal, &b.hash)) {
+            continue; // this exact block, at this spot, is already in
+        }
+        let fresh = tx.execute(
+            "INSERT INTO bodies_db.blocks (hash, kind, chars, text)
+             VALUES (?1,?2,?3,?4) ON CONFLICT(hash) DO NOTHING",
+            params![&b.hash[..], b.kind, b.chars, b.text],
+        )?;
+        // `last_insert_rowid` is only this block's when the insert took; on a conflict
+        // it still holds whatever was written before it.
+        let block_id: i64 = if fresh == 1 {
+            tx.last_insert_rowid()
+        } else {
+            tx.query_row(
+                "SELECT id FROM bodies_db.blocks WHERE hash = ?1",
+                params![&b.hash[..]],
+                |r| r.get(0),
+            )?
+        };
+        tx.execute(
+            "INSERT INTO bodies_db.block_sites
+                 (block_id, session_id, ordinal, role, request_id, at)
+             VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT DO NOTHING",
+            params![block_id, session_id, b.ordinal, b.role, request_row_id, at],
+        )?;
+    }
+    Ok(())
+}
+
+/// How far the backfill has read. Kept in `settings` so it survives a restart and can
+/// pick up where it stopped rather than starting the whole store again.
+const BACKFILL_KEY: &str = "blocks_backfill_after";
+
+/// Index the request bodies that were captured before there was an index.
+///
+/// **Must run while those bodies still exist.** They are the only record of the older
+/// conversations; once request bodies stop being stored there is nothing left to read.
+///
+/// Most of what it reads is truncated — on a real store, 98.7% of request bodies were
+/// cut at `body_cap` — so it goes through `blocks_from_stored_body`, which recovers the
+/// messages that closed before the cut and drops the partial tail. That makes this a
+/// partial recovery by nature: the opening of every session comes back, and with it
+/// nearly all assistant text, since each reply is replayed in the following request.
+/// The middles of long sessions were never captured and cannot be conjured.
+///
+/// Resumable and idempotent. It runs in small transactions on its own connection with a
+/// busy timeout and a pause between batches, because the capture task is writing to the
+/// same file for live traffic and must not be made to wait behind housekeeping.
+pub fn backfill_blocks(path: &Path) -> Result<()> {
+    let conn = Connection::open(path)?;
+    conn.busy_timeout(std::time::Duration::from_secs(30))?;
+    attach_bodies(&conn, path)?;
+
+    let mut after: i64 = conn
+        .query_row("SELECT value FROM settings WHERE key = ?1", [BACKFILL_KEY], |r| {
+            r.get::<_, String>(0)
+        })
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+
+    let ceiling: i64 = conn.query_row(
+        "SELECT coalesce(max(request_id), 0) FROM bodies_db.bodies WHERE direction = 'request'",
+        [],
+        |r| r.get(0),
+    )?;
+    if after >= ceiling {
+        return Ok(());
+    }
+    tracing::info!(from = after, to = ceiling, "indexing the bodies captured before the index");
+
+    let started = std::time::Instant::now();
+    let mut seen = std::collections::HashSet::new();
+    let (mut done, blocks_before) = (0i64, current_block_count(&conn)?);
+    loop {
+        let batch: Vec<(i64, Option<String>, i64, Vec<u8>)> = {
+            let mut stmt = conn.prepare(
+                "SELECT b.request_id, r.session_id, r.started_at, b.content
+                   FROM bodies_db.bodies b
+                   JOIN main.requests r ON r.id = b.request_id
+                  WHERE b.direction = 'request' AND b.request_id > ?1 AND b.request_id <= ?2
+                  ORDER BY b.request_id LIMIT 200",
+            )?;
+            let rows = stmt
+                .query_map(params![after, ceiling], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get::<_, Vec<u8>>(3)?))
+                })?
+                .collect::<std::result::Result<_, _>>()?;
+            rows
+        };
+        if batch.is_empty() {
+            break;
+        }
+
+        // Unchecked because the read above borrows `conn` to prepare its statement;
+        // there is no nesting here, only one transaction open at a time.
+        let tx = conn.unchecked_transaction()?;
+        for (request_id, session_id, at, content) in &batch {
+            after = (*request_id).max(after);
+            // A request with no session has nowhere to be found, and an empty body has
+            // nothing in it; both still move the watermark past themselves.
+            let Some(session_id) = session_id.as_deref() else { continue };
+            if content.is_empty() {
+                continue;
+            }
+            let blocks = crate::analyze::blocks_from_stored_body(content);
+            write_blocks(&tx, &mut seen, &blocks, session_id, *request_id, *at)?;
+        }
+        tx.execute(
+            "INSERT INTO settings (key, value, updated_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+            params![BACKFILL_KEY, after.to_string(), now_ms()],
+        )?;
+        tx.commit()?;
+
+        done += batch.len() as i64;
+        if done % 5000 == 0 {
+            tracing::info!(done, at = after, "backfill progress");
+        }
+        // Housekeeping yields to live traffic: the capture task writes to this same
+        // file, and a writer that never pauses makes every capture wait behind it.
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    tracing::info!(
+        requests = done,
+        blocks_added = current_block_count(&conn)? - blocks_before,
+        secs = started.elapsed().as_secs(),
+        "backfill complete"
+    );
+    Ok(())
+}
+
+fn current_block_count(conn: &Connection) -> Result<i64> {
+    Ok(conn.query_row("SELECT count(*) FROM bodies_db.blocks", [], |r| r.get(0))?)
+}
+
+/// Identity of one block *at one spot in one session*, for the replay cache. A hash of
+/// a hash: collisions cost a redundant `INSERT OR IGNORE`, never a lost or wrong row.
+fn site_key(session_id: &str, ordinal: i64, hash: &[u8; 32]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    session_id.hash(&mut h);
+    ordinal.hash(&mut h);
+    hash.hash(&mut h);
+    h.finish()
 }
 
 /// Add a column if the table predates it. Cheap, idempotent, no migration table.
@@ -587,15 +828,81 @@ mod tests {
             usage: Default::default(),
             tool_calls: Vec::new(),
             shape: None,
-            request_body: crate::capture::StoredBody {
+            response_body: crate::capture::StoredBody {
                 stored: b"{\"hello\":1}".to_vec(),
                 truncated: false,
                 true_bytes: 11,
             },
-            response_body: Default::default(),
             request_bytes: 11,
             response_bytes: 0,
         }
+    }
+
+    /// The replay problem in miniature. Two requests one turn apart: the second resends
+    /// everything the first did. The text must be written once, the positions twice, and
+    /// the whole thing must come back out of the index.
+    #[test]
+    fn a_replayed_conversation_is_stored_once_and_stays_searchable() {
+        let dir = std::env::temp_dir().join(format!("ar-search-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut db = Db::open(&dir.join("store.db")).unwrap();
+        crate::pricing::ensure_table(&db.conn).unwrap();
+
+        // The third message repeats the first word for word — same block, second site.
+        let first = br#"{"messages":[
+            {"role":"user","content":[{"type":"text","text":"where does the kestrel roost"}]}]}"#;
+        let again = br#"{"messages":[
+            {"role":"user","content":[{"type":"text","text":"where does the kestrel roost"}]},
+            {"role":"assistant","content":[{"type":"text","text":"on the cliff ledge, near body_cap"}]},
+            {"role":"user","content":[{"type":"text","text":"where does the kestrel roost"}]}]}"#;
+
+        for (n, body) in [(1, &first[..]), (2, &again[..])] {
+            let mut ev = an_event("claude-opus-5");
+            ev.request_id = Some(format!("req-{n}"));
+            ev.shape = crate::analyze::analyze_request(body);
+            db.record(&ev).unwrap();
+        }
+
+        fn count(db: &Db, sql: &str) -> i64 { db.conn.query_row(sql, [], |r| r.get(0)).unwrap() }
+        assert_eq!(count(&db, "SELECT count(*) FROM bodies_db.blocks"), 2, "two distinct texts");
+        assert_eq!(
+            count(&db, "SELECT count(*) FROM bodies_db.block_sites"),
+            3,
+            "three places they sat, across both requests"
+        );
+
+        // The index must see the block, and find it by a word from the middle of it.
+        assert_eq!(
+            count(&db, "SELECT count(*) FROM bodies_db.blocks_fts WHERE blocks_fts MATCH 'kestrel'"),
+            1
+        );
+        // An identifier survives the tokenizer whole rather than splitting at the `_`.
+        assert_eq!(
+            count(&db, "SELECT count(*) FROM bodies_db.blocks_fts WHERE blocks_fts MATCH 'body_cap'"),
+            1
+        );
+        // And the text really is readable back through the external-content index.
+        let snip: String = db
+            .conn
+            .query_row(
+                "SELECT snippet(blocks_fts, 0, '[', ']', '…', 8) FROM bodies_db.blocks_fts
+                 WHERE blocks_fts MATCH 'cliff'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(snip.contains("[cliff]"), "snippet should mark the hit, got {snip:?}");
+
+        // A third request replaying the same two turns adds nothing at all.
+        let mut ev = an_event("claude-opus-5");
+        ev.request_id = Some("req-3".into());
+        ev.shape = crate::analyze::analyze_request(again);
+        db.record(&ev).unwrap();
+        assert_eq!(count(&db, "SELECT count(*) FROM bodies_db.blocks"), 2);
+        assert_eq!(count(&db, "SELECT count(*) FROM bodies_db.block_sites"), 3);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A store written before bodies had their own file still has them in the main one.
@@ -707,13 +1014,25 @@ mod tests {
         let (content, bytes): (Vec<u8>, i64) = db
             .conn
             .query_row(
-                "SELECT content, true_bytes FROM bodies_db.bodies WHERE direction = 'request'",
+                "SELECT content, true_bytes FROM bodies_db.bodies WHERE direction = 'response'",
                 [],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .unwrap();
         assert_eq!(content, b"{\"hello\":1}".to_vec());
         assert_eq!(bytes, 11);
+
+        // The request body is no longer kept: what was worth reading in it is indexed
+        // as blocks, and the capped copy this used to store was never read back.
+        let requests: i64 = db
+            .conn
+            .query_row(
+                "SELECT count(*) FROM bodies_db.bodies WHERE direction = 'request'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(requests, 0, "no request body should be written");
 
         // And it is genuinely a separate file on disk, not a table under another name.
         assert!(dir.join("store-bodies.db").exists(), "sidecar file should exist");

@@ -15,9 +15,26 @@ const src = fs.readFileSync(path.join(root, 'assets', 'index.html'), 'utf8');
 const js = src.slice(src.indexOf('<script>') + 8, src.lastIndexOf('</script>'));
 
 let failures = 0;
+const report = (name, e) => {
+  if (!e) return console.log(`  ok    ${name}`);
+  failures++;
+  console.log(`  FAIL  ${name}\n        ${e.stack.split('\n').slice(0, 3).join('\n        ')}`);
+};
 const check = (name, fn) => {
-  try { fn(); console.log(`  ok    ${name}`); }
-  catch (e) { failures++; console.log(`  FAIL  ${name}\n        ${e.stack.split('\n').slice(0, 3).join('\n        ')}`); }
+  try { fn(); report(name); }
+  catch (e) { report(name, e); }
+};
+/// For a check that has to await the page's own async path.
+///
+/// `check` cannot take one: an async function handed to it returns a promise, which
+/// cannot throw into its `try`, so a failing async check would report `ok` and the
+/// assertion would escape as an unhandled rejection. These are settled before the
+/// summary instead.
+/// One chain, not one promise each: these drive the same page and the same DOM, so
+/// starting them together lets a later check move state out from under an earlier one.
+let queue = Promise.resolve();
+const acheck = (name, fn) => {
+  queue = queue.then(fn).then(() => report(name), (e) => report(name, e));
 };
 
 // --- a DOM just real enough to run the page ---
@@ -37,13 +54,24 @@ const mkEl = (tag = 'div') => {
       contains: (c) => el._cls.has(c),
     },
     append: (...c) => el.children.push(...c),
+    insertBefore(node, ref) {
+      const i = ref ? el.children.indexOf(ref) : -1;
+      if (i < 0) el.children.push(node); else el.children.splice(i, 0, node);
+      return node;
+    },
     appendChild: (c) => (el.children.push(c), c),
     replaceChildren: (...c) => { el.children.length = 0; el.children.push(...c); },
-    querySelector: () => mkEl(), querySelectorAll: () => [],
+    parentNode: null,
+    // renderCrumbs reaches through a found node to its parent
+    // (`querySelector('use[...]').parentNode`), so a found node has one. Only the found
+    // node: giving every element a parent lazily makes the graph cyclic, and anything
+    // that walks it — JSON.stringify, in one of the checks below — never returns.
+    querySelector: () => { const found = mkEl(); found.parentNode = mkEl(); return found; },
+    querySelectorAll: () => [],
     getBoundingClientRect: () => ({ left: 0, top: 0, right: 900, bottom: 300, width: 900, height: 300 }),
     setAttribute(k, v) { el[k] = v; }, getAttribute: (k) => el[k], removeAttribute() {},
     addEventListener() {}, removeEventListener() {}, closest: () => mkEl(),
-    after() {}, remove() {}, focus() {}, blur() {}, scrollIntoView() {},
+    after() {}, remove() {}, focus() {}, select() {}, blur() {}, scrollIntoView() {},
     showModal() { el.open = true; }, close() { el.open = false; },
     createElementNS: (ns, t) => mkEl(t),
   };
@@ -68,9 +96,29 @@ global.getComputedStyle = () => ({ lineHeight: '18' });
 global.setInterval = () => 0;
 global.setTimeout = ((f, ms) => (ms > 50 ? 0 : setTimeout(f, 0)));
 global.addEventListener = () => {};
+// A search reply, as the router spells it. The marker pair is what the page splits on,
+// and the second hit carries a stray opener to prove that cannot break out.
+const SEARCH = {
+  query: 'kestrel', expression: 'kestrel',
+  sessions: [{ session_id: 'aaaaaaaa-1111-2222-3333-444444444444', project: '/code/agent-router',
+               session_label: null, git_branch: 'dev', blocks: 2, hits: 3,
+               first_at: Date.now() - 6e5, last_at: Date.now() - 1e4 }],
+  hits: [
+    { block_id: 1, kind: 'tool_use', chars: 40, role: 'assistant', ordinal: 4, request_id: 9,
+      at: Date.now() - 1e4, session_id: 'aaaaaaaa-1111-2222-3333-444444444444',
+      project: '/code/agent-router', session_label: null,
+      snippet: 'where does the \u2039kestrel\u203a roost', rank: -8 },
+    { block_id: 2, kind: 'text', chars: 20, role: 'user', ordinal: 0, request_id: 10,
+      at: Date.now() - 6e5, session_id: 'bbbbbbbb-1111-2222-3333-444444444444',
+      project: null, session_label: null,
+      snippet: 'a stray \u2039marker and no close', rank: -7 },
+  ],
+};
 global.fetch = (url = '') => Promise.resolve({
   ok: true,
-  json: () => Promise.resolve(/\/api\/(projects|sessions|requests|tools|accounts)/.test(String(url)) ? [] : {}),
+  json: () => Promise.resolve(
+    String(url).includes('/api/search') ? SEARCH
+      : /\/api\/(projects|sessions|requests|tools|accounts)/.test(String(url)) ? [] : {}),
 });
 
 const load = (f, d) => {
@@ -81,7 +129,10 @@ const FORECAST = load(process.argv[2] || path.join(root, 'scripts', 'fixtures', 
 check('script evaluates', () => { new Function(js)(); });
 
 const api = new Function(
-  js + '\n; return { fcState, fcBasis, fcLine, runwaySvg, renderRunway, renderAllAccounts, hrs, applyAuth, pwForm };'
+  js + '\n; return { fcState, fcBasis, fcLine, runwaySvg, renderRunway, renderAllAccounts, hrs, applyAuth, pwForm,' +
+       ' markup, runSearch, qbox,' +
+       ' searchEls: () => ({ box: document.getElementById(\'sresults\'),' +
+       '   sess: document.getElementById(\'ssess\'), hits: document.getElementById(\'shits\') }) };'
 )();
 
 check('a local does not shadow a browser global the page uses', () => {
@@ -287,5 +338,36 @@ if (FORECAST) {
   console.log('  skip  real-payload checks (no fixture given)');
 }
 
-console.log(failures ? `\n${failures} check(s) failed` : '\nall checks passed');
-process.exit(failures ? 1 : 0);
+// Search is the one panel driven by the keyboard rather than the poll, and the one that
+// puts router-supplied text on the page — so it is worth proving it renders and escapes.
+acheck('a search renders its sessions and its hits', async () => {
+  api.qbox.value = 'kestrel';
+  await api.runSearch();
+  const els = api.searchEls();
+  if (els.box.hidden) throw new Error('the results stayed hidden');
+  if (!els.sess.children.length) throw new Error('no session rows were built');
+  if (els.hits.children.length !== 2) {
+    throw new Error(`expected both hits, got ${els.hits.children.length}`);
+  }
+});
+
+acheck('an empty query puts the panel away rather than searching for nothing', async () => {
+  api.qbox.value = '   ';
+  await api.runSearch();
+  if (!api.searchEls().box.hidden) throw new Error('a blank query left results on screen');
+});
+
+check('a stray marker cannot leave a tag open, and snippet text is escaped', () => {
+  const out = api.markup('a \u2039b\u203a c \u2039d');
+  const opens = (out.match(/<mark>/g) || []).length;
+  const closes = (out.match(/<\/mark>/g) || []).length;
+  if (opens !== closes) throw new Error(`unbalanced: ${opens} open, ${closes} close`);
+  if (api.markup('<script>x</script>').includes('<script>')) {
+    throw new Error('snippet text reached the page as markup');
+  }
+});
+
+queue.then(() => {
+  console.log(failures ? `\n${failures} check(s) failed` : '\nall checks passed');
+  process.exit(failures ? 1 : 0);
+});

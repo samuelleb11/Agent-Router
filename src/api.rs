@@ -154,6 +154,18 @@ impl ReadPool {
         conn.pragma_update(None, "cache_size", -65536)?; // 64 MB, negative means KiB
         conn.pragma_update(None, "mmap_size", 268_435_456i64)?; // 256 MB
         conn.pragma_update(None, "temp_store", "MEMORY")?;
+        // Search reads the sidecar; every other query reads the main file. Attached
+        // read-only and separately, because these connections are read-only and must
+        // not be the ones that bring the bodies file into being — the capture task
+        // creates it. A store that predates the index simply has no rows to match,
+        // which is why a failure here is a warning and not a dead dashboard.
+        let side = crate::db::bodies_path(&self.path);
+        if let Err(err) = conn.execute(
+            "ATTACH DATABASE ?1 AS bodies_db",
+            [format!("file:{}?mode=ro", side.display())],
+        ) {
+            tracing::warn!(error = %err, path = %side.display(), "search index unavailable to readers");
+        }
         Ok(conn)
     }
 
@@ -593,6 +605,126 @@ fn sessions_inner(state: &AppState, f: &Filter) -> anyhow::Result<Value> {
                  AND (?3 IS NULL OR r.account_id = ?3)
                GROUP BY s.id ORDER BY s.last_seen_at DESC LIMIT 200";
     Ok(rows(&conn, sql, &[&f.project, &f.since, &f.account])?)
+}
+
+/// What to look for, and where. Separate from `Filter` because none of the page-wide
+/// controls mean the same thing here: a search is not scoped to the dashboard's time
+/// window unless the caller says so.
+#[derive(Deserialize)]
+pub struct SearchQuery {
+    pub q: String,
+    pub project: Option<String>,
+    pub session: Option<String>,
+    /// text | thinking | tool_use | tool_result
+    pub kind: Option<String>,
+    pub since: Option<i64>,
+    pub limit: Option<i64>,
+}
+
+/// Find every session and every message whose text matches.
+///
+/// Deliberately not memoized: the other endpoints answer a handful of fixed questions,
+/// while the space of search queries is whatever anyone types, so a memo of it would
+/// grow without bound and hit on almost nothing. It does not need one — the index is
+/// the point.
+pub async fn search(
+    State(state): State<Arc<AppState>>,
+    Query(f): Query<SearchQuery>,
+) -> ApiResult {
+    Ok(Json(search_inner(&state, &f)?))
+}
+
+fn search_inner(state: &AppState, f: &SearchQuery) -> anyhow::Result<Value> {
+    let raw = f.q.trim();
+    if raw.is_empty() {
+        return Ok(json!({ "query": "", "expression": "", "sessions": [], "hits": [] }));
+    }
+    let conn = open(state)?;
+    let limit = f.limit.unwrap_or(60).clamp(1, 500);
+
+    // FTS5 has a query language of its own, and it is worth having: `"exact phrase"`,
+    // `term*`, `NEAR(a b)` and `a OR b` all do the obvious thing. So the typed text is
+    // offered to it verbatim first.
+    //
+    // But that language also rejects a great deal of ordinary typing — `don't`, a bare
+    // `AND`, an unclosed bracket, a lone `*` — and it rejects each with a differently
+    // worded error. Rather than try to tell its complaints apart from a real failure,
+    // anything that does not run is retried once as a plain AND of quoted words. That
+    // form is always valid FTS5, so if the retry fails too it is the store talking and
+    // not the query, and it is allowed to surface.
+    let (expression, hits) = match hits_for(&conn, raw, f, limit) {
+        Ok(rows) => (raw.to_string(), rows),
+        Err(_) => {
+            let literal = literal_query(raw);
+            (literal.clone(), hits_for(&conn, &literal, f, limit)?)
+        }
+    };
+    let sessions = sessions_for(&conn, &expression, f)?;
+    Ok(json!({
+        "query": raw,
+        "expression": expression,
+        "sessions": sessions,
+        "hits": hits,
+    }))
+}
+
+/// The matching blocks themselves, best match first.
+fn hits_for(
+    conn: &Connection,
+    expr: &str,
+    f: &SearchQuery,
+    limit: i64,
+) -> anyhow::Result<Value> {
+    let sql = "SELECT b.id AS block_id, b.kind, b.chars,
+                      st.session_id, st.role, st.ordinal, st.request_id, st.at,
+                      s.cwd AS project, s.label AS session_label,
+                      snippet(blocks_fts, 0, '\u{2039}', '\u{203a}', ' \u{2026} ', 18) AS snippet,
+                      bm25(blocks_fts) AS rank
+               FROM bodies_db.blocks_fts
+               JOIN bodies_db.blocks b       ON b.id  = blocks_fts.rowid
+               JOIN bodies_db.block_sites st ON st.block_id = b.id
+               LEFT JOIN main.sessions s     ON s.id  = st.session_id
+               WHERE blocks_fts MATCH ?1
+                 AND (?2 IS NULL OR s.cwd = ?2)
+                 AND (?3 IS NULL OR st.session_id = ?3)
+                 AND (?4 IS NULL OR b.kind = ?4)
+                 AND (?5 IS NULL OR st.at >= ?5)
+               ORDER BY rank LIMIT ?6";
+    rows(conn, sql, &[&expr, &f.project, &f.session, &f.kind, &f.since, &limit])
+}
+
+/// The same matches rolled up per session — "which conversations talk about this".
+fn sessions_for(conn: &Connection, expr: &str, f: &SearchQuery) -> anyhow::Result<Value> {
+    let sql = "SELECT st.session_id, s.cwd AS project, s.label AS session_label,
+                      s.git_branch, s.started_at,
+                      count(DISTINCT b.id) AS blocks,
+                      count(*) AS hits,
+                      min(st.at) AS first_at, max(st.at) AS last_at
+               FROM bodies_db.blocks_fts
+               JOIN bodies_db.blocks b       ON b.id  = blocks_fts.rowid
+               JOIN bodies_db.block_sites st ON st.block_id = b.id
+               LEFT JOIN main.sessions s     ON s.id  = st.session_id
+               WHERE blocks_fts MATCH ?1
+                 AND (?2 IS NULL OR s.cwd = ?2)
+                 AND (?3 IS NULL OR st.session_id = ?3)
+                 AND (?4 IS NULL OR b.kind = ?4)
+                 AND (?5 IS NULL OR st.at >= ?5)
+               GROUP BY st.session_id
+               ORDER BY hits DESC, last_at DESC LIMIT 200";
+    rows(conn, sql, &[&expr, &f.project, &f.session, &f.kind, &f.since])
+}
+
+/// Every word as a literal term, all of them required. `"` is FTS5's own escape for a
+/// quote inside a quoted string, which is what makes this safe for arbitrary input.
+fn literal_query(raw: &str) -> String {
+    // A quoted empty string is not a query; `MATCH ''` is an error rather than a miss.
+    if raw.split_whitespace().next().is_none() {
+        return "\"\"".into();
+    }
+    raw.split_whitespace()
+        .map(|t| format!("\"{}\"", t.replace('"', "\"\"")))
+        .collect::<Vec<_>>()
+        .join(" AND ")
 }
 
 pub async fn requests(State(state): State<Arc<AppState>>, Query(f): Query<Filter>) -> ApiResult {

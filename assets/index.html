@@ -184,6 +184,26 @@ button:focus-visible, .brow:focus-visible, .sum:focus-visible, summary:focus-vis
 .crow .meta b { color:var(--ink); }
 .crow .track { height:8px; }
 
+/* search */
+.sbar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+.sbar input { flex:1 1 300px; min-width:0; font:inherit; font-size:14px; padding:8px 11px;
+              border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--ink); }
+.sbar input:focus { outline:2px solid color-mix(in srgb, var(--accent) 50%, transparent); outline-offset:1px;
+                    border-color:var(--accent); }
+.sbar kbd { font:inherit; font-size:11px; color:var(--muted); border:1px solid var(--line);
+            border-bottom-width:2px; border-radius:4px; padding:0 5px; }
+.sechead { font-size:12px; color:var(--muted); margin:14px 0 2px; display:flex; gap:6px; align-items:center; }
+.hit { display:block; width:100%; text-align:left; background:none; border:0; border-bottom:1px solid var(--line);
+       padding:9px 6px; font:inherit; color:inherit; cursor:pointer; border-radius:6px; }
+.hit:last-child { border-bottom:0; }
+.hit:hover { background:color-mix(in srgb, var(--accent) 5%, transparent); }
+.hit .top { display:flex; align-items:center; gap:7px; flex-wrap:wrap; font-size:12px; color:var(--muted); }
+.hit .snip { margin-top:5px; font-size:13px; line-height:1.5; color:var(--ink); white-space:pre-wrap;
+             display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
+.hit mark { background:color-mix(in srgb, var(--accent) 30%, transparent); color:inherit;
+            border-radius:3px; padding:0 2px; }
+.kindtag { font-size:11px; padding:1px 7px; border-radius:99px; border:1px solid var(--line); color:var(--muted); }
+
 /* bar rows */
 .list { display:flex; flex-direction:column; }
 .brow { display:block; width:100%; text-align:left; background:none; border:0; border-bottom:1px solid var(--line);
@@ -367,6 +387,7 @@ pre.cmd { background:var(--bg); border:1px solid var(--line); border-radius:7px;
     <symbol id="g-list" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M2 3.5h10M2 7h10M2 10.5h10"/></symbol>
     <symbol id="g-activity" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M1.5 9l3-4 2.5 3 2-6 3.5 9"/></symbol>
     <symbol id="g-lock" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><rect x="2.5" y="6.5" width="9" height="6" rx="1.5"/><path d="M4.5 6.5V4.5a2.5 2.5 0 0 1 5 0v2"/></symbol>
+    <symbol id="g-search" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="6" cy="6" r="4"/><path d="M9 9l3.5 3.5"/></symbol>
     <symbol id="g-read" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 3.5c2-1.2 3.8-1.2 5.5 0 1.7-1.2 3.5-1.2 5.5 0v8c-2-1.2-3.8-1.2-5.5 0-1.7-1.2-3.5-1.2-5.5 0z"/><path d="M7 3.5v8"/></symbol>
   </defs>
 </svg>
@@ -393,7 +414,29 @@ pre.cmd { background:var(--bg); border:1px solid var(--line); border-radius:7px;
     <button class="link" id="reset" hidden>✕ clear scope</button>
   </div>
 
-  <h2 style="margin-top:0"><svg class="g" width="14" height="14"><use href="#g-quota"/></svg>Quota headroom<span class="h2sub" id="quotasub">the account that is serving right now</span></h2>
+  <h2 style="margin-top:0"><svg class="g" width="14" height="14"><use href="#g-search"/></svg>Search the transcripts<span class="h2sub" id="searchsub">every message, tool call and result ever captured</span></h2>
+  <section class="panel" id="searchpanel">
+    <div class="sbar">
+      <input id="q" type="search" spellcheck="false" autocomplete="off" aria-label="Search the transcripts"
+             placeholder="a word, a phrase, an identifier…">
+      <kbd>/</kbd>
+      <div class="range" id="skind" role="radiogroup" aria-label="What to search">
+        <button role="radio" data-k="" aria-checked="true">all</button>
+        <button role="radio" data-k="text" aria-checked="false">messages</button>
+        <button role="radio" data-k="tool_use" aria-checked="false">tool calls</button>
+        <button role="radio" data-k="tool_result" aria-checked="false">results</button>
+        <button role="radio" data-k="thinking" aria-checked="false">thinking</button>
+      </div>
+    </div>
+    <div id="sresults" hidden>
+      <div class="sechead" id="ssesshead"></div>
+      <div class="list" id="ssess"></div>
+      <div class="sechead" id="shitshead"></div>
+      <div class="list" id="shits"></div>
+    </div>
+  </section>
+
+  <h2><svg class="g" width="14" height="14"><use href="#g-quota"/></svg>Quota headroom<span class="h2sub" id="quotasub">the account that is serving right now</span></h2>
   <section class="panel" id="quotabox">
     <div class="quota" id="quota"></div>
     <div class="qhist" id="qhist"></div>
@@ -2411,6 +2454,105 @@ async function refresh() {
   await renderAccounts(accounts || undefined);
   await renderAuth();
 }
+// ---------- search ----------
+// Not part of the five-second refresh: this one answers the keyboard, not the clock.
+const KINDLABEL = { text:'message', thinking:'thinking', tool_use:'tool call', tool_result:'tool result' };
+const qbox = document.getElementById('q');
+let searchTimer = null, searchSeq = 0;
+
+// The snippet arrives with its hits wrapped in \u2039\u203a. Splitting on the pair rather
+// than substituting it means a stray marker in the source text can only mis-highlight,
+// never emit unbalanced HTML — everything between them is escaped either way.
+const markup = s => String(s ?? '').split(/[\u2039\u203a]/)
+  .map((part, i) => i % 2 ? '<mark>' + esc(part) + '</mark>' : esc(part)).join('');
+
+const searchKind = () => (document.querySelector('#skind button[aria-checked="true"]') || {}).dataset?.k || '';
+
+document.getElementById('skind').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  document.querySelectorAll('#skind button').forEach(x => x.setAttribute('aria-checked', String(x === b)));
+  runSearch();
+});
+qbox.addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(runSearch, 160); });
+addEventListener('keydown', e => {
+  if (e.key !== '/' || e.metaKey || e.ctrlKey || e.altKey) return;
+  const a = document.activeElement;
+  if (a && (/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) || a.isContentEditable)) return;
+  e.preventDefault(); qbox.focus(); qbox.select();
+});
+
+async function runSearch() {
+  const q = qbox.value.trim(), seq = ++searchSeq;
+  const box = document.getElementById('sresults'), sub = document.getElementById('searchsub');
+  if (!q) {
+    box.hidden = true;
+    setText(sub, 'every message, tool call and result ever captured');
+    return;
+  }
+  const t0 = performance.now();
+  let r;
+  try {
+    r = await get('/api/search', { q, kind: searchKind() || null,
+      project: state.project, session: state.session, since: sinceMs() });
+  } catch (e) {
+    if (seq !== searchSeq) return;
+    box.hidden = false;
+    setText(document.getElementById('ssesshead'), '');
+    document.getElementById('ssess').replaceChildren();
+    setText(document.getElementById('shitshead'), '');
+    setEmpty(document.getElementById('shits'), 'Search failed: ' + e.message);
+    return;
+  }
+  if (seq !== searchSeq) return;   // a later keystroke has already answered
+  const ms = Math.round(performance.now() - t0);
+  const sess = r.sessions || [], hits = r.hits || [];
+  box.hidden = false;
+  setText(sub, sess.length
+    ? `${n(sess.length)} session${sess.length === 1 ? '' : 's'} · ${ms} ms`
+    : `nothing matched · ${ms} ms`);
+
+  const sessEl = document.getElementById('ssess'), hitsEl = document.getElementById('shits');
+  setText(document.getElementById('ssesshead'),
+    sess.length ? 'Sessions that mention it — click one to scope the page' : '');
+  const max = Math.max(1, ...sess.map(x => num(x.hits)));
+  if (!patchList(sessEl, sess, x => x.session_id, () => {
+        const row = makeBarRow(true);
+        row.addEventListener('click', () => {
+          const id = row.dataset.key;
+          setScope({ session: state.session === id ? null : id, project: null });
+        });
+        return row;
+      }, (row, x) => setBarRow(row, {
+        icon:'session', iconStyle:'color:var(--sess)', name: id8(x.session_id), mono:true,
+        path: x.project || '', value: num(x.hits), max, tip: n(x.hits),
+        meta: [`${n(x.blocks)} message${num(x.blocks) === 1 ? '' : 's'}`, ago(x.last_at)].join(' · '),
+        selected: state.session === x.session_id,
+        title: x.session_id,
+        tipRows: [x.session_id, [n(x.hits), 'matching places'], [n(x.blocks), 'distinct messages'],
+                  [x.project || '(unresolved)', 'project'], [`${tod(x.first_at)} \u2192 ${tod(x.last_at)}`, 'span']],
+      }))) sessEl.replaceChildren();
+
+  setText(document.getElementById('shitshead'),
+    hits.length ? `Best matches — ${n(hits.length)} shown` : '');
+  if (!hits.length) {
+    setEmpty(hitsEl, `Nothing matched \u201c${q}\u201d${state.session || state.project || state.range !== 'all' ? ' in the current scope' : ''}.`);
+    return;
+  }
+  hitsEl.replaceChildren(...hits.map(x => {
+    const el = h('button', { class:'hit', title: x.session_id },
+      h('div', { class:'top' },
+        h('span', { class:'kindtag', text: KINDLABEL[x.kind] || x.kind }),
+        h('b', { text: x.role || '' }),
+        h('span', { text: '\u00b7 ' + base(x.project) }),
+        h('span', { text: '\u00b7 ' + id8(x.session_id) }),
+        h('span', { text: '\u00b7 ' + tod(x.at) })),
+      h('div', { class:'snip' }));
+    el.querySelector('.snip').innerHTML = markup(x.snippet);
+    el.addEventListener('click', () => setScope({ session: x.session_id, project: null }));
+    return el;
+  }));
+}
+
 async function tick() {
   clearTimeout(timer);
   try { await refresh(); }
