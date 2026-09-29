@@ -59,4 +59,244 @@ final class DecodingTests: XCTestCase {
         let decoded = try XCTUnwrap(Data(base64Encoded: String(header.dropFirst(6))))
         XCTAssertEqual(String(decoding: decoded, as: UTF8.self), "app:hunter22")
     }
+
+    // MARK: - Session liveness: the keys a current router adds, and the rows an older one sends
+
+    private func row(_ json: String) throws -> LiveSession {
+        try JSONDecoder().decode(LiveSession.self, from: Data(json.utf8))
+    }
+
+    private func status(_ json: String) throws -> LiveStatus {
+        try JSONDecoder().decode(LiveStatus.self, from: Data(json.utf8))
+    }
+
+    /// A current router's row: every key it added decodes, and the legacy ones still say
+    /// what older builds expect.
+    func testASessionRowCarriesTheRoutersActivity() throws {
+        let s = try row(#"""
+        {"session_id":"d6e4d7da-9d0e","cwd":"/code/agent-router","project":"-code-agent-router","git_branch":"dev",
+         "title":"Session liveness","created_ms":1790000000000,"last_activity_ms":1790000100000,"active":true,
+         "state":"ask","archived":false,"wrapped":true,"bytes":123456,
+         "activity":"waiting","open":true,"detail":"Bash wants to run","since_ms":1790000090000,
+         "waiting_on":{"kind":"permission","tool":"Bash","request_id":"req-1","tool_use_id":"toolu_1","summary":"git status"},
+         "tone":"attention","source":"registry","as_of_ms":1790000120000}
+        """#)
+        XCTAssertEqual(s.activity, .waiting)
+        XCTAssertEqual(s.isOpen, true)
+        XCTAssertEqual(s.detail, "Bash wants to run")
+        XCTAssertEqual(s.waitingOn?.kind, "permission")
+        XCTAssertEqual(s.waitingOn?.tool, "Bash")
+        XCTAssertEqual(s.waitingOn?.requestId, "req-1")
+        XCTAssertEqual(s.waitingOn?.toolUseId, "toolu_1")
+        XCTAssertEqual(s.waitingOn?.summary, "git status")
+        XCTAssertEqual(s.tone, .attention)
+        XCTAssertEqual(s.source, "registry")
+        XCTAssertEqual(s.asOfMs, 1_790_000_120_000)
+        XCTAssertEqual(s.elapsed, 30, "measured against the router's clock, not the phone's")
+        XCTAssertTrue(s.isLive)
+        XCTAssertTrue(s.needsYou)
+        XCTAssertFalse(s.isWorking)
+        XCTAssertEqual(s.state, "ask", "the legacy word is still there for the builds already installed")
+        XCTAssertEqual(s.look, StateLook(color: .orange, hollow: false, halo: true, label: "waiting for you"))
+
+        let closed = try row(#"""
+        {"session_id":"738b7b63","project":"-p","last_activity_ms":1790000000000,"active":false,"state":"idle",
+         "archived":false,"wrapped":false,"bytes":1,"activity":"closed","open":false,"detail":"Session ended mid-turn",
+         "ended_ms":1789990000000,"ended_how":"unknown","mid_turn":true,"tone":"closed","source":"registry"}
+        """#)
+        XCTAssertEqual(closed.activity, .closed)
+        XCTAssertEqual(closed.isOpen, false)
+        XCTAssertEqual(closed.endedMs, 1_789_990_000_000)
+        XCTAssertEqual(closed.endedHow, "unknown")
+        XCTAssertEqual(closed.midTurn, true)
+        XCTAssertFalse(closed.isLive)
+        XCTAssertEqual(closed.look, StateLook(color: .gray, hollow: true, halo: false, label: "ended"), "a hollow ring, never a plain idle dot")
+
+        let busy = try row(#"""
+        {"session_id":"bg","project":"-p","last_activity_ms":1790000000000,"active":true,"state":"working",
+         "archived":false,"wrapped":true,"bytes":1,"activity":"background","open":true,
+         "detail":"2 background agents running","since_ms":1789999000000,
+         "background":{"agents":2,"workflows":0,"shells":1},"tone":"busy"}
+        """#)
+        XCTAssertEqual(busy.background, BackgroundWork(agents: 2, workflows: 0, shells: 1))
+        XCTAssertTrue(busy.isWorking)
+        XCTAssertEqual(busy.look.color, .green)
+    }
+
+    /// An older router sends none of the new keys: the row decodes as it always did, and
+    /// is drawn exactly as it always was.
+    func testALegacyRowDecodesAndDrawsAsBefore() throws {
+        let s = try row(#"{"session_id":"aaaa","cwd":null,"project":"-p","git_branch":null,"title":null,"created_ms":null,"last_activity_ms":1790000000000,"active":true,"state":"working","archived":false,"wrapped":false,"bytes":10}"#)
+        XCTAssertNil(s.activity)
+        XCTAssertNil(s.isOpen)
+        XCTAssertNil(s.detail)
+        XCTAssertNil(s.sinceMs)
+        XCTAssertNil(s.endedMs)
+        XCTAssertNil(s.waitingOn)
+        XCTAssertNil(s.background)
+        XCTAssertNil(s.tone)
+        XCTAssertNil(s.asOfMs)
+        XCTAssertNil(s.elapsed)
+        XCTAssertTrue(s.isLive, "an older router's `active` still counts")
+        XCTAssertFalse(s.needsYou)
+        XCTAssertEqual(s.look, StateLook(color: .green, hollow: false, halo: true, label: "working"))
+        for (state, color) in [("ask", StateColor.ColorName.orange), ("stalled", .yellow), ("failed", .red), ("idle", .gray)] {
+            let r = try row(#"{"session_id":"b","project":"-p","last_activity_ms":1,"active":false,"state":"\#(state)","archived":false,"wrapped":false,"bytes":1}"#)
+            XCTAssertEqual(r.look, StateLook(color: color, hollow: false, halo: false, label: state), state)
+        }
+        // The legacy keys are exactly as strict as before: a row without them is refused.
+        XCTAssertThrowsError(try row(#"{"session_id":"c","project":"-p","active":false,"state":"idle","archived":false,"wrapped":false,"bytes":1}"#))
+    }
+
+    /// A key added later that arrives malformed must not cost the list: on an installed
+    /// phone one row that fails to decode fails them all.
+    func testAMalformedNewKeyReadsAsAbsent() throws {
+        let rows = try JSONDecoder().decode([LiveSession].self, from: Data(#"""
+        [{"session_id":"a","project":"-p","last_activity_ms":1,"active":false,"state":"idle","archived":false,"wrapped":false,"bytes":1,
+          "activity":7,"open":"yes","detail":null,"since_ms":"soon","ended_ms":1.5,"mid_turn":"no","waiting_on":"x",
+          "background":[1],"tone":null,"as_of_ms":{}},
+         {"session_id":"b","project":"-p","last_activity_ms":2,"active":false,"state":"idle","archived":false,"wrapped":false,"bytes":1}]
+        """#.utf8))
+        XCTAssertEqual(rows.map(\.sessionId), ["a", "b"])
+        XCTAssertNil(rows[0].activity)
+        XCTAssertNil(rows[0].isOpen)
+        XCTAssertNil(rows[0].sinceMs)
+        XCTAssertNil(rows[0].endedMs)
+        XCTAssertNil(rows[0].midTurn)
+        XCTAssertNil(rows[0].waitingOn)
+        XCTAssertNil(rows[0].background)
+        XCTAssertNil(rows[0].tone)
+        XCTAssertNil(rows[0].asOfMs)
+        let st = try status(#"{"state":"idle","detail":"Waiting for you","quiet_ms":5,"activity":["x"],"waiting_on":3,"since_ms":"x"}"#)
+        XCTAssertNil(st.activity)
+        XCTAssertNil(st.waitingOn)
+        XCTAssertEqual(st.detail, "Waiting for you")
+    }
+
+    /// A word this build has never heard is kept and drawn neutral gray — never guessed
+    /// at from the legacy state, never a crash, and never a Stop button.
+    func testAnUnknownActivityIsNeutral() throws {
+        let s = try row(#"{"session_id":"a","project":"-p","last_activity_ms":1,"active":true,"state":"working","archived":false,"wrapped":true,"bytes":1,"activity":"compacting"}"#)
+        XCTAssertEqual(s.activity, .unknown("compacting"))
+        XCTAssertEqual(s.look.color, .gray)
+        XCTAssertFalse(s.look.hollow)
+        XCTAssertEqual(s.look.label, "compacting")
+        XCTAssertTrue(s.isLive, "the router's own `active` still decides whether it is live")
+        XCTAssertFalse(s.isWorking)
+        // The router's tone, when it sends one this build knows, is its explicit choice.
+        let toned = try row(#"{"session_id":"a","project":"-p","last_activity_ms":1,"active":true,"state":"working","archived":false,"wrapped":true,"bytes":1,"activity":"compacting","tone":"busy"}"#)
+        XCTAssertEqual(toned.look.color, .green)
+        // An unknown tone falls back to the activity's own.
+        let odd = try row(#"{"session_id":"a","project":"-p","last_activity_ms":1,"active":true,"state":"ask","archived":false,"wrapped":true,"bytes":1,"activity":"waiting","tone":"violet"}"#)
+        XCTAssertEqual(odd.tone, .unknown("violet"))
+        XCTAssertEqual(odd.look.color, .orange)
+
+        let st = try status(#"{"state":"working","detail":"Compacting","quiet_ms":10,"activity":"compacting"}"#)
+        XCTAssertFalse(st.isBusy, "no Stop for an activity this build cannot vouch for")
+        XCTAssertEqual(st.look.color, .gray)
+    }
+
+    /// The stream's status event in both shapes, and what each activity lets the header do.
+    func testTheStatusEventInBothShapes() throws {
+        let old = try status(#"{"state":"working","detail":"Working","quiet_ms":10}"#)
+        XCTAssertNil(old.activity)
+        XCTAssertTrue(old.isBusy, "an older router's `working` still offers Stop")
+        XCTAssertTrue(old.isActive)
+        XCTAssertEqual(old.look, StateLook(color: .green, hollow: false, halo: true, label: "working"))
+        XCTAssertFalse(try status(#"{"state":"idle","detail":"Waiting for you","quiet_ms":10}"#).isBusy)
+        XCTAssertTrue(try status(#"{"state":"ask","detail":"Question","quiet_ms":10}"#).needsYou)
+
+        let thinking = try status(#"{"state":"working","detail":"Thinking","quiet_ms":110000,"queued":1,"activity":"generating","open":true,"since_ms":1790000000000,"as_of_ms":1790000110000,"tone":"busy"}"#)
+        XCTAssertEqual(thinking.activity, .generating)
+        XCTAssertEqual(thinking.isOpen, true)
+        XCTAssertEqual(thinking.sinceMs, 1_790_000_000_000)
+        XCTAssertEqual(thinking.asOfMs, 1_790_000_110_000)
+        XCTAssertEqual(thinking.queued, 1)
+        XCTAssertTrue(thinking.isBusy)
+
+        let tool = try status(#"{"state":"tool","detail":"Running Bash","quiet_ms":10,"activity":"tool","tone":"busy"}"#)
+        XCTAssertTrue(tool.isBusy)
+        let stalled = try status(#"{"state":"working","detail":"No progress","quiet_ms":700000,"activity":"stalled","tone":"warn"}"#)
+        XCTAssertTrue(stalled.isBusy, "a stalled turn is still a turn Stop can end")
+        XCTAssertEqual(stalled.look.color, .yellow)
+
+        let background = try status(#"{"state":"working","detail":"2 background agents running","quiet_ms":5000,"queued":0,"activity":"background","open":true,"background":{"agents":2,"workflows":0,"shells":0},"tone":"busy"}"#)
+        XCTAssertFalse(background.isBusy, "no Stop for background work: an interrupt could discard its results")
+        XCTAssertTrue(background.isActive)
+        XCTAssertEqual(background.background?.agents, 2)
+        XCTAssertEqual(background.look, StateLook(color: .green, hollow: false, halo: true, label: "working in the background"))
+
+        let waiting = try status(#"{"state":"ask","detail":"Waiting for your answer","quiet_ms":61000,"activity":"waiting","waiting_on":{"kind":"question","tool":"AskUserQuestion","request_id":"r-9"},"tone":"attention"}"#)
+        XCTAssertTrue(waiting.needsYou)
+        XCTAssertFalse(waiting.isBusy)
+        XCTAssertEqual(waiting.waitingOn?.requestId, "r-9")
+        XCTAssertEqual(waiting.look.color, .orange)
+
+        let failed = try status(#"{"state":"failed","detail":"API error: rate limited","quiet_ms":10,"activity":"failed","tone":"error"}"#)
+        XCTAssertFalse(failed.isBusy)
+        XCTAssertFalse(failed.isActive)
+        XCTAssertEqual(failed.look.color, .red)
+
+        let closed = try status(#"{"state":"idle","detail":"Session ended","quiet_ms":3600000,"queued":0,"activity":"closed","open":false,"ended_ms":1789996400000,"tone":"closed"}"#)
+        XCTAssertFalse(closed.isBusy)
+        XCTAssertFalse(closed.isActive)
+        XCTAssertEqual(closed.endedMs, 1_789_996_400_000)
+        XCTAssertEqual(closed.look, StateLook(color: .gray, hollow: true, halo: false, label: "ended"))
+    }
+
+    /// The prompt says how many are waiting, and an answer names the one it settles.
+    func testThePromptCountAndTheAnswerNamesItsPrompt() throws {
+        let p = try JSONDecoder().decode(LivePrompt.self, from: Data(#"{"pending":true,"request_id":"r1","tool":"Bash","question":false,"display_name":"Bash","description":"git status","reason":null,"input":{},"suggestions":[{"index":0,"label":"Always allow Bash(git status:*) for the rest of this session"}],"count":3}"#.utf8))
+        XCTAssertEqual(p.count, 3)
+        XCTAssertTrue(p.isPermission)
+        XCTAssertFalse(p.isQuestion)
+        let q = try JSONDecoder().decode(LivePrompt.self, from: Data(#"{"pending":true,"request_id":"r2","tool":"AskUserQuestion","question":true,"suggestions":[]}"#.utf8))
+        XCTAssertNil(q.count, "an older router reports only the one")
+        XCTAssertTrue(q.isQuestion)
+        XCTAssertFalse(q.isPermission)
+        XCTAssertFalse(try JSONDecoder().decode(LivePrompt.self, from: Data(#"{"pending":false}"#.utf8)).isQuestion)
+
+        func keys(_ body: AnswerBody) throws -> [String: Any] {
+            try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(body)) as? [String: Any])
+        }
+        let allow = try keys(AnswerBody(session: "s", allow: true, suggestion: 0, requestId: "r1"))
+        XCTAssertEqual(allow["request_id"] as? String, "r1")
+        XCTAssertNil(allow["requestId"])
+        XCTAssertEqual(allow["allow"] as? Bool, true)
+        let legacy = try keys(AnswerBody(session: "s", answers: ["Which?": "B"]))
+        XCTAssertNil(legacy["request_id"], "left out when unknown, so an older router sees what it always saw")
+        XCTAssertEqual(Set(legacy.keys), ["session", "answers"])
+    }
+
+    /// A waiting question lists its questions in the tool's input — what tells a form drawn
+    /// for an earlier question from the one waiting now. Any other prompt's input is the
+    /// tool's own business, of any shape, and one this build does not expect costs the
+    /// list, never the prompt: the permission card must keep coming.
+    func testAPromptSaysWhichQuestionsItPuts() throws {
+        func prompt(_ json: String) throws -> LivePrompt { try JSONDecoder().decode(LivePrompt.self, from: Data(json.utf8)) }
+        let q = try prompt(#"{"pending":true,"request_id":"r2","tool":"AskUserQuestion","question":true,"display_name":null,"description":null,"reason":null,"input":{"questions":[{"question":"Which database?","header":"DB","multiSelect":false,"options":[{"label":"Postgres","description":""}]},{"question":"And the cache?"}]},"suggestions":[],"count":1}"#)
+        XCTAssertEqual(q.questions, ["Which database?", "And the cache?"])
+        XCTAssertTrue(q.asks(["Which database?", "And the cache?"]))
+        XCTAssertFalse(q.asks(["And the cache?", "Which database?"]), "in the same order")
+        XCTAssertFalse(q.asks(["Which database?"]), "all of them")
+        XCTAssertFalse(q.asks(["Which framework?", "And the cache?"]))
+
+        let bare = try prompt(#"{"pending":true,"request_id":"r3","tool":"AskUserQuestion","question":true}"#)
+        XCTAssertNil(bare.questions)
+        XCTAssertTrue(bare.asks(["Anything?"]), "a prompt that lists nothing is taken at its word")
+
+        let bash = try prompt(#"{"pending":true,"request_id":"p1","tool":"Bash","question":false,"input":{"command":"ls","questions":"not a list"},"suggestions":[{"index":0,"label":"Always allow"}],"count":2}"#)
+        XCTAssertNil(bash.questions)
+        XCTAssertTrue(bash.isPermission)
+        XCTAssertEqual(bash.suggestions?.map(\.label), ["Always allow"])
+        XCTAssertEqual(bash.count, 2)
+        XCTAssertNil(try prompt(#"{"pending":true,"request_id":"p2","tool":"Write","question":false,"input":null}"#).questions)
+
+        // An entry with no text stays in the list, so it can match no form.
+        let odd = try prompt(#"{"pending":true,"question":true,"input":{"questions":[{"question":"A"},7,{"question":3}]}}"#)
+        XCTAssertEqual(odd.questions, ["A", nil, nil])
+        XCTAssertFalse(odd.asks(["A"]))
+        XCTAssertFalse(odd.asks(["A", "B", "C"]))
+        XCTAssertNil(try prompt(#"{"pending":false,"count":0}"#).questions)
+    }
 }

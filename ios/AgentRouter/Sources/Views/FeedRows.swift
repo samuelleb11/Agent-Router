@@ -13,7 +13,9 @@ struct FeedRowView: View {
         switch item.kind {
         case "ask" where item.ask != nil:
             AskFormView(questions: item.ask!.questions, answered: row.answered) { answers, parts in
-                await feed.answer(answers, fallback: parts, row: row.id)
+                // Which questions the form was drawn for: the transcript it came from has no
+                // prompt id, so these are what say whether the question waiting is this one.
+                await feed.answer(answers, questions: item.ask!.questions.map(\.question), fallback: parts, row: row.id)
             }
             .padding(12)
             .background(RoundedRectangle(cornerRadius: 12).fill(Color.orange.opacity(row.answered ? 0.06 : 0.12)))

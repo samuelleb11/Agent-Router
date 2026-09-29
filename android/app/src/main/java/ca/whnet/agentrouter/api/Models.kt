@@ -9,6 +9,11 @@ package ca.whnet.agentrouter.api
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 
 @Serializable
 data class Health(val ok: Boolean, val pid: Int = 0, val version: String = "")
@@ -24,7 +29,17 @@ data class AuthStatus(
 
 // ---------------------------------------------------------------- live sessions
 
-/** One row of `GET /api/live/sessions`: a transcript written in the last week. */
+/**
+ * One row of `GET /api/live/sessions`: a transcript written in the last week, or a session
+ * whose process is running however long ago it last wrote.
+ *
+ * The first block is what every router has always sent, and it keeps its meaning — [state]
+ * stays in the old vocabulary so builds of this app that predate the rest still read it.
+ * Everything after [bytes] comes only from a router that watches the Claude Code process as
+ * well as its transcript: whether the process is running at all, and what it is doing, in
+ * words the router chose. All of it is optional. An older router sends none of it and the
+ * app then behaves exactly as it did.
+ */
 @Serializable
 data class LiveSession(
     @SerialName("session_id") val sessionId: String,
@@ -34,6 +49,7 @@ data class LiveSession(
     val title: String? = null,
     @SerialName("created_ms") val createdMs: Long? = null,
     @SerialName("last_activity_ms") val lastActivityMs: Long = 0,
+    /** Doing something now, or waiting on a person. (An older router: wrote in the last two minutes.) */
     val active: Boolean = false,
     /** working | ask | idle | stalled | failed */
     val state: String = "idle",
@@ -41,6 +57,28 @@ data class LiveSession(
     /** Under the wrapper and answering on its socket: a message or a stop would arrive. */
     val wrapped: Boolean = false,
     val bytes: Long = 0,
+    /** One of [Activity]'s values — or a newer one, which reads as neutral rather than failing. */
+    val activity: String? = null,
+    /** Whether the Claude Code process is running at all. Null when the router cannot tell. */
+    val open: Boolean? = null,
+    /** The router's own sentence for it: "Running Bash", "Waiting for your answer". */
+    val detail: String? = null,
+    /** When the current activity began, on the Mac's clock. */
+    @SerialName("since_ms") val sinceMs: Long? = null,
+    /** A closed session's end, as near as its transcript says. */
+    @SerialName("ended_ms") val endedMs: Long? = null,
+    /** `exit` when the process wrote its exit marker on the way out; `unknown` when it just stopped. */
+    @SerialName("ended_how") val endedHow: String? = null,
+    /** Closed with a turn still open: it died, or was killed, in the middle of something. */
+    @SerialName("mid_turn") val midTurn: Boolean? = null,
+    @SerialName("waiting_on") val waitingOn: WaitingOn? = null,
+    val background: BackgroundWork? = null,
+    /** busy | attention | warn | error | idle | closed: the router picks the colour so every client agrees on it. */
+    val tone: String? = null,
+    /** `registry` when the process said so itself, `transcript` when it was read from what it wrote. */
+    val source: String? = null,
+    /** When the router took this reading, on its own clock — what a duration is measured against. */
+    @SerialName("as_of_ms") val asOfMs: Long? = null,
 ) {
     val shortId: String get() = sessionId.take(8)
 
@@ -49,7 +87,80 @@ data class LiveSession(
         get() = cwd?.trimEnd('/')?.substringAfterLast('/')?.takeIf { it.isNotEmpty() } ?: project
 
     val label: String get() = title ?: shortId
+
+    /** The process has gone: nothing more happens here unless the session is resumed. */
+    val isClosed: Boolean get() = Activity.isClosed(activity, tone, open)
+
+    /** Blocked on a person. Only a router that sends [activity] says so on the row. */
+    val needsYou: Boolean get() = activity == Activity.WAITING
+
+    /** At work — see [Activity.working]. Only a router that sends [activity] says so. */
+    val isWorking: Boolean get() = activity?.let(Activity::working) ?: false
 }
+
+/**
+ * The router's `activity` vocabulary, and the questions every client asks of it.
+ *
+ * Strings rather than an enum on purpose: a router newer than this app may add a value, and
+ * one this app does not know must come out neutral — gray, no Stop — never as a failed
+ * decode that blanks the whole list.
+ */
+object Activity {
+    const val CLOSED = "closed"
+    const val IDLE = "idle"
+    const val GENERATING = "generating"
+    const val TOOL = "tool"
+    const val WAITING = "waiting"
+    const val BACKGROUND = "background"
+    const val FAILED = "failed"
+    const val STALLED = "stalled"
+
+    /**
+     * What a Stop can interrupt: the model mid-reply, a tool running, a turn gone quiet.
+     * Not [BACKGROUND]. The turn is already over there, and what an interrupt does to agents
+     * and workflows still running on their own has never been measured — it may throw away
+     * the results they are about to hand back. The router refuses that Stop for older
+     * builds, which still show the button for the legacy `working`.
+     */
+    private val STOPPABLE = setOf(GENERATING, TOOL, STALLED)
+
+    /**
+     * At work, as the router's session counts say it: a turn running, background work a
+     * finished turn left behind, or a turn gone quiet — the process still says it is busy.
+     * Not [WAITING]: a session blocked on you is counted apart, since it is the one that
+     * needs a thumb.
+     */
+    private val WORKING = setOf(GENERATING, TOOL, BACKGROUND, STALLED)
+
+    /** Busy, or waiting on a person: what the router's `active` means once it sends this. */
+    private val ACTIVE = WORKING + WAITING
+
+    fun stoppable(activity: String): Boolean = activity in STOPPABLE
+
+    fun working(activity: String): Boolean = activity in WORKING
+
+    fun active(activity: String): Boolean = activity in ACTIVE
+
+    /** Any one of the three is enough: the router sends them together, but only one is needed to know. */
+    fun isClosed(activity: String?, tone: String?, open: Boolean?): Boolean =
+        activity == CLOSED || tone == "closed" || open == false
+}
+
+/** What a waiting session is blocked on. */
+@Serializable
+data class WaitingOn(
+    /** permission | question | plan | dialog */
+    val kind: String? = null,
+    val tool: String? = null,
+    /** The wrapper's id for the prompt, when the wrapper holds it: what an answer names. */
+    @SerialName("request_id") val requestId: String? = null,
+    @SerialName("tool_use_id") val toolUseId: String? = null,
+    val summary: String? = null,
+)
+
+/** Work still running after the turn itself ended. */
+@Serializable
+data class BackgroundWork(val agents: Int = 0, val workflows: Int = 0, val shells: Int = 0)
 
 /** One rendered row of the feed, as the stream projects it. */
 @Serializable
@@ -84,17 +195,46 @@ data class AskQuestion(
 @Serializable
 data class AskOption(val label: String, val description: String? = null)
 
-/** The `status` event: what the session is doing, from the tail of its transcript. */
+/**
+ * The `status` event: what the session is doing.
+ *
+ * [state], [detail] and [quietMs] are what every router sends. The rest comes only from a
+ * router that watches the process as well as the transcript, and is optional for the same
+ * reason as on [LiveSession].
+ */
 @Serializable
 data class LiveStatus(
-    /** ask | tool | idle | working */
+    /** ask | tool | idle | working | failed — the old vocabulary, kept for older builds */
     val state: String = "idle",
     val detail: String = "",
+    /** How long it has been doing what [detail] says. */
     @SerialName("quiet_ms") val quietMs: Long = 0,
     /** Messages typed while a turn ran, still waiting their turn. */
     val queued: Int? = null,
+    val activity: String? = null,
+    val open: Boolean? = null,
+    @SerialName("since_ms") val sinceMs: Long? = null,
+    @SerialName("as_of_ms") val asOfMs: Long? = null,
+    @SerialName("waiting_on") val waitingOn: WaitingOn? = null,
+    val background: BackgroundWork? = null,
+    val tone: String? = null,
+    @SerialName("ended_ms") val endedMs: Long? = null,
 ) {
-    val isBusy: Boolean get() = state == "tool" || state == "working"
+    /**
+     * Whether a Stop would interrupt anything. From [activity] when the router sends it —
+     * so background work, which the legacy [state] also calls `working`, offers no Stop —
+     * and from [state], as it always was, when it does not.
+     */
+    val isBusy: Boolean
+        get() = activity?.let(Activity::stoppable) ?: (state == "tool" || state == "working")
+
+    val isClosed: Boolean get() = Activity.isClosed(activity, tone, open)
+
+    /**
+     * Busy or waiting on you, so the header's dot wears its halo. Never from an older
+     * router: its header never had one, and a guess from [state] would be the old guesses.
+     */
+    val isActive: Boolean get() = activity?.let(Activity::active) ?: false
 }
 
 /** What the live endpoints answer with — success and failure share the shape. */
@@ -170,8 +310,38 @@ data class LivePrompt(
     val description: String? = null,
     val reason: String? = null,
     val suggestions: List<PromptSuggestion> = emptyList(),
+    /**
+     * How many prompts are waiting in all; this one is the newest. An older router sends
+     * no count — it only ever knew one — and it also answers "whatever is newest" no matter
+     * which request id it is given, which is why an answer checks for this.
+     */
+    val count: Int? = null,
+    /**
+     * The tool's own input, as the editor was asked about it. Kept as raw JSON: a
+     * permission request carries whatever its tool takes, and no one shape decodes them
+     * all — a strict one here would fail the whole prompt, and with it the card.
+     */
+    val input: JsonElement? = null,
 ) {
     val isPermission: Boolean get() = pending && !question
+    val isQuestion: Boolean get() = pending && question
+
+    /**
+     * The questions a question prompt asks, by their text and in their order. Null when its
+     * input does not list them, as from a router that sends no input.
+     */
+    val questionTexts: List<String?>?
+        get() = ((input as? JsonObject)?.get("questions") as? JsonArray)
+            ?.map { ((it as? JsonObject)?.get("question") as? JsonPrimitive)?.contentOrNull }
+
+    /**
+     * Whether this is the question a form with [questions] was drawn for: the same
+     * questions, in the same order — the web view's rule, word for word. The feed keeps
+     * every form it has drawn, so one answered in the editor stays on screen here while the
+     * model asks the next; its answers must not be handed to that next one. A prompt that
+     * does not list its questions is taken at its word.
+     */
+    fun asks(questions: List<String>): Boolean = questionTexts?.let { it == questions } ?: true
 }
 
 /**
@@ -227,6 +397,12 @@ data class OkReply(
     val allow: Boolean? = null,
     val suggestion: Int? = null,
     val message: String? = null,
+    /**
+     * Which prompt this answers, by the id `/api/live/prompt` gave it. Left out, the router
+     * answers only when exactly one prompt is waiting — with several, it will not guess
+     * which one was meant. Null is not sent at all, so the body is the old one.
+     */
+    @SerialName("request_id") val requestId: String? = null,
 )
 @Serializable data class SessionBody(val session: String)
 @Serializable data class ArchiveBody(val session: String, val archived: Boolean)

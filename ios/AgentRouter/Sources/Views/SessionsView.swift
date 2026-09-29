@@ -21,6 +21,25 @@ struct SessionsView: View {
             if let notice {
                 Section { Text(notice).font(.footnote).foregroundStyle(.red) }
             }
+            // A listing that failed keeps the last one on screen, and its dots would go on
+            // claiming "working" or "waiting" long after either stopped being true.
+            if let why = state.sessionsFailure, !state.sessions.isEmpty {
+                Section {
+                    Label {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(why)
+                            Text("The list below is the last one the router sent.")
+                                .foregroundStyle(.secondary)
+                        }
+                    } icon: {
+                        Image(systemName: "wifi.exclamationmark")
+                    }
+                    .font(.footnote)
+                    .foregroundStyle(.orange)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("sessions-stale")
+                }
+            }
             ForEach(groups.recent) { p in
                 Section {
                     ForEach(p.sessions) { row($0) }
@@ -92,7 +111,7 @@ private struct ProjectHeader: View {
     let project: SessionGroups.Project
     var body: some View {
         HStack {
-            StateDot(state: project.live ? "working" : "idle", active: project.live)
+            StateDot(look: project.look)
             Text(project.name)
             Spacer()
             Text(Fmt.ago(project.newest))
@@ -104,7 +123,7 @@ struct SessionRowView: View {
     let session: LiveSession
     var body: some View {
         HStack(spacing: 10) {
-            StateDot(state: session.state, active: session.active)
+            StateDot(look: session.look)
             VStack(alignment: .leading, spacing: 2) {
                 Text(session.label)
                     .lineLimit(2)
@@ -117,8 +136,16 @@ struct SessionRowView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
+                if let line = session.doing {
+                    Text(line)
+                        .font(.caption)
+                        .foregroundStyle(session.needsYou ? .orange : session.activity == .failed ? .red : .secondary)
+                        .lineLimit(1)
+                }
             }
             Spacer(minLength: 6)
+            // An ended session is not wrapped any more, so it reads "view", as on the web view
+            // and the other phone; its line already says that it ended, and when.
             Text(session.wrapped ? "live" : "view")
                 .font(.caption2.weight(.medium))
                 .padding(.horizontal, 7)
@@ -134,17 +161,27 @@ struct SessionRowView: View {
 }
 
 struct StateDot: View {
-    let state: String?
-    var active = false
+    let look: StateLook
     var body: some View {
-        Circle()
-            .fill(color)
-            .frame(width: 9, height: 9)
-            .overlay { if active { Circle().stroke(color.opacity(0.35), lineWidth: 3) } }
-            .accessibilityLabel(state ?? "idle")
+        let color = look.color.color
+        ZStack {
+            if look.hollow {
+                // Ended: a ring with nothing in it, so a closed session never reads as
+                // one that is merely idle.
+                Circle().strokeBorder(color, lineWidth: 1.5)
+            } else {
+                Circle().fill(color)
+            }
+        }
+        .frame(width: 9, height: 9)
+        .overlay { if look.halo { Circle().stroke(color.opacity(0.35), lineWidth: 3) } }
+        .accessibilityLabel(look.label)
     }
-    private var color: Color {
-        switch StateColor.of(state) {
+}
+
+extension StateColor.ColorName {
+    var color: Color {
+        switch self {
         case .green: .green
         case .orange: .orange
         case .yellow: .yellow

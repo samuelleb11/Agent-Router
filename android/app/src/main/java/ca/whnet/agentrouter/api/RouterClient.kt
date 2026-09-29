@@ -3,10 +3,11 @@
 package ca.whnet.agentrouter.api
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.flow
-import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -135,33 +136,53 @@ class RouterClient(baseUrl: String, private val password: String?) {
      * Server-sent events from [path], until the connection ends or the collector stops.
      * Bytes are split into lines here rather than by a line reader — see [SseLineSplitter]
      * for why that is load-bearing and not a detail.
+     *
+     * The read blocks inside the socket, where coroutine cancellation cannot reach it, so
+     * a collector that stops cancels the call itself. Without that, a stream abandoned on
+     * a link that died quietly — the Mac asleep, the phone off the LAN — held its reader
+     * until the 45 s read timeout, and the feed's retry waited behind it the whole time.
      */
-    fun events(path: String): Flow<SseEvent> = flow {
+    fun events(path: String): Flow<SseEvent> = callbackFlow {
         val b = Request.Builder().url(base + path).header("accept", "text/event-stream")
         if (!password.isNullOrEmpty()) b.header("authorization", authorization(password))
-        val response = try {
-            streams.newCall(b.get().build()).execute()
-        } catch (e: IOException) {
-            coroutineContext.ensureActive()
-            throw RouterFailure.Unreachable(e.message ?: "no route")
-        }
-        response.use {
-            when {
-                it.isSuccessful -> Unit
-                it.code == 401 -> throw RouterFailure.Unauthorized
-                it.code == 403 -> throw RouterFailure.NoPasswordSet
-                else -> throw RouterFailure.Status(it.code, "")
+        val call = streams.newCall(b.get().build())
+        launch(Dispatchers.IO) {
+            val response = try {
+                call.execute()
+            } catch (e: IOException) {
+                ensureActive()
+                throw RouterFailure.Unreachable(e.message ?: "no route")
             }
-            val source = it.body?.source() ?: throw RouterFailure.Unreachable("no body")
-            val splitter = SseLineSplitter()
-            val parser = SseParser()
-            while (!source.exhausted()) {
-                coroutineContext.ensureActive()
-                val line = splitter.feed(source.readByte().toInt() and 0xff) ?: continue
-                emit(parser.feed(line) ?: continue)
+            try {
+                response.use {
+                    when {
+                        it.isSuccessful -> Unit
+                        it.code == 401 -> throw RouterFailure.Unauthorized
+                        it.code == 403 -> throw RouterFailure.NoPasswordSet
+                        else -> throw RouterFailure.Status(it.code, "")
+                    }
+                    val source = it.body?.source() ?: throw RouterFailure.Unreachable("no body")
+                    val splitter = SseLineSplitter()
+                    val parser = SseParser()
+                    while (!source.exhausted()) {
+                        ensureActive()
+                        val line = splitter.feed(source.readByte().toInt() and 0xff) ?: continue
+                        send(parser.feed(line) ?: continue)
+                    }
+                }
+            } catch (e: IOException) {
+                // Cancelling the call is how a collector that stopped closes the socket, and
+                // the blocked read reports that as an IOException. That is the stop working,
+                // not the router failing, so it ends as the cancellation it is; a real
+                // failure mid-stream goes to the collector as it always did.
+                ensureActive()
+                throw e
             }
+            // The router ended the stream: the flow ends with it, normally.
+            channel.close()
         }
-    }.flowOn(Dispatchers.IO)
+        awaitClose { call.cancel() }
+    }
 }
 
 /** Decode a reply, turning a shape mismatch into something the UI can show. */

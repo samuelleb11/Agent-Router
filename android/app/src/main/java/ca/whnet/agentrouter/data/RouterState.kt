@@ -59,7 +59,6 @@ class RouterState(router: Router, private val store: RouterStore) {
     var sessionsLoaded: Boolean by mutableStateOf(false)
 
     val isReachable: Boolean get() = health?.ok == true && failure == null
-    val activeSessions: Int get() = sessions.count { it.active }
     val activeAccount: Forecast.ForecastAccount? get() = forecast?.accounts?.firstOrNull { it.isActive }
 
     /** Accounts to offer in the switcher: everything the router lists, in its order. */

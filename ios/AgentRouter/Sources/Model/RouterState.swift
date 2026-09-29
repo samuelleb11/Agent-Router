@@ -42,6 +42,20 @@ final class RouterState {
 
     func credential(for id: String) -> Account? { accounts.first { $0.id == id } }
     var activeSessions: Int { sessions.filter(\.active).count }
+    /// Sessions at work and sessions waiting on you, when the router names each session's
+    /// activity. Nil from an older router, whose only word for either is `active`.
+    var sessionCounts: (working: Int, waiting: Int)? {
+        guard sessions.contains(where: { $0.activity != nil }) else { return nil }
+        return (sessions.filter(\.isWorking).count, sessions.filter(\.needsYou).count)
+    }
+    /// "2 working · 1 waiting", or from an older router "3 active"; nil when nothing is.
+    /// An ended session is neither, so it is never counted.
+    var liveSummary: String? {
+        guard let c = sessionCounts else { return activeSessions > 0 ? "\(activeSessions) active" : nil }
+        let parts = [c.working > 0 ? "\(c.working) working" : nil, c.waiting > 0 ? "\(c.waiting) waiting" : nil]
+        let said = parts.compactMap { $0 }
+        return said.isEmpty ? nil : said.joined(separator: " · ")
+    }
     /// For the pages that stream: the same address and password this state uses.
     var liveClient: RouterClient? { client }
 

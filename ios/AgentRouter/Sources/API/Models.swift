@@ -245,7 +245,8 @@ struct ActivateResponse: Decodable, Sendable {
 
 // MARK: - Live sessions
 
-/// One row of `GET /api/live/sessions`: a transcript written in the last week.
+/// One row of `GET /api/live/sessions`: a transcript written in the last week, or the
+/// transcript of a session still open however old.
 struct LiveSession: Decodable, Sendable, Identifiable, Hashable {
     let sessionId: String
     let cwd: String?
@@ -253,7 +254,11 @@ struct LiveSession: Decodable, Sendable, Identifiable, Hashable {
     let gitBranch: String?
     let title: String?
     let createdMs: Int?
+    /// When the conversation last said something — its content, not the file's mtime,
+    /// from a router that knows the difference.
     let lastActivityMs: Int
+    /// Doing something or waiting on you. A current router sets it from `activity`; an
+    /// older one from how recently the transcript moved.
     let active: Bool
     /// working | ask | idle | stalled | failed
     let state: String
@@ -261,6 +266,31 @@ struct LiveSession: Decodable, Sendable, Identifiable, Hashable {
     /// Under the wrapper and answering on its socket: a message or a stop would arrive.
     let wrapped: Bool
     let bytes: Int
+
+    // What the router's one derivation says the session is doing — the same answer the
+    // open view's status event gives. Every key from here down is absent from an older
+    // router and optional for that reason: the phone must keep listing its sessions.
+
+    let activity: SessionActivity?
+    /// Whether a process still holds the conversation; nil when the router cannot tell.
+    let isOpen: Bool?
+    /// The router's own line for what it is doing, worded once for every client.
+    let detail: String?
+    /// When the current activity began.
+    let sinceMs: Int?
+    /// When a closed session ended, and how the router knows: `exit` or `unknown`.
+    let endedMs: Int?
+    let endedHow: String?
+    /// Closed with its turn still open: the process went away mid-work.
+    let midTurn: Bool?
+    let waitingOn: WaitingOn?
+    let background: BackgroundWork?
+    /// The colour class the router chose, so every client colours a state alike.
+    let tone: SessionTone?
+    /// `registry` (Claude Code's own record of the process) or `transcript`.
+    let source: String?
+    /// The router's clock when it worked this out.
+    let asOfMs: Int?
 
     var id: String { sessionId }
     var shortId: String { String(sessionId.prefix(8)) }
@@ -272,11 +302,222 @@ struct LiveSession: Decodable, Sendable, Identifiable, Hashable {
     var label: String { title ?? shortId }
     var lastActivity: Date { Date(timeIntervalSince1970: TimeInterval(lastActivityMs) / 1000) }
 
+    /// Doing something now or waiting on you — what keeps a session in view however long
+    /// ago it last wrote. The router's activity when it names one this build knows;
+    /// otherwise its `active`, which a current router derives from that same activity.
+    var isLive: Bool {
+        if let activity, activity.isKnown { return activity.isActive }
+        return active
+    }
+    /// At work: a turn running, or background agents after one.
+    var isWorking: Bool { activity?.isWorking ?? false }
+    /// Blocked on a person.
+    var needsYou: Bool { activity == .waiting }
+
+    /// Seconds in the current activity, on the router's clock alone: `since_ms` against the
+    /// `as_of_ms` the row was worked out at, never this phone's clock — one that disagrees
+    /// with the Mac's would shift every duration, and the web view and the other phone would
+    /// say something else. Nil without both; a current router always sends both with an
+    /// activity. The list is re-read every few seconds, which is all the ticking a row needs.
+    var elapsed: TimeInterval? {
+        guard let sinceMs, let asOfMs else { return nil }
+        return max(0, TimeInterval(asOfMs - sinceMs) / 1000)
+    }
+
     enum CodingKeys: String, CodingKey {
         case cwd, project, title, active, state, archived, wrapped, bytes
         case sessionId = "session_id", gitBranch = "git_branch", createdMs = "created_ms"
         case lastActivityMs = "last_activity_ms"
+        case activity, detail, background, tone, source
+        case isOpen = "open", sinceMs = "since_ms", endedMs = "ended_ms", endedHow = "ended_how"
+        case midTurn = "mid_turn", waitingOn = "waiting_on", asOfMs = "as_of_ms"
     }
+}
+
+extension LiveSession {
+    /// Written out rather than synthesized for one reason: the keys the router added for
+    /// session liveness are read leniently. The legacy keys decode exactly as they always
+    /// have; a new key that is absent, null or not what this build expects reads as nil,
+    /// because one row that fails to decode fails the whole list.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        sessionId = try c.decode(String.self, forKey: .sessionId)
+        cwd = try c.decodeIfPresent(String.self, forKey: .cwd)
+        project = try c.decode(String.self, forKey: .project)
+        gitBranch = try c.decodeIfPresent(String.self, forKey: .gitBranch)
+        title = try c.decodeIfPresent(String.self, forKey: .title)
+        createdMs = try c.decodeIfPresent(Int.self, forKey: .createdMs)
+        lastActivityMs = try c.decode(Int.self, forKey: .lastActivityMs)
+        active = try c.decode(Bool.self, forKey: .active)
+        state = try c.decode(String.self, forKey: .state)
+        archived = try c.decode(Bool.self, forKey: .archived)
+        wrapped = try c.decode(Bool.self, forKey: .wrapped)
+        bytes = try c.decode(Int.self, forKey: .bytes)
+
+        activity = c.lenient(String.self, .activity).map(SessionActivity.init)
+        isOpen = c.lenient(Bool.self, .isOpen)
+        detail = c.lenient(String.self, .detail)
+        sinceMs = c.lenient(Int.self, .sinceMs)
+        endedMs = c.lenient(Int.self, .endedMs)
+        endedHow = c.lenient(String.self, .endedHow)
+        midTurn = c.lenient(Bool.self, .midTurn)
+        waitingOn = c.lenient(WaitingOn.self, .waitingOn)
+        background = c.lenient(BackgroundWork.self, .background)
+        tone = c.lenient(String.self, .tone).map(SessionTone.init)
+        source = c.lenient(String.self, .source)
+        asOfMs = c.lenient(Int.self, .asOfMs)
+    }
+}
+
+extension KeyedDecodingContainer {
+    /// A key added after phones were already in the field: absent, null or of a shape this
+    /// build does not expect, it is nil — never the error that would fail everything
+    /// around it.
+    func lenient<T: Decodable>(_ type: T.Type, _ key: Key) -> T? {
+        try? decodeIfPresent(type, forKey: key)
+    }
+}
+
+/// What a session is doing, in the router's words (`activity`). One derivation on the
+/// router produces it for the list, the open view and the notifier, so the phone draws it
+/// rather than inferring it. A word this build does not know is kept, and drawn neutral.
+enum SessionActivity: Hashable, Sendable {
+    /// No process holds the conversation any more.
+    case closed
+    /// Open, and the turn is over.
+    case idle
+    /// Mid-turn with no tool outstanding: thinking, writing, or retrying a request.
+    case generating
+    /// Mid-turn with a tool call outstanding.
+    case tool
+    /// Blocked on a person: a question, a permission, a plan, a dialog.
+    case waiting
+    /// The turn is over but background agents or workflows are still running; the session
+    /// will act again by itself.
+    case background
+    /// The last turn ended on an API error.
+    case failed
+    /// Mid-turn with nothing observable for ten minutes.
+    case stalled
+    case unknown(String)
+
+    init(_ raw: String) {
+        switch raw {
+        case "closed": self = .closed
+        case "idle": self = .idle
+        case "generating": self = .generating
+        case "tool": self = .tool
+        case "waiting": self = .waiting
+        case "background": self = .background
+        case "failed": self = .failed
+        case "stalled": self = .stalled
+        default: self = .unknown(raw)
+        }
+    }
+
+    var isKnown: Bool {
+        if case .unknown = self { return false }
+        return true
+    }
+    /// Work in flight that will produce output without anyone typing.
+    var isWorking: Bool {
+        switch self {
+        case .generating, .tool, .background, .stalled: true
+        default: false
+        }
+    }
+    /// What the router's `active` means: at work, or waiting on you.
+    var isActive: Bool { isWorking || self == .waiting }
+    /// What Stop can act on: a turn in progress. Not background work alone — what an
+    /// interrupt does to running background agents is unmeasured and could discard their
+    /// results, so the router refuses it and no client offers it.
+    var isStoppable: Bool {
+        switch self {
+        case .generating, .tool, .stalled: true
+        default: false
+        }
+    }
+    /// The colour class the router gives this activity, for a payload that carries an
+    /// activity without a tone.
+    var tone: SessionTone {
+        switch self {
+        case .generating, .tool, .background: .busy
+        case .waiting: .attention
+        case .stalled: .warn
+        case .failed: .error
+        case .idle: .idle
+        case .closed: .closed
+        case .unknown(let raw): .unknown(raw)
+        }
+    }
+    /// What VoiceOver says for a dot of this activity.
+    var spoken: String {
+        switch self {
+        case .closed: "ended"
+        case .idle: "idle"
+        case .generating: "working"
+        case .tool: "running a tool"
+        case .waiting: "waiting for you"
+        case .background: "working in the background"
+        case .failed: "failed"
+        case .stalled: "stalled"
+        case .unknown(let raw): raw
+        }
+    }
+}
+
+/// The router's colour class for a session (`tone`): chosen once, on the router, so the
+/// web view and both phones colour the same state the same way.
+enum SessionTone: Hashable, Sendable {
+    case busy, attention, warn, error, idle, closed
+    case unknown(String)
+
+    init(_ raw: String) {
+        switch raw {
+        case "busy": self = .busy
+        case "attention": self = .attention
+        case "warn": self = .warn
+        case "error": self = .error
+        case "idle": self = .idle
+        case "closed": self = .closed
+        default: self = .unknown(raw)
+        }
+    }
+
+    var isKnown: Bool {
+        if case .unknown = self { return false }
+        return true
+    }
+
+    /// The tone to draw: the router's when it sent one this build knows, else the one its
+    /// activity implies. Nil only when the router sent neither — an older router.
+    static func effective(_ tone: SessionTone?, _ activity: SessionActivity?) -> SessionTone? {
+        if let tone, tone.isKnown { return tone }
+        return activity?.tone
+    }
+}
+
+/// What a waiting session is blocked on (`waiting_on`).
+struct WaitingOn: Decodable, Sendable, Hashable {
+    /// permission | question | plan | dialog
+    let kind: String?
+    let tool: String?
+    /// The wrapper's id for the prompt, when the session is wrapped: what an answer names.
+    let requestId: String?
+    let toolUseId: String?
+    let summary: String?
+
+    enum CodingKeys: String, CodingKey {
+        case kind, tool, summary, requestId = "request_id", toolUseId = "tool_use_id"
+    }
+}
+
+/// Work a session left running after its turn (`background`): agents and workflows that
+/// will report back, and shells that will start a turn of their own when they finish.
+struct BackgroundWork: Decodable, Sendable, Hashable {
+    let agents: Int?
+    let workflows: Int?
+    let shells: Int?
 }
 
 /// One rendered row of the feed, as the stream projects it.
@@ -320,18 +561,72 @@ struct AskOption: Decodable, Sendable, Hashable, Identifiable {
     var id: String { label }
 }
 
-/// The `status` event: what the session is doing, from the tail of its transcript.
+/// The `status` event: what the session is doing — from a current router the same
+/// derivation the session list uses, from an older one the tail of the transcript.
 struct LiveStatus: Decodable, Sendable, Equatable {
-    /// ask | tool | thinking | idle | working
+    /// ask | tool | idle | working | failed — the vocabulary every build of this app
+    /// understands; `activity` says the same thing in finer words.
     let state: String
     let detail: String
+    /// How long the session has been doing what it is doing now, by the router's clock.
     let quietMs: Int
     /// Messages typed while a turn ran, still waiting their turn.
     let queued: Int?
 
-    var isBusy: Bool { state == "tool" || state == "working" }
+    // Absent from an older router, and optional for that reason.
+    let activity: SessionActivity?
+    let isOpen: Bool?
+    let sinceMs: Int?
+    let asOfMs: Int?
+    let waitingOn: WaitingOn?
+    let background: BackgroundWork?
+    let tone: SessionTone?
+    let endedMs: Int?
 
-    enum CodingKeys: String, CodingKey { case state, detail, queued, quietMs = "quiet_ms" }
+    /// Whether a turn is running that Stop could end: thinking, running a tool, or gone
+    /// quiet mid-turn. Not background work alone, and not an activity this build does not
+    /// know. From an older router, its `tool` and `working`, which is all Stop ever keyed on.
+    var isBusy: Bool {
+        if let activity { return activity.isStoppable }
+        return state == "tool" || state == "working"
+    }
+    /// Blocked on a person.
+    var needsYou: Bool {
+        if let activity, activity.isKnown { return activity == .waiting }
+        return state == "ask"
+    }
+    /// Doing something or waiting on you — the halo around the header's dot.
+    var isActive: Bool {
+        guard let activity else { return isBusy }
+        return activity.isActive
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case state, detail, queued, quietMs = "quiet_ms"
+        case activity, background, tone
+        case isOpen = "open", sinceMs = "since_ms", asOfMs = "as_of_ms"
+        case waitingOn = "waiting_on", endedMs = "ended_ms"
+    }
+}
+
+extension LiveStatus {
+    /// The legacy keys as they always were; the newer ones leniently, as on a session row:
+    /// a status that fails to decode leaves the header with nothing to say.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        state = try c.decode(String.self, forKey: .state)
+        detail = try c.decode(String.self, forKey: .detail)
+        quietMs = try c.decode(Int.self, forKey: .quietMs)
+        queued = try c.decodeIfPresent(Int.self, forKey: .queued)
+        activity = c.lenient(String.self, .activity).map(SessionActivity.init)
+        isOpen = c.lenient(Bool.self, .isOpen)
+        sinceMs = c.lenient(Int.self, .sinceMs)
+        asOfMs = c.lenient(Int.self, .asOfMs)
+        waitingOn = c.lenient(WaitingOn.self, .waitingOn)
+        background = c.lenient(BackgroundWork.self, .background)
+        tone = c.lenient(String.self, .tone).map(SessionTone.init)
+        endedMs = c.lenient(Int.self, .endedMs)
+    }
 }
 
 /// What the live endpoints answer with — success and failure share the shape.
@@ -873,14 +1168,68 @@ struct LivePrompt: Decodable, Sendable {
     let description: String?
     let reason: String?
     let suggestions: [PromptSuggestion]?
+    /// How many prompts are waiting in the session, this one the newest. Absent from an
+    /// older router, which only ever reported the one.
+    let count: Int?
+    /// The questions a waiting AskUserQuestion puts, in order, from the tool's own input:
+    /// what says whether a form drawn from the transcript — which carries no prompt id — is
+    /// the question waiting now. Nil when the prompt does not list them. A listed question
+    /// with no text is kept, as nil, so that it matches no form.
+    let questions: [String?]?
 
     var isPermission: Bool { pending && question != true }
+    var isQuestion: Bool { pending && question == true }
+
+    /// Whether this is the question a form was drawn for: the same questions in the same
+    /// order — the web view's `sameQuestions`, so a form one client refuses to send the
+    /// others refuse too. A prompt that does not list its questions is taken at its word.
+    func asks(_ texts: [String]) -> Bool {
+        guard let questions else { return true }
+        return questions == texts.map { Optional($0) }
+    }
 
     enum CodingKeys: String, CodingKey {
-        case pending, tool, question, description, reason, suggestions
+        case pending, tool, question, description, reason, suggestions, count, input
         case requestId = "request_id"
         case displayName = "display_name"
     }
+}
+
+extension LivePrompt {
+    /// Written out for `input` alone, which is whatever the tool was called with — for a
+    /// permission request a command or a path, of any shape — so it is read leniently: a
+    /// shape this build does not expect costs the question list, never the prompt, whose
+    /// poll would otherwise stop showing the permission card. The rest decodes as it did.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        pending = try c.decode(Bool.self, forKey: .pending)
+        requestId = try c.decodeIfPresent(String.self, forKey: .requestId)
+        tool = try c.decodeIfPresent(String.self, forKey: .tool)
+        question = try c.decodeIfPresent(Bool.self, forKey: .question)
+        displayName = try c.decodeIfPresent(String.self, forKey: .displayName)
+        description = try c.decodeIfPresent(String.self, forKey: .description)
+        reason = try c.decodeIfPresent(String.self, forKey: .reason)
+        suggestions = try c.decodeIfPresent([PromptSuggestion].self, forKey: .suggestions)
+        count = try c.decodeIfPresent(Int.self, forKey: .count)
+        questions = c.lenient(AskedInput.self, .input)?.questions?.map(\.question)
+    }
+}
+
+/// Just enough of AskUserQuestion's input to say which questions it puts.
+private struct AskedInput: Decodable {
+    struct Asked: Decodable {
+        let question: String?
+
+        /// An entry that is not an object, or whose text is not a string, is a question with
+        /// no text: it stays in the list, so the count and the order still have to match.
+        init(from decoder: Decoder) throws {
+            question = (try? decoder.container(keyedBy: CodingKeys.self))?.lenient(String.self, .question)
+        }
+
+        enum CodingKeys: String, CodingKey { case question }
+    }
+
+    let questions: [Asked]?
 }
 
 /// One of the prompt's own offers — "always allow this, for the rest of the session".

@@ -303,11 +303,20 @@ recorded in full by it on the way out.
 
 ## Telling the phone
 
-A session under the wrapper writes every unanswered `can_use_tool` request to
-`/tmp/agent-router-sessions/<id>.pending` as it happens; a session without one reveals
-only an AskUserQuestion, and only through its transcript. `notify` watches both once a
-second and announces each prompt once, keyed by its request id — what is already waiting
-when the router starts is not announced, because a restart is not news. Delivery is
+Whether a session is waiting on a person is the same answer the list gives
+(`live::session_activity`, see "What each session is doing" below), asked once a second of
+every open session. What it waits on decides the key: `req:<request_id>` for a prompt the
+wrapper recorded in `/tmp/agent-router-sessions/<id>.pending` (answerable from the phone);
+`ask:<tool_use_id>` for a question, plan or call the transcript shows open;
+`ask:wait-<session>-<statusUpdatedAt>` when only Claude Code's own registry knows — an
+unwrapped session at a permission prompt, answerable only where it runs. The installed apps
+take down only `req:`/`ask:` banners, which is why every key wears one of those prefixes.
+A key is announced once, after two seconds of waiting without a break (auto mode and hooks
+resolve many prompts within one); what is already waiting when the router starts is not
+announced, because a restart is not news. A `req:` key has to be missing from two sweeps in
+a row before its banner comes down (an older wrapper's file can read empty mid-rewrite), and
+a closed session's banners come down. The same loop clears, once a minute, wrapper sockets
+nothing listens on that no open session holds. Delivery is
 Apple's push service (`apns`): an ES256 provider token minted from the team's `.p8`
 (kept in the secrets file beside the account credentials), reused for fifty minutes, over
 HTTP/2, to every phone that registered through `POST /api/push/register`. A device Apple
@@ -422,7 +431,16 @@ not by Claude Code.
 by every session, including ones the router never proxied and ones the VSCode
 extension hosts. `live` tails these. It cannot break on a CLI update, because it reads
 a file the CLI has written the same way for its whole life. This is the whole basis of
-the live view, and it is why following works everywhere.
+the live view's *content*, and it is why following works everywhere. What a session is
+*doing* needs more than the transcript can say; see "What each session is doing" below.
+
+**The session registry (read).** Every CLI process registers itself in
+`~/.claude/sessions/<pid>.json` (under `$CLAUDE_CONFIG_DIR` when set): the conversation it
+holds now, and on current builds a `status` of busy, waiting, idle or shell written by the
+CLI's own state machine. `registry` reads the `<pid>.json` files only — never the `.key`
+files beside them, which hold secrets — and counts a record only while its pid is alive and
+is the same process (`proc_pidinfo` start time against the record's `procStart`, read as
+UTC). It never writes there.
 
 **The peer socket (write, best-effort).** Every live session binds
 `/tmp/cc-socks/<pid>.sock` and publishes a token at
@@ -470,17 +488,33 @@ claude (real)
 ```
 
 The wrapper relays both directions byte-for-byte, sniffs only the session id out of the
-`init` message, and publishes a control socket named by that session id. A write on that
+`init` message, and publishes a control socket named by that session id. The CLI emits
+that message at startup, again at once after a `/clear` — naming the new session — and at
+the start of every turn, so the wrapper moves its socket when the id changes (the Sep 12
+build still deployed inside long-running sessions keeps the first). A write on that
 socket becomes the *identical bytes the extension writes when you type* — an ordinary
 user turn, not a peer message. Because the wrapper also sees the downstream side of the
 permission channel, prompts become answerable remotely too.
 
+One write is one line, and a wrapper takes at most 1 MiB of it, newline included. The
+builds deployed inside long-running sessions read in 8 KiB pieces, stop once they hold
+more, and write what they have into the CLI anyway — which exits on the unparseable line,
+and the session with it; the current wrapper refuses such a frame whole. So `peer`
+measures every frame as it would send it and refuses a longer one before connecting; a
+message or an answer that long gets a 413 that says so.
+
 A session is reported as `wrapped` only when its control socket *answers*, not when the
 file exists: the wrapper unlinks its socket on a clean exit but a killed one leaves it
 behind, and a phone showing that session as live is where the mistake costs the most.
-The listing connects to each socket (the wrapper reads EOF, replies `{"ok":false}`, and
-nothing reaches the session) and removes the leftovers of a refused one. `wrapper_alive`
-in `peer.rs` is the one place that rule lives.
+The router connects to the socket (the wrapper reads EOF, replies `{"ok":false}`, and
+nothing reaches the session) and removes the leftovers of a refused one — at most once a
+second per session, and only for sessions a live process holds, since every probe costs
+the wrapper a thread; the notifier's janitor asks the rest once a minute. `wrapper_alive`
+in `peer.rs` is the one place that rule lives. The janitor also takes what a dead wrapper
+leaves beside its socket — the `.ctl` recording, a `.pending.tmp` — and, once ten minutes
+old, records whose socket is already gone and whose session no process holds; the
+per-session probe never touches `.ctl`, since for an open session a refused connect can be
+a full backlog, and the recording is where `set_model` reads its answer.
 
 The same socket changes what the session runs with. `set_model` is a control request
 the CLI's own SDK sends (`{subtype:"set_model", model}`); the CLI answers on its control
@@ -518,19 +552,59 @@ each one is noted in a short in-memory log the Setup section shows, and pushed t
 phone. The switch is server-side on purpose: it is the router that does the work, so it
 is the router that must be told to stop, from any client, without shipping one.
 
-### What "working" means
+### What each session is doing
 
-The live status is a fold over the transcript (`advance` in `live.rs`): a `tool_use`
-opens a pending call, its `tool_result` closes it, and assistant prose with nothing
-pending ends the turn. Two lines the CLI writes are part of that fold and were not at
-first. A user-role line reading `[Request interrupted by user]` (or `… for tool use`) —
-which is what Stop produces, and which is stored as a plain string or a text block
-depending on the CLI's mood — ends the turn outright: the tool it cut short will never
-get a result, and a feed still waiting for one shows Stop lit with nothing to stop. And
-`queue-operation` lines are the CLI's own bookkeeping of messages typed while a turn
-ran (`enqueue` / `dequeue` / `remove`); their count is the status's `queued`. Because
-the session queues on its own, Send is never replaced by Stop: the two sit side by side
-while a turn runs.
+One derivation answers it for every surface — the list, the open view's status line, the
+prompt endpoints, the stop guard and the notifier — and nothing else derives state. It
+used to be four, each reading the transcript on its own, and they disagreed: a session
+generating read `idle` in the list and `Working` in its own view, one running a background
+workflow read idle everywhere, and a closed one read exactly like one waiting for you. The
+evidence behind every rule, with the numbers, is in
+[docs/session-liveness.md](docs/session-liveness.md).
+
+The order of trust is process first, transcript for detail:
+
+  1. **The registry record** (`registry`), verified against the live process, decides
+     whether the session is open at all, and its `status` decides the class when it has a
+     known one: `busy` covers the silent generation the transcript cannot see and the
+     background agents that outlive a turn; `waiting` covers permission prompts the
+     transcript never records.
+  2. **The wrapper's open prompts**, for wrapped sessions: what exactly is being asked,
+     ordered by when the router first saw each, and answerable by request id.
+  3. **The transcript** (`fold`, one incremental fold per file): the turn, the call being
+     run, the question or plan open, retries, API errors, the background tasks launched
+     and not yet reported done, the queue, the exit marker, the title. With no usable
+     registry status it decides the class alone.
+  4. **Subagent transcripts** under `<session>/subagents/`: the heartbeat of background
+     agents, whose parent transcript sits silent after its turn.
+
+`activity::derive` turns that into one of closed, idle, generating, tool, waiting,
+background, failed or stalled, with a header line, a start time, and — for old clients —
+the legacy `state` and `active`. A file's mtime is never evidence of activity: it moves on
+bookkeeping (the exit flush, titles, ledgers, subagents' queue lines) and stands still
+through real work, so `last_activity_ms` is the newest *content*. `live::tracked` keeps
+each transcript's fold, offset and head in memory, so a list call costs a registry
+snapshot (reused for 250 ms), `stat`s, and the bytes appended since the last look.
+
+Three lines the fold has to read carefully. A user-role line reading `[Request interrupted
+by user]` (or `… for tool use`) — which is what Stop produces, stored as a plain string or
+a text block depending on the CLI's mood — ends the turn outright: the tool it cut short
+will never get a result. An assistant message's blocks arrive as separate lines, each
+carrying the message's final `stop_reason`, and a message that calls a tool ends nothing
+whatever that reason says: so when a later line of a closing message turns out to carry a
+call, the close its first line made is undone. And `queue-operation` lines are the CLI's
+own bookkeeping of messages typed while a turn ran (`enqueue` / `dequeue` / `remove`);
+their count is the status's `queued`, less the task notifications subagents route through
+the same queue, and it empties when a crashed session is resumed, as at an exit.
+Because the session queues on its own, Send is never replaced by Stop: the two sit side
+by side while a turn runs. Stop is offered only while the turn itself runs (generating, a
+tool, stalled) — not for background work, where an interrupt could discard what the agents
+report back; the server refuses it there for clients too old to know. Busy after a turn
+is over is told apart by when the registry went busy: stamped after the end, with nothing
+in the background, it is the main loop at work (a `/compact`) and can be stopped; held
+from before the end with nothing to see — a Stop hook, a task no transcript records, a
+turn the CLI carries on by itself — it reads `Working`, claims no background counts, and
+is not.
 
 ### Side questions
 
@@ -549,6 +623,8 @@ a fork needs), run from the session's own directory so the fork lands in the sam
 project, with `--output-format json` for one result object. A fork is a new session id
 with the original untouched — the question and answer never enter the session's
 transcript, nothing is interrupted, nothing is queued — and the id it leaves behind is
-shelved on the spot so the list does not fill with one-question sessions. The price is a
+shelved on the spot so the list does not fill with one-question sessions. While it runs
+the fork registers like any session, but its parent is the router, so the registry reader
+sets it aside: it is never counted as open, and its transcript is left out of the list. The price is a
 replay of the session's context through the proxy, mostly served from cache; three
 minutes is the ceiling before the router gives up.

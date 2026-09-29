@@ -28,16 +28,28 @@
 
 use std::io::Write;
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
+/// The key file's `procStart` is the same `ps lstart` rendering the session registry
+/// stores, so one parser serves both.
+use crate::registry::parse_proc_start;
+
 const SOCK_DIR: &str = "/tmp/cc-socks";
 /// Where a wrapped session offers its control socket (see `wrapper/`).
 const WRAPPER_DIR: &str = "/tmp/agent-router-sessions";
+
+/// Where wrapped sessions keep their sockets and records. A function rather than the
+/// constant at every use, so everything that reads the directory has a `_in` twin that
+/// takes it as an argument: tests point those at a temp dir instead of the real one,
+/// which live sessions are using.
+pub fn wrapper_dir() -> PathBuf {
+    PathBuf::from(WRAPPER_DIR)
+}
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 /// A session started within this long of a transcript's first event is taken to own it.
 const START_TOLERANCE_MS: i64 = 120_000;
@@ -69,39 +81,8 @@ fn key_path(socket: &str) -> PathBuf {
         .next()
         .and_then(|f| f.strip_suffix(".sock"))
         .unwrap_or("");
-    let home = std::env::var("HOME").unwrap_or_default();
-    PathBuf::from(home)
-        .join(".claude")
-        .join("sessions")
-        .join(format!("{pid}.{hex}.key"))
-}
-
-/// `Thu Sep 10 07:35:03 2026` — the one format the key file uses.
-fn parse_proc_start(s: &str) -> Option<i64> {
-    let f: Vec<&str> = s.split_whitespace().collect();
-    if f.len() < 5 {
-        return None;
-    }
-    let mon = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    ]
-    .iter()
-    .position(|m| *m == f[1])? as i64
-        + 1;
-    let day: i64 = f[2].parse().ok()?;
-    let t: Vec<i64> = f[3].split(':').filter_map(|x| x.parse().ok()).collect();
-    let year: i64 = f[4].parse().ok()?;
-    if t.len() != 3 {
-        return None;
-    }
-    let y = if mon <= 2 { year - 1 } else { year };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400;
-    let mp = (mon + 9) % 12;
-    let doy = (153 * mp + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146_097 + doe - 719_468;
-    Some((days * 86_400 + t[0] * 3600 + t[1] * 60 + t[2]) * 1000)
+    // Beside the session records, wherever `CLAUDE_CONFIG_DIR` puts them.
+    crate::registry::sessions_dir().join(format!("{pid}.{hex}.key"))
 }
 
 fn proc_cwd(pid: u32) -> Option<String> {
@@ -192,12 +173,16 @@ pub fn resolve(session_id: &str, cwd: Option<&str>, first_event_ms: Option<i64>)
 
 /// Is this session running under the wrapper?
 pub fn wrapper_socket(session_id: &str) -> Option<PathBuf> {
+    wrapper_socket_in(&wrapper_dir(), session_id)
+}
+
+pub fn wrapper_socket_in(dir: &Path, session_id: &str) -> Option<PathBuf> {
     if session_id.is_empty()
         || !session_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
     {
         return None;
     }
-    let p = PathBuf::from(WRAPPER_DIR).join(format!("{session_id}.sock"));
+    let p = dir.join(format!("{session_id}.sock"));
     p.exists().then_some(p)
 }
 
@@ -211,7 +196,11 @@ pub fn wrapper_socket(session_id: &str) -> Option<PathBuf> {
 /// The wrapper reads EOF from the bare connect, answers `{"ok":false}` and hangs up;
 /// nothing reaches the session.
 pub fn wrapper_alive(session_id: &str) -> bool {
-    let Some(path) = wrapper_socket(session_id) else {
+    wrapper_alive_in(&wrapper_dir(), session_id)
+}
+
+pub fn wrapper_alive_in(dir: &Path, session_id: &str) -> bool {
+    let Some(path) = wrapper_socket_in(dir, session_id) else {
         return false;
     };
     let Ok(addr) = std::os::unix::net::SocketAddr::from_pathname(&path) else {
@@ -229,9 +218,7 @@ pub fn wrapper_alive(session_id: &str) -> bool {
             ) =>
         {
             let _ = std::fs::remove_file(&path);
-            let _ = std::fs::remove_file(
-                PathBuf::from(WRAPPER_DIR).join(format!("{session_id}.pending")),
-            );
+            let _ = std::fs::remove_file(dir.join(format!("{session_id}.pending")));
             false
         }
         Err(_) => false,
@@ -247,13 +234,19 @@ pub fn wrapper_alive(session_id: &str) -> bool {
 /// that channel is, and wrong for a message its user typed on a phone — which is the
 /// whole reason the wrapper exists.
 pub fn send_via_wrapper(session_id: &str, text: &str) -> anyhow::Result<()> {
-    write_via_wrapper(
-        session_id,
-        &serde_json::json!({
-            "type": "user",
-            "message": { "role": "user", "content": [{ "type": "text", "text": text }] },
-        }),
-    )
+    send_via_wrapper_in(&wrapper_dir(), session_id, text)
+}
+
+pub fn send_via_wrapper_in(dir: &Path, session_id: &str, text: &str) -> anyhow::Result<()> {
+    write_via_wrapper_in(dir, session_id, &user_frame(text))
+}
+
+/// A typed message, as the editor frames it.
+fn user_frame(text: &str) -> serde_json::Value {
+    serde_json::json!({
+        "type": "user",
+        "message": { "role": "user", "content": [{ "type": "text", "text": text }] },
+    })
 }
 
 /// Stop whatever the session is doing, the way the editor's stop button does.
@@ -298,7 +291,15 @@ pub fn set_effort_via_wrapper(session_id: &str, level: &str) -> anyhow::Result<(
 /// The CLI's answer to a control request we injected, once it has one: the
 /// `response` object of the matching `control_response` in the session's recording.
 pub fn control_response(session_id: &str, request_id: &str) -> Option<serde_json::Value> {
-    let path = PathBuf::from(WRAPPER_DIR).join(format!("{session_id}.ctl"));
+    control_response_in(&wrapper_dir(), session_id, request_id)
+}
+
+pub fn control_response_in(
+    dir: &Path,
+    session_id: &str,
+    request_id: &str,
+) -> Option<serde_json::Value> {
+    let path = dir.join(format!("{session_id}.ctl"));
     let text = std::fs::read_to_string(path).ok()?;
     text.lines()
         .rev()
@@ -308,16 +309,59 @@ pub fn control_response(session_id: &str, request_id: &str) -> Option<serde_json
         .map(|v| v["response"].clone())
 }
 
+/// The longest line a wrapper takes from its socket, newline included.
+///
+/// The builds already deployed inside long-running sessions read a frame in 8 KiB pieces,
+/// stop as soon as they hold more than a mebibyte, newline or not, and write what they
+/// have into the CLI anyway with a newline added — and the CLI treats a line it cannot
+/// parse as fatal and exits, so the session is gone. The current wrapper refuses such a
+/// frame whole instead. A line of this length or less is taken whole by both, so nothing
+/// longer is sent.
+pub const WRAPPER_LINE_MAX: usize = 1024 * 1024;
+
+/// A frame longer than a wrapper can take whole (`WRAPPER_LINE_MAX`), refused before a
+/// byte of it was sent.
+#[derive(Debug)]
+pub struct TooLong {
+    /// The line as it would have been sent, newline included.
+    pub bytes: usize,
+}
+
+impl std::fmt::Display for TooLong {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "a {} byte frame, over the {WRAPPER_LINE_MAX} bytes a wrapper takes in one line",
+            self.bytes
+        )
+    }
+}
+
+impl std::error::Error for TooLong {}
+
 /// One newline-delimited frame into a wrapped session's stdin.
 fn write_via_wrapper(session_id: &str, frame: &serde_json::Value) -> anyhow::Result<()> {
-    let path = wrapper_socket(session_id)
+    write_via_wrapper_in(&wrapper_dir(), session_id, frame)
+}
+
+fn write_via_wrapper_in(
+    dir: &Path,
+    session_id: &str,
+    frame: &serde_json::Value,
+) -> anyhow::Result<()> {
+    let path = wrapper_socket_in(dir, session_id)
         .ok_or_else(|| anyhow::anyhow!("this session is not running under the wrapper"))?;
+    // Measured as sent, escaping and all: that is what the wrapper counts.
+    let line = format!("{frame}\n");
+    if line.len() > WRAPPER_LINE_MAX {
+        return Err(TooLong { bytes: line.len() }.into());
+    }
     let addr = std::os::unix::net::SocketAddr::from_pathname(&path)?;
     let mut s = UnixStream::connect_addr(&addr)?;
     s.set_write_timeout(Some(CONNECT_TIMEOUT))?;
     s.set_read_timeout(Some(CONNECT_TIMEOUT))?;
 
-    s.write_all(format!("{frame}\n").as_bytes())?;
+    s.write_all(line.as_bytes())?;
     s.flush()?;
 
     // The wrapper answers once it has written into the child's stdin, so unlike the
@@ -332,24 +376,33 @@ fn write_via_wrapper(session_id: &str, frame: &serde_json::Value) -> anyhow::Res
     }
 }
 
-/// The tool-permission request a wrapped session is currently blocked on, if any.
+/// Every tool-permission request a wrapped session has open, as the wrapper recorded
+/// them — a Bash approval, an edit, an AskUserQuestion, a plan.
 ///
 /// Written by the wrapper, which sees the control traffic between the CLI and whatever
-/// hosts it. Only the newest is returned: a session waits on one prompt at a time.
-/// `tool` narrows it to one tool; `None` means whatever the session is actually
-/// waiting on. A permission request for `Bash` blocks a session exactly as hard as an
-/// `AskUserQuestion` does, so the general case is the useful one.
-pub fn pending_prompt(session_id: &str, tool: Option<&str>) -> Option<serde_json::Value> {
-    // A prompt recorded by a wrapper that is gone is not pending; it is history.
-    if !wrapper_alive(session_id) {
-        return None;
+/// hosts it. All of them, not only the last line: a session can have several open at
+/// once (parallel tool calls, a subagent's prompt beside the main thread's), and the
+/// file's order is not the order they arrived in — wrappers before the fix kept them
+/// sorted by request id. Which is newest is the caller's to work out, from when it first
+/// saw each (`live`'s first-seen memo); nothing here may pretend to know.
+///
+/// A prompt recorded by a wrapper that is gone is not pending, it is history, so the
+/// caller asks `wrapper_alive` first — `live` does, once a second, and reads this only
+/// when the wrapper answered. Only `can_use_tool` requests with an id: they are what the
+/// file is for, and nothing without an id could be answered anyway.
+pub fn read_pending_in(dir: &Path, session_id: &str) -> Vec<serde_json::Value> {
+    if session_id.is_empty()
+        || !session_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+    {
+        return Vec::new();
     }
-    let path = PathBuf::from(WRAPPER_DIR).join(format!("{session_id}.pending"));
-    let body = std::fs::read_to_string(path).ok()?;
+    let Ok(body) = std::fs::read_to_string(dir.join(format!("{session_id}.pending"))) else {
+        return Vec::new();
+    };
     body.lines()
         .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
-        .filter(|v| tool.is_none_or(|t| v["request"]["tool_name"] == t))
-        .next_back()
+        .filter(|v| v["request"]["subtype"] == "can_use_tool" && v["request_id"].is_string())
+        .collect()
 }
 
 /// Let a pending tool-permission request through — what the editor does when someone
@@ -363,7 +416,8 @@ pub fn pending_prompt(session_id: &str, tool: Option<&str>) -> Option<serde_json
 /// again — but only ever one the prompt itself offered in its `permission_suggestions`.
 /// The editor filters anything else out ("Dropping permission update(s) the prompt did
 /// not offer"), so inventing one here would be silently discarded at best.
-pub fn allow_prompt(
+pub fn allow_prompt_in(
+    dir: &Path,
     session_id: &str,
     request_id: &str,
     updated_input: serde_json::Value,
@@ -378,7 +432,8 @@ pub fn allow_prompt(
     if let Some(updates) = updates {
         response["updatedPermissions"] = serde_json::json!([updates]);
     }
-    write_via_wrapper(
+    write_via_wrapper_in(
+        dir,
         session_id,
         &serde_json::json!({
             "type": "control_response",
@@ -393,8 +448,14 @@ pub fn allow_prompt(
 
 /// Refuse a pending tool-permission request. The message is what the model is told, so
 /// it reads as the reason a person declined rather than as a failure.
-pub fn deny_prompt(session_id: &str, request_id: &str, message: &str) -> anyhow::Result<()> {
-    write_via_wrapper(
+pub fn deny_prompt_in(
+    dir: &Path,
+    session_id: &str,
+    request_id: &str,
+    message: &str,
+) -> anyhow::Result<()> {
+    write_via_wrapper_in(
+        dir,
         session_id,
         &serde_json::json!({
             "type": "control_response",
@@ -510,41 +571,121 @@ mod tests {
         assert!(parse_proc_start("2026-09-10T07:35:03Z").is_none());
     }
 
+    /// A private stand-in for `/tmp/agent-router-sessions`, which live sessions are using.
+    /// Short, because a unix socket's path has to fit in 104 bytes.
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("arp-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
     #[test]
     fn a_socket_nobody_listens_on_is_not_a_live_session() {
-        let id = format!("test-{}", std::process::id());
-        let dir = PathBuf::from(WRAPPER_DIR);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = scratch("sock");
+        let id = "s-1";
         let path = dir.join(format!("{id}.sock"));
-        let _ = std::fs::remove_file(&path);
-        assert!(!wrapper_alive(&id), "no file, no session");
+        let pending = dir.join(format!("{id}.pending"));
+        assert!(!wrapper_alive_in(&dir, id), "no file, no session");
 
         let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
-        assert!(wrapper_alive(&id), "a listener is a session");
+        std::fs::write(&pending, "{}\n").unwrap();
+        assert!(wrapper_alive_in(&dir, id), "a listener is a session");
+        assert!(pending.exists(), "a live session's prompts are left alone");
 
         // What a killed wrapper leaves behind: the file, and nothing on the other end.
         drop(listener);
         assert!(path.exists(), "dropping a listener does not unlink its file");
-        assert!(!wrapper_alive(&id), "a file with nobody behind it is not a session");
+        assert!(!wrapper_alive_in(&dir, id), "a file with nobody behind it is not a session");
         assert!(!path.exists(), "and the stale file is cleaned up");
+        assert!(!pending.exists(), "with the prompts nobody can answer any more");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn a_recorded_answer_is_found_by_its_request_id() {
-        let id = format!("test-ctl-{}", std::process::id());
-        let dir = PathBuf::from(WRAPPER_DIR);
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join(format!("{id}.ctl"));
-        std::fs::write(&path, concat!(
+        let dir = scratch("ctl");
+        let id = "s-ctl";
+        std::fs::write(dir.join(format!("{id}.ctl")), concat!(
             r#"{"type":"control_request","request_id":"r-1","request":{"subtype":"set_model","model":"opus"}}"#, "\n",
             r#"{"type":"control_response","response":{"subtype":"error","request_id":"r-0","error":"older"}}"#, "\n",
             r#"{"type":"control_response","response":{"subtype":"success","request_id":"r-1","response":{"notices":["Switched to opus"]}}}"#, "\n",
         )).unwrap();
-        let got = control_response(&id, "r-1").expect("the answer is there");
+        let got = control_response_in(&dir, id, "r-1").expect("the answer is there");
         assert_eq!(got["subtype"], "success");
         assert_eq!(got["response"]["notices"][0], "Switched to opus");
-        assert!(control_response(&id, "r-2").is_none(), "no answer yet");
-        let _ = std::fs::remove_file(&path);
+        assert!(control_response_in(&dir, id, "r-2").is_none(), "no answer yet");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn every_open_prompt_is_read_not_only_the_last_line() {
+        let dir = scratch("pend");
+        let id = "s-pend";
+        // An old wrapper's order: by request id, so the newest is not last.
+        std::fs::write(dir.join(format!("{id}.pending")), concat!(
+            r#"{"type":"control_request","request_id":"aa-newer","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"ls"},"tool_use_id":"toolu_2"}}"#, "\n",
+            r#"{"type":"control_request","request_id":"zz-older","request":{"subtype":"can_use_tool","tool_name":"Edit","input":{"file_path":"/x"},"tool_use_id":"toolu_1"}}"#, "\n",
+            r#"{"type":"control_request","request_id":"h-1","request":{"subtype":"hook_callback"}}"#, "\n",
+            "{\"type\":\"control_request\",\"request_id\":\"torn", "\n",
+        )).unwrap();
+        let got: Vec<String> = read_pending_in(&dir, id)
+            .iter()
+            .map(|v| v["request_id"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(got, ["aa-newer", "zz-older"], "both prompts, in the file's order");
+        assert!(read_pending_in(&dir, "no-such").is_empty());
+        assert!(read_pending_in(&dir, "../etc/passwd").is_empty(), "an id that is not one");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Every deployed wrapper reads a frame in 8 KiB pieces and stops once it holds more
+    /// than a mebibyte, newline or not — then writes what it has into the CLI anyway,
+    /// newline added, and the CLI exits on the line it cannot parse. A frame up to the
+    /// limit arrives whole; anything longer is refused here, and never connects.
+    #[test]
+    fn a_frame_the_wrapper_would_cut_short_is_never_sent() {
+        use std::io::Read;
+        let dir = scratch("big");
+        let id = "s-big";
+        let listener =
+            std::os::unix::net::UnixListener::bind(dir.join(format!("{id}.sock"))).unwrap();
+        let wrapper = std::thread::spawn(move || {
+            let (mut conn, _) = listener.accept().unwrap();
+            let mut body = Vec::new();
+            let mut buf = [0u8; 8192];
+            while !body.contains(&b'\n') {
+                match conn.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => body.extend_from_slice(&buf[..n]),
+                }
+            }
+            conn.write_all(b"{\"ok\":true}\n").unwrap();
+            (listener, body.len())
+        });
+        // Exactly at the limit: the typed text plus the frame around it and its newline.
+        let around = format!("{}\n", user_frame("")).len();
+        let text = "x".repeat(WRAPPER_LINE_MAX - around);
+        send_via_wrapper_in(&dir, id, &text).expect("a frame at the limit is delivered");
+        let (listener, got) = wrapper.join().unwrap();
+        assert_eq!(got, WRAPPER_LINE_MAX, "whole, newline included");
+
+        // One byte more is refused, and nothing so much as connects.
+        listener.set_nonblocking(true).unwrap();
+        let err = send_via_wrapper_in(&dir, id, &format!("{text}x")).unwrap_err();
+        let too_long = err.downcast_ref::<TooLong>().expect("refused as too long");
+        assert_eq!(too_long.bytes, WRAPPER_LINE_MAX + 1);
+        assert_eq!(
+            listener.accept().map(|_| ()).unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock,
+            "the socket was never touched"
+        );
+        // What counts is the frame as sent: escaping can make it far longer than the text.
+        let quotes = "\"".repeat(WRAPPER_LINE_MAX / 2);
+        assert!(send_via_wrapper_in(&dir, id, &quotes)
+            .unwrap_err()
+            .is::<TooLong>());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

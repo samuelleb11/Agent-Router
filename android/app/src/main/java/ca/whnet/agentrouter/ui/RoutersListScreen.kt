@@ -44,6 +44,7 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.unit.dp
 import ca.whnet.agentrouter.data.AppState
 import ca.whnet.agentrouter.data.Router
+import ca.whnet.agentrouter.data.SessionCounts
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -176,12 +177,11 @@ private fun RouterRow(
                     MiniGauge("5h", account.fiveHour, Modifier.weight(1f, fill = false))
                     MiniGauge("7d", account.sevenDay, Modifier.weight(1f, fill = false))
                 }
-                val n = state.activeSessions
-                if (n > 0) {
+                SessionCounts.routerLine(state.sessions)?.let { line ->
                     Text(
-                        "$n active session${if (n == 1) "" else "s"}",
+                        line.text,
                         style = MaterialTheme.typography.labelMedium,
-                        color = Tint.green,
+                        color = dotColor(line.color),
                     )
                 }
             }

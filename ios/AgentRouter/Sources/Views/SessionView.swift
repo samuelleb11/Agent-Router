@@ -33,15 +33,20 @@ struct SessionView: View {
             ToolbarItem(placement: .principal) {
                 VStack(spacing: 1) {
                     Text(session.projectName).font(.headline)
-                    if let st = feed?.status {
+                    if let feed, feed.connected, let st = feed.status {
                         HStack(spacing: 5) {
-                            StateDot(state: st.state, active: st.isBusy)
-                            Text(statusLine(st))
+                            StateDot(look: st.look)
+                            Text(st.line)
                         }
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    } else if feed?.connected == false {
-                        Text("connecting…").font(.caption).foregroundStyle(.secondary)
+                    } else if let feed, !feed.connected {
+                        // Never the last line the stream sent: "Running Bash · 12s" frozen
+                        // in the header reads as the truth long after it stopped being so.
+                        Text(feed.status == nil ? "connecting…" : "reconnecting…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .accessibilityIdentifier("feed-link")
                     }
                 }
             }
@@ -133,9 +138,12 @@ struct SessionView: View {
             // for. Alongside the stream, not after it: `run()` only returns when the
             // session ends.
             async let prompts: Void = pollPrompts(f)
+            async let list: Void = pollSessions()
             await f.run()
+            // One at a time: awaiting several `async let`s as a tuple aborts at runtime.
             _ = await facts
             _ = await prompts
+            _ = await list
         }
         .alert("Bypass permissions?", isPresented: $confirmBypass) {
             Button("Cancel", role: .cancel) {}
@@ -151,6 +159,18 @@ struct SessionView: View {
         while !Task.isCancelled {
             await f.loadPrompt()
             try? await Task.sleep(for: .seconds(2))
+        }
+    }
+
+    /// The other tabs' dots come from the session list (the open one's from its stream,
+    /// see `LiveFeed.look(of:)`), and nothing else re-reads the list while this page
+    /// covers it — so they would keep the states from the moment the session was opened.
+    /// Re-read here at the list's own cadence.
+    private func pollSessions() async {
+        while !Task.isCancelled {
+            try? await Task.sleep(for: .seconds(5))
+            if Task.isCancelled { return }
+            await state.refreshSessions()
         }
     }
 
@@ -181,12 +201,6 @@ struct SessionView: View {
         }
     }
 
-    private func statusLine(_ st: LiveStatus) -> String {
-        var line = st.quietMs > 4000 ? "\(st.detail) · \(Fmt.duration(TimeInterval(st.quietMs) / 1000))" : st.detail
-        if let q = st.queued, q > 0 { line += " · \(q) queued" }
-        return line
-    }
-
     @ViewBuilder private func content(_ feed: LiveFeed) -> some View {
         VStack(spacing: 0) {
             let tabs = siblings
@@ -199,7 +213,7 @@ struct SessionView: View {
                                 if !on { draft = ""; session = s }
                             } label: {
                                 HStack(spacing: 5) {
-                                    StateDot(state: s.state, active: s.active)
+                                    StateDot(look: feed.look(of: s))
                                     Text(s.label).lineLimit(1)
                                 }
                                 .font(.caption)
@@ -292,18 +306,24 @@ struct SessionView: View {
             if let d = p.description, !d.isEmpty {
                 Text(d).font(.footnote).foregroundStyle(.secondary)
             }
+            if let n = p.count, n > 1 {
+                // The router offers the newest; the rest follow once this one is settled.
+                Text("\(n - 1) more waiting after this one")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             VStack(alignment: .leading, spacing: 6) {
-                Button("Allow") { Task { await feed.answerPermission(allow: true, said: "Allowed.") } }
+                Button("Allow") { Task { await feed.answerPermission(p, allow: true, said: "Allowed.") } }
                     .buttonStyle(.borderedProminent)
                 ForEach(p.suggestions ?? []) { s in
                     Button(s.label) {
-                        Task { await feed.answerPermission(allow: true, suggestion: s.index, said: s.label + ".") }
+                        Task { await feed.answerPermission(p, allow: true, suggestion: s.index, said: s.label + ".") }
                     }
                     .buttonStyle(.bordered)
                     .font(.footnote)
                 }
                 Button("Deny", role: .destructive) {
-                    Task { await feed.answerPermission(allow: false, said: "Declined.") }
+                    Task { await feed.answerPermission(p, allow: false, said: "Declined.") }
                 }
                 .buttonStyle(.bordered)
             }

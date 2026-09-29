@@ -35,6 +35,7 @@ import androidx.compose.ui.unit.dp
 import ca.whnet.agentrouter.data.AppState
 import ca.whnet.agentrouter.data.Projection
 import ca.whnet.agentrouter.data.Router
+import ca.whnet.agentrouter.data.SessionCounts
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
@@ -100,8 +101,7 @@ fun RouterDetailScreen(
                         when {
                             !state.sessionsLoaded -> if (state.failure == null) "connecting…" else "no data"
                             state.sessions.isEmpty() -> "none this week"
-                            state.activeSessions > 0 -> "${state.activeSessions} active · ${state.sessions.size} this week"
-                            else -> "${state.sessions.size} this week"
+                            else -> SessionCounts.weekLine(state.sessions)
                         },
                         onSessions,
                     )

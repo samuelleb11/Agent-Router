@@ -5,6 +5,7 @@
 //! See ARCHITECTURE.md.
 
 mod accounts;
+mod activity;
 mod analyze;
 mod api;
 mod apns;
@@ -13,6 +14,7 @@ mod capture;
 mod config;
 mod db;
 mod fcm;
+mod fold;
 mod forecast;
 mod guard;
 mod lifecycle;
@@ -24,6 +26,7 @@ mod login;
 mod notify;
 mod proxy;
 mod quota;
+mod registry;
 mod setup;
 mod shim;
 mod transcript;

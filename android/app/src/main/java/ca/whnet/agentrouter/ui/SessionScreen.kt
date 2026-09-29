@@ -51,11 +51,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import ca.whnet.agentrouter.api.LivePrompt
 import ca.whnet.agentrouter.api.LiveSession
 import ca.whnet.agentrouter.data.AppState
+import ca.whnet.agentrouter.data.DotLook
 import ca.whnet.agentrouter.data.Router
+import ca.whnet.agentrouter.data.SessionGroups
 import ca.whnet.agentrouter.feed.LiveFeed
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -98,16 +101,38 @@ fun SessionScreen(app: AppState, router: Router, opened: LiveSession, onBack: ((
         following = last == null || last.index >= info.totalItemsCount - 2
     }
 
-    // A session restored across a rotation, or opened from a notification, carries only
-    // its id — so its title reads as the short id until the router's listing catches up.
+    // The row this page opened with does not stay true. A session restored across a
+    // rotation, or opened from a notification, carries only its id — its title reads as
+    // the short id — and any row's `wrapped`, colour and activity move on. So the page
+    // follows the router's listing whenever that changes.
     LaunchedEffect(state.sessions, session.sessionId) {
-        if (session.title == null) {
-            state.sessions.firstOrNull { it.sessionId == session.sessionId }
-                ?.let { session = it }
+        state.sessions.firstOrNull { it.sessionId == session.sessionId }
+            ?.takeIf { it != session }
+            ?.let { session = it }
+    }
+
+    // Full screen, nothing else refreshes that listing — the list page's loop stops when
+    // it leaves the screen — so the tab strip's dots, and this session's own row, would
+    // keep whatever they said when the page opened. Beside the list (no Back) the list's
+    // loop is still running, and a second one would only double the traffic.
+    if (onBack != null) {
+        LaunchedEffect(router.id) {
+            while (true) {
+                state.refreshSessions()
+                delay(5_000)
+            }
         }
     }
 
-    val siblings = state.sessions.filter { it.projectName == session.projectName }
+    // The project's sessions worth a tab: what the list shows as recent — moved lately,
+    // or live however long ago it last moved — and never one put away, bar the one open.
+    // In the order they were started, so a tab keeps its place while the listing
+    // refreshes under it.
+    val now = System.currentTimeMillis()
+    val siblings = state.sessions
+        .filter { it.projectName == session.projectName }
+        .filter { it.sessionId == session.sessionId || (!it.archived && SessionGroups.isRecent(it, now)) }
+        .sortedBy { it.createdMs ?: it.lastActivityMs }
 
     LaunchedEffect(feed.rows.size) {
         if (feed.rows.isNotEmpty() && following) listState.scrollToItem(feed.rows.size - 1)
@@ -133,15 +158,12 @@ fun SessionScreen(app: AppState, router: Router, opened: LiveSession, onBack: ((
                 title = {
                     Column {
                         Text(session.label, style = MaterialTheme.typography.titleMedium, maxLines = 1)
-                        val s = feed.status
                         Text(
-                            when {
-                                s == null && !feed.connected -> "connecting…"
-                                s == null -> session.projectName
-                                else -> s.detail.ifEmpty { s.state }
-                            },
+                            StatusText.header(feed.status, feed.connected, feed.statusFresh, session.projectName),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
                     }
                 },
@@ -151,12 +173,16 @@ fun SessionScreen(app: AppState, router: Router, opened: LiveSession, onBack: ((
                     }
                 },
                 actions = {
-                    if (feed.status?.isBusy == true && session.wrapped) {
+                    val s = feed.status
+                    val fresh = feed.statusFresh
+                    // Only while the stream is current: a Stop offered from a status the
+                    // phone can no longer vouch for may interrupt a turn that has moved on.
+                    if (fresh && s?.isBusy == true && session.wrapped) {
                         TextButton(enabled = !feed.stopping, onClick = { scope.launch { feed.interrupt() } }) {
                             Text("Stop")
                         }
                     }
-                    StateDot(feed.status?.state ?: session.state)
+                    StateDot(DotLook.stream(s, fresh, session))
                     IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, "More") }
                     DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                         feed.stats?.let { st ->
@@ -210,7 +236,7 @@ fun SessionScreen(app: AppState, router: Router, opened: LiveSession, onBack: ((
                             if (feed.options?.modes?.isNotEmpty() == true) HorizontalDivider()
                             feed.options?.modes?.forEach { m ->
                                 DropdownMenuItem(
-                                    text = { Text("mode: ${'$'}{m.label}") },
+                                    text = { Text("mode: ${m.label}") },
                                     trailingIcon = {
                                         if (feed.stats?.mode == m.value) Icon(Icons.Default.Check, "current")
                                     },
@@ -253,7 +279,7 @@ fun SessionScreen(app: AppState, router: Router, opened: LiveSession, onBack: ((
             Surface(tonalElevation = 3.dp) {
               Column(Modifier.fillMaxWidth()) {
                 feed.pendingPrompt?.let { p -> PermissionCard(p) { allow, suggestion, said ->
-                    scope.launch { feed.answerPermission(allow, suggestion, said) }
+                    scope.launch { feed.answerPermission(p, allow, suggestion, said) }
                 } }
                 Row(
                     // imePadding for the keyboard, bottomBarInsets for the gesture pill or
@@ -294,7 +320,9 @@ fun SessionScreen(app: AppState, router: Router, opened: LiveSession, onBack: ((
                     AssistChip(
                         onClick = { if (!on) { composing = ""; session = s } },
                         label = { Text(s.label, maxLines = 1, style = MaterialTheme.typography.labelMedium) },
-                        leadingIcon = { StateDot(s.state, size = 8) },
+                        leadingIcon = {
+                            StateDot(DotLook.tab(s, session.sessionId, feed.status, feed.statusFresh), size = 8)
+                        },
                         colors = AssistChipDefaults.assistChipColors(
                             containerColor = if (on) MaterialTheme.colorScheme.secondaryContainer
                             else MaterialTheme.colorScheme.surface,
@@ -329,7 +357,10 @@ fun SessionScreen(app: AppState, router: Router, opened: LiveSession, onBack: ((
         ) {
             items(feed.rows, key = { it.id }) { row ->
                 FeedRow(row) { answers, parts ->
-                    scope.launch { feed.answer(answers, parts, row.id) }
+                    // Every question the form showed, answered or not, in its order: what the
+                    // router's waiting prompt is compared against before anything is sent.
+                    val asked = row.item.ask?.questions.orEmpty().map { it.question }
+                    scope.launch { feed.answer(asked, answers, parts, row.id) }
                 }
             }
         }
@@ -458,6 +489,15 @@ private fun PermissionCard(p: LivePrompt, answer: (Boolean, Int?, String) -> Uni
         )
         p.description?.takeIf { it.isNotBlank() }?.let {
             Text(it, style = MaterialTheme.typography.bodySmall)
+        }
+        // Several at once is ordinary with agents working in parallel. The newest is the
+        // one shown; the rest follow as each is answered.
+        p.count?.takeIf { it > 1 }?.let { n ->
+            Text(
+                "${n - 1} more waiting after this one",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = { answer(true, null, "Allowed.") }) { Text("Allow") }

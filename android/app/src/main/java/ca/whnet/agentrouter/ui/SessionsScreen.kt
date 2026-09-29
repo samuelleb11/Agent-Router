@@ -262,7 +262,7 @@ private fun LazyListScope.projects(
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.primary,
                 )
-                if (project.live) StateDot("working", size = 7, active = true)
+                project.dot?.let { StateDot(it, size = 7) }
             }
         }
         items(project.sessions, key = { "$section-${it.sessionId}" }) { s ->
@@ -346,7 +346,7 @@ private fun SessionRow(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        StateDot(session.state, size = 9, active = session.active)
+        SessionDot(session, size = 9)
         Column(Modifier.weight(1f)) {
             Text(
                 session.label,
@@ -354,6 +354,19 @@ private fun SessionRow(
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
+            // What it is doing, in the router's words, and for how long — every session
+            // (see StatusText.row); the one waiting on you in the colour this app uses for
+            // "waiting for you".
+            StatusText.row(session)?.let { line ->
+                Text(
+                    line,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (session.needsYou) MaterialTheme.colorScheme.tertiary
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                 Text(
                     session.shortId,

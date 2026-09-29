@@ -100,8 +100,7 @@ struct RouterDetailView: View {
     private var sessionsSummary: String {
         let n = state.sessions.count
         if n == 0 { return state.forecast == nil ? "" : "none this week" }
-        let live = state.activeSessions
-        return live > 0 ? "\(live) active · \(n) this week" : "\(n) this week"
+        return state.liveSummary.map { "\($0) · \(n) this week" } ?? "\(n) this week"
     }
 
     @ViewBuilder private func burnDownSection(_ a: Forecast.ForecastAccount) -> some View {

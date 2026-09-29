@@ -141,7 +141,15 @@ private struct RouterRow: View {
                     MiniGauge(label: "5h", used: a.fiveHour)
                     MiniGauge(label: "7d", used: a.sevenDay)
                 }
-                if state.activeSessions > 0 {
+                if let c = state.sessionCounts {
+                    // Waiting on you is the one worth colouring: it is the one that needs
+                    // a thumb.
+                    if let live = state.liveSummary {
+                        Label(live, systemImage: "bubble.left.and.bubble.right")
+                            .font(.caption)
+                            .foregroundStyle(c.waiting > 0 ? .orange : .green)
+                    }
+                } else if state.activeSessions > 0 {
                     Label("\(state.activeSessions) active session\(state.activeSessions == 1 ? "" : "s")",
                           systemImage: "bubble.left.and.bubble.right")
                         .font(.caption)
