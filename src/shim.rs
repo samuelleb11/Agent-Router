@@ -243,14 +243,29 @@ pub fn remove(bin: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Put `src` at `dst` as a new file — never by writing into the one already there.
+///
+/// `dst` is the binary the extension runs, and once a wrapper is installed every open
+/// session is executing it. Writing into a Mach-O while it is mapped invalidates its code
+/// signature: every later exec of that path dies at once with SIGKILL, and the running
+/// sessions sit on pages that may be read back from the changed file (seen 2026-09-12 with
+/// the router's own binary). A copy beside it, renamed over it, leaves the running ones on
+/// the old file and gives the next session the new one.
 fn copy_executable(src: &Path, dst: &Path) -> std::io::Result<()> {
-    std::fs::copy(src, dst)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(dst, std::fs::Permissions::from_mode(0o755))?;
+    let name = dst.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let tmp = dst.with_file_name(format!(".{name}.agent-router-new"));
+    let placed = std::fs::copy(src, &tmp).and_then(|_| {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
+        }
+        std::fs::rename(&tmp, dst)
+    });
+    if placed.is_err() {
+        std::fs::remove_file(&tmp).ok();
     }
-    Ok(())
+    placed
 }
 
 pub mod api {
@@ -443,6 +458,32 @@ mod tests {
             "the shim was replaced, not left pinned at the first version"
         );
         assert!(d.join("claude.real").is_file(), "the real binary stays parked");
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn a_wrapper_is_replaced_by_rename_never_written_in_place() {
+        // Open sessions are executing the installed wrapper: the file under them must stay
+        // exactly as it was, and the next session must find the new one.
+        use std::io::Read;
+        use std::os::unix::fs::MetadataExt;
+        let d = scratch("in-place");
+        let src = d.join("new-wrapper");
+        let dst = d.join("claude");
+        std::fs::write(&src, b"NEW WRAPPER").unwrap();
+        std::fs::write(&dst, b"OLD WRAPPER").unwrap();
+        let running = std::fs::File::open(&dst).unwrap();
+        let old_inode = running.metadata().unwrap().ino();
+        copy_executable(&src, &dst).unwrap();
+        let mut under_them = String::new();
+        (&running).read_to_string(&mut under_them).unwrap();
+        assert_eq!(under_them, "OLD WRAPPER", "written into the file the sessions are running");
+        assert_eq!(std::fs::read(&dst).unwrap(), b"NEW WRAPPER");
+        let now = std::fs::metadata(&dst).unwrap();
+        assert_ne!(now.ino(), old_inode, "a new file, not the old one rewritten");
+        assert_eq!(now.mode() & 0o777, 0o755);
+        let names: Vec<_> = std::fs::read_dir(&d).unwrap().flatten().map(|e| e.file_name()).collect();
+        assert_eq!(names.len(), 2, "no temporary left beside it: {names:?}");
         std::fs::remove_dir_all(&d).ok();
     }
 
