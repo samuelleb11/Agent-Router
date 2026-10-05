@@ -55,8 +55,20 @@ export function Composer({
   const [said, say] = useNotice();
   const flying = useRef(false);
 
-  // A draft kept from an earlier visit is drawn at its height.
-  useLayoutEffect(() => fit(box.current), []);
+  // The box follows its text after every change: a draft kept from an earlier visit, a send, a
+  // side question, a step through the history. It is measured here, once the new text is in the
+  // DOM. A frame scheduled beside the state change could run before React committed it, measure
+  // the old text, and leave the box tall after a send (SE-C147). A history step also puts the
+  // caret at the end (SE-C156), for the same reason here and not in a frame.
+  const caretToEnd = useRef(false);
+  useLayoutEffect(() => {
+    const b = box.current;
+    fit(b);
+    if (caretToEnd.current && b) {
+      caretToEnd.current = false;
+      b.setSelectionRange(b.value.length, b.value.length);
+    }
+  }, [draft]);
 
   /// Send trims the text, sends nothing when it is empty, and is disabled while it flies; a sent
   /// message is echoed at once and the box is cleared; a refused one keeps the text (SE-C148,
@@ -72,7 +84,6 @@ export function Composer({
     if (r.ok) {
       setDraft('');
       setBrowse(COMPOSING);
-      requestAnimationFrame(() => fit(box.current));
     }
     say(r.notice);
   };
@@ -93,10 +104,7 @@ export function Composer({
     setAsking(true);
     echo(q, SIDE_QUESTION);
     follow();
-    if (fromBox) {
-      setDraft('');
-      requestAnimationFrame(() => fit(box.current));
-    }
+    if (fromBox) setDraft('');
     say(notice('asking on the side — this replays the session once, usually under a minute', { ok: true }));
     const r = await postLive<{ answer?: string; took_ms?: number; cost?: number }>('/api/live/aside', { session, text: q }, ASIDE_TIMEOUT_MS);
     setAsking(false);
@@ -122,14 +130,9 @@ export function Composer({
     if (!step) return;
     e.preventDefault();
     setBrowse(step.state);
+    // The caret lands at the end (SE-C156), placed by the layout effect once the step's text is in.
+    caretToEnd.current = true;
     setDraft(step.value);
-    // The caret lands at the end (SE-C156).
-    requestAnimationFrame(() => {
-      const b = box.current;
-      if (!b) return;
-      fit(b);
-      b.setSelectionRange(b.value.length, b.value.length);
-    });
   };
 
   const sideSubmit = (e: FormEvent) => {
