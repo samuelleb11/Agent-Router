@@ -115,6 +115,16 @@ describe('RequestRow', () => {
     expect(block(scss, ".swatch[data-family='other']")).toMatch(/box-shadow:\s*inset 0 0 0 \$spacing-01 var\(--ar-model-other\);/);
   });
 
+  it('OV-C184, OV-C196: names its model as every client spells it, whole up to "sonnet-4-5-20250929" and ellipsised past that, never cut mid-letter', () => {
+    render(<RequestRow {...BASE} model="claude-sonnet-4-5-20250929" modelShort="sonnet-4-5-20250929" family="sonnet" />);
+    const name = within(summary()).getByText('sonnet-4-5-20250929');
+    expect(name.className).toMatch(/modelName/);
+    // The cell is wide enough for the swatch and the nineteen characters of that spelling, and a
+    // longer name gives up its tail with an ellipsis rather than being clipped.
+    expect(block(scss, '\n.model {')).toMatch(/flex:\s*0 1 22ch;/);
+    expect(block(scss, '.modelName {')).toMatch(/overflow:\s*hidden;\s*text-overflow:\s*ellipsis;/);
+  });
+
   it('OV-C158: opens into every fact recorded, the error at full width with its line breaks, and its context window', () => {
     render(<RequestRow {...BASE} open />);
     const facts = within(region()).getAllByRole('term').map((dt) => [dt.textContent, dt.nextElementSibling!.textContent]);

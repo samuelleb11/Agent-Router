@@ -121,6 +121,18 @@ describe('ShareBar', () => {
     expect(block(scss, '.segment[data-hot]')).toMatch(/outline:\s*\$spacing-01 solid var\(--cds-text-primary\);/);
   });
 
+  it('OV-C123: given row bars, draws under each legend row a bar of that part’s share of the whole', () => {
+    render(<ShareBar label="What the model read" parts={[...READ, { key: 'none', label: 'nothing', value: 0, colour: '--ar-tok' }]} rowBars />);
+    const fill = (label: string) => row(label).querySelector('[data-row-bar] span') as HTMLElement | null;
+    expect(fill('from cache')!.style.inlineSize).toBe('80%');
+    expect(fill('paid in full')!.style.inlineSize).toBe(`${(100 * 100_000) / 1_500_000}%`);
+    expect(fill('from cache')!.style.background).toBe('var(--ar-tok-3)');
+    // A part of zero keeps its row and its empty track, and no fill.
+    expect(row('nothing').querySelector('[data-row-bar]')).toHaveAttribute('aria-hidden', 'true');
+    expect(fill('nothing')).toBeNull();
+    expect(block(scss, '.rowBar {')).toMatch(/grid-column:\s*1 \/ -1;/);
+  });
+
   it('OV-C197: walks its parts from the keyboard, each with its figures', () => {
     render(<ShareBar label="What the model read" parts={READ} />);
     fireEvent.focus(bar());

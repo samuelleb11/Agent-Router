@@ -7,12 +7,10 @@ import {
   clearScope,
   crumbs,
   isScoped,
-  legacyRewrite,
   parseRange,
   pickerMatches,
   pickerPlaceholder,
   RANGE_ORDER,
-  readLegacyHash,
   readQuery,
   sessionsHeld,
   setRange,
@@ -54,13 +52,6 @@ describe('scope', () => {
     expect([sinceMs('all', NOW), sinceMs('24h', NOW)]).toEqual([null, NOW - 86_400_000]);
     for (const bad of ['constructor', '__proto__', 'toString', '2d', '', null, 7]) expect(parseRange(bad), String(bad)).toBe('all');
     expect(setRange(S, 'hasOwnProperty').range).toBe('all');
-  });
-
-  it("OV-C29: the dashboard's #a=&p=&s=&r=&o= is read once and rewritten into the query string", () => {
-    expect(readLegacyHash('#a=acct&p=%2Fcode%2Fa&s=sess-1&r=7d&o=12.13')).toEqual({ scope: S, open: ['12', '13'], requests: { kind: 'all', model: null, stop: null } });
-    expect(legacyRewrite('http://host/#p=%2Fcode%2Fa&r=24h')).toBe('/?project=%2Fcode%2Fa&range=24h');
-    expect([legacyRewrite('http://host/?project=x'), legacyRewrite('http://host/#settings')]).toEqual([null, null]);
-    expect(readLegacyHash('#r=constructor')?.scope.range).toBe('all');
   });
 
   it('OV-C29, OV-C31: the scope, the range, the open rows and the request filters live in the address and read back as themselves', () => {

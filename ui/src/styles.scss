@@ -264,6 +264,13 @@ body {
   min-height: 100dvh;
 }
 
+/// Whatever the page turns off is not displayed and takes no space, whatever classes style it: any
+/// class that sets `display` outranks the user agent's rule for `hidden` and silently un-hides the
+/// element, and Carbon's classes set `display` throughout (OV-C11, SH-C29).
+[hidden] {
+  display: none !important;
+}
+
 /// A Carbon list box menu is exactly as wide as the control that opens it (`inline-size:
 /// 100%` pinned to both edges with `inset-inline: 0`), so a filter sized for the words "Any
 /// state" truncates its own options to "att…", "un…", "ve…". The option text IS the fact

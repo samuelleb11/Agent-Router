@@ -48,8 +48,10 @@ function chosen(): { unread: Unread[] } {
 
 const { unread } = chosen();
 const record = asked();
-window.fetch = fixtureServer({ unread, asked: record }).fetch;
-window.EventSource = fakeEventSource(STREAMS, { asked: record }).EventSource;
+// The Sessions screen's reads and streams (harness/sessions.ts), its reads answered before the rest.
+const sessions = await import('./sessions');
+window.fetch = sessions.withSessions(fixtureServer({ unread, asked: record }).fetch, record);
+window.EventSource = fakeEventSource({ ...STREAMS, ...sessions.STREAMS }, { asked: record }).EventSource;
 window.__harness = { unread, answered: record.answered, unanswered: record.unanswered };
 
 await import('~/main');

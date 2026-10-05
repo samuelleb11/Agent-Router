@@ -467,7 +467,13 @@ export interface StreamItem {
   readonly ask?: Ask | null;
 }
 
-export type FeedEntry = { readonly kind: 'row'; readonly item: StreamItem } | { readonly kind: 'echo'; readonly text: string };
+/// A row the stream delivered, or something the reader did echoed at once: a message sent, "you ·
+/// queued" (SE-C150), or a side question asked, "you · side question" (SE-C160).
+export type FeedEntry = { readonly kind: 'row'; readonly item: StreamItem } | { readonly kind: 'echo'; readonly text: string; readonly label: string };
+
+/// What an echoed message is labelled: one sent, and one asked on the side.
+export const QUEUED = 'you · queued';
+export const SIDE_QUESTION = 'you · side question';
 
 /// The open session's stream and feed. A pure value: each event makes a new one.
 export interface Feed {
@@ -576,9 +582,17 @@ export function silent(feed: Feed | null, now: number): boolean {
 }
 
 /// A message the person sent, echoed at once as "you · queued" until the transcript has it
-/// (SE-C150). It is not history: ArrowUp offers what the transcript says was sent.
-export function feedEcho(feed: Feed, text: string): Feed {
-  return { ...feed, entries: [...feed.entries, { kind: 'echo', text }] };
+/// (SE-C150), or a side question, "you · side question" (SE-C160). It is not history: ArrowUp
+/// offers what the transcript says was sent.
+export function feedEcho(feed: Feed, text: string, label: string = QUEUED): Feed {
+  return { ...feed, entries: [...feed.entries, { kind: 'echo', text, label }] };
+}
+
+/// A side question's answer, landed as a "side answer" row in Markdown, "(no answer)" when it is
+/// empty (SE-C160). Like an echo, a rebuilt feed drops it: the session never saw the question.
+export function feedAside(feed: Feed, answer: string | null | undefined): Feed {
+  const item: StreamItem = { role: 'assistant', kind: 'aside', text: answer || '(no answer)', sidechain: false };
+  return { ...feed, entries: [...feed.entries, { kind: 'row', item }] };
 }
 
 /// The status the stream vouches for, or none: connecting, reconnecting, silent or refused.

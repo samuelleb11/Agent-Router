@@ -49,6 +49,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { checksFor } from './shot-checks.mjs';
 
 const ui = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const repo = resolve(ui, '..');
@@ -307,6 +308,12 @@ async function shoot(cdp, args, base, route, width, theme) {
     writeFileSync(file, Buffer.from(data, 'base64'));
 
     const wrong = [];
+    // The route's browser-only contracts (scripts/shot-checks.mjs), after the shot, since a check may
+    // scroll or open something; each failure is named by its contract's id.
+    for (const check of checksFor(route, v.mode)) {
+      const r = (await send('Runtime.evaluate', { expression: check.expression, returnByValue: true, awaitPromise: true })).result.value;
+      if (!r?.ok) wrong.push(`${check.id}: ${check.says}${r?.detail ? ` — ${r.detail}` : ''}`);
+    }
     if (page.width !== v.width) wrong.push(`width ${page.width}, not ${v.width}`);
     if (!page.html.split(/\s+/).includes(theme.html)) wrong.push(`<html class="${page.html}">, not ${theme.html}`);
     if (page.dark !== (theme.scheme === 'dark')) wrong.push(`prefers-color-scheme is not ${theme.scheme}`);

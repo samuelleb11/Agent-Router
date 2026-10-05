@@ -53,18 +53,18 @@ describe('fixtureServer', () => {
 
   it('fails a path no fixture answers loudly: a 501 naming it, the console, and the list', async () => {
     const h = fixtureServer();
-    const r = await get(h, '/api/summary');
+    const r = await get(h, '/api/nothing-here');
     expect(r.status).toBe(501);
-    expect((await body<{ error: string }>(r)).error).toContain('GET /api/summary');
-    expect(h.unanswered).toEqual(['GET /api/summary']);
-    expect(errors).toHaveBeenCalledWith(expect.stringContaining('GET /api/summary'));
+    expect((await body<{ error: string }>(r)).error).toContain('GET /api/nothing-here');
+    expect(h.unanswered).toEqual(['GET /api/nothing-here']);
+    expect(errors).toHaveBeenCalledWith(expect.stringContaining('GET /api/nothing-here'));
   });
 
   it('fails a write, and a query parameter it cannot honour, the same way', async () => {
     const h = fixtureServer();
     expect((await get(h, '/api/projects', { method: 'POST', body: '{}' })).status).toBe(501);
-    expect((await get(h, '/api/projects?since=0')).status).toBe(501);
-    expect(h.unanswered).toEqual(['POST /api/projects', 'GET /api/projects?since=0']);
+    expect((await get(h, '/api/projects?bogus=1')).status).toBe(501);
+    expect(h.unanswered).toEqual(['POST /api/projects', 'GET /api/projects?bogus=1']);
   });
 
   it('stands for a read that could not be made with a fetch that never got a response', async () => {

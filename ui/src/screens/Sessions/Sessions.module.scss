@@ -1,0 +1,857 @@
+// New for agent-router: the Sessions screen's layout, on Carbon tokens. The live view's fixed
+// column (assets/live.html, `body`, `header`, the panes, the composer), inside the shell's content
+// area: header, strips, one scrolling pane, composer last (SE-C197).
+@use '@carbon/react/scss/spacing' as *;
+@use '@carbon/react/scss/type' as *;
+@use '@carbon/react/scss/theme' as *;
+@use '@carbon/react/scss/breakpoint' as *;
+@use '@carbon/react/scss/colors' as colors;
+
+// The shell's header is Carbon's, fixed, 3rem tall (src/app/Shell.tsx). Named once.
+$ar-shell-header: 3rem;
+// The list pane beside the feed on a desk (decision H).
+$ar-list-pane: 24rem;
+// The selected tab's rule. Carbon has no border-width token, so the one width is named here.
+$ar-tab-rule: 0.125rem;
+
+/// The screen: a column pinned to the dynamic viewport under the shell's header, or to the visual
+/// viewport while a keyboard shrinks it (useViewportPin), so the composer cannot drift and nothing
+/// reflows when the iPhone's URL bar shows or hides (SE-C197, SE-C200). The panes scroll; the page
+/// does not.
+.screen {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  // Under the shell's header and the phone's top safe area (SE-C199): the shell's header is fixed
+  // and Carbon's ignores the notch, so the column clears both itself.
+  block-size: calc(var(--ar-viewport-block, 100dvh) - #{$ar-shell-header} - env(safe-area-inset-top));
+  min-inline-size: 0;
+  overflow: hidden;
+
+  // From 1,056px the list sits beside the open session (decision H, SE-C201).
+  @include breakpoint('lg') {
+    grid-template-columns: $ar-list-pane minmax(0, 1fr);
+  }
+}
+
+/// The shell's content area is at least a viewport tall; here it is exactly the screen, so a
+/// keyboard that shrinks the visual viewport leaves no page to scroll under it. Its 3rem clear of
+/// the fixed header is padding here rather than Carbon's margin, which collapses through to the
+/// page's root and makes the page 3rem taller than the window: a page that scrolls.
+:global(#main-content):has(> [data-sessions-screen]) {
+  min-block-size: 0;
+  margin-block-start: 0;
+  padding-block-start: calc(#{$ar-shell-header} + env(safe-area-inset-top));
+}
+
+/// Below 1,056px one pane shows at a time: the list, or the open session and Find (SE-C201).
+.listPane,
+.mainPane {
+  display: flex;
+  flex-direction: column;
+  min-inline-size: 0;
+  min-block-size: 0;
+  overflow: hidden;
+}
+
+.screen[data-open] .listPane {
+  display: none;
+}
+
+.screen:not([data-open]) .mainPane {
+  display: none;
+}
+
+@include breakpoint('lg') {
+  .screen[data-open] .listPane,
+  .screen:not([data-open]) .mainPane {
+    display: flex;
+  }
+
+  .listPane {
+    border-inline-end: 1px solid $border-subtle-01;
+  }
+
+  // Beside the list there is no list to go back to.
+  .back {
+    display: none !important;
+  }
+}
+
+/// A pane's header: where the reader is, and what the session or the list is doing. Its items
+/// shrink and ellipsise, and the status never crushes the heading to nothing (SE-C202).
+.paneHead {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: $spacing-02 $spacing-03;
+  min-inline-size: 0;
+  padding: $spacing-03 max($spacing-05, env(safe-area-inset-right)) $spacing-03 max($spacing-05, env(safe-area-inset-left));
+  border-block-end: 1px solid $border-subtle-01;
+  background: $background;
+}
+
+.heading {
+  @include type-style('heading-compact-02');
+  margin: 0;
+  flex: 1 1 8rem;
+  min-inline-size: 6rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/// The status has a line of its own under the heading and the actions, so a long one ("Waiting
+/// for you · background shell running · 10h · 1 queued") wraps there rather than crushing the
+/// heading or running off a phone (SE-C202).
+.pill {
+  flex: 1 0 100%;
+  order: 10;
+  min-inline-size: 0;
+  max-inline-size: 100%;
+}
+
+/// Said to assistive technology when what the session is doing changes (SE-C206), and to nobody's
+/// eyes: the pill beside it shows it. `.said` is the same for the words between a row's parts.
+.said,
+.announce {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.findButton,
+.back {
+  flex: none;
+}
+
+.help {
+  flex: none;
+}
+
+.stale,
+.muted {
+  @include type-style('helper-text-01');
+  color: $text-secondary;
+  margin: 0;
+}
+
+.stale {
+  padding: $spacing-02 $spacing-05;
+  overflow-wrap: anywhere;
+}
+
+/// Whichever pane is visible owns the scroll, and its scroll never chains to the page (SE-C198).
+.listScroll,
+.feedScroll,
+.find {
+  flex: 1 1 auto;
+  min-block-size: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.listScroll {
+  padding-block-end: $spacing-07;
+}
+
+.idle {
+  flex: 1 1 auto;
+  display: grid;
+}
+
+.notice {
+  max-inline-size: 100%;
+  min-inline-size: 0;
+}
+
+// ---------- the list ----------
+
+.list {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: $spacing-03;
+  min-inline-size: 0;
+}
+
+.warning {
+  margin: $spacing-03 $spacing-05 0;
+}
+
+.group {
+  min-inline-size: 0;
+}
+
+/// A project's heading: its dot, its name, its count, its newest session's age (SE-C25).
+.groupHead {
+  display: flex;
+  align-items: center;
+  gap: $spacing-03;
+  min-inline-size: 0;
+}
+
+.groupName {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.groupCount,
+.groupAge {
+  flex: none;
+  color: $text-secondary;
+}
+
+.groupAge {
+  margin-inline-start: auto;
+}
+
+/// A row is a real button (Carbon's ContainedListItem draws one); its action sits beside it, in a
+/// column of its own. Carbon lays the action over the row's corner and keeps room for an icon only,
+/// and a visible "Archive" is wider than that.
+.row:global(.cds--contained-list-item) {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  min-inline-size: 0;
+
+  :global(.cds--contained-list-item__content) {
+    padding-inline-end: $spacing-03;
+  }
+
+  :global(.cds--contained-list-item__action) {
+    position: static;
+    pointer-events: auto;
+    padding: $spacing-03 $spacing-03 0 0;
+  }
+}
+
+.row {
+  min-inline-size: 0;
+
+  :global(.cds--contained-list-item__content) {
+    min-inline-size: 0;
+    text-align: start;
+  }
+
+  :global(.cds--contained-list-item__content) > div {
+    display: grid;
+    gap: $spacing-01;
+    min-inline-size: 0;
+  }
+}
+
+.openRow {
+  box-shadow: inset $ar-tab-rule 0 0 $border-interactive;
+  background: $layer-selected-01;
+}
+
+.shelved {
+  opacity: 0.72;
+}
+
+.rowTop {
+  display: flex;
+  align-items: center;
+  gap: $spacing-03;
+  min-inline-size: 0;
+}
+
+.rowName {
+  @include type-style('heading-compact-01');
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/// Whether a session can be typed into, in words (SE-C28).
+.reach {
+  @include type-style('label-01');
+  flex: none;
+  border: 1px solid currentColor;
+  padding: 0 $spacing-02;
+  color: $text-secondary;
+  text-transform: lowercase;
+}
+
+.reach[data-reach='live'] {
+  color: $text-primary;
+}
+
+.rowAge {
+  @include type-style('label-01');
+  flex: none;
+  margin-inline-start: auto;
+  color: $text-secondary;
+}
+
+/// The title, in at most two lines (SE-C26).
+.rowTitle {
+  @include type-style('body-compact-01');
+  color: $text-secondary;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow-wrap: anywhere;
+}
+
+/// What it is doing: neutral, except where a reader is needed (SE-C27). The status text tokens are
+/// the only coloured text; a waiting session's line is the warning's, and its dot says which.
+.rowLine {
+  @include type-style('helper-text-01');
+  color: $text-secondary;
+  overflow-wrap: anywhere;
+}
+
+.rowLine[data-tone='attention'] {
+  color: var(--ar-warn);
+  font-weight: 600;
+}
+
+.rowLine[data-tone='warn'] {
+  color: var(--ar-warn);
+}
+
+.rowLine[data-tone='error'] {
+  color: var(--ar-bad);
+}
+
+.rowMeta {
+  @include type-style('code-01');
+  color: $text-secondary;
+  overflow-wrap: anywhere;
+}
+
+.rowAction {
+  flex: none;
+}
+
+.rowNotice {
+  list-style: none;
+  padding: 0 $spacing-05 $spacing-03;
+}
+
+.older {
+  display: grid;
+  gap: $spacing-03;
+  padding-inline: $spacing-03;
+}
+
+.fold {
+  justify-self: start;
+}
+
+.olderGroups {
+  display: grid;
+  gap: $spacing-03;
+}
+
+.shelf {
+  min-inline-size: 0;
+}
+
+// ---------- the open session ----------
+
+.session {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-block-size: 0;
+  min-inline-size: 0;
+}
+
+/// The strip over the feed: one row that scrolls sideways and never wraps (SE-C54), Carbon's 64px
+/// cap and its wrapping kept out of reach of a phone (Northstar 29472eb).
+.strip {
+  flex: none;
+  min-inline-size: 0;
+  border-block-end: 1px solid $border-subtle-01;
+  background: $layer-01;
+}
+
+.stripRow {
+  display: flex;
+  align-items: stretch;
+  min-inline-size: 0;
+}
+
+.tabs {
+  display: flex;
+  flex-wrap: nowrap;
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  margin: 0;
+  padding: 0 $spacing-03;
+  list-style: none;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  flex: none;
+  max-inline-size: 16rem;
+  border-block-end: $ar-tab-rule solid transparent;
+}
+
+.tab[data-open] {
+  border-block-end-color: $border-interactive;
+}
+
+.tabLink {
+  display: flex;
+  align-items: center;
+  gap: $spacing-03;
+  min-inline-size: 0;
+  padding: $spacing-02 $spacing-03;
+  color: $text-secondary;
+  text-decoration: none;
+
+  &:hover {
+    color: $text-primary;
+  }
+
+  &:focus-visible {
+    outline: 2px solid $focus;
+    outline-offset: -2px;
+  }
+}
+
+.tab[data-open] .tabLink {
+  color: $text-primary;
+}
+
+.tabText {
+  display: grid;
+  min-inline-size: 0;
+}
+
+.tabLabel {
+  @include type-style('body-compact-01');
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tabWords {
+  @include type-style('label-01');
+  color: $text-secondary;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tabArchive {
+  flex: none;
+}
+
+.stripHelp {
+  flex: none;
+  align-self: center;
+  padding-inline: $spacing-03;
+}
+
+/// The facts strip: what the session is, what it costs, the project apart, and the switchers.
+.facts {
+  flex: none;
+  display: grid;
+  gap: $spacing-02;
+  padding: $spacing-03 $spacing-05;
+  border-block-end: 1px solid $border-subtle-01;
+  background: $layer-01;
+  min-inline-size: 0;
+}
+
+.factsLine {
+  @include type-style('label-01');
+  display: flex;
+  flex-wrap: wrap;
+  gap: $spacing-01 $spacing-04;
+  margin: 0;
+  color: $text-secondary;
+  min-inline-size: 0;
+}
+
+.fact {
+  overflow-wrap: anywhere;
+
+  &:first-child {
+    color: $text-primary;
+    font-weight: 600;
+  }
+}
+
+.projectTotal {
+  margin-inline-start: auto;
+  overflow-wrap: anywhere;
+}
+
+.switchers {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: $spacing-02 $spacing-05;
+  min-inline-size: 0;
+
+  // On a phone the three are one row that scrolls sideways, as the tabs do, rather than three rows
+  // taken from the feed.
+  @include breakpoint-down('md') {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+  }
+
+  :global(.cds--form-item) {
+    flex: none;
+  }
+}
+
+.switcher {
+  min-inline-size: 0;
+  max-inline-size: 100%;
+
+  :global(.cds--select-input) {
+    max-inline-size: 12rem;
+  }
+}
+
+.switchHelp {
+  @include type-style('helper-text-01');
+  color: $text-secondary;
+  margin: 0;
+  flex-basis: 100%;
+}
+
+.feedScroll {
+  background: $background;
+}
+
+/// The prompt card and the composer: the column's last row, clearing the bottom safe area
+/// (SE-C199).
+.dock {
+  flex: none;
+  display: grid;
+  gap: $spacing-03;
+  padding: $spacing-03 max($spacing-05, env(safe-area-inset-right)) calc(#{$spacing-03} + env(safe-area-inset-bottom)) max($spacing-05, env(safe-area-inset-left));
+  border-block-start: 1px solid $border-subtle-01;
+  background: $background;
+  min-inline-size: 0;
+}
+
+/// The permission card wraps its command rather than widening the screen (SE-C122). Carbon lays a
+/// Callout's text out as wrapping flex items, each as wide as its longest unbroken word, and holds
+/// the card to 288px on a phone; here its text is one column that shrinks to the card, and the card
+/// to the column. The wrapper warning on the list is a Callout too.
+.card,
+.warning {
+  max-inline-size: none;
+  min-inline-size: 0;
+
+  :global(.cds--actionable-notification__details) {
+    flex: 1 1 auto;
+    min-inline-size: 0;
+  }
+
+  :global(.cds--actionable-notification__text-wrapper) {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    min-inline-size: 0;
+    overflow-wrap: anywhere;
+  }
+
+  :global(.cds--actionable-notification__button-wrapper) {
+    display: none;
+  }
+}
+
+.cardMore,
+.cardWhy {
+  @include type-style('body-compact-01');
+  margin: $spacing-02 0 0;
+  overflow-wrap: anywhere;
+}
+
+.subject {
+  margin-block-start: $spacing-03;
+  min-inline-size: 0;
+
+  :global(.cds--snippet) {
+    max-inline-size: none;
+  }
+
+  :global(.cds--snippet) {
+    padding: $spacing-03;
+  }
+
+  :global(.cds--snippet pre) {
+    padding: 0;
+  }
+
+  :global(.cds--snippet pre),
+  :global(.cds--snippet code) {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+}
+
+.choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: $spacing-03;
+  margin-block-start: $spacing-04;
+}
+
+.cardRefused {
+  @include type-style('helper-text-01');
+  color: $text-error;
+  margin: $spacing-03 0 0;
+}
+
+.composer {
+  display: grid;
+  gap: $spacing-02;
+  min-inline-size: 0;
+}
+
+.composeRow {
+  display: flex;
+  align-items: flex-end;
+  gap: $spacing-03;
+  min-inline-size: 0;
+}
+
+.send {
+  flex: none;
+}
+
+/// The box grows with its text to 120px (Composer.tsx), and shrinks back after a send (SE-C147).
+.message {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+
+  :global(.cds--text-area) {
+    resize: none;
+    max-block-size: 120px;
+    min-block-size: 0;
+  }
+}
+
+.composeActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: $spacing-02;
+  min-inline-size: 0;
+
+  // Carbon keeps an icon's room at the end of every button, iconless or not; these have none, and a
+  // phone's row has no room to spare for it.
+  :global(.cds--btn) {
+    padding-inline-end: $spacing-05;
+  }
+}
+
+/// The permission card's own area over the composer: a tall card scrolls in it, so the feed keeps
+/// its room and the composer stays in view.
+.cardArea {
+  display: grid;
+  gap: $spacing-03;
+  min-inline-size: 0;
+  max-block-size: calc(var(--ar-viewport-block, 100dvh) * 0.3);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/// The feed keeps room to be read however much is fixed around it.
+.feedScroll {
+  min-block-size: 6rem;
+}
+
+/// Stop: a labelled button in the warn colour (SE-C158), dark words on its fill in both themes.
+.stop:global(.cds--btn) {
+  background: var(--ar-warn-fill);
+  border-color: var(--ar-warn-fill);
+  // Carbon's darkest gray on the amber fill reaches AA in both themes; its on-colour white does not.
+  color: colors.$gray-100;
+
+  &:hover {
+    background: var(--ar-warn-fill);
+    filter: brightness(0.92);
+  }
+}
+
+.composeHelp {
+  @include type-style('helper-text-01');
+  color: $text-secondary;
+  margin: 0;
+}
+
+// ---------- find ----------
+
+.find {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-content: start;
+  gap: $spacing-04;
+  padding: 0 $spacing-05 $spacing-07;
+}
+
+/// The field and its scope stay in view while the hits scroll (SE-C163).
+.findBar {
+  position: sticky;
+  inset-block-start: 0;
+  z-index: 1;
+  display: grid;
+  gap: $spacing-03;
+  padding-block: $spacing-04 $spacing-03;
+  background: $background;
+  min-inline-size: 0;
+}
+
+.findScope {
+  min-inline-size: 0;
+  overflow-x: auto;
+
+  :global(.cds--content-switcher) {
+    inline-size: max-content;
+    min-inline-size: 100%;
+  }
+}
+
+.findWhat,
+.findNote {
+  @include type-style('helper-text-01');
+  color: $text-secondary;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.findRows {
+  display: grid;
+  gap: $spacing-03;
+  min-inline-size: 0;
+}
+
+.hitWrap {
+  display: grid;
+  gap: $spacing-02;
+  min-inline-size: 0;
+}
+
+.hit {
+  display: grid;
+  gap: $spacing-02;
+  min-inline-size: 0;
+  padding: $spacing-04;
+  background: $layer-01;
+  border: 1px solid $border-subtle-01;
+  color: $text-primary;
+  text-align: start;
+  font: inherit;
+}
+
+button.hit {
+  cursor: pointer;
+
+  &:hover {
+    background: $layer-hover-01;
+  }
+
+  &:focus-visible {
+    outline: 2px solid $focus;
+    outline-offset: -2px;
+  }
+}
+
+.hitTop {
+  @include type-style('label-01');
+  display: flex;
+  gap: $spacing-03;
+  color: $text-secondary;
+}
+
+.hitKind {
+  border: 1px solid $border-subtle-01;
+  padding: 0 $spacing-02;
+}
+
+.hitAge {
+  margin-inline-start: auto;
+}
+
+/// A hit's snippet in at most five lines, wrapping anywhere (SE-C169).
+.snippet {
+  @include type-style('body-compact-01');
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 5;
+  -webkit-box-orient: vertical;
+
+  mark {
+    background: $highlight;
+    color: inherit;
+  }
+}
+
+.hitWhere {
+  @include type-style('label-01');
+  color: $text-secondary;
+  overflow-wrap: anywhere;
+}
+
+.findClose {
+  justify-self: start;
+}
+
+/// On a coarse pointer every field is 16px and every target 48px (SE-C205).
+@media (pointer: coarse) {
+  .message :global(.cds--text-area),
+  .find :global(.cds--search-input),
+  .switcher :global(.cds--select-input) {
+    @include type-style('body-02');
+  }
+
+  .tabLink,
+  .findButton,
+  .back,
+  .composeActions :global(.cds--btn),
+  .choices :global(.cds--btn),
+  .rowAction,
+  .fold,
+  .hit {
+    min-block-size: $spacing-09;
+  }
+
+  .switcher :global(.cds--select-input),
+  .screen :global(.cds--text-input) {
+    block-size: $spacing-09;
+  }
+
+  // Carbon's buttons are 40px at the size this screen draws them; a fingertip needs 48.
+  .screen :global(.cds--btn) {
+    min-block-size: $spacing-09;
+  }
+
+  .message :global(.cds--text-area) {
+    min-block-size: $spacing-09;
+  }
+
+  .help :global(.cds--toggletip-button),
+  .stripHelp :global(.cds--toggletip-button),
+  .screen :global(.cds--snippet .cds--copy-btn) {
+    min-block-size: $spacing-09;
+    min-inline-size: $spacing-09;
+  }
+}

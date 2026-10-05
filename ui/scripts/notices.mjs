@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Copied from Northstar ui/scripts/notices.mjs at e9c1589.
-// Changed: Northstar's declarations for cytoscape, dagre, heap and lodash are gone, and so are those for Carbon Charts and for flatpickr's tslib, which this console does not bundle; there is no generated client to credit; the notices name the router.
+// Changed: Northstar's declarations for cytoscape, dagre, heap and lodash are gone, and so is the one for flatpickr's tslib, which this console does not bundle; Carbon Charts' are kept, for the Overview's activity chart; there is no generated client to credit; the notices name the router.
 //
 // The console's third-party notices, generated from what the production build bundles.
 //
@@ -66,19 +66,24 @@ const VENDORED = join(ui, 'scripts', 'licences');
 /// into them, or installed at a release other than the one the dist carries. Each says how its
 /// version is known (`basis`), and its licence files are in VENDORED.
 const INLINED = {
-  // Empty: nothing this console bundles compiles in a package that is not installed. Northstar
-  // declares here what cytoscape, cytoscape-dagre, @dagrejs/dagre and Carbon Charts compile in,
-  // and tslib inside flatpickr, which @carbon/react's date picker imports; this console renders no
-  // date picker, so the build holds no flatpickr. A slice that brings one of them brings its entry
-  // here and its licence files to scripts/licences/<name>@<version>/, as Northstar keeps them
-  // (tslib 2.0.3 for flatpickr; dompurify 3.4.14 and @carbon/utils-position 1.3.0 for the
-  // charts); the run fails until it does.
+  // @carbon/charts's dist compiles in DOMPurify, and its banner there says 3.4.14; the copy
+  // installed beside it is 3.4.15. The banner is checked against this on every run. Its licence
+  // files are LICENSE and LICENSE-MPL from the published 3.4.14 tarball, as Northstar keeps them.
+  // Carbon Charts also compile in @carbon/utils-position 1.3.0, which is installed but ships no
+  // licence file: its LICENSE in VENDORED is the one at the root of
+  // carbon-design-system/carbon-utils-position. Northstar's entries for cytoscape, cytoscape-dagre,
+  // @dagrejs/dagre and flatpickr's tslib are left out: this console bundles none of them, and
+  // renders no date picker, so the build holds no flatpickr.
+  '@carbon/charts@1.27.20': {
+    dompurify: { version: '3.4.14', license: '(MPL-2.0 OR Apache-2.0)', repository: 'https://github.com/cure53/DOMPurify', author: 'Dr.-Ing. Mario Heiderich, Cure53', basis: 'the version its licence banner in that dist names' },
+  },
 };
 
 /// Sources a package's map names by a path in the repository it was built in, which is another
-/// installed package. Northstar maps @carbon/charts-react's `../../core/` to @carbon/charts here;
-/// this console bundles neither yet.
-const SOURCE_ALIASES = {};
+/// installed package: @carbon/charts-react's monorepo keeps @carbon/charts in ../core.
+const SOURCE_ALIASES = {
+  '@carbon/charts-react': [{ prefix: '../../core/', package: '@carbon/charts' }],
+};
 
 /// Rollup's virtual modules that render into the bundle.
 const VIRTUAL = {

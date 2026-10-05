@@ -53,6 +53,7 @@ export function ShareBar({
   of = 'of the whole',
   size = 'md',
   legend = true,
+  rowBars = false,
   className,
 }: {
   /// What the whole is: "What the model read".
@@ -67,6 +68,9 @@ export function ShareBar({
   of?: string;
   size?: 'md' | 'sm';
   legend?: boolean;
+  /// Under each legend row, a bar of that part's share of the whole, for a legend read row by row
+  /// (OV-C123).
+  rowBars?: boolean;
   className?: string;
 }) {
   const bar = useRef<HTMLDivElement>(null);
@@ -142,6 +146,11 @@ export function ShareBar({
                   )}
                 </span>{' '}
                 <span className={styles.figure}>{figure(p)}</span> <span className={styles.pct}>{shareOf(p.value, whole)}</span>
+                {rowBars && (
+                  <span className={styles.rowBar} data-row-bar={p.key} aria-hidden="true">
+                    {drawn(p.value) && whole > 0 && <span className={styles.rowFill} style={{ inlineSize: `${(100 * p.value) / whole}%`, background: paint(p.colour) }} />}
+                  </span>
+                )}
               </li>
             );
           })}

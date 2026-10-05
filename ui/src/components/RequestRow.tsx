@@ -59,7 +59,7 @@ export function RequestRow({
   at: string;
   /// The model's full id, in the detail.
   model: string | null;
-  /// Its short name on the card: "opus 4.5".
+  /// Its short name on the card, as every client spells it: "opus-4-5-20251101" (OV-C184).
   modelShort: string;
   family: Family;
   subagent?: boolean;
@@ -107,7 +107,7 @@ export function RequestRow({
           <span className={styles.time}>{time}</span>{' '}
           <span className={styles.model}>
             <span className={styles.swatch} data-family={family} style={family === 'other' ? undefined : { background: paint(FAMILY_COLOUR[family]) }} aria-hidden="true" />
-            {modelShort}
+            <span className={styles.modelName}>{modelShort}</span>
           </span>{' '}
           <span className={styles.badges}>
             {subagent && (

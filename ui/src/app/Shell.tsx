@@ -1,6 +1,6 @@
 // Copied from Northstar ui/src/app/Shell.tsx at e9c1589.
-// Changed: agent-router's navigation (Overview, Sessions, the projects, Settings at the foot); the freshness badge reads the router's health; no sign-in and no log-out, because the router's LAN gate is HTTP Basic, which the browser asks for itself; no wide routes; the phone drawer closes on every arrival, a project link's included; the palette is open at a location as the drawer is, and opening either puts the other away.
-import { Suspense, useCallback, useEffect, useMemo, useState, type MouseEvent } from 'react';
+// Changed: agent-router's navigation (Overview, Sessions, the projects, Settings at the foot); the freshness badge reads the router's health; no sign-in and no log-out, because the router's LAN gate is HTTP Basic, which the browser asks for itself; no wide routes; the phone drawer closes on every arrival, a project link's included; the palette is open at a location as the drawer is, and opening either puts the other away; the first-boot password prompt is decided here, on every screen but Settings, in a chunk of its own.
+import { Suspense, lazy, useCallback, useEffect, useMemo, useState, type MouseEvent } from 'react';
 import { Link, Outlet, useHref, useLocation, useNavigate } from 'react-router';
 import {
   Content,
@@ -27,6 +27,10 @@ import { InitialsIcon } from '~/components/InitialsIcon';
 import { LiveBadge } from '~/components/LiveBadge';
 import { Palette, usePaletteShortcut } from '~/screens/Palette';
 import styles from './Shell.module.scss';
+
+/// Whether the first-boot password prompt opens (ST-C80), in a chunk of its own: it reads the
+/// router's auth with Settings' own reader, which every page's first load need not carry.
+const FirstBootGate = lazy(() => import('~/screens/Settings/FirstBootGate').then((m) => ({ default: m.FirstBootGate })));
 
 const RAIL_KEY = 'agent-router.rail';
 
@@ -237,6 +241,10 @@ export function Shell() {
         </Suspense>
       </Content>
       <Palette open={paletteOpen} onClose={closePalette} />
+      {/* The first-boot password prompt: on any screen but Settings, once (ST-C80). */}
+      <Suspense fallback={null}>
+        <FirstBootGate />
+      </Suspense>
     </>
   );
 }

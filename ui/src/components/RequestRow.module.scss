@@ -61,15 +61,21 @@
   white-space: nowrap;
 }
 
+/// Wide enough for a model as every client spells it, "sonnet-4-5-20250929" (OV-C184, decision K),
+/// and a longer one ellipsised rather than cut: the full id is in the detail.
 .model {
-  flex: 0 1 12ch;
+  flex: 0 1 22ch;
   display: inline-flex;
   align-items: center;
   gap: $spacing-02;
   min-inline-size: 0;
+  white-space: nowrap;
+}
+
+.modelName {
+  min-inline-size: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /// A model family's swatch; "other" is a hollow ring rather than a fourth fill (OV-C10).
@@ -84,8 +90,9 @@
   box-shadow: inset 0 0 0 $spacing-01 var(--ar-model-other);
 }
 
+/// The same width on every row, whatever badges it carries, so the columns after it line up.
 .badges {
-  flex: 1 1 auto;
+  flex: 1 1 20ch;
   display: inline-flex;
   flex-wrap: wrap;
   gap: $spacing-02;
@@ -197,6 +204,10 @@
     align-items: center;
     gap: $spacing-02 $spacing-03;
     min-inline-size: 0;
+  }
+
+  .badges {
+    flex: 1 1 auto;
   }
 
   .out {

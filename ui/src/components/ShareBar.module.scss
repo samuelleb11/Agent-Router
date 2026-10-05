@@ -107,6 +107,21 @@
   color: var(--cds-text-secondary);
 }
 
+/// A row's own bar of its share, the width of the row, under its words (OV-C123). Its width is its
+/// share, set on the element; a part above zero is at least 3 px, as in the bar above (OV-C189).
+.rowBar {
+  grid-column: 1 / -1;
+  display: block;
+  block-size: $spacing-02;
+  background: var(--cds-layer-accent-01);
+}
+
+.rowFill {
+  display: block;
+  block-size: 100%;
+  min-inline-size: 3px;
+}
+
 /// The row whose part is lit, lit with it.
 .item[data-hot] {
   background: var(--cds-layer-hover-01);

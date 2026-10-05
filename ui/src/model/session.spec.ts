@@ -8,6 +8,8 @@ import {
   answerTarget,
   asideNotice,
   composeAnswers,
+  feedAside,
+  feedEcho,
   feedError,
   feedHeader,
   feedMessage,
@@ -24,6 +26,8 @@ import {
   permissionSubject,
   projectOf,
   questionTabs,
+  QUEUED,
+  SIDE_QUESTION,
   sendNotice,
   silent,
   switcherOptions,
@@ -148,6 +152,23 @@ describe('the stream', () => {
     expect(feed.sent).toEqual(['a', 'b']);
     for (let n = 0; n < 250; n++) typed(`m${n}`);
     expect([feed.sent.length, feed.sent[199]]).toEqual([200, 'm249']);
+  });
+
+  it('SE-C150, SE-C160: a send is echoed "you · queued", a side question "you · side question", and its answer lands as a side answer, "(no answer)" when empty; none of them is history', () => {
+    let feed = openFeed(NOW);
+    feed = feedEcho(feed, 'sent at once');
+    feed = feedEcho(feed, 'what is this?', SIDE_QUESTION);
+    feed = feedAside(feed, '**it is** that');
+    feed = feedAside(feed, '');
+    expect(feed.entries.map((e) => (e.kind === 'echo' ? `${e.label}: ${e.text}` : feedRowView(e.item).who))).toEqual([
+      `${QUEUED}: sent at once`,
+      'you · side question: what is this?',
+      'side answer',
+      'side answer',
+    ]);
+    const last = feed.entries[3];
+    expect(last?.kind === 'row' && last.item.text).toBe('(no answer)');
+    expect(feed.sent).toEqual([]);
   });
 });
 

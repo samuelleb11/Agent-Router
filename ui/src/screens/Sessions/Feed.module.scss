@@ -1,0 +1,417 @@
+// New for agent-router: the live view's transcript (assets/live.html, "transcript", "folding",
+// "markdown") on Carbon tokens. A conversation, not a log (SE-C75): the person's words are the one
+// filled bubble, the assistant's prose sits on the page, and the apparatus recedes onto a rail.
+@use '@carbon/react/scss/spacing' as *;
+@use '@carbon/react/scss/type' as *;
+@use '@carbon/react/scss/theme' as *;
+@use '@carbon/react/scss/breakpoint' as *;
+
+// A rail is a 2px rule. Carbon has no border-width token, so the one width is named here.
+$ar-rail: 0.125rem;
+
+/// The rows, in the order the stream delivered them. Every grid item may shrink: a grid item
+/// defaults to `min-width: auto`, so one wide block would stretch the column and scroll the page
+/// sideways (SE-C89).
+.feed {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: $spacing-02;
+  align-content: start;
+  padding: $spacing-05 $spacing-05 $spacing-04;
+  min-inline-size: 0;
+}
+
+.entry {
+  min-inline-size: 0;
+  // Transcripts, output, paths and links wrap anywhere (SE-C89, Northstar 4b65e8b).
+  overflow-wrap: anywhere;
+  scroll-margin-block: $spacing-07;
+
+  > * {
+    min-inline-size: 0;
+  }
+}
+
+/// What a row says over itself: a tool's name, "subagent", "side answer"; its duration at the end.
+.who {
+  @include type-style('label-01');
+  display: flex;
+  gap: $spacing-03;
+  align-items: baseline;
+  color: $text-secondary;
+  margin-block-end: $spacing-02;
+}
+
+.dur {
+  margin-inline-start: auto;
+}
+
+.name {
+  @include type-style('label-02');
+  color: $text-primary;
+  font-weight: 600;
+}
+
+/// The person's own words: the only filled bubble, at the right, no wider than 85 % of the column
+/// or 40em (SE-C75). Carbon's brand background under its on-colour text is AA in both themes
+/// (SE-C207); the page's white on its dark blue was 2.52:1.
+.person {
+  justify-self: end;
+  max-inline-size: min(85%, 40em);
+  background: $background-brand;
+  color: $text-on-color;
+  padding: $spacing-04 $spacing-05;
+  margin-block: $spacing-05 $spacing-02;
+}
+
+/// What the person sent, echoed until the transcript has it: dashed, and in the secondary text
+/// colour rather than faded by opacity, which would take it under AA (SE-C150, SE-C207).
+.echo {
+  justify-self: end;
+  max-inline-size: min(85%, 40em);
+  border: 1px dashed $border-interactive;
+  color: $text-secondary;
+  padding: $spacing-04 $spacing-05;
+  margin-block: $spacing-05 $spacing-02;
+}
+
+/// Words as written: whitespace kept, never Markdown (SE-C78).
+.plain {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+}
+
+.person .plain {
+  @include type-style('body-02');
+}
+
+/// The assistant's answer: on the page, no chrome, at most 46em (SE-C75).
+.prose {
+  max-inline-size: 46em;
+  padding: $spacing-02 $spacing-02 $spacing-04;
+}
+
+/// The apparatus: tools, thinking and the rest, on a thin rail.
+.rail {
+  border-inline-start: $ar-rail solid $border-subtle-01;
+  padding-block: $spacing-02;
+  padding-inline-start: $spacing-04;
+  margin-inline-start: $spacing-01;
+}
+
+/// A subagent's rows on a warn-coloured rail; an answer on an ok-coloured one (SE-C83).
+.rail[data-subagent] {
+  border-inline-start-color: var(--ar-warn-fill);
+}
+
+.rail[data-answer] {
+  border-inline-start-color: var(--ar-ok-fill);
+}
+
+/// A cancellation: something that happened, said by nobody — centred, faint, italic (SE-C77).
+.interrupt {
+  @include type-style('helper-text-01');
+  text-align: center;
+  font-style: italic;
+  color: $text-secondary;
+  padding-block: $spacing-03;
+}
+
+/// A tool call and its output, one block (SE-C79, SE-C80).
+.term {
+  border: 1px solid $border-subtle-01;
+  min-inline-size: 0;
+  max-inline-size: 100%;
+}
+
+/// A terminal block's snippets sit tight: a one-line command is one line high, not Carbon's
+/// three-row minimum, and its copy button keeps its corner.
+.term :global(.cds--snippet--multi) {
+  padding: $spacing-03 $spacing-04;
+}
+
+.term :global(.cds--snippet--multi .cds--snippet-container pre) {
+  padding-block-end: 0;
+}
+
+/// The command line: raised, never wrapped — it scrolls sideways inside its own box (SE-C81).
+.command {
+  :global(.cds--snippet) {
+    max-inline-size: none;
+    background: $layer-02;
+  }
+
+  :global(.cds--snippet pre) {
+    white-space: pre;
+    overflow-wrap: normal;
+  }
+}
+
+/// Only Bash gets the prompt glyph (SE-C79): a file path or a query was never typed at a prompt.
+.command[data-shell] :global(.cds--snippet code)::before {
+  content: '$ ';
+  color: $text-secondary;
+}
+
+/// The output: hung off its call under a small OUT label, with no gap, wrapping anywhere (SE-C80,
+/// SE-C81).
+.output {
+  border-block-start: 1px solid $border-subtle-01;
+
+  :global(.cds--snippet) {
+    max-inline-size: none;
+  }
+
+  :global(.cds--snippet pre),
+  :global(.cds--snippet code) {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+}
+
+.out {
+  @include type-style('label-01');
+  display: block;
+  color: $text-secondary;
+  padding: $spacing-02 $spacing-05 0;
+  background: $layer-01;
+}
+
+/// Thinking collapses to "Thought for 2s ›" and opens on demand, never clamped (SE-C82).
+.thought {
+  @include type-style('label-01');
+  font-style: italic;
+  color: $text-secondary;
+  background: none;
+  border: 0;
+  padding: $spacing-02 0;
+  cursor: pointer;
+  text-align: start;
+
+  &:focus-visible {
+    outline: 2px solid $focus;
+    outline-offset: 2px;
+  }
+}
+
+.thinking {
+  margin: $spacing-02 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-style: italic;
+  color: $text-secondary;
+  @include type-style('body-compact-01');
+}
+
+// ---------- folding ----------
+
+.clampWrap {
+  min-inline-size: 0;
+}
+
+/// Clamped before it is measured (SE-C86); kept clamped only when it overflows.
+.clamp {
+  position: relative;
+  overflow: hidden;
+}
+
+/// Prose and plain rows fold at 11em (SE-C85).
+.clampProse {
+  max-block-size: 11em;
+}
+
+/// Terminal output folds at four lines of code: Carbon's code line is 1rem, under its 1rem padding.
+.clampTerm {
+  max-block-size: 5rem;
+}
+
+/// The toggle that says how many lines a fold hides, "Show 42 lines", and "Show less" (SE-C85).
+.more {
+  @include type-style('label-01');
+  display: inline-block;
+  color: $link-primary;
+  background: none;
+  border: 0;
+  padding: $spacing-02 0;
+  cursor: pointer;
+
+  &:hover {
+    text-decoration: underline;
+  }
+
+  &:focus-visible {
+    outline: 2px solid $focus;
+    outline-offset: 2px;
+  }
+}
+
+.term .more {
+  padding-inline: $spacing-05;
+}
+
+// ---------- markdown ----------
+
+.md {
+  @include type-style('body-02');
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
+}
+
+.p {
+  margin: $spacing-03 0;
+
+  &:first-child {
+    margin-block-start: 0;
+  }
+
+  &:last-child {
+    margin-block-end: 0;
+  }
+}
+
+.h {
+  @include type-style('heading-compact-01');
+  margin: $spacing-04 0 $spacing-02;
+}
+
+.list {
+  margin: $spacing-03 0;
+  padding-inline-start: $spacing-05;
+}
+
+.quote {
+  margin: $spacing-03 0;
+  padding-inline-start: $spacing-04;
+  border-inline-start: $ar-rail solid $border-subtle-01;
+  color: $text-secondary;
+}
+
+/// Link text wraps anywhere too: one long unbroken URL in an answer once scrolled the whole feed.
+.link {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.inlineCode {
+  @include type-style('code-01');
+  background: $layer-02;
+  padding: 0 $spacing-02;
+  overflow-wrap: anywhere;
+}
+
+.fence {
+  margin: $spacing-03 0;
+
+  &:global(.cds--snippet) {
+    max-inline-size: 100%;
+  }
+}
+
+/// A table scrolls sideways inside the column rather than widening it (SE-C102).
+.tableScroll {
+  max-inline-size: 100%;
+  overflow-x: auto;
+  margin: $spacing-03 0;
+}
+
+.table {
+  border-collapse: collapse;
+  @include type-style('body-compact-01');
+
+  th,
+  td {
+    border: 1px solid $border-subtle-01;
+    padding: $spacing-02 $spacing-03;
+    text-align: start;
+    vertical-align: top;
+    white-space: nowrap;
+    overflow-wrap: normal;
+  }
+
+  th {
+    background: $layer-02;
+    font-weight: 600;
+  }
+}
+
+// ---------- the question form ----------
+
+/// A question is the one thing worth interrupting the flow for: a card in the question colour, set
+/// apart (SE-C105). The question colour is Carbon's interactive border, apart from the session
+/// tones (SE-C4).
+.ask {
+  border: 1px solid $border-interactive;
+  max-inline-size: 46em;
+  margin-block: $spacing-05;
+  display: grid;
+  gap: $spacing-04;
+  min-inline-size: 0;
+
+  &[data-spent] {
+    border-color: $border-subtle-01;
+  }
+}
+
+.question {
+  @include type-style('heading-compact-01');
+  margin: 0 0 $spacing-03;
+}
+
+.option {
+  display: grid;
+  gap: $spacing-01;
+}
+
+.optionLabel {
+  font-weight: 600;
+}
+
+.optionWhy {
+  @include type-style('helper-text-01');
+  color: $text-secondary;
+}
+
+.other {
+  margin-block-start: $spacing-03;
+}
+
+.askFoot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: $spacing-04;
+}
+
+.askHint {
+  @include type-style('helper-text-01');
+  color: $text-secondary;
+}
+
+/// The entry an address arrived at: marked, and kept marked.
+.arrived {
+  outline: 2px solid $focus;
+  outline-offset: $spacing-02;
+
+  &:focus {
+    outline-width: 3px;
+  }
+}
+
+/// A row's text is never under 16px on a touch pointer where it is a field, and its toggles are
+/// fingertip targets (SE-C205).
+@media (pointer: coarse) {
+  .more,
+  .thought {
+    min-block-size: $spacing-09;
+  }
+
+  .ask :global(.cds--text-input) {
+    @include type-style('body-02');
+  }
+
+  .ask :global(.cds--tabs__nav-link) {
+    min-block-size: $spacing-09;
+  }
+}

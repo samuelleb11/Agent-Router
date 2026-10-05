@@ -1,5 +1,5 @@
 // New for agent-router: the dashboard's scope (assets/index.html: `state`, `RANGES`, `sinceMs`,
-// `readHash`, `writeHash`, `setScope`, `renderCrumbs`, `menuRows` and the lists' click handlers) as
+// `writeHash`, `setScope`, `renderCrumbs`, `menuRows` and the lists' click handlers) as
 // values. Three nested levels — account › project › session — and a time range (OV-C12), kept in
 // the address so a scoped view is a link (OV-C29, SH-C53).
 //
@@ -11,7 +11,8 @@
 // - the account picker's filter says what it filters (OV-C18);
 // - the session picker says when its list stops at the 200 most recent sessions (OV-C34).
 // A scope change pushes a history entry rather than replacing one (OV-C30): the address is written
-// by `writeQuery`, and pushed or replaced by the screen.
+// by `writeQuery`, and pushed or replaced by the screen. The dashboard's own `#a=&p=&s=&r=&o=` is not
+// read: the clean cut keeps no compatibility code (decision J), so an old bookmark opens unscoped.
 
 import { DASH, count, id8, projectName } from './format';
 
@@ -125,28 +126,6 @@ export function writeQuery(address: Partial<OverviewAddress> & { readonly scope:
   if (requests.stop) p.set('stop', requests.stop);
   const q = p.toString();
   return q ? `?${q}` : '';
-}
-
-/// The dashboard's own spelling, `#a=&p=&s=&r=&o=`, read once on load (OV-C29). Null when the hash
-/// carries none of it, so an address with no legacy state is left alone.
-export function readLegacyHash(hash: string): OverviewAddress | null {
-  const p = new URLSearchParams(hash.replace(/^#/, ''));
-  if (!['a', 'p', 's', 'r', 'o'].some((k) => p.has(k))) return null;
-  return {
-    scope: { account: p.get('a') || null, project: p.get('p') || null, session: p.get('s') || null, range: parseRange(p.get('r')) },
-    open: ids(p.get('o')),
-    requests: NO_FILTERS,
-  };
-}
-
-/// Where an old bookmark is rewritten to: its hash as the query string, on the same path, so the
-/// bookmark keeps working and the address then reads like every other (OV-C29). Null when there is
-/// nothing to rewrite.
-export function legacyRewrite(href: string): string | null {
-  const u = new URL(href);
-  const old = readLegacyHash(u.hash);
-  if (!old) return null;
-  return u.pathname + writeQuery(old);
 }
 
 // ---------- the crumbs and their pickers ----------

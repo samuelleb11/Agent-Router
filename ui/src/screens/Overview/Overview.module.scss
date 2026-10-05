@@ -1,0 +1,653 @@
+// New for agent-router: the Overview's layout, on Carbon tokens. Drawn from the dashboard's `.scopebar`,
+// `.panel`, `.two`, `.headline` and `.rq*` (assets/index.html), without its 330 px two-up minimum, its
+// eleven-track request row and its unwrapped meta lines, which together scrolled a phone sideways
+// (OV-C195).
+@use '@carbon/react/scss/spacing' as *;
+@use '@carbon/react/scss/type' as *;
+@use '@carbon/react/scss/breakpoint' as *;
+@use '@carbon/react/scss/utilities/button-reset';
+@use '@carbon/react/scss/utilities/focus-outline' as *;
+
+/// The scope bar stays in view at the top while the page scrolls, under the shell's 48 px header
+/// (OV-C35): it qualifies every figure below it.
+.scopeBar {
+  position: sticky;
+  inset-block-start: $spacing-09;
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: $spacing-03 $spacing-05;
+  min-inline-size: 0;
+  margin-block: calc(-1 * #{$spacing-03});
+  padding-block: $spacing-03;
+  background: var(--cds-background);
+  border-block-end: 1px solid var(--cds-border-subtle-01);
+}
+
+.crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: $spacing-02;
+  min-inline-size: 0;
+}
+
+.crumbs > svg {
+  flex: none;
+}
+
+.sep {
+  color: var(--cds-text-secondary);
+}
+
+/// A switcher is as wide as its words, every one of them whole: Carbon gives every button the
+/// switcher's whole width and lets them shrink alike, which cut "24h" and "30d" to "2…" and "3…".
+/// Carbon's rule is three classes deep, so its width is undone with the button's own attributes.
+.range,
+.kinds,
+.kindSwitch {
+  flex: 0 1 auto;
+  inline-size: auto;
+  max-inline-size: 100%;
+  min-inline-size: 0;
+}
+
+.range :global(.cds--content-switcher-btn)[role='tab'][type='button'],
+.kinds :global(.cds--content-switcher-btn)[role='tab'][type='button'],
+.kindSwitch :global(.cds--content-switcher-btn)[role='tab'][type='button'] {
+  flex: 1 0 auto;
+  inline-size: auto;
+  min-inline-size: 3rem;
+}
+
+/// The page's freshness and the network's state, under the title.
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: $spacing-02 $spacing-04;
+  min-inline-size: 0;
+}
+
+.freshness {
+  @include type-style('helper-text-01');
+  color: var(--cds-text-secondary);
+}
+
+.freshness[data-freshness='stale'],
+.freshness[data-freshness='unreachable'] {
+  color: var(--ar-warn);
+}
+
+.freshness[data-freshness='unreachable'] {
+  color: var(--ar-bad);
+}
+
+.network {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: $spacing-02 $spacing-03;
+  @include type-style('helper-text-01');
+  color: var(--cds-text-secondary);
+}
+
+.dot {
+  flex: none;
+  inline-size: $spacing-03;
+  block-size: $spacing-03;
+  border-radius: 50%;
+}
+
+.dot[data-tone='ok'] {
+  background: var(--ar-ok-fill);
+}
+
+.dot[data-tone='bad'] {
+  background: var(--ar-bad-fill);
+}
+
+/// One panel: a heading with its concept's icon and its caption beside it, over its content.
+.panel {
+  display: grid;
+  align-content: start;
+  gap: $spacing-04;
+  min-inline-size: 0;
+  // An in-page jump lands the heading clear of the header and the sticky scope bar.
+  scroll-margin-block-start: 8rem;
+}
+
+.panelHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: $spacing-02 $spacing-04;
+  min-inline-size: 0;
+}
+
+.h2 {
+  display: inline-flex;
+  align-items: center;
+  gap: $spacing-03;
+  margin: 0;
+  @include type-style('heading-03');
+  color: var(--cds-text-primary);
+}
+
+.h2 svg {
+  flex: none;
+}
+
+/// The caption: what the panel measures, or how to use it, as text beside its heading (OV-C2).
+.caption {
+  margin: 0;
+  @include type-style('helper-text-01');
+  color: var(--cds-text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.body {
+  display: grid;
+  align-content: start;
+  gap: $spacing-05;
+  min-inline-size: 0;
+}
+
+/// Two panels side by side on a desk, stacked in a hand (OV-C202), never with a minimum wider than
+/// the screen.
+.two {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 24rem), 1fr));
+  gap: $spacing-07 $spacing-06;
+  min-inline-size: 0;
+
+  @include breakpoint-down('md') {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.note {
+  margin: 0;
+  @include type-style('helper-text-01');
+  color: var(--cds-text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.empty {
+  margin: 0;
+  @include type-style('body-compact-01');
+  color: var(--cds-text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.problem {
+  margin: 0;
+  @include type-style('body-compact-01');
+  color: var(--ar-bad);
+  overflow-wrap: anywhere;
+}
+
+// ---------------------------------------------------------------- search
+
+.searchBar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: $spacing-03 $spacing-05;
+  min-inline-size: 0;
+}
+
+.searchField {
+  display: flex;
+  align-items: center;
+  gap: $spacing-03;
+  flex: 1 1 18rem;
+  min-inline-size: 0;
+}
+
+.kbd {
+  flex: none;
+  padding: 0 $spacing-02;
+  border: 1px solid var(--cds-border-subtle-01);
+  @include type-style('code-01');
+  color: var(--cds-text-secondary);
+}
+
+
+.subhead {
+  margin: 0;
+  @include type-style('label-01');
+  color: var(--cds-text-secondary);
+}
+
+.hits {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.hits > li + li {
+  border-block-start: 1px solid var(--cds-border-subtle-01);
+}
+
+/// A hit: a button naming its kind, role, project, session and time over a snippet of at most three
+/// lines (OV-C48).
+.hit {
+  @include button-reset.reset;
+  display: grid;
+  gap: $spacing-02;
+  inline-size: 100%;
+  min-inline-size: 0;
+  padding: $spacing-03;
+  color: var(--cds-text-primary);
+  text-align: start;
+  cursor: pointer;
+
+  &:hover {
+    background: var(--cds-layer-hover-01);
+  }
+
+  &:focus-visible {
+    @include focus-outline('outline');
+  }
+}
+
+.hitHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: $spacing-02 $spacing-03;
+  @include type-style('label-01');
+  color: var(--cds-text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.kindTag {
+  padding: 0 $spacing-02;
+  background: var(--cds-layer-accent-01);
+  color: var(--cds-text-primary);
+}
+
+.role {
+  color: var(--cds-text-primary);
+  font-weight: 600;
+}
+
+.snippet {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
+  margin: 0;
+  @include type-style('body-compact-01');
+  overflow-wrap: anywhere;
+}
+
+.snippet mark {
+  background: var(--cds-highlight);
+  color: var(--cds-text-primary);
+}
+
+.mono {
+  font-family: var(--cds-code-01-font-family, 'IBM Plex Mono', monospace);
+  overflow-wrap: anywhere;
+}
+
+// ---------------------------------------------------------------- quota
+
+.meters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr));
+  gap: $spacing-05 $spacing-07;
+  min-inline-size: 0;
+}
+
+.line {
+  display: flex;
+  align-items: baseline;
+  gap: $spacing-02;
+  margin: 0;
+  @include type-style('helper-text-01');
+  color: var(--cds-text-primary);
+  overflow-wrap: anywhere;
+}
+
+.line[data-tone='warn'] {
+  color: var(--ar-warn);
+}
+
+.line[data-tone='bad'] {
+  color: var(--ar-bad);
+}
+
+.line svg {
+  flex: none;
+  align-self: center;
+}
+
+.basis {
+  display: block;
+  margin: 0;
+  @include type-style('helper-text-01');
+  color: var(--cds-text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.statusRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: $spacing-02 $spacing-04;
+  @include type-style('body-compact-01');
+}
+
+/// The status tag: its word and its colour from one field (OV-C59). The words wear the status text
+/// tokens, which reach 4.5:1; the border and the icon the fills.
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: $spacing-02;
+  padding: 0 $spacing-03;
+  border: 1px solid var(--cds-border-strong-01);
+  @include type-style('label-01');
+  color: var(--cds-text-primary);
+}
+
+.status[data-tone='ok'] {
+  border-color: var(--ar-ok-fill);
+  color: var(--ar-ok);
+}
+
+.status[data-tone='warn'] {
+  border-color: var(--ar-warn-fill);
+  color: var(--ar-warn);
+}
+
+.status[data-tone='bad'] {
+  border-color: var(--ar-bad-fill);
+  color: var(--ar-bad);
+}
+
+.burns {
+  display: grid;
+  gap: $spacing-05 $spacing-06;
+  min-inline-size: 0;
+}
+
+// ---------------------------------------------------------------- all accounts
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 18rem), 1fr));
+  gap: $spacing-05;
+  min-inline-size: 0;
+}
+
+.card {
+  display: grid;
+  align-content: start;
+  gap: $spacing-04;
+  min-inline-size: 0;
+}
+
+.cardName {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: $spacing-02 $spacing-03;
+  margin: 0;
+  @include type-style('heading-compact-01');
+  overflow-wrap: anywhere;
+}
+
+.cardFoot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: $spacing-02 $spacing-05;
+  @include type-style('label-01');
+  color: var(--cds-text-secondary);
+}
+
+.activeTag {
+  padding: 0 $spacing-02;
+  border: 1px solid var(--ar-ok-fill);
+  @include type-style('label-01');
+  color: var(--ar-ok);
+}
+
+// ---------------------------------------------------------------- headline
+
+.tileButton {
+  justify-self: start;
+}
+
+.spendTarget {
+  display: block;
+  min-inline-size: 0;
+}
+
+.split {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0 $spacing-03;
+  margin: 0;
+  @include type-style('helper-text-01');
+  color: var(--cds-text-secondary);
+}
+
+.split dt {
+  font-variant-numeric: tabular-nums;
+  color: var(--cds-text-primary);
+  text-align: end;
+}
+
+.split dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.cacheMeter {
+  display: block;
+  block-size: $spacing-02;
+  background: var(--cds-layer-accent-01);
+}
+
+.cacheFill {
+  display: block;
+  block-size: 100%;
+}
+
+// ---------------------------------------------------------------- activity
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: $spacing-02 $spacing-05;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  @include type-style('label-01');
+  color: var(--cds-text-primary);
+}
+
+.legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: $spacing-02;
+}
+
+/// A family absent from the range stays in the legend, dimmed (OV-C109).
+.legend li[data-present='false'] {
+  color: var(--cds-text-secondary);
+  opacity: 0.6;
+}
+
+.legendNote {
+  color: var(--cds-text-secondary);
+}
+
+.swatch {
+  flex: none;
+  display: inline-block;
+  inline-size: $spacing-03;
+  block-size: $spacing-03;
+}
+
+/// "Other" is a hollow ring, never a fourth fill (OV-C10).
+.swatch[data-family='other'] {
+  border: 2px solid var(--ar-model-other);
+  border-radius: 50%;
+  background: transparent;
+}
+
+.chips {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: $spacing-02;
+  min-inline-size: 0;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: $spacing-02;
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  padding: 0 $spacing-02;
+  background: var(--cds-layer-accent-01);
+  @include type-style('label-01');
+  color: var(--cds-text-primary);
+  overflow-wrap: anywhere;
+}
+
+.chip svg {
+  flex: none;
+}
+
+// ---------------------------------------------------------------- lists
+
+.orphan {
+  display: grid;
+  gap: $spacing-02;
+  padding: $spacing-03;
+  border-block-start: 1px solid var(--cds-border-subtle-01);
+  min-inline-size: 0;
+}
+
+.orphanLine {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: $spacing-02 $spacing-03;
+  @include type-style('body-compact-01');
+  color: var(--cds-text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.orphanLine svg {
+  flex: none;
+}
+
+.orphanName {
+  font-weight: 600;
+}
+
+.more {
+  display: flex;
+  flex-wrap: wrap;
+  gap: $spacing-03;
+}
+
+// ---------------------------------------------------------------- requests
+
+.filters {
+  display: grid;
+  gap: $spacing-03;
+  min-inline-size: 0;
+}
+
+.filterRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: $spacing-02 $spacing-03;
+  min-inline-size: 0;
+}
+
+.filterRow :global(.cds--tag) {
+  max-inline-size: 100%;
+}
+
+
+.rows {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  min-inline-size: 0;
+}
+
+.rows > li {
+  min-inline-size: 0;
+}
+
+.rows > li + li {
+  border-block-start: 1px solid var(--cds-border-subtle-01);
+}
+
+// ---------------------------------------------------------------- back to top
+
+.toTop {
+  position: fixed;
+  inset-inline-end: $spacing-05;
+  inset-block-end: calc(#{$spacing-05} + env(safe-area-inset-bottom));
+  z-index: 3;
+}
+
+/// On a touch screen every target here is a fingertip tall (OV-C198), and the search field's text is
+/// 16 px so iOS does not zoom into it (Carbon's Search is 14 px).
+@media (pointer: coarse) {
+  .searchField :global(.cds--search-input) {
+    @include type-style('body-compact-02');
+  }
+
+  .hit {
+    min-block-size: $spacing-09;
+  }
+
+  .filterRow :global(.cds--tag),
+  .kinds :global(.cds--content-switcher-btn),
+  .kindSwitch :global(.cds--content-switcher-btn),
+  .range :global(.cds--content-switcher-btn) {
+    min-block-size: $spacing-09;
+  }
+
+  .kbd {
+    display: none;
+  }
+
+  /// A link inside a caption or a note is a target too.
+  .caption a,
+  .note a {
+    display: inline-flex;
+    align-items: center;
+    min-block-size: $spacing-09;
+  }
+}
+
+/// On a phone the switchers wrap rather than cut their words, and the scope bar's controls take
+/// their own lines.
+@include breakpoint-down('md') {
+  .range,
+  .kinds,
+  .kindSwitch {
+    flex-wrap: wrap;
+    block-size: auto;
+    inline-size: 100%;
+  }
+}

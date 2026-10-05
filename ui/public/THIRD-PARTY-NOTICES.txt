@@ -28,167 +28,388 @@ A font licence: the fonts are redistributed unmodified and not sold on their own
 @ibm/plex-sans 1.1.0: OFL-1.1. In the console as the IBM Plex Sans font files in fonts/: IBMPlexSans-Light.woff2, IBMPlexSans-Regular.woff2, IBMPlexSans-SemiBold.woff2.
 A font licence: the fonts are redistributed unmodified and not sold on their own, with the licence text beside them (fonts/LICENSE.txt) and below, as it requires.
 
-Packages (30)
+dompurify 3.4.14: (MPL-2.0 OR Apache-2.0). In the console as compiled into the dist of @carbon/charts@1.27.20 (the version its licence banner in that dist names).
+It offers a choice, and is used under Apache-2.0, which is permissive; the text of the other is left out.
+
+Packages (67)
 ------------
 
-@carbon/colors 11.58.0  [1]
+@carbon/charts 1.27.20  [1]
+  Licence: Apache-2.0
+  Source: https://github.com/carbon-design-system/carbon-charts
+  In the console: compiled into the dist of @carbon/charts-react@1.27.20; its stylesheets, compiled into the console's CSS
+  Copyright: Copyright 2018 IBM
+
+@carbon/charts-react 1.27.20  [1]
+  Licence: Apache-2.0
+  Source: https://github.com/carbon-design-system/carbon-charts
+  In the console: its JavaScript
+  Copyright: Copyright 2018 IBM
+
+@carbon/colors 11.58.0  [2]
   Licence: Apache-2.0
   Source: https://github.com/carbon-design-system/carbon
-  In the console: its stylesheets, compiled into the console's CSS
+  In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in); its stylesheets, compiled into the console's CSS
   Copyright: Copyright 2015 IBM Corp.
 
-@carbon/feature-flags 1.9.0  [1]
+@carbon/feature-flags 1.9.0  [2]
   Licence: Apache-2.0
   Source: https://github.com/carbon-design-system/carbon
   In the console: its JavaScript; its stylesheets, compiled into the console's CSS
   Copyright: Copyright 2015 IBM Corp.
 
-@carbon/grid 11.62.0  [1]
+@carbon/grid 11.62.0  [2]
   Licence: Apache-2.0
   Source: https://github.com/carbon-design-system/carbon
   In the console: its stylesheets, compiled into the console's CSS
   Copyright: Copyright 2015 IBM Corp.
 
-@carbon/icon-helpers 10.82.0  [1]
+@carbon/icon-helpers 10.82.0  [2]
   Licence: Apache-2.0
   Source: https://github.com/carbon-design-system/carbon
   In the console: its JavaScript
   Copyright: Copyright 2015 IBM Corp.
 
-@carbon/icons-react 11.88.0  [1]
+@carbon/icons-react 11.88.0  [2]
   Licence: Apache-2.0
   Source: https://github.com/carbon-design-system/carbon
   In the console: its JavaScript
   Copyright: Copyright 2015 IBM Corp.
 
-@carbon/layout 11.59.0  [1]
+@carbon/layout 11.59.0  [2]
   Licence: Apache-2.0
   Source: https://github.com/carbon-design-system/carbon
   In the console: its JavaScript; its stylesheets, compiled into the console's CSS
   Copyright: Copyright 2015 IBM Corp.
 
-@carbon/motion 11.52.0  [1]
+@carbon/motion 11.52.0  [2]
   Licence: Apache-2.0
   Source: https://github.com/carbon-design-system/carbon
   In the console: its stylesheets, compiled into the console's CSS
   Copyright: Copyright 2015 IBM Corp.
 
-@carbon/react 1.116.0  [1]
+@carbon/react 1.116.0  [2]
   Licence: Apache-2.0
   Source: https://github.com/carbon-design-system/carbon
   In the console: its JavaScript; its stylesheets, compiled into the console's CSS
   Copyright: Copyright 2015 IBM Corp.
 
-@carbon/styles 1.115.0  [1]
+@carbon/styles 1.115.0  [2]
   Licence: Apache-2.0
   Source: https://github.com/carbon-design-system/carbon
   In the console: its stylesheets, compiled into the console's CSS
   Copyright: Copyright 2015 IBM Corp.
 
-@carbon/themes 11.81.0  [1]
+@carbon/themes 11.81.0  [2]
   Licence: Apache-2.0
   Source: https://github.com/carbon-design-system/carbon
   In the console: its stylesheets, compiled into the console's CSS
   Copyright: Copyright 2015 IBM Corp.
 
-@carbon/type 11.67.0  [1]
+@carbon/type 11.67.0  [2]
   Licence: Apache-2.0
   Source: https://github.com/carbon-design-system/carbon
   In the console: its stylesheets, compiled into the console's CSS
   Copyright: Copyright 2015 IBM Corp.
 
-@floating-ui/core 1.8.0  [2]
+@carbon/utils-position 1.3.0  [3]
+  Licence: MIT
+  Source: https://github.com/carbon-design-system/carbon-utils-position
+  In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
+  Copyright: Copyright 2019 IBM
+
+@floating-ui/core 1.8.0  [4]
   Licence: MIT
   Source: https://github.com/floating-ui/floating-ui
   In the console: its JavaScript
   Copyright: Copyright (c) 2021-present Floating UI contributors
 
-@floating-ui/dom 1.8.0  [2]
+@floating-ui/dom 1.8.0  [4]
   Licence: MIT
   Source: https://github.com/floating-ui/floating-ui
   In the console: its JavaScript
   Copyright: Copyright (c) 2021-present Floating UI contributors
 
-@floating-ui/react 0.27.20  [2]
+@floating-ui/react 0.27.20  [4]
   Licence: MIT
   Source: https://github.com/floating-ui/floating-ui
   In the console: its JavaScript
   Copyright: Copyright (c) 2021-present Floating UI contributors
 
-@floating-ui/react-dom 2.1.9  [2]
+@floating-ui/react-dom 2.1.9  [4]
   Licence: MIT
   Source: https://github.com/floating-ui/floating-ui
   In the console: its JavaScript
   Copyright: Copyright (c) 2021-present Floating UI contributors
 
-@floating-ui/utils 0.2.12  [2]
+@floating-ui/utils 0.2.12  [4]
   Licence: MIT
   Source: https://github.com/floating-ui/floating-ui
   In the console: its JavaScript
   Copyright: Copyright (c) 2021-present Floating UI contributors
 
-@ibm/plex-mono 2.5.0  [3]
+@ibm/plex-mono 2.5.0  [5]
   Licence: OFL-1.1
   Source: https://github.com/ibm/plex
   In the console: the IBM Plex Mono font files in fonts/: IBMPlexMono-Regular.woff2
   Copyright: Copyright © 2017 IBM Corp. with Reserved Font Name "Plex"
 
-@ibm/plex-sans 1.1.0  [3]
+@ibm/plex-sans 1.1.0  [5]
   Licence: OFL-1.1
   Source: https://github.com/ibm/plex
   In the console: the IBM Plex Sans font files in fonts/: IBMPlexSans-Light.woff2, IBMPlexSans-Regular.woff2, IBMPlexSans-SemiBold.woff2
   Copyright: Copyright © 2017 IBM Corp. with Reserved Font Name "Plex"
 
-@rollup/plugin-commonjs ^29.0.0, bundled in vite 7.3.6  [4]
+@rollup/plugin-commonjs ^29.0.0, bundled in vite 7.3.6  [6]
   Licence: MIT
   Source: https://github.com/rollup/plugins
   In the console: its CommonJS interop helper, from the copy Vite bundles
   Copyright: Copyright (c) 2019 RollupJS Plugin Contributors (https://github.com/rollup/plugins/graphs/contributors)
 
-@tanstack/query-core 5.103.1  [5]
+@tanstack/query-core 5.103.1  [7]
   Licence: MIT
   Source: https://github.com/TanStack/query
   In the console: its JavaScript
   Copyright: Copyright (c) 2021-present Tanner Linsley
 
-@tanstack/react-query 5.103.1  [5]
+@tanstack/react-query 5.103.1  [7]
   Licence: MIT
   Source: https://github.com/TanStack/query
   In the console: its JavaScript
   Copyright: Copyright (c) 2021-present Tanner Linsley
 
-classnames 2.5.1  [6]
+classnames 2.5.1  [8]
   Licence: MIT
   Source: https://github.com/JedWatson/classnames
-  In the console: its JavaScript
+  In the console: compiled into the dist of @carbon/charts-react@1.27.20 (the version installed here; that dist does not record which release it compiled in); its JavaScript
   Copyright: Copyright (c) 2018 Jed Watson
 
-es-toolkit 1.52.0  [7]
+copy-to-clipboard 4.0.2  [9]
+  Licence: MIT
+  Source: https://github.com/sudodoki/copy-to-clipboard
+  In the console: its JavaScript
+  Copyright: Copyright (c) 2017 sudodoki <smd.deluzion@gmail.com>
+
+d3-array 2.12.1  [10]
+  Licence: BSD-3-Clause
+  Source: https://github.com/d3/d3-array
+  In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
+  Copyright: Copyright 2010-2020 Mike Bostock
+
+d3-array 3.2.4  [11]
+  Licence: ISC
+  Source: https://github.com/d3/d3-array
+  In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
+  Copyright: Copyright 2010-2023 Mike Bostock
+
+d3-axis 3.0.0  [12]
+  Licence: ISC
+  Source: https://github.com/d3/d3-axis
+  In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
+  Copyright: Copyright 2010-2021 Mike Bostock
+
+d3-brush 3.0.0  [12]
+  Licence: ISC
+  Source: https://github.com/d3/d3-brush
+  In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
+  Copyright: Copyright 2010-2021 Mike Bostock
+
+d3-cloud 1.2.9  [13]
+  Licence: BSD-3-Clause
+  Source: https://github.com/jasondavies/d3-cloud
+  In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
+  Copyright: Copyright (c) 2013, Jason Davies.
+
+d3-color 3.1.0  [14]
+  Licence: ISC
+  Source: https://github.com/d3/d3-color
+  In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
+  Copyright: Copyright 2010-2022 Mike Bostock
+
+d3-dispatch 1.0.6  [15]
+  Licence: BSD-3-Clause
+  Source: https://github.com/d3/d3-dispatch
+  In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
+  Copyright: Copyright 2010-2016 Mike Bostock
+
+d3-dispatch 3.0.1  [12]
+  Licence: ISC
+  Source: https://github.com/d3/d3-dispatch
+  In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
+  Copyright: Copyright 2010-2021 Mike Bostock
+
+d3-drag 3.0.0  [12]
+  Licence: ISC
+  Source: https://github.com/d3/d3-drag
+  In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
+  Copyright: Copyright 2010-2021 Mike Bostock
+
+d3-ease 3.0.1  [16]
+  Licence: BSD-3-Clause
+  Source: https://github.com/d3/d3-ease
+  In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
+  Copyright: Copyright 2010-2021 Mike Bostock
+             Copyright 2001 Robert Penner
+
+d3-format 3.1.2  [17]
+  Licence: ISC
+  Source: https://github.com/d3/d3-format
+  In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
+  Copyright: Copyright 2010-2026 Mike Bostock
+
+d3-geo 3.1.1  [18]
+  Licence: ISC
+  Source: https://github.com/d3/d3-geo
+  In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
+  Copyright: Copyright 2010-2024 Mike Bostock
+             Copyright 2008-2012 Charles Karney
+
+d3-hierarchy 3.1.2  [12]
+  Licence: ISC
+  Source: https://github.com/d3/d3-hierarchy
+  In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
+  Copyright: Copyright 2010-2021 Mike Bostock
+
+d3-interpolate 3.0.1  [12]
+  Licence: ISC
+  Source: https://github.com/d3/d3-interpolate
+  In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
+  Copyright: Copyright 2010-2021 Mike Bostock
+
+d3-path 1.0.9  [19]
+  Licence: BSD-3-Clause
+  Source: https://github.com/d3/d3-path
+  In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
+  Copyright: Copyright 2015-2016 Mike Bostock
+
+d3-path 3.1.0  [20]
+  Licence: ISC
+  Source: https://github.com/d3/d3-path
+  In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
+  Copyright: Copyright 2015-2022 Mike Bostock
+
+d3-sankey 0.12.3  [21]
+  Licence: BSD-3-Clause
+  Source: https://github.com/d3/d3-sankey
+  In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
+  Copyright: Copyright 2015, Mike Bostock
+
+d3-scale 4.0.2  [12]
+  Licence: ISC
+  Source: https://github.com/d3/d3-scale
+  In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
+  Copyright: Copyright 2010-2021 Mike Bostock
+
+d3-selection 3.0.0  [12]
+  Licence: ISC
+  Source: https://github.com/d3/d3-selection
+  In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
+  Copyright: Copyright 2010-2021 Mike Bostock
+
+d3-shape 1.3.7  [22]
+  Licence: BSD-3-Clause
+  Source: https://github.com/d3/d3-shape
+  In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
+  Copyright: Copyright 2010-2015 Mike Bostock
+
+d3-shape 3.2.0  [14]
+  Licence: ISC
+  Source: https://github.com/d3/d3-shape
+  In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
+  Copyright: Copyright 2010-2022 Mike Bostock
+
+d3-time 3.1.0  [14]
+  Licence: ISC
+  Source: https://github.com/d3/d3-time
+  In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
+  Copyright: Copyright 2010-2022 Mike Bostock
+
+d3-time-format 4.1.0  [12]
+  Licence: ISC
+  Source: https://github.com/d3/d3-time-format
+  In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
+  Copyright: Copyright 2010-2021 Mike Bostock
+
+d3-timer 3.0.1  [12]
+  Licence: ISC
+  Source: https://github.com/d3/d3-timer
+  In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
+  Copyright: Copyright 2010-2021 Mike Bostock
+
+d3-transition 3.0.1  [12]
+  Licence: ISC
+  Source: https://github.com/d3/d3-transition
+  In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
+  Copyright: Copyright 2010-2021 Mike Bostock
+
+d3-zoom 3.0.0  [12]
+  Licence: ISC
+  Source: https://github.com/d3/d3-zoom
+  In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
+  Copyright: Copyright 2010-2021 Mike Bostock
+
+date-fns 4.4.0  [23]
+  Licence: MIT
+  Source: https://github.com/date-fns/date-fns
+  In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
+  Copyright: Copyright (c) 2021 Sasha Koss and Lesha Koss https://kossnocorp.mit-license.org
+
+dompurify 3.4.14  [24]
+  Licence: (MPL-2.0 OR Apache-2.0), used under Apache-2.0
+  Source: https://github.com/cure53/DOMPurify
+  In the console: compiled into the dist of @carbon/charts@1.27.20 (the version its licence banner in that dist names)
+  Copyright: no line in its licence; its author: Dr.-Ing. Mario Heiderich, Cure53
+
+es-toolkit 1.52.0  [25]
   Licence: MIT
   Source: https://github.com/toss/es-toolkit
   In the console: its JavaScript
   Copyright: Copyright (c) 2024 Viva Republica, Inc.
              Copyright OpenJS Foundation and other contributors <https://openjsf.org/>
 
-prop-types 15.8.1  [8]
+html-to-image 1.11.11  [26]
+  Licence: MIT
+  Source: https://github.com/bubkoo/html-to-image
+  In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
+  Copyright: Copyright (c) 2017-2023 W.Y.
+
+internmap 1.0.1  [27]
+  Licence: ISC
+  Source: https://github.com/mbostock/internmap
+  In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
+  Copyright: Copyright 2021 Mike Bostock
+
+internmap 2.0.3  [27]
+  Licence: ISC
+  Source: https://github.com/mbostock/internmap
+  In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
+  Copyright: Copyright 2021 Mike Bostock
+
+lodash-es 4.18.1  [28]
+  Licence: MIT
+  Source: https://github.com/lodash/lodash
+  In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
+  Copyright: Copyright OpenJS Foundation and other contributors <https://openjsf.org/>
+
+prop-types 15.8.1  [29]
   Licence: MIT
   Source: https://github.com/facebook/prop-types
   In the console: its JavaScript
   Copyright: Copyright (c) 2013-present, Facebook, Inc.
 
-react 19.3.0  [9]
+react 19.3.0  [30]
   Licence: MIT
   Source: https://github.com/react/react
   In the console: its JavaScript
   Copyright: Copyright (c) Meta Platforms, Inc. and affiliates.
 
-react-dom 19.3.0  [9]
+react-dom 19.3.0  [30]
   Licence: MIT
   Source: https://github.com/react/react
   In the console: its JavaScript
   Copyright: Copyright (c) Meta Platforms, Inc. and affiliates.
 
-react-router 7.18.4  [10]
+react-router 7.18.4  [31]
   Licence: MIT
   Source: https://github.com/remix-run/react-router
   In the console: its JavaScript
@@ -196,19 +417,25 @@ react-router 7.18.4  [10]
              Copyright (c) Remix Software Inc. 2020-2021
              Copyright (c) Shopify Inc. 2022-2023
 
-scheduler 0.28.0  [9]
+scheduler 0.28.0  [30]
   Licence: MIT
   Source: https://github.com/react/react
   In the console: its JavaScript
   Copyright: Copyright (c) Meta Platforms, Inc. and affiliates.
 
-tabbable 6.5.0  [11]
+tabbable 6.5.0  [32]
   Licence: MIT
   Source: https://github.com/focus-trap/tabbable
   In the console: its JavaScript
   Copyright: Copyright (c) 2015 David Clark
 
-vite 7.3.6  [12]
+topojson-client 3.1.0  [33]
+  Licence: ISC
+  Source: https://github.com/topojson/topojson-client
+  In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
+  Copyright: Copyright 2012-2019 Michael Bostock
+
+vite 7.3.6  [34]
   Licence: MIT
   Source: https://github.com/vitejs/vite
   In the console: Vite's preload helper and Vite's module-preload polyfill
@@ -216,6 +443,216 @@ vite 7.3.6  [12]
 
 ====================================================================================================
 [1] Apache-2.0
+====================================================================================================
+
+Applies to: @carbon/charts 1.27.20, @carbon/charts-react 1.27.20
+
+---- LICENSE.md, as @carbon/charts ships it
+
+                                 Apache License
+                           Version 2.0, January 2004
+                        http://www.apache.org/licenses/
+
+   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
+
+   1. Definitions.
+
+      "License" shall mean the terms and conditions for use, reproduction,
+      and distribution as defined by Sections 1 through 9 of this document.
+
+      "Licensor" shall mean the copyright owner or entity authorized by
+      the copyright owner that is granting the License.
+
+      "Legal Entity" shall mean the union of the acting entity and all
+      other entities that control, are controlled by, or are under common
+      control with that entity. For the purposes of this definition,
+      "control" means (i) the power, direct or indirect, to cause the
+      direction or management of such entity, whether by contract or
+      otherwise, or (ii) ownership of fifty percent (50%) or more of the
+      outstanding shares, or (iii) beneficial ownership of such entity.
+
+      "You" (or "Your") shall mean an individual or Legal Entity
+      exercising permissions granted by this License.
+
+      "Source" form shall mean the preferred form for making modifications,
+      including but not limited to software source code, documentation
+      source, and configuration files.
+
+      "Object" form shall mean any form resulting from mechanical
+      transformation or translation of a Source form, including but
+      not limited to compiled object code, generated documentation,
+      and conversions to other media types.
+
+      "Work" shall mean the work of authorship, whether in Source or
+      Object form, made available under the License, as indicated by a
+      copyright notice that is included in or attached to the work
+      (an example is provided in the Appendix below).
+
+      "Derivative Works" shall mean any work, whether in Source or Object
+      form, that is based on (or derived from) the Work and for which the
+      editorial revisions, annotations, elaborations, or other modifications
+      represent, as a whole, an original work of authorship. For the purposes
+      of this License, Derivative Works shall not include works that remain
+      separable from, or merely link (or bind by name) to the interfaces of,
+      the Work and Derivative Works thereof.
+
+      "Contribution" shall mean any work of authorship, including
+      the original version of the Work and any modifications or additions
+      to that Work or Derivative Works thereof, that is intentionally
+      submitted to Licensor for inclusion in the Work by the copyright owner
+      or by an individual or Legal Entity authorized to submit on behalf of
+      the copyright owner. For the purposes of this definition, "submitted"
+      means any form of electronic, verbal, or written communication sent
+      to the Licensor or its representatives, including but not limited to
+      communication on electronic mailing lists, source code control systems,
+      and issue tracking systems that are managed by, or on behalf of, the
+      Licensor for the purpose of discussing and improving the Work, but
+      excluding communication that is conspicuously marked or otherwise
+      designated in writing by the copyright owner as "Not a Contribution."
+
+      "Contributor" shall mean Licensor and any individual or Legal Entity
+      on behalf of whom a Contribution has been received by Licensor and
+      subsequently incorporated within the Work.
+
+   2. Grant of Copyright License. Subject to the terms and conditions of
+      this License, each Contributor hereby grants to You a perpetual,
+      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+      copyright license to reproduce, prepare Derivative Works of,
+      publicly display, publicly perform, sublicense, and distribute the
+      Work and such Derivative Works in Source or Object form.
+
+   3. Grant of Patent License. Subject to the terms and conditions of
+      this License, each Contributor hereby grants to You a perpetual,
+      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+      (except as stated in this section) patent license to make, have made,
+      use, offer to sell, sell, import, and otherwise transfer the Work,
+      where such license applies only to those patent claims licensable
+      by such Contributor that are necessarily infringed by their
+      Contribution(s) alone or by combination of their Contribution(s)
+      with the Work to which such Contribution(s) was submitted. If You
+      institute patent litigation against any entity (including a
+      cross-claim or counterclaim in a lawsuit) alleging that the Work
+      or a Contribution incorporated within the Work constitutes direct
+      or contributory patent infringement, then any patent licenses
+      granted to You under this License for that Work shall terminate
+      as of the date such litigation is filed.
+
+   4. Redistribution. You may reproduce and distribute copies of the
+      Work or Derivative Works thereof in any medium, with or without
+      modifications, and in Source or Object form, provided that You
+      meet the following conditions:
+
+      (a) You must give any other recipients of the Work or
+          Derivative Works a copy of this License; and
+
+      (b) You must cause any modified files to carry prominent notices
+          stating that You changed the files; and
+
+      (c) You must retain, in the Source form of any Derivative Works
+          that You distribute, all copyright, patent, trademark, and
+          attribution notices from the Source form of the Work,
+          excluding those notices that do not pertain to any part of
+          the Derivative Works; and
+
+      (d) If the Work includes a "NOTICE" text file as part of its
+          distribution, then any Derivative Works that You distribute must
+          include a readable copy of the attribution notices contained
+          within such NOTICE file, excluding those notices that do not
+          pertain to any part of the Derivative Works, in at least one
+          of the following places: within a NOTICE text file distributed
+          as part of the Derivative Works; within the Source form or
+          documentation, if provided along with the Derivative Works; or,
+          within a display generated by the Derivative Works, if and
+          wherever such third-party notices normally appear. The contents
+          of the NOTICE file are for informational purposes only and
+          do not modify the License. You may add Your own attribution
+          notices within Derivative Works that You distribute, alongside
+          or as an addendum to the NOTICE text from the Work, provided
+          that such additional attribution notices cannot be construed
+          as modifying the License.
+
+      You may add Your own copyright statement to Your modifications and
+      may provide additional or different license terms and conditions
+      for use, reproduction, or distribution of Your modifications, or
+      for any such Derivative Works as a whole, provided Your use,
+      reproduction, and distribution of the Work otherwise complies with
+      the conditions stated in this License.
+
+   5. Submission of Contributions. Unless You explicitly state otherwise,
+      any Contribution intentionally submitted for inclusion in the Work
+      by You to the Licensor shall be under the terms and conditions of
+      this License, without any additional terms or conditions.
+      Notwithstanding the above, nothing herein shall supersede or modify
+      the terms of any separate license agreement you may have executed
+      with Licensor regarding such Contributions.
+
+   6. Trademarks. This License does not grant permission to use the trade
+      names, trademarks, service marks, or product names of the Licensor,
+      except as required for reasonable and customary use in describing the
+      origin of the Work and reproducing the content of the NOTICE file.
+
+   7. Disclaimer of Warranty. Unless required by applicable law or
+      agreed to in writing, Licensor provides the Work (and each
+      Contributor provides its Contributions) on an "AS IS" BASIS,
+      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+      implied, including, without limitation, any warranties or conditions
+      of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A
+      PARTICULAR PURPOSE. You are solely responsible for determining the
+      appropriateness of using or redistributing the Work and assume any
+      risks associated with Your exercise of permissions under this License.
+
+   8. Limitation of Liability. In no event and under no legal theory,
+      whether in tort (including negligence), contract, or otherwise,
+      unless required by applicable law (such as deliberate and grossly
+      negligent acts) or agreed to in writing, shall any Contributor be
+      liable to You for damages, including any direct, indirect, special,
+      incidental, or consequential damages of any character arising as a
+      result of this License or out of the use or inability to use the
+      Work (including but not limited to damages for loss of goodwill,
+      work stoppage, computer failure or malfunction, or any and all
+      other commercial damages or losses), even if such Contributor
+      has been advised of the possibility of such damages.
+
+   9. Accepting Warranty or Additional Liability. While redistributing
+      the Work or Derivative Works thereof, You may choose to offer,
+      and charge a fee for, acceptance of support, warranty, indemnity,
+      or other liability obligations and/or rights consistent with this
+      License. However, in accepting such obligations, You may act only
+      on Your own behalf and on Your sole responsibility, not on behalf
+      of any other Contributor, and only if You agree to indemnify,
+      defend, and hold each Contributor harmless for any liability
+      incurred by, or claims asserted against, such Contributor by reason
+      of your accepting any such warranty or additional liability.
+
+   END OF TERMS AND CONDITIONS
+
+   APPENDIX: How to apply the Apache License to your work.
+
+      To apply the Apache License to your work, attach the following
+      boilerplate notice, with the fields enclosed by brackets "{}"
+      replaced with your own identifying information. (Don't include
+      the brackets!)  The text should be enclosed in the appropriate
+      comment syntax for the file format. We also recommend that a
+      file or class name and description of purpose be included on the
+      same "printed page" as the copyright notice for easier
+      identification within third-party archives.
+
+   Copyright 2018 IBM
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+
+====================================================================================================
+[2] Apache-2.0
 ====================================================================================================
 
 Applies to: @carbon/colors 11.58.0, @carbon/feature-flags 1.9.0, @carbon/grid 11.62.0, @carbon/icon-helpers 10.82.0, @carbon/icons-react 11.88.0, @carbon/layout 11.59.0, @carbon/motion 11.52.0, @carbon/react 1.116.0, @carbon/styles 1.115.0, @carbon/themes 11.81.0, @carbon/type 11.67.0
@@ -425,7 +862,23 @@ Applies to: @carbon/colors 11.58.0, @carbon/feature-flags 1.9.0, @carbon/grid 11
    limitations under the License.
 
 ====================================================================================================
-[2] MIT
+[3] MIT
+====================================================================================================
+
+Applies to: @carbon/utils-position 1.3.0
+
+---- LICENSE (from its repository; the package ships none)
+
+Copyright 2019 IBM
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+====================================================================================================
+[4] MIT
 ====================================================================================================
 
 Applies to: @floating-ui/core 1.8.0, @floating-ui/dom 1.8.0, @floating-ui/react 0.27.20, @floating-ui/react-dom 2.1.9, @floating-ui/utils 0.2.12
@@ -454,7 +907,7 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ====================================================================================================
-[3] OFL-1.1
+[5] OFL-1.1
 ====================================================================================================
 
 Applies to: @ibm/plex-mono 2.5.0, @ibm/plex-sans 1.1.0
@@ -556,7 +1009,7 @@ FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
 OTHER DEALINGS IN THE FONT SOFTWARE.
 
 ====================================================================================================
-[4] MIT
+[6] MIT
 ====================================================================================================
 
 Applies to: @rollup/plugin-commonjs ^29.0.0, bundled in vite 7.3.6
@@ -602,7 +1055,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
 ====================================================================================================
-[5] MIT
+[7] MIT
 ====================================================================================================
 
 Applies to: @tanstack/query-core 5.103.1, @tanstack/react-query 5.103.1
@@ -632,7 +1085,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ====================================================================================================
-[6] MIT
+[8] MIT
 ====================================================================================================
 
 Applies to: classnames 2.5.1
@@ -662,7 +1115,682 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ====================================================================================================
-[7] MIT
+[9] MIT
+====================================================================================================
+
+Applies to: copy-to-clipboard 4.0.2
+
+---- LICENSE
+
+MIT License
+
+Copyright (c) 2017 sudodoki <smd.deluzion@gmail.com>
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+====================================================================================================
+[10] BSD-3-Clause
+====================================================================================================
+
+Applies to: d3-array 2.12.1
+
+---- LICENSE
+
+Copyright 2010-2020 Mike Bostock
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+* Redistributions of source code must retain the above copyright notice, this
+  list of conditions and the following disclaimer.
+
+* Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation
+  and/or other materials provided with the distribution.
+
+* Neither the name of the author nor the names of contributors may be used to
+  endorse or promote products derived from this software without specific prior
+  written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+====================================================================================================
+[11] ISC
+====================================================================================================
+
+Applies to: d3-array 3.2.4
+
+---- LICENSE
+
+Copyright 2010-2023 Mike Bostock
+
+Permission to use, copy, modify, and/or distribute this software for any purpose
+with or without fee is hereby granted, provided that the above copyright notice
+and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
+REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
+FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
+INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS
+OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER
+TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
+THIS SOFTWARE.
+
+====================================================================================================
+[12] ISC
+====================================================================================================
+
+Applies to: d3-axis 3.0.0, d3-brush 3.0.0, d3-dispatch 3.0.1, d3-drag 3.0.0, d3-hierarchy 3.1.2, d3-interpolate 3.0.1, d3-scale 4.0.2, d3-selection 3.0.0, d3-time-format 4.1.0, d3-timer 3.0.1, d3-transition 3.0.1, d3-zoom 3.0.0
+
+---- LICENSE, as d3-axis ships it
+
+Copyright 2010-2021 Mike Bostock
+
+Permission to use, copy, modify, and/or distribute this software for any purpose
+with or without fee is hereby granted, provided that the above copyright notice
+and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
+REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
+FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
+INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS
+OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER
+TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
+THIS SOFTWARE.
+
+====================================================================================================
+[13] BSD-3-Clause
+====================================================================================================
+
+Applies to: d3-cloud 1.2.9
+
+---- LICENSE
+
+Copyright (c) 2013, Jason Davies.
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+  * Redistributions of source code must retain the above copyright notice, this
+    list of conditions and the following disclaimer.
+
+  * Redistributions in binary form must reproduce the above copyright notice,
+    this list of conditions and the following disclaimer in the documentation
+    and/or other materials provided with the distribution.
+
+  * The name Jason Davies may not be used to endorse or promote products
+    derived from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL JASON DAVIES BE LIABLE FOR ANY DIRECT, INDIRECT,
+INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE
+OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
+ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+====================================================================================================
+[14] ISC
+====================================================================================================
+
+Applies to: d3-color 3.1.0, d3-shape 3.2.0, d3-time 3.1.0
+
+---- LICENSE, as d3-color ships it
+
+Copyright 2010-2022 Mike Bostock
+
+Permission to use, copy, modify, and/or distribute this software for any purpose
+with or without fee is hereby granted, provided that the above copyright notice
+and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
+REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
+FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
+INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS
+OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER
+TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
+THIS SOFTWARE.
+
+====================================================================================================
+[15] BSD-3-Clause
+====================================================================================================
+
+Applies to: d3-dispatch 1.0.6
+
+---- LICENSE
+
+Copyright 2010-2016 Mike Bostock
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+* Redistributions of source code must retain the above copyright notice, this
+  list of conditions and the following disclaimer.
+
+* Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation
+  and/or other materials provided with the distribution.
+
+* Neither the name of the author nor the names of contributors may be used to
+  endorse or promote products derived from this software without specific prior
+  written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+====================================================================================================
+[16] BSD-3-Clause
+====================================================================================================
+
+Applies to: d3-ease 3.0.1
+
+---- LICENSE
+
+Copyright 2010-2021 Mike Bostock
+Copyright 2001 Robert Penner
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+* Redistributions of source code must retain the above copyright notice, this
+  list of conditions and the following disclaimer.
+
+* Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation
+  and/or other materials provided with the distribution.
+
+* Neither the name of the author nor the names of contributors may be used to
+  endorse or promote products derived from this software without specific prior
+  written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+====================================================================================================
+[17] ISC
+====================================================================================================
+
+Applies to: d3-format 3.1.2
+
+---- LICENSE
+
+Copyright 2010-2026 Mike Bostock
+
+Permission to use, copy, modify, and/or distribute this software for any purpose
+with or without fee is hereby granted, provided that the above copyright notice
+and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
+REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
+FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
+INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS
+OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER
+TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
+THIS SOFTWARE.
+
+====================================================================================================
+[18] ISC
+====================================================================================================
+
+Applies to: d3-geo 3.1.1
+
+---- LICENSE
+
+Copyright 2010-2024 Mike Bostock
+
+Permission to use, copy, modify, and/or distribute this software for any purpose
+with or without fee is hereby granted, provided that the above copyright notice
+and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
+REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
+FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
+INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS
+OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER
+TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
+THIS SOFTWARE.
+
+This license applies to GeographicLib, versions 1.12 and later.
+
+Copyright 2008-2012 Charles Karney
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+====================================================================================================
+[19] BSD-3-Clause
+====================================================================================================
+
+Applies to: d3-path 1.0.9
+
+---- LICENSE
+
+Copyright 2015-2016 Mike Bostock
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+* Redistributions of source code must retain the above copyright notice, this
+  list of conditions and the following disclaimer.
+
+* Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation
+  and/or other materials provided with the distribution.
+
+* Neither the name of the author nor the names of contributors may be used to
+  endorse or promote products derived from this software without specific prior
+  written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+====================================================================================================
+[20] ISC
+====================================================================================================
+
+Applies to: d3-path 3.1.0
+
+---- LICENSE
+
+Copyright 2015-2022 Mike Bostock
+
+Permission to use, copy, modify, and/or distribute this software for any purpose
+with or without fee is hereby granted, provided that the above copyright notice
+and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
+REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
+FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
+INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS
+OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER
+TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
+THIS SOFTWARE.
+
+====================================================================================================
+[21] BSD-3-Clause
+====================================================================================================
+
+Applies to: d3-sankey 0.12.3
+
+---- LICENSE
+
+Copyright 2015, Mike Bostock
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+* Redistributions of source code must retain the above copyright notice, this
+  list of conditions and the following disclaimer.
+
+* Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation
+  and/or other materials provided with the distribution.
+
+* Neither the name of the author nor the names of contributors may be used to
+  endorse or promote products derived from this software without specific prior
+  written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+====================================================================================================
+[22] BSD-3-Clause
+====================================================================================================
+
+Applies to: d3-shape 1.3.7
+
+---- LICENSE
+
+Copyright 2010-2015 Mike Bostock
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+* Redistributions of source code must retain the above copyright notice, this
+  list of conditions and the following disclaimer.
+
+* Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation
+  and/or other materials provided with the distribution.
+
+* Neither the name of the author nor the names of contributors may be used to
+  endorse or promote products derived from this software without specific prior
+  written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+====================================================================================================
+[23] MIT
+====================================================================================================
+
+Applies to: date-fns 4.4.0
+
+---- LICENSE.md
+
+MIT License
+
+Copyright (c) 2021 Sasha Koss and Lesha Koss https://kossnocorp.mit-license.org
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+====================================================================================================
+[24] Apache-2.0
+====================================================================================================
+
+Applies to: dompurify 3.4.14
+
+---- LICENSE
+
+                                 Apache License
+                           Version 2.0, January 2004
+                        http://www.apache.org/licenses/
+
+   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
+
+   1. Definitions.
+
+      "License" shall mean the terms and conditions for use, reproduction,
+      and distribution as defined by Sections 1 through 9 of this document.
+
+      "Licensor" shall mean the copyright owner or entity authorized by
+      the copyright owner that is granting the License.
+
+      "Legal Entity" shall mean the union of the acting entity and all
+      other entities that control, are controlled by, or are under common
+      control with that entity. For the purposes of this definition,
+      "control" means (i) the power, direct or indirect, to cause the
+      direction or management of such entity, whether by contract or
+      otherwise, or (ii) ownership of fifty percent (50%) or more of the
+      outstanding shares, or (iii) beneficial ownership of such entity.
+
+      "You" (or "Your") shall mean an individual or Legal Entity
+      exercising permissions granted by this License.
+
+      "Source" form shall mean the preferred form for making modifications,
+      including but not limited to software source code, documentation
+      source, and configuration files.
+
+      "Object" form shall mean any form resulting from mechanical
+      transformation or translation of a Source form, including but
+      not limited to compiled object code, generated documentation,
+      and conversions to other media types.
+
+      "Work" shall mean the work of authorship, whether in Source or
+      Object form, made available under the License, as indicated by a
+      copyright notice that is included in or attached to the work
+      (an example is provided in the Appendix below).
+
+      "Derivative Works" shall mean any work, whether in Source or Object
+      form, that is based on (or derived from) the Work and for which the
+      editorial revisions, annotations, elaborations, or other modifications
+      represent, as a whole, an original work of authorship. For the purposes
+      of this License, Derivative Works shall not include works that remain
+      separable from, or merely link (or bind by name) to the interfaces of,
+      the Work and Derivative Works thereof.
+
+      "Contribution" shall mean any work of authorship, including
+      the original version of the Work and any modifications or additions
+      to that Work or Derivative Works thereof, that is intentionally
+      submitted to Licensor for inclusion in the Work by the copyright owner
+      or by an individual or Legal Entity authorized to submit on behalf of
+      the copyright owner. For the purposes of this definition, "submitted"
+      means any form of electronic, verbal, or written communication sent
+      to the Licensor or its representatives, including but not limited to
+      communication on electronic mailing lists, source code control systems,
+      and issue tracking systems that are managed by, or on behalf of, the
+      Licensor for the purpose of discussing and improving the Work, but
+      excluding communication that is conspicuously marked or otherwise
+      designated in writing by the copyright owner as "Not a Contribution."
+
+      "Contributor" shall mean Licensor and any individual or Legal Entity
+      on behalf of whom a Contribution has been received by Licensor and
+      subsequently incorporated within the Work.
+
+   2. Grant of Copyright License. Subject to the terms and conditions of
+      this License, each Contributor hereby grants to You a perpetual,
+      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+      copyright license to reproduce, prepare Derivative Works of,
+      publicly display, publicly perform, sublicense, and distribute the
+      Work and such Derivative Works in Source or Object form.
+
+   3. Grant of Patent License. Subject to the terms and conditions of
+      this License, each Contributor hereby grants to You a perpetual,
+      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+      (except as stated in this section) patent license to make, have made,
+      use, offer to sell, sell, import, and otherwise transfer the Work,
+      where such license applies only to those patent claims licensable
+      by such Contributor that are necessarily infringed by their
+      Contribution(s) alone or by combination of their Contribution(s)
+      with the Work to which such Contribution(s) was submitted. If You
+      institute patent litigation against any entity (including a
+      cross-claim or counterclaim in a lawsuit) alleging that the Work
+      or a Contribution incorporated within the Work constitutes direct
+      or contributory patent infringement, then any patent licenses
+      granted to You under this License for that Work shall terminate
+      as of the date such litigation is filed.
+
+   4. Redistribution. You may reproduce and distribute copies of the
+      Work or Derivative Works thereof in any medium, with or without
+      modifications, and in Source or Object form, provided that You
+      meet the following conditions:
+
+      (a) You must give any other recipients of the Work or
+          Derivative Works a copy of this License; and
+
+      (b) You must cause any modified files to carry prominent notices
+          stating that You changed the files; and
+
+      (c) You must retain, in the Source form of any Derivative Works
+          that You distribute, all copyright, patent, trademark, and
+          attribution notices from the Source form of the Work,
+          excluding those notices that do not pertain to any part of
+          the Derivative Works; and
+
+      (d) If the Work includes a "NOTICE" text file as part of its
+          distribution, then any Derivative Works that You distribute must
+          include a readable copy of the attribution notices contained
+          within such NOTICE file, excluding those notices that do not
+          pertain to any part of the Derivative Works, in at least one
+          of the following places: within a NOTICE text file distributed
+          as part of the Derivative Works; within the Source form or
+          documentation, if provided along with the Derivative Works; or,
+          within a display generated by the Derivative Works, if and
+          wherever such third-party notices normally appear. The contents
+          of the NOTICE file are for informational purposes only and
+          do not modify the License. You may add Your own attribution
+          notices within Derivative Works that You distribute, alongside
+          or as an addendum to the NOTICE text from the Work, provided
+          that such additional attribution notices cannot be construed
+          as modifying the License.
+
+      You may add Your own copyright statement to Your modifications and
+      may provide additional or different license terms and conditions
+      for use, reproduction, or distribution of Your modifications, or
+      for any such Derivative Works as a whole, provided Your use,
+      reproduction, and distribution of the Work otherwise complies with
+      the conditions stated in this License.
+
+   5. Submission of Contributions. Unless You explicitly state otherwise,
+      any Contribution intentionally submitted for inclusion in the Work
+      by You to the Licensor shall be under the terms and conditions of
+      this License, without any additional terms or conditions.
+      Notwithstanding the above, nothing herein shall supersede or modify
+      the terms of any separate license agreement you may have executed
+      with Licensor regarding such Contributions.
+
+   6. Trademarks. This License does not grant permission to use the trade
+      names, trademarks, service marks, or product names of the Licensor,
+      except as required for reasonable and customary use in describing the
+      origin of the Work and reproducing the content of the NOTICE file.
+
+   7. Disclaimer of Warranty. Unless required by applicable law or
+      agreed to in writing, Licensor provides the Work (and each
+      Contributor provides its Contributions) on an "AS IS" BASIS,
+      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+      implied, including, without limitation, any warranties or conditions
+      of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A
+      PARTICULAR PURPOSE. You are solely responsible for determining the
+      appropriateness of using or redistributing the Work and assume any
+      risks associated with Your exercise of permissions under this License.
+
+   8. Limitation of Liability. In no event and under no legal theory,
+      whether in tort (including negligence), contract, or otherwise,
+      unless required by applicable law (such as deliberate and grossly
+      negligent acts) or agreed to in writing, shall any Contributor be
+      liable to You for damages, including any direct, indirect, special,
+      incidental, or consequential damages of any character arising as a
+      result of this License or out of the use or inability to use the
+      Work (including but not limited to damages for loss of goodwill,
+      work stoppage, computer failure or malfunction, or any and all
+      other commercial damages or losses), even if such Contributor
+      has been advised of the possibility of such damages.
+
+   9. Accepting Warranty or Additional Liability. While redistributing
+      the Work or Derivative Works thereof, You may choose to offer,
+      and charge a fee for, acceptance of support, warranty, indemnity,
+      or other liability obligations and/or rights consistent with this
+      License. However, in accepting such obligations, You may act only
+      on Your own behalf and on Your sole responsibility, not on behalf
+      of any other Contributor, and only if You agree to indemnify,
+      defend, and hold each Contributor harmless for any liability
+      incurred by, or claims asserted against, such Contributor by reason
+      of your accepting any such warranty or additional liability.
+
+   END OF TERMS AND CONDITIONS
+
+   APPENDIX: How to apply the Apache License to your work.
+
+      To apply the Apache License to your work, attach the following
+      boilerplate notice, with the fields enclosed by brackets "[]"
+      replaced with your own identifying information. (Don't include
+      the brackets!)  The text should be enclosed in the appropriate
+      comment syntax for the file format. We also recommend that a
+      file or class name and description of purpose be included on the
+      same "printed page" as the copyright notice for easier
+      identification within third-party archives.
+
+   Copyright [yyyy] [name of copyright owner]
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+
+====================================================================================================
+[25] MIT
 ====================================================================================================
 
 Applies to: es-toolkit 1.52.0
@@ -734,7 +1862,115 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ====================================================================================================
-[8] MIT
+[26] MIT
+====================================================================================================
+
+Applies to: html-to-image 1.11.11
+
+---- LICENSE
+
+MIT License
+
+Copyright (c) 2017-2023 W.Y.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+====================================================================================================
+[27] ISC
+====================================================================================================
+
+Applies to: internmap 1.0.1, internmap 2.0.3
+
+---- LICENSE, as internmap ships it
+
+Copyright 2021 Mike Bostock
+
+Permission to use, copy, modify, and/or distribute this software for any purpose
+with or without fee is hereby granted, provided that the above copyright notice
+and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
+REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
+FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
+INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS
+OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER
+TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
+THIS SOFTWARE.
+
+====================================================================================================
+[28] MIT
+====================================================================================================
+
+Applies to: lodash-es 4.18.1
+
+---- LICENSE
+
+Copyright OpenJS Foundation and other contributors <https://openjsf.org/>
+
+Based on Underscore.js, copyright Jeremy Ashkenas,
+DocumentCloud and Investigative Reporters & Editors <http://underscorejs.org/>
+
+This software consists of voluntary contributions made by many
+individuals. For exact contribution history, see the revision history
+available at https://github.com/lodash/lodash
+
+The following license applies to all parts of this software except as
+documented below:
+
+====
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+====
+
+Copyright and related rights for sample code are waived via CC0. Sample
+code is defined as all source code displayed within the prose of the
+documentation.
+
+CC0: http://creativecommons.org/publicdomain/zero/1.0/
+
+====
+
+Files located in the node_modules and vendor directories are externally
+maintained libraries used by this software which have their own
+licenses; we recommend you read them, as their terms may differ from the
+terms above.
+
+====================================================================================================
+[29] MIT
 ====================================================================================================
 
 Applies to: prop-types 15.8.1
@@ -764,7 +2000,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ====================================================================================================
-[9] MIT
+[30] MIT
 ====================================================================================================
 
 Applies to: react 19.3.0, react-dom 19.3.0, scheduler 0.28.0
@@ -794,7 +2030,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ====================================================================================================
-[10] MIT
+[31] MIT
 ====================================================================================================
 
 Applies to: react-router 7.18.4
@@ -826,7 +2062,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ====================================================================================================
-[11] MIT
+[32] MIT
 ====================================================================================================
 
 Applies to: tabbable 6.5.0
@@ -856,7 +2092,29 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ====================================================================================================
-[12] MIT
+[33] ISC
+====================================================================================================
+
+Applies to: topojson-client 3.1.0
+
+---- LICENSE
+
+Copyright 2012-2019 Michael Bostock
+
+Permission to use, copy, modify, and/or distribute this software for any purpose
+with or without fee is hereby granted, provided that the above copyright notice
+and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
+REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
+FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
+INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS
+OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER
+TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
+THIS SOFTWARE.
+
+====================================================================================================
+[34] MIT
 ====================================================================================================
 
 Applies to: vite 7.3.6

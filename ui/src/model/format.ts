@@ -272,18 +272,27 @@ export function marks(snippet: string | null | undefined): Run[] {
     .filter((run) => run.text !== '');
 }
 
-/// The reader's word for each kind of indexed block, the same on every client: message, tool
-/// call, tool result, thinking, system prompt; anything else as sent (OV-C50, SE-C169). The
-/// dashboard had no word for `system`.
-const KIND_WORDS: Readonly<Record<string, string>> = {
-  text: 'message',
-  tool_use: 'tool call',
-  tool_result: 'tool result',
-  thinking: 'thinking',
-  system: 'system prompt',
+/// The reader's words for each kind of indexed block, the same on every client: one hit's kind —
+/// message, tool call, tool result, thinking, system prompt — and a run of hits of that kind, as
+/// the palette groups them; anything else as sent (OV-C50, SE-C169). One table, so a hit and its
+/// run cannot name a kind two ways. The dashboard had no word for `system`. Looked up as an own
+/// property, so a kind spelled like one every object has (`constructor`) is a kind like any other.
+const KINDS: Readonly<Record<string, { readonly one: string; readonly run: string }>> = {
+  text: { one: 'message', run: 'Messages' },
+  tool_use: { one: 'tool call', run: 'Tool calls' },
+  tool_result: { one: 'tool result', run: 'Tool results' },
+  thinking: { one: 'thinking', run: 'Thinking' },
+  system: { one: 'system prompt', run: 'System prompts' },
 };
 
 export function kindWord(kind: string | null | undefined): string {
   const k = kind ?? '';
-  return Object.hasOwn(KIND_WORDS, k) ? (KIND_WORDS[k] ?? k) : k;
+  return Object.hasOwn(KINDS, k) ? (KINDS[k]?.one ?? k) : k;
+}
+
+/// What a run of hits of one kind is called: "Messages", "Tool calls"…, and a kind the router
+/// indexes later as it is sent.
+export function kindRun(kind: string | null | undefined): string {
+  const k = kind ?? '';
+  return Object.hasOwn(KINDS, k) ? (KINDS[k]?.run ?? k) : k;
 }

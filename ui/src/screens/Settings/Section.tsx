@@ -1,27 +1,56 @@
-// New for agent-router: one settings page's place in the route table, until AGEN-0011 builds it.
+// New for agent-router: one Settings page, chosen by the address (`/settings/:section`). A page a
+// router does not have is not offered, and its address says why rather than drawing a blank or a
+// not-found (ST-C101, ST-C103).
+import { useEffect, type ComponentType } from 'react';
 import { useParams } from 'react-router';
+import { InlineNotification } from '@carbon/react';
 import { Page } from '~/components/Page';
-import { SECTIONS } from '~/lib/routes';
-import { Placeholder } from '~/screens/Placeholder';
+import { useAuth } from '~/data/settings';
+import { SECTIONS, type SectionSlug } from '~/lib/routes';
+import { isHosted, settingsPages } from '~/model/settings';
+import AccountsPage from './Accounts';
+import ClaudeCodePage from './ClaudeCode';
+import NetworkPage from './Network';
+import NotificationsPage from './Notifications';
+import PasswordPage from './Password';
+import RouterPage from './Router';
+import { ReadFailed, Reading } from './parts';
+import { NO_MACHINE } from './rules';
 
-/// What each page will hold, in the words of the plan (docs/web-console-carbon.md, "Settings").
-const WHAT: Readonly<Record<string, string>> = {
-  accounts: 'One card per account with Use, Edit and Remove always visible, and Add account in place.',
-  'claude-code': 'Start at login, route every project and manage the wrapper, each with what it did.',
-  network: 'The switch that puts the router on the LAN, bound to what the router reports, and its address.',
-  password: 'The password the LAN gate asks for: set it, change it, remove it with a confirmation.',
-  notifications: 'Apple and Firebase push, the registered phones, and test results that stay put.',
-  router: 'What this router is: its version, its build and where it keeps its store.',
+const PAGES: Readonly<Record<SectionSlug, ComponentType>> = {
+  accounts: AccountsPage,
+  'claude-code': ClaudeCodePage,
+  network: NetworkPage,
+  password: PasswordPage,
+  notifications: NotificationsPage,
+  router: RouterPage,
 };
+
+const isSection = (s: string): s is SectionSlug => SECTIONS.some((x) => x.slug === s);
 
 export default function SettingsSection() {
   const { section = '' } = useParams();
+  const auth = useAuth();
   const label = SECTIONS.find((s) => s.slug === section)?.label ?? section;
-  return (
-    <Page.Section label={label}>
-      <Placeholder item="AGEN-0011" what={`The ${label} page`}>
-        {WHAT[section] ?? ''}
-      </Placeholder>
-    </Page.Section>
-  );
+  // Each page names itself in the tab's title (SH-C7).
+  useEffect(() => {
+    document.title = `${label} · Settings · Agent Router`;
+  }, [label]);
+  // The layout sends an address no page owns to the first page; nothing to draw meanwhile.
+  if (!isSection(section)) return null;
+  if (!settingsPages(auth.value).includes(section)) {
+    if (isHosted(auth.value)) {
+      return (
+        <Page.Section title={label}>
+          <InlineNotification kind="info" lowContrast hideCloseButton title={`${label} is not on this router`} subtitle={NO_MACHINE} />
+        </Page.Section>
+      );
+    }
+    // Not yet known: offering it first would flash a page a hosted router refuses.
+    if (auth.unreachable) return <ReadFailed what="Could not read what kind of router this is" error={auth.error} />;
+    return <Reading what="Asking the router what kind it is…" />;
+  }
+  const Shown = PAGES[section];
+  // Keyed by the page, so nothing half-typed on one is carried to another (SH-C54).
+  return <Shown key={section} />;
 }

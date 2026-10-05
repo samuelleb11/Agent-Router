@@ -1,6 +1,8 @@
 // Copied from Northstar ui/harness/fixtureFetch.ts at e9c1589.
 // Changed: it answers the router's reads (its health and its projects so far) from harness/fixtures.ts, where Northstar's answers its own API from the Work map's fixtures.
 import { HEALTH, PROJECTS } from './fixtures';
+import { settingsRead } from './settings';
+import { overviewRead } from './overview';
 import { asked, type Asked } from './asked';
 
 /// A stand-in for `window.fetch` that answers the console's reads from fixtures, so the real
@@ -49,7 +51,8 @@ export function fixtureServer(options: FixtureOptions = {}): FixtureServer {
     const only = (...allowed: string[]) => [...query.keys()].every((p) => allowed.includes(p));
     if (path === '/_router/health' && only()) return unread.has('health') ? 'unread' : json(200, HEALTH);
     if (path === '/api/projects' && only()) return unread.has('projects') ? 'unread' : json(200, PROJECTS);
-    return null;
+    // Settings' reads (harness/settings.ts), then the Overview's (harness/overview.ts).
+    return settingsRead(path, query) ?? overviewRead(path, query);
   };
 
   const answer = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {

@@ -32,4 +32,14 @@ export const queryClient = new QueryClient({
 export const keys = {
   health: ['health'] as const,
   projects: ['projects'] as const,
+  /// The Overview's snapshot, one per scope: a reply lands under the scope it was read for, so an
+  /// older scope's can never be drawn under newer crumbs (OV-C162).
+  overview: (scope: { readonly account: string | null; readonly project: string | null; readonly session: string | null; readonly range: string }) =>
+    ['overview', scope.account ?? '', scope.project ?? '', scope.session ?? '', scope.range] as const,
+  /// `GET /api/auth`: what kind of router this is.
+  auth: ['auth'] as const,
+  /// `GET /api/accounts` without a credential check; the palette's key for the same read.
+  accounts: ['accounts'] as const,
+  /// `GET /api/accounts?probe=1`, the one credential check a load makes outside Settings.
+  accountsChecked: ['accounts', 'checked'] as const,
 };

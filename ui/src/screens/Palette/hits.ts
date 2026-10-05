@@ -5,6 +5,7 @@ import type { Availability } from '~/data/held';
 import { projectKey, projectName, UNRESOLVED } from '~/data/projects';
 import type { ProjectRow } from '~/data/router';
 import { SECTIONS, routes, settingsPath } from '~/lib/routes';
+import { kindRun, marks } from '~/model/format';
 import type { Account, LiveOptions, LiveSession, SearchAnswer, SearchHit, SearchKind } from './api';
 
 /// What the palette resolves a line of typing into. Pure, so the rules can be tested without a
@@ -41,17 +42,9 @@ export const SEARCH_KINDS: readonly { readonly kind: SearchKind | null; readonly
 ];
 
 /// What a run of hits of each kind is called: the reader's words, the same on every client
-/// (OV-C50). A kind the router indexes later is shown as it is sent. A Map, so a kind spelled like
-/// a property every object has (`constructor`) is a kind like any other.
-const KIND_RUN = new Map<string, string>([
-  ['text', 'Messages'],
-  ['tool_use', 'Tool calls'],
-  ['tool_result', 'Tool results'],
-  ['thinking', 'Thinking'],
-  ['system', 'System prompts'],
-]);
-
-export const kindRun = (kind: string): string => KIND_RUN.get(kind) ?? kind;
+/// (OV-C50), from the one table the model keeps for a hit's kind and a run's (`kindRun` in
+/// ~/model/format). A kind the router indexes later is shown as it is sent.
+export { kindRun };
 
 /// What a session can be switched, each through its own endpoint (src/live.rs).
 export type Setting = 'model' | 'effort' | 'mode';
@@ -207,12 +200,10 @@ export function sessionHref(id: string, at?: { readonly block: number; readonly 
 
 /// A snippet's plain and matched runs, split on the ‹ › pair the router marks matches with and
 /// never substituted into: a marker the conversation itself contained can only shift which run
-/// is emphasised, never leave a mark open, drop text or make the snippet markup (SE-C170).
+/// is emphasised, never leave a mark open, drop text or make the snippet markup (SE-C170). The
+/// splitting is the model's (`marks` in ~/model/format), the one copy every screen marks with.
 export function markRuns(snippet: string): { readonly text: string; readonly marked: boolean }[] {
-  return snippet
-    .split(/[‹›]/)
-    .map((text, i) => ({ text, marked: i % 2 === 1 }))
-    .filter((r) => r.text !== '');
+  return marks(snippet).map((r) => ({ text: r.text, marked: r.mark }));
 }
 
 /// A model name the CLI could accept, by the router's own rule (src/live.rs, `valid_model`): an

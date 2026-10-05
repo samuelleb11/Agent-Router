@@ -1,11 +1,15 @@
 // Copied from Northstar ui/src/screens/Settings/Layout.tsx at e9c1589.
-// Changed: agent-router's six sections; each tab's href is resolved through the router, as a bare path in an anchor is not; the header says what these pages are about here.
-import type { MouseEvent } from 'react';
-import { Tab, TabList, Tabs } from '@carbon/react';
+// Changed: agent-router's six sections, offered as the router allows (none of the machine-only ones before /api/auth has said it is local, nor on a hosted router); each tab's href is resolved through the router, as a bare path in an anchor is not; the header says what these pages are about here.
+import { useEffect, useState, type MouseEvent } from 'react';
+import { Button, Tab, TabList, Tabs } from '@carbon/react';
+import { ArrowUp } from '@carbon/icons-react';
 import { Navigate, Outlet, useHref, useLocation, useNavigate } from 'react-router';
 import { Page } from '~/components/Page';
 import { PageHeader } from '~/components/PageHeader';
+import { useAuth } from '~/data/settings';
 import { SECTIONS, settingsPath, type SectionSlug } from '~/lib/routes';
+import { useCoarse } from '~/lib/viewport';
+import { settingsPages } from '~/model/settings';
 import styles from './Settings.module.scss';
 
 /// Whether a URL is this section's page or one beneath it — the whole segment, so
@@ -29,6 +33,11 @@ const plain = (e: MouseEvent) => e.button === 0 && !e.metaKey && !e.altKey && !e
 export default function SettingsLayout() {
   const location = useLocation();
   const navigate = useNavigate();
+  const auth = useAuth();
+  // The pages this router has (ST-C53, ST-C72, ST-C101). An address for one it has not is still
+  // its page, which says why (ST-C103); it is simply not a tab.
+  const offered = settingsPages(auth.value);
+  const tabs = SECTIONS.filter((s) => offered.includes(s.slug));
   // The console's own root as the browser sees it. An anchor's href is the browser's, so it is
   // resolved through the router, which would add any basename by itself.
   const root = useHref('/').replace(/\/$/, '');
@@ -40,6 +49,7 @@ export default function SettingsLayout() {
     return <Navigate to={settingsPath(SECTIONS[0].slug)} replace />;
   }
   const current = SECTIONS[found] ?? SECTIONS[0];
+  const selected = tabs.findIndex((s) => s.slug === current.slug);
 
   return (
     <Page className={styles.settings}>
@@ -57,9 +67,9 @@ export default function SettingsLayout() {
         {/* Controlled by the URL alone. Carbon still reports a click through `onChange`;
             it is ignored, because the anchor's own handler decides whether the click was
             the router's or the browser's. */}
-        <Tabs selectedIndex={found}>
+        <Tabs selectedIndex={selected}>
           <TabList aria-label="Settings pages" contained className={styles.tabs}>
-            {SECTIONS.map((s) => {
+            {tabs.map((s) => {
               const path = settingsPath(s.slug);
               return (
                 // Carbon's `as` swaps the element but not its prop type, so `href` goes
@@ -82,6 +92,26 @@ export default function SettingsLayout() {
         </Tabs>
       </div>
       <Outlet />
+      <BackToTop />
     </Page>
+  );
+}
+
+/// "Back to top", once the page is 600 px down, smoothly unless reduced motion is asked for: the
+/// Settings pages scroll, the Accounts and Notifications pages a long way in a hand (SH-C48).
+function BackToTop() {
+  const coarse = useCoarse();
+  const [down, setDown] = useState(() => (globalThis.scrollY ?? 0) >= 600);
+  useEffect(() => {
+    const on = () => setDown(window.scrollY >= 600);
+    window.addEventListener('scroll', on, { passive: true });
+    return () => window.removeEventListener('scroll', on);
+  }, []);
+  if (!down) return null;
+  const reduced = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
+  return (
+    <Button className={styles.toTop} kind="secondary" size={coarse ? 'lg' : 'md'} renderIcon={ArrowUp} onClick={() => window.scrollTo({ top: 0, behavior: reduced ? 'auto' : 'smooth' })}>
+      Back to top
+    </Button>
   );
 }

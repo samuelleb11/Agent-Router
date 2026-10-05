@@ -1,0 +1,74 @@
+// Copied from Northstar ui/src/components/StatTile.module.scss at e9c1589.
+// Changed: the tones are the router's status tokens, the stripe width is named for this console, and a hero tile spans its row's two columns on a phone.
+@use '@carbon/react/scss/spacing' as *;
+@use '@carbon/react/scss/type' as *;
+@use '@carbon/react/scss/breakpoint' as *;
+
+/// The tone stripe's width. A 2px rule is a hairline, not a spacing step; Carbon exposes no
+/// border-width token, so the kit names the one value it draws a stripe with, here, once.
+$ar-tone-stripe: 0.125rem;
+
+/// The stripe is always drawn and is transparent when the value has no tone, so every tile in a row
+/// starts its label at the same left edge whether or not it carries a meaning.
+.tile {
+  --tone: var(--cds-text-primary);
+  display: grid;
+  align-content: start;
+  gap: $spacing-02;
+  min-inline-size: 0;
+  block-size: 100%;
+  border-inline-start: $ar-tone-stripe solid transparent;
+  color: var(--cds-text-primary);
+  text-decoration: none;
+}
+
+.label {
+  @include type-style('label-01');
+  color: var(--cds-text-secondary);
+}
+
+/// A standalone big number wears the font's proportional figures: tabular figures give every digit
+/// the width of a 0, and a value like 121 reads loose at this size.
+.value {
+  @include type-style('fluid-heading-04', true);
+  font-variant-numeric: proportional-nums;
+  color: var(--tone);
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/// `fluid-heading-04` re-emits `font-weight: 400` inside its `xlg` and `max` media queries, which
+/// land after the rule above and would take the semibold away at the desktop widths where the tile
+/// is read. One extra class of specificity outranks a media query at the same specificity.
+.tile .value {
+  font-weight: 600;
+}
+
+.detail,
+.meaning {
+  @include type-style('helper-text-01');
+  color: var(--cds-text-secondary);
+  overflow-wrap: anywhere;
+}
+
+/// The status colours: the text tokens for the figure, which reach 4.5:1, and the fills for the
+/// stripe.
+.tone_ok {
+  --tone: var(--ar-ok);
+  border-inline-start-color: var(--ar-ok-fill);
+}
+.tone_warn {
+  --tone: var(--ar-warn);
+  border-inline-start-color: var(--ar-warn-fill);
+}
+.tone_bad {
+  --tone: var(--ar-bad);
+  border-inline-start-color: var(--ar-bad-fill);
+}
+
+/// On a phone the tiles sit two to a row and the largest takes the row (OV-C202).
+@include breakpoint-down('md') {
+  .hero {
+    grid-column: 1 / -1;
+  }
+}

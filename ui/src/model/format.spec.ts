@@ -12,6 +12,7 @@ import {
   factTokens,
   factUsd,
   id8,
+  kindRun,
   kindWord,
   ms,
   pct,
@@ -100,6 +101,18 @@ describe('format', () => {
       'thinking',
       'system prompt',
       'other',
+      'constructor',
+    ]);
+  });
+
+  it('OV-C50: a run of hits names its kind from the same table, and a kind the router adds later as it is sent', () => {
+    expect(['text', 'tool_use', 'tool_result', 'thinking', 'system', 'image', 'constructor'].map(kindRun)).toEqual([
+      'Messages',
+      'Tool calls',
+      'Tool results',
+      'Thinking',
+      'System prompts',
+      'image',
       'constructor',
     ]);
   });
