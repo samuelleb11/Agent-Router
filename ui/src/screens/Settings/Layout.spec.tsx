@@ -1,7 +1,7 @@
 // Copied from Northstar ui/src/screens/Settings/Layout.spec.tsx at e9c1589.
-// Changed: agent-router's six sections, its breadcrumb, and the /next basename every tab's href must carry.
-import { fireEvent, render, screen } from '@testing-library/react';
-import { MemoryRouter, Route, Routes } from 'react-router';
+// Changed: agent-router's six sections, and its breadcrumb.
+import { fireEvent, screen } from '@testing-library/react';
+import { Route, Routes } from 'react-router';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { renderScreen, stubNarrow } from '~/test-utils';
 import SettingsLayout from './Layout';
@@ -53,21 +53,6 @@ describe('SettingsLayout', () => {
     });
   });
 
-  /// Served at /next/ until the switch, the console's own navigation adds the basename by
-  /// itself, and an anchor's href does not: a tab copied or opened in a new tab must still land
-  /// on the console, not on the old dashboard at /settings.
-  it('gives every tab the basename the console is served under', () => {
-    render(
-      <MemoryRouter basename="/next" initialEntries={['/next/settings/password']}>
-        <Routes>{pages}</Routes>
-      </MemoryRouter>,
-    );
-    expect(screen.getByText('PASSWORD PAGE')).toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: 'Accounts' })).toHaveAttribute('href', '/next/settings/accounts');
-    expect(screen.getByRole('tab', { name: 'Router' })).toHaveAttribute('href', '/next/settings/router');
-    fireEvent.click(screen.getByRole('tab', { name: 'Router' }));
-    expect(screen.getByText('ROUTER PAGE')).toBeInTheDocument();
-  });
 
   it('leaves a modified click to the browser, so open-in-new-tab keeps working', () => {
     show('/settings/router');

@@ -1,5 +1,5 @@
 // Copied from Northstar ui/src/app/Shell.tsx at e9c1589.
-// Changed: agent-router's navigation (Overview, Sessions, the projects, Settings at the foot); the freshness badge reads the router's health; no sign-in and no log-out, because the router's LAN gate is HTTP Basic, which the browser asks for itself; no wide routes; the phone drawer closes on every arrival, a project link's included; the palette is open at a location as the drawer is, and opening either puts the other away; links carry the /next basename.
+// Changed: agent-router's navigation (Overview, Sessions, the projects, Settings at the foot); the freshness badge reads the router's health; no sign-in and no log-out, because the router's LAN gate is HTTP Basic, which the browser asks for itself; no wide routes; the phone drawer closes on every arrival, a project link's included; the palette is open at a location as the drawer is, and opening either puts the other away.
 import { Suspense, useCallback, useEffect, useMemo, useState, type MouseEvent } from 'react';
 import { Link, Outlet, useHref, useLocation, useNavigate } from 'react-router';
 import {
@@ -55,7 +55,7 @@ export function Shell() {
   const projects = useProjects();
   const navigate = useNavigate();
   const location = useLocation();
-  // The console's root as the browser addresses it, "/" or "/next/": the header's name is a
+  // The console's root as the browser addresses it: the header's name is a
   // real link, and an href is the browser's, not the router's.
   const home = useHref('/');
 

@@ -1,5 +1,5 @@
 // Copied from Northstar ui/src/screens/Settings/Layout.tsx at e9c1589.
-// Changed: agent-router's six sections; each tab's href carries the console's basename (/next while it is served there), which a bare path in an anchor does not; the header says what these pages are about here.
+// Changed: agent-router's six sections; each tab's href is resolved through the router, as a bare path in an anchor is not; the header says what these pages are about here.
 import type { MouseEvent } from 'react';
 import { Tab, TabList, Tabs } from '@carbon/react';
 import { Navigate, Outlet, useHref, useLocation, useNavigate } from 'react-router';
@@ -29,8 +29,8 @@ const plain = (e: MouseEvent) => e.button === 0 && !e.metaKey && !e.altKey && !e
 export default function SettingsLayout() {
   const location = useLocation();
   const navigate = useNavigate();
-  // The console's own root as the browser sees it: "/" or "/next/". An anchor's href is the
-  // browser's, so it needs the basename the router's own navigation adds by itself.
+  // The console's own root as the browser sees it. An anchor's href is the browser's, so it is
+  // resolved through the router, which would add any basename by itself.
   const root = useHref('/').replace(/\/$/, '');
 
   const found = SECTIONS.findIndex((s) => isUnder(location.pathname, s.slug));

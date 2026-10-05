@@ -70,8 +70,9 @@ Every external consumer opens a bare `/` or `/live`:
   (`ios/AgentRouter/Sources/Views/RouterSettingsView.swift:146-148`).
 - Push payloads carry no URL; the phones route a tap natively by session id.
 
-So `/` and `/live` must keep answering, plus the state formats the pages write themselves, for
-bookmarks: `#a=&p=&s=&r=&o=` on the dashboard and `?session=` on the live view.
+So `/` and `/live` must keep answering. The state the pages wrote into their addresses
+(`#a=&p=&s=&r=&o=` on the dashboard, `?session=` on the live view) does not carry over: the
+clean cut (decision J) keeps no compatibility code, so an old bookmark opens the screen unscoped.
 
 ### The phones follow the live view
 
@@ -217,7 +218,7 @@ two copies are cheaper than a published dependency.
 
 **URL state.** Scope, time range, request filters and Find live in the query string. A scope
 change pushes history, so Back un-scopes (Northstar's rule); today the dashboard replaces it.
-An old `#a=&p=…` link is read once and rewritten, so bookmarks keep working.
+An old `#a=&p=…` link is not rewritten: the clean cut keeps no compatibility code.
 
 ### Data
 
@@ -461,25 +462,27 @@ Settled where the port meets them, unless marked *now* or *server*.
      g10 and g100 with the `--ar-*` tokens re-validated, and the shell.
    - On the Rust side: `rust-embed`, the routes and headers, and the `build.rs` policy.
    - `build-target.sh` and CI.
-   - The new app is mounted at `/next/` (`/next/`, `/next/live`, `/next/settings`), so the old
-     pages keep serving until the switch.
+   - Until the cut, the new app runs only in its fixture harness and its specs: it is never
+     mounted beside the old pages.
 3. **The custom components and the concepts registry**, each with a spec and a harness page
    at phone and desk widths.
 4. **Overview.** 5. **Settings.** 6. **Sessions.** Once 1–3 land, these three can proceed in
    parallel, in separate worktrees.
-7. **Parity and switch.**
+7. **The clean cut**, one change once the screens are done.
    - Every contract green, screenshots at 360 and 390 px and at 1,440 px in both themes, the
      palette re-validated, and an accessibility pass.
-   - `/` and `/live` switch to the new app, and the old pages, the check scripts and the two
-     `include_str!` go.
+   - The router serves the console at `/`, `/live` and `/settings/*`. The same change deletes the
+     old pages, their two `include_str!`, the check scripts with their CI job and fixtures, and
+     every fallback written only for them.
    - README and ARCHITECTURE are updated, and the phones' parity tests still pass.
 
 **Size.** Northstar's rewrite replaced about 8,000 lines of components and specs. This one
 replaces 4,244 dense lines and should land in the same range. Every phase is reviewable on its
 own.
 
-**While both exist**, the old pages stay authoritative and keep taking fixes. Any behaviour
-change made there during the migration goes into the contracts list in the same commit; the
+**Until the cut**, the old pages stay what users run, but they take no new work: a defect
+found in them is fixed in the console instead (AGEN-0019 is withdrawn for that reason). A
+behaviour change that does land there goes into the contracts list in the same commit; the
 hosting work's server-mode notice on the live view is the first.
 
 **The hosting work** (`serve --server`, a Host allow-list, machine-local features off) has
@@ -505,7 +508,7 @@ spec or a shot script.
 | AGEN-0005 | Shared Markdown and grouping fixtures for web, iOS and Android | 0004 |
 | AGEN-0006 | The custom components and the concepts registry | 0003 |
 | AGEN-0007 | The ⌘K palette over the router's search | 0003 |
-| AGEN-0008 | The embedded console served at `/next/` behind the guard | 0003 |
+| AGEN-0008 | The embedded console served at `/` and `/live` behind the guard, with the cut | 0003 |
 | AGEN-0009 | CI and `build-target.sh` build the console | 0003 |
 | AGEN-0010 | Overview | 0002, 0004, 0006 |
 | AGEN-0011 | Settings | 0002, 0003 |
@@ -636,7 +639,7 @@ Decided on 2026-10-05:
 | G | Defects | **Fixed where the port meets them**; server-side fixes as separate small commits (AGEN-0014, AGEN-0015) |
 | H | Sessions on a desk | **Two panes from 1,056 px**, the list beside the feed |
 | I | Folds and put-away | **Archive is a visible action** on every row and tab, with the Archive icon, and **the archived shelf is visible**, not folded |
-| J | Rollout | **Behind `/next/` until parity**, then `/` and `/live` switch |
+| J | Rollout | **A clean cut, and no old code kept.** The console replaces `/` and `/live` in one change, which also deletes the old pages, their check scripts and CI job, and every fallback written for them. There is no `/next/` period. The console ships inside the router it talks to, so it never meets an older one and needs no fallback for it; old `#a=&p=…` bookmarks are not rewritten. Decided on 2026-10-05, replacing "behind `/next/` until parity". |
 | K | Spelling | **The phones' spelling on every client**: full model ids (`opus-5-20260115`) and whole bucket names ("15 minutes"), which the iOS and Android tests already pin (OV-C184, OV-C185) |
 
 The hosting work landed on 2026-10-05, in `e621f67` to `27d41ba`: `serve --server`, `build.rs`,

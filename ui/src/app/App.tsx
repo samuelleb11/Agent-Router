@@ -1,10 +1,9 @@
 // Copied from Northstar ui/src/app/App.tsx at e9c1589.
-// Changed: agent-router's routes (/, /live, /settings/:section) and their placeholder screens; no /login, because the router's LAN gate is HTTP Basic, which the browser asks for itself; no generated client to configure and no 401 redirect; the basename is /next while the console is served there.
+// Changed: agent-router's routes (/, /live, /settings/:section) and their placeholder screens; no /login, because the router's LAN gate is HTTP Basic, which the browser asks for itself; no generated client to configure and no 401 redirect.
 import { Suspense, lazy } from 'react';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider, createBrowserRouter } from 'react-router';
 import { Theme } from '@carbon/react';
-import { basenameFor } from '~/app/basename';
 import { queryClient } from '~/app/query';
 import { Shell } from '~/app/Shell';
 import { useTheme } from '~/app/theme';
@@ -50,9 +49,6 @@ const router = createBrowserRouter(
       errorElement: <ErrorScreen />,
     },
   ],
-  // Served at /next/ beside the old pages until the switch (AGEN-0013), and at / after: one
-  // build for both, so the mount point is read from where the page was opened.
-  { basename: basenameFor(window.location.pathname) },
 );
 
 export function App() {
