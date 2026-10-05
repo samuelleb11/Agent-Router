@@ -262,9 +262,13 @@ An old `#a=&p=…` link is not rewritten: the clean cut keeps no compatibility c
   - For the document: `default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self';
     img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none';
     form-action 'none'` plus the frame policy.
-  - React and Carbon set inline styles through the CSSOM, which CSP does not govern. Whether
-    any dependency injects a `<style>` element is checked on the first build, with the policy
-    in Report-Only mode until it is.
+  - React and Carbon set inline styles through the CSSOM, which CSP does not govern. Checked on
+    the first build, 2026-10-05, in headless Chrome under the policy: on every screen, the
+    Overview's chart drawn on fixtures, hovered and re-themed included, nothing inserted a
+    `<style>` element, had a style attribute refused or ran an inline script, so the policy is
+    enforced from the cut with no Report-Only period. The one refusal anywhere is Carbon
+    Charts' image export, which sets a `<base>` that `base-uri 'none'` blocks without changing
+    the image; the console's chart has no toolbar, so it is not reachable.
 - **Framing (Decision D).** One document now serves every route, so one policy covers both
   pages. Today the dashboard refuses all framing, which by the headers' logic breaks VS Code's
   Simple Browser and its fallback on editors before 1.109. The live view allows framing from
@@ -309,6 +313,11 @@ An old `#a=&p=…` link is not rewritten: the clean cut keeps no compatibility c
 - **Versioning.** `--ensure` compares only `CARGO_PKG_VERSION`, so the extension will not
   replace a running router for a UI-only change unless the version is bumped. That is already
   true today.
+- **Size**, measured at the cut (2026-10-05). `rust-embed` 8.12 adds nine packages to the
+  lockfile: itself, its derive and its utils, `sha2` 0.11 with `digest`, `block-buffer` and
+  `cpufeatures`, and `mime_guess` with `unicase` for the derive. The console, 37 files and
+  2.8 MB, grows the macOS arm64 release binary by the same 2.8 MB, from 14.1 to 17.0 MB, so
+  each file is in it once. The embed is not compressed.
 
 ### Carbon traps already known
 
@@ -653,13 +662,9 @@ the image, the chart and the CI stages. The serving and CI slices build on it.
   documents' promises were re-read against the code for this note.
 - That `X-Frame-Options: DENY` breaks Simple Browser on VS Code before 1.109. This follows from
   the headers and was not run.
-- That Carbon and Carbon Charts inject no `<style>` elements, and that Vite emits no inline
-  script, which a strict CSP needs. Both are checked on the first build.
 - That `frame-ancestors vscode-webview: vscode-file:` admits Simple Browser and its fallback.
 - Whether a macOS CI runner is registered, and whether pnpm is reachable in the Linux job
   without installing it.
-- The crates `rust-embed` adds, and how much the binary and VSIX grow. Northstar's sizes come
-  from its `dist` as built on 2026-09-24, before its graph engine was added.
 
 ## Sources
 

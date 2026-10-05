@@ -146,7 +146,8 @@ Claude Code (VSCode ext / CLI)
 |  capture/   parse SSE usage -> SQLite          |
 |  transcript/ fs watcher over ~/.claude/projects|
 |  join/      request-id correlation + backfill  |
-|  api/       read endpoints + the embedded UI   |
+|  api/       read endpoints                     |
+|  console/   the web console (ui/), embedded    |
 |  guard/     loopback, peer and Host checks     |
 +------------------------------------------------+
   |  Authorization: Bearer <active account token>
@@ -410,6 +411,10 @@ and clears the wrapper setting.
   Anything else is refused before it reaches Anthropic.
 - The transcript watcher is strictly read-only; it never writes to Claude Code's files.
 - Captured bodies may contain source code. The database is local and gitignored.
+- The web console (`console.rs`) is served under a content security policy that admits this
+  origin alone and no inline script, and that only VS Code's own schemes may frame: it approves
+  prompts and can switch a session to bypass permissions. Every response carries
+  `X-Content-Type-Options: nosniff`.
 
 ## Running as a hosted server
 
@@ -466,7 +471,7 @@ The protocol, the decisions and the Windows port are in
 | 1 | ✅ **Done.** Proxy listener, credential swap, byte-faithful streaming, path/credential guards. Verified end to end from a real project: subscription OAuth works over a custom base URL, and `x-claude-code-session-id` gives exact session attribution for free. |
 | 2 | ✅ **Done.** Capture tee, SQLite schema, SSE usage parsing through gzip, context composition, tool attribution, quota headroom, session→project resolution. Verified against a live tool-using session. |
 | 3 | ✅ **Done.** Account registry with three sources, Keychain storage, live switching, and the accounts page. Verified by switching to a deliberately invalid credential mid-flight (200 → 401 → 200 with nothing restarted). |
-| 4 | ✅ **Done.** Embedded read-only dashboard: quota, projects, sessions, context composition, thread split, tools, requests. A single HTML file compiled into the binary — no build step and no node toolchain, which keeps the "one static binary" promise intact. Account management joins it in Phase 3. |
+| 4 | ✅ **Done.** Embedded read-only dashboard: quota, projects, sessions, context composition, thread split, tools, requests. Account management joins it in Phase 3. At first a single HTML file compiled into the binary; since the clean cut of AGEN-0001, the web console: a React and IBM Carbon app in `ui/`, built with pnpm and Vite and compiled in with `rust-embed` (`console.rs`). The "one static binary" promise holds, and the console loads nothing from the network; building from source now needs Node for the console. |
 
 Each phase after the first is useful on its own.
 

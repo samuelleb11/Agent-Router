@@ -17,6 +17,12 @@
 # as above, else through mingw-w64 (brew install mingw-w64). Their programs are
 # agent-router.exe and claude-wrapper.exe, and only the agent runs there
 # (docs/hosting-machine-agent.md).
+#
+# The router embeds the web console, ui/dist, and a release build stops without it. This
+# builds it first, with pnpm (Node 22 or later; npm i -g pnpm@10.33.0), unless it is
+# already there: CI's build:ui job hands it over, as does an earlier run. It is built once
+# and never per target, since targets build in parallel with their own CARGO_TARGET_DIR
+# and would race on ui/dist.
 set -eu
 cd "$(dirname "$0")/.."
 TRIPLE="${1:?usage: build-target.sh <rust target triple>}"
@@ -58,6 +64,25 @@ case "$TRIPLE" in
       fi
     fi ;;
 esac
+
+# The console, before the first cargo step. A run started beside this one waits on the lock
+# for its build rather than starting a second over the same ui/dist, and a build that fails
+# leaves no ui/dist behind, so the next run does not embed one its checks refused.
+if [ ! -f ui/dist/index.html ]; then
+  LOCK=ui/.build-target.lock
+  until mkdir "$LOCK" 2>/dev/null; do
+    echo "waiting for another run's console build (remove $LOCK if none is running)" >&2
+    sleep 5
+  done
+  trap 'rmdir "$LOCK"' EXIT
+  if [ ! -f ui/dist/index.html ]; then
+    command -v pnpm >/dev/null 2>&1 || { echo "building the console needs pnpm: npm i -g pnpm@10.33.0" >&2; exit 4; }
+    echo "==> pnpm run build (the web console, into ui/dist)"
+    (cd ui && pnpm install --frozen-lockfile && pnpm run build) || { rm -rf ui/dist; exit 5; }
+  fi
+  rmdir "$LOCK"
+  trap - EXIT
+fi
 
 echo "==> $BUILD --release --target $TRIPLE (agent-router, claude-wrapper)"
 $BUILD --release --target "$TRIPLE" -p agent-router -p claude-wrapper

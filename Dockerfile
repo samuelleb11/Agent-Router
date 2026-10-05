@@ -7,24 +7,23 @@
 #   docker run -p 8787:8787 -v agent-router:/data \
 #     -e AGENT_ROUTER_SERVER_PASSWORD=<at least 8 characters> agent-router
 #
-# Two stages, because the toolchain that builds the router has no place in the image that
-# runs it. Nothing else is needed at run time: a hosted router signs only with setup-token
-# accounts pasted into the dashboard, so it never runs `claude`, and it handles APNs keys
-# in-process, so it never runs `openssl`.
+# Three stages, because the toolchains that build the console and the router have no place
+# in the image that runs it. Nothing else is needed at run time: the console is compiled into
+# the binary, a hosted router signs only with setup-token accounts pasted into the console, so
+# it never runs `claude`, and it handles APNs keys in-process, so it never runs `openssl`.
 
-# ---------------------------------------------------------------- console (not yet)
-# A web console built with Node will come first, as Northstar's does, and the runtime stage
-# will then copy its `ui/dist` beside the binary:
-#
-#   FROM node:24-bookworm-slim AS console
-#   WORKDIR /src/ui
-#   COPY ui/package.json ui/pnpm-lock.yaml ./    # dependencies before sources
-#   RUN <install with the frozen lockfile>
-#   COPY ui/ ./
-#   RUN <build>                                  # -> /src/ui/dist
-#
-# Today the dashboard and /live are compiled into the binary (assets/), so there is nothing
-# to build here.
+# ---------------------------------------------------------------- console
+# The web console, built with Node as Northstar's is. The router stage embeds its ui/dist, so
+# nothing of it reaches the runtime image but the bytes inside the binary.
+FROM node:24-bookworm-slim AS console
+WORKDIR /src/ui
+RUN npm i -g pnpm@10.33.0
+# Dependencies before sources, so a change to the console alone reuses the installed layer.
+COPY ui/package.json ui/pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
+COPY ui/ ./
+# tsc, Vite, the first load's budget and the notices check -> /src/ui/dist
+RUN pnpm run build
 
 # ---------------------------------------------------------------- router
 FROM rust:1.98-bookworm AS router
@@ -35,6 +34,10 @@ WORKDIR /src
 # the id of a tree that was never committed. (A checkout made by `git worktree add` has a
 # `.git` file pointing outside the context, and builds `unknown` for the same reason.)
 COPY . .
+# The console, where build.rs looks for it: a release build stops without it. Git ignores
+# ui/dist, so it leaves the build id alone, and .dockerignore keeps a local one out of the
+# context, so this is the only ui/dist there is.
+COPY --from=console /src/ui/dist ui/dist
 # `-p agent-router`, never `--workspace`: the workspace also holds the macOS menubar app,
 # which pulls in gtk on Linux, and the editor wrapper, which has no use in a pod.
 # git comes with this base image (buildpack-deps); asking for its version first fails the

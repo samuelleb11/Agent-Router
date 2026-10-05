@@ -18,6 +18,7 @@ mod apns;
 mod auth;
 mod capture;
 mod config;
+mod console;
 mod db;
 mod fcm;
 mod fold;
@@ -461,9 +462,15 @@ async fn serve_here(args: config::ServeArgs) -> anyhow::Result<()> {
 /// arrives, and the guard in front of all of it. One function, so the tests that hold the
 /// API to what its clients rely on (`api_refusals`) drive exactly what `serve` does.
 fn app(state: Arc<proxy::AppState>) -> Router {
-    let common = Router::new()
-        .route("/", get(api::index))
-        .route("/favicon.svg", get(api::favicon))
+    app_with(state, console::Files::embedded())
+}
+
+/// `app`, serving the console's files given here rather than the ones compiled in, so the
+/// console's tests drive a build of their own through the very routes and guard `serve` uses.
+fn app_with(state: Arc<proxy::AppState>, console: console::Files) -> Router {
+    // The console's routes first, on the router both route sets grow from: like every route
+    // here they are added before the guard layer, which wraps only what was added before it.
+    let common = console::routes(Router::new(), console)
         .route("/api/summary", get(api::summary))
         .route("/api/projects", get(api::projects))
         .route("/api/sessions", get(api::sessions))
@@ -483,13 +490,14 @@ fn app(state: Arc<proxy::AppState>) -> Router {
         .route("/api/quota", get(quota::quota))
         .route("/api/quota/raw", get(quota::raw_usage))
         .route("/api/usage-token", post(quota::set_usage_token))
-        .route("/live", get(live::page))
         .route("/api/live/options", get(live::options))
         .route("/_router/health", get(api::health));
     let routes = if state.config.server { hosted::routes(common) } else { machine_routes(common) };
     routes
         .fallback(any(proxy::handle))
         .layer(axum::middleware::from_fn_with_state(state.clone(), guard::layer))
+        // Outside the guard, so its refusals carry it as well.
+        .layer(axum::middleware::map_response(console::nosniff))
         .with_state(state)
 }
 

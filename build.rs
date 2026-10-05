@@ -19,9 +19,17 @@
 //! The limit, stated rather than hidden: it names the tree when this script ran. An edit
 //! that lands in the middle of a build can make it name a tree no binary was wholly
 //! built from.
+//!
+//! It also says what happens to the web console, `ui/dist`, which `src/console.rs` embeds.
+//! Git ignores `ui/dist`, so the list above never watches it, and nothing here builds it:
+//! `src/console/policy.rs` decides what a build without it does, and is included below so
+//! that the crate's tests hold the same function to its contracts.
 
 use std::path::Path;
 use std::process::Command;
+
+#[path = "src/console/policy.rs"]
+mod console_policy;
 
 fn main() {
     let root = std::env::var("CARGO_MANIFEST_DIR").map(std::path::PathBuf::from).ok();
@@ -38,6 +46,20 @@ fn main() {
     }
     let id = root.as_deref().and_then(tree_id).unwrap_or_else(|| "unknown".to_string());
     println!("cargo:rustc-env=AGENT_ROUTER_BUILD={id}");
+    if let Some(root) = root.as_deref() {
+        console(root);
+    }
+}
+
+/// Embed `ui/dist`, or serve the placeholder in its place, or stop: see `console_policy`.
+fn console(root: &Path) {
+    let built = root.join("ui").join("dist").join("index.html").is_file();
+    let profile = std::env::var("PROFILE").unwrap_or_default();
+    let allow = std::env::var(console_policy::ALLOW_NO_UI).ok();
+    let verdict = console_policy::verdict(built, &profile, allow.as_deref());
+    for line in console_policy::directives(root, &verdict) {
+        println!("{line}");
+    }
 }
 
 fn tree_files(root: &Path) -> Option<Vec<String>> {

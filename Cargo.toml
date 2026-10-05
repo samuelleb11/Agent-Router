@@ -41,6 +41,10 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["ring",
 webpki-roots = "1"
 # Running a tunneled request through the agent's own routes, in process.
 tower = { version = "0.5", features = ["util"] }
+# The web console, ui/dist, compiled into the binary (src/console.rs). `debug-embed` embeds it in
+# a debug build as well, so what a test serves is what a release serves, and no build of the
+# router reads a console file from disk at run time.
+rust-embed = { version = "8.12", features = ["debug-embed"] }
 
 # Windows runs the machine agent: process liveness and stopping an older agent.
 [target.'cfg(windows)'.dependencies]

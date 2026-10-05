@@ -1,4 +1,4 @@
-//! Read API for the dashboard, plus the embedded UI itself.
+//! Read API for the console (`console` serves the console itself).
 //!
 //! Reads come from a small pool of long-lived connections. SQLite in WAL mode takes
 //! concurrent readers alongside the capture task's single writer, so the pool is only
@@ -9,8 +9,8 @@
 use std::sync::{Arc, Mutex};
 
 use axum::extract::{Query, State};
-use axum::http::{header, StatusCode};
-use axum::response::{Html, IntoResponse, Response};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use axum::Json;
 use rusqlite::types::ValueRef;
 use rusqlite::{Connection, OpenFlags};
@@ -18,33 +18,6 @@ use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
 use crate::proxy::AppState;
-
-const INDEX_HTML: &str = include_str!("../assets/index.html");
-
-pub async fn index() -> Response {
-    // The dashboard can switch and remove accounts, so it must not be framable: a
-    // transparent frame over a decoy would let another origin borrow those clicks.
-    (
-        [
-            (header::X_FRAME_OPTIONS, "DENY"),
-            (
-                header::CONTENT_SECURITY_POLICY,
-                "frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
-            ),
-        ],
-        Html(INDEX_HTML),
-    )
-        .into_response()
-}
-
-pub async fn favicon() -> Response {
-    // An inline SVG keeps the binary self-contained and the tab identifiable.
-    (
-        [(header::CONTENT_TYPE, "image/svg+xml")],
-        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="#4f46e5"/><path d="M8 21V11h3.2l4.8 6.4V11h3.2v10h-3.2l-4.8-6.4V21z" fill="#fff"/></svg>"##,
-    )
-        .into_response()
-}
 
 #[derive(Deserialize)]
 pub struct Filter {

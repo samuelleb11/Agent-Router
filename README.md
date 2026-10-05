@@ -42,9 +42,16 @@ Either one can watch any number of routers.
 ### From source
 
 ```sh
+(cd ui && pnpm install && pnpm run build)   # the web console, which the binary embeds
 cargo build --release
 ./target/release/agent-router
 ```
+
+The console needs Node 22 or later and pnpm 10 to build (`npm i -g pnpm@10.33.0`); the
+router itself needs only Rust. A release build without `ui/dist` stops and says so, rather
+than ship a router without its console (`AGENT_ROUTER_ALLOW_NO_UI=1` builds one that serves a
+placeholder instead), and a debug build serves that placeholder with a warning. Either way it
+is still one binary: the console is compiled into it.
 
 ### As a VS Code extension
 
@@ -114,11 +121,12 @@ full, what filled the context window, the main-thread / subagent split, tokens p
 project and per session, which tools flood the context, and every request as an
 expandable row.
 
-Click a project or a session and the whole page rescopes to it; the breadcrumb and the
-time range (1h / 24h / 7d / 30d / all) sit in a sticky bar at the top and are mirrored
-in the URL, so a link keeps its scope. It refreshes every five seconds without flicker
-and is served from the same binary — no build step, no node toolchain, no network, and
-it works down to phone width.
+Click a project or a session and the whole page rescopes to it; the scope and the time
+range (1h / 24h / 7d / 30d / all) are in the URL, so a link keeps its scope. It refreshes
+every five seconds without flicker and works down to phone width. The live sessions are at
+`/live` and the settings under `/settings`, in the same app: a React and IBM Carbon console
+(`ui/`, built with pnpm as above), compiled into the binary and served by it, so there is
+nothing to install beside the router and nothing is loaded from the network.
 
 For anything the dashboard does not answer, the store is plain SQLite:
 
@@ -487,17 +495,19 @@ scripts/package-vsix.sh darwin-arm64                #    x86_64-unknown-linux-mu
                                                     #    x86_64-pc-windows-gnu (win32-x64)
 ```
 
-Linux builds are static (musl). From a Mac they cross-build through `cargo zigbuild`
-(`brew install zig && cargo install cargo-zigbuild`) or a musl cross compiler; on Linux
-they build natively. Windows builds are the GNU ABI and cross-build the same way, through
-zig or mingw-w64.
+`build-target.sh` builds the web console first, once, with pnpm (`ui/dist`, which every
+binary embeds), unless it is already there. Linux builds are static (musl). From a Mac they
+cross-build through `cargo zigbuild` (`brew install zig && cargo install cargo-zigbuild`) or
+a musl cross compiler; on Linux they build natively. Windows builds are the GNU ABI and
+cross-build the same way, through zig or mingw-w64.
 
 Claude Code is pointed at the router through its settings file and launched through the
 wrapper by way of Claude Code's own `claudeCode.claudeProcessWrapper` setting, so nothing
 inside Anthropic's extension is ever touched.
 
-`.gitlab-ci.yml` does all of them on a tag — the Linux and Windows jobs in Docker through
-zig, the Mac job on a shell runner tagged `macos` that has rustup, node and zig — puts
+`.gitlab-ci.yml` does all of them on a tag — the console once, in its `build:ui` job, which
+hands `ui/dist` to the rest; the Linux and Windows jobs in Docker through zig; the Mac job on
+a shell runner tagged `macos` that has rustup, node and zig — puts
 the VSIX files in the package registry, makes a release, and publishes to the
 Marketplace and Open VSX when the `VSCE_PAT` and `OVSX_PAT` variables are set. The
 Windows package stays off the marketplaces until it has run on Windows. The extension's manifest lives in

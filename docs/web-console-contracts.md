@@ -3478,13 +3478,11 @@ URLs that must keep answering, development, and what a hosted router changes.
   console off the machine sits behind the same guard. *Why:* the wider bind is a second
   socket serving `app.clone()`, not a second app. *Regression:* no. *Source:*
   `src/main.rs:433-437`.
-- **SV-C9** Until the switch, the new console answers under `/next/` (`/next/`,
-  `/next/live`, `/next/settings…`) behind the same guard and headers, while `/` and `/live`
-  keep serving today's pages; at the switch, `/` and `/live` serve the console and both
-  `include_str!` pages go. *Why:* Decision J — the old pages stay authoritative until parity.
-  *Regression:* no. *Source:* `docs/web-console-carbon.md:464-465`,
-  `docs/web-console-carbon.md:470-475`, `docs/web-console-carbon.md:481-483`,
-  `docs/web-console-carbon.md:639`, `src/api.rs:23`, `src/live.rs:1202`.
+- **SV-C9** The console replaces the old pages in one cut: `/` and `/live` serve it, both
+  `include_str!` pages are gone with the code that served them, and nothing answers under
+  `/next/`. *Why:* decision J, a clean cut with no `/next/` period and no old code kept; the
+  console ships inside the router it talks to, so it never meets an older one. *Regression:*
+  no. *Source:* plan, decision J; `src/api.rs:23`, `src/live.rs:1202` (the two pages).
 
 ### The guard, as a browser meets it
 
@@ -3630,10 +3628,12 @@ URLs that must keep answering, development, and what a hosted router changes.
   only with a newer version, so a console-only change would never reach a router already
   serving. *Regression:* no. *Source:* `docs/web-console-carbon.md:308-310`,
   `src/main.rs:134-151`.
-- **SV-C34** The app reloads itself on `vite:preloadError`, and only the charts are lazy
-  chunks. *Why:* a tab left open across a handover asks the new binary for chunks it does not
-  have. *Regression:* no. *Source:* `docs/web-console-carbon.md:278-279`,
-  `src/main.rs:418-430`.
+- **SV-C34** The app reloads itself, once, on `vite:preloadError`, which fires because a chunk
+  the binary does not hold answers a plain 404. *Why:* a tab left open across a handover asks
+  the new binary for chunks it does not have, and the screens are lazy chunks as well as the
+  charts (the route table keeps Northstar's lazy screens), so any of them can be missing.
+  *Regression:* no. *Source:* `docs/web-console-carbon.md:278-279`,
+  `docs/web-console-carbon.md:559-560`, `src/main.rs:418-430`.
 
 ### URLs that must keep working
 

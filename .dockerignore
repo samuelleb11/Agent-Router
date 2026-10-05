@@ -14,6 +14,9 @@ target
 target-*
 .cargo
 dist
+# The image builds its own console (the Dockerfile's console stage); a local one would merge
+# stale hashed files into it.
+ui/dist
 **/node_modules
 vscode/out
 vscode/bin/*

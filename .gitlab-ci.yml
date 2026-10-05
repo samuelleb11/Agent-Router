@@ -1,12 +1,13 @@
 # Agent Router's pipeline. Two things leave this repository, and each keeps its own path
 # through it.
 #
-# The VS Code extension: build the router for every supported platform, package the
-# extension per platform, keep the VSIX files as artifacts, and on a `v*` tag attach them to
-# a release and publish them where the tokens exist. Runners: `build:macos` needs a shell
-# runner on a Mac with rustup, node and zig (register one on the Mac that builds the iOS
-# app; see the README). `build:linux` runs in Docker and cross-builds both Linux targets
-# through zig, so it needs no special runner.
+# The VS Code extension: build the web console once (`build:ui`), build the router with it
+# embedded for every supported platform, package the extension per platform, keep the VSIX
+# files as artifacts, and on a `v*` tag attach them to a release and publish them where the
+# tokens exist. Runners: `build:macos` needs a shell runner on a Mac with rustup, node and
+# zig (register one on the Mac that builds the iOS app; see the README); it is handed the
+# console, so it needs no pnpm. `build:linux` runs in Docker and cross-builds both Linux
+# targets through zig, so it needs no special runner.
 #
 # The hosted server (docs/hosting-on-kubernetes.md), in the shape the group's other apps
 # use: the shared docker and rules templates, an image per commit, `latest` retagged on main,
@@ -156,19 +157,47 @@ check chart:
     # What `publish chart` runs, so a packaging failure stops a merge and not a publish.
     - scripts/package-chart.sh 0 "$CI_COMMIT_SHA" registry.example.com/check/agent-router /tmp/chart
 
-# The two pages the binary serves today, run outside a browser by their own check scripts.
-# They pin the dashboard's forecast and password behaviour and the live view's stream, list
-# and markdown, and until now nothing ran them: a regression on either page reached the user
-# first. The pages stay authoritative while ui/ replaces them (AGEN-0001), so they are guarded
-# until then. The switch that deletes them (AGEN-0013) deletes this job with them. Plain node:
-# the scripts need no packages.
-check web pages:
+# The web console (ui/), which every router binary embeds, built once. The binary jobs and the
+# console check take its ui/dist through `needs`, so the Mac runner needs no pnpm, and
+# scripts/build-target.sh, finding ui/dist there, does not build it again. `pnpm run build` is
+# the whole build: tsc, Vite, the first load's budget and the notices check. It runs in every
+# pipeline, as the binary jobs that wait on it do, and starts at once (`needs: []`); it sits in
+# this stage so that the console check, here too, can take its ui/dist.
+build:ui:
+  stage: check
+  needs: []
+  rules:
+    - when: on_success
+  image: node:22
+  before_script:
+    - npm i -g pnpm@10.33.0
+  script:
+    - cd ui
+    - pnpm install --frozen-lockfile
+    - pnpm run build
+  artifacts:
+    paths: [ui/dist]
+    expire_in: 2 weeks
+
+# The console's own checks: lint, types, the Vitest suite (the old pages' checks are ported
+# there, and the contracts each screen keeps), and the chunk and notices checks over build:ui's
+# ui/dist. After the Rust checks rather than beside them: Vitest beside cargo on one runner
+# timed out in Northstar's pipeline.
+check console:
   stage: check
   extends: .rules-agent-router
   image: node:22
+  needs: ["check rust", "build:ui"]
+  before_script:
+    - npm i -g pnpm@10.33.0
   script:
-    - node scripts/check-dashboard-ui.js
-    - node scripts/check-live-ui.js
+    - cd ui
+    - pnpm install --frozen-lockfile
+    - pnpm run lint
+    - pnpm run typecheck
+    - pnpm run test
+    - pnpm run chunks:check
+    - pnpm run notices:check
 
 # ---------------------------------------------------------------- build
 
@@ -178,12 +207,13 @@ build docker image:
     - .rules-agent-router
 
 # The extension builds in every pipeline the workflow lets through, as it did before there
-# was a workflow: a job with no rules is left out of merge request pipelines. `needs: []`
-# starts it at once, as before, instead of after the checks, which do not gate it. Named so
-# that no hidden job in the shared templates can merge into it.
+# was a workflow: a job with no rules is left out of merge request pipelines. It needs only
+# build:ui, whose console every binary embeds: macos, linux and windows alike take its ui/dist
+# from there, and start as soon as it is built rather than after the checks, which do not gate
+# them. Named so that no hidden job in the shared templates can merge into it.
 .vsix-build:
   stage: build
-  needs: []
+  needs: ["build:ui"]
   rules:
     - when: on_success
   cache:

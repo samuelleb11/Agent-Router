@@ -1198,21 +1198,6 @@ fn max_opt(a: Option<i64>, b: Option<i64>) -> Option<i64> {
 // HTTP
 // ---------------------------------------------------------------------------
 
-const LIVE_HTML: &str = include_str!("../assets/live.html");
-
-pub async fn page() -> Response {
-    // The page ships inside the binary and changes with every build, so a cached copy
-    // is a stale copy — and a phone holding one looks exactly like "it's not working".
-    (
-        [(
-            axum::http::header::CACHE_CONTROL,
-            "no-store, no-cache, must-revalidate",
-        )],
-        axum::response::Html(LIVE_HTML),
-    )
-        .into_response()
-}
-
 pub async fn sessions() -> Response {
     // Off the async workers: it reads the registry, stats every recent transcript, and
     // folds the ones it has not seen yet.
