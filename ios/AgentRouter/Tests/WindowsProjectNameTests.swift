@@ -19,7 +19,7 @@ final class WindowsProjectNameTests: XCTestCase {
         try JSONDecoder().decode(T.self, from: Data(json.utf8))
     }
 
-    private func projectRow(_ path: String) throws -> ProjectRow {
+    private func projectRow(_ path: String?) throws -> ProjectRow {
         try decode(ProjectRow.self, #"{"project":\#(wire(path)),"sessions":1,"requests":4,"prompt_tokens":1000,"cost":0.1,"output_tokens":10,"cache_read_tokens":900,"subagent_tokens":0,"errors":0,"models":"claude-opus-5","first_seen":1,"last_seen":2}"#)
     }
 
@@ -58,13 +58,12 @@ final class WindowsProjectNameTests: XCTestCase {
     /// What each list calls a project, from the directory the router recorded for it.
     private var lists: [(String, (String?) throws -> String)] {
         [
-            // A project row's directory is not optional here, so the empty path stands in for none;
-            // and the usage page is narrowed to the directory of a row tapped in that list.
-            ("the project list", { try self.projectRow($0 ?? "").name }),
+            ("the project list", { try self.projectRow($0).name }),
             ("the dashboard's sessions", { try self.proxySession($0).projectName }),
             ("a search's sessions", { try self.search($0).sessions.first?.projectName ?? "no row" }),
             ("a search hit", { try self.search($0).hits.first?.projectName ?? "no row" }),
-            ("the usage page", { UsageScope(project: $0 ?? "").title }),
+            // The usage page is narrowed to a row tapped in the project list, by the row's id.
+            ("the usage page", { UsageScope(project: try self.projectRow($0).id).title }),
         ]
     }
 

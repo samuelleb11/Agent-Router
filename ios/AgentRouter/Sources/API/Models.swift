@@ -295,6 +295,12 @@ enum ProjectPath {
         if let path, !path.isEmpty { return path }
         return "—"
     }
+
+    /// What `project=` asks the router for to get the sessions with no recorded directory
+    /// (src/api.rs, `SCOPE`), and what the web console keys their row by (OV-C136). No real
+    /// directory is spelt that way: Claude Code records an absolute path, and the router takes
+    /// no other from a request (src/analyze.rs, `as_path`). The phones still name that row "—".
+    static let unresolved = "(unresolved)"
 }
 
 // MARK: - Live sessions
@@ -943,7 +949,9 @@ struct Summary: Decodable, Sendable {
 }
 
 struct ProjectRow: Decodable, Sendable, Identifiable, Hashable {
-    let project: String
+    /// The sessions' working directory, or nil for those that never recorded one: the router
+    /// groups them all into one row (src/api.rs, `projects_inner`).
+    let project: String?
     let sessions: Double
     let requests: Double
     let promptTokens: Double
@@ -955,8 +963,11 @@ struct ProjectRow: Decodable, Sendable, Identifiable, Hashable {
     let models: String?
     let firstSeen: Int?
     let lastSeen: Int?
-    var id: String { project }
-    /// The project by name, a Windows machine's included (`ProjectPath`).
+    /// The row's key, and what narrows the page to it: its path, or for the row without one the
+    /// router's `(unresolved)`, which no real path can be (`ProjectPath.unresolved`).
+    var id: String { project ?? ProjectPath.unresolved }
+    /// The project by name, a Windows machine's included, and "—" for the row without a
+    /// directory (`ProjectPath`).
     var name: String { ProjectPath.name(project) }
     enum CodingKeys: String, CodingKey {
         case project, sessions, requests, cost, errors, models

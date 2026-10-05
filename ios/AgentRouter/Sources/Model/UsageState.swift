@@ -27,7 +27,9 @@ struct UsageScope: Hashable, Sendable {
     var isEmpty: Bool { account == nil && project == nil && session == nil }
     var title: String {
         if let session { return "Session \(session.prefix(8))" }
-        if let project { return ProjectPath.name(project) }
+        // The sessions with no directory are narrowed to by the router's key for them, and
+        // named as their row is.
+        if let project { return ProjectPath.name(project == ProjectPath.unresolved ? nil : project) }
         if let account { return account }
         return "Usage"
     }
