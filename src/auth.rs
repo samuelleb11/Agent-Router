@@ -323,11 +323,14 @@ pub mod api {
     use std::sync::Arc;
 
     use axum::extract::{ConnectInfo, State};
+    use axum::http::StatusCode;
+    use axum::response::{IntoResponse, Response};
     use axum::Json;
     use serde::Deserialize;
     use serde_json::{json, Value};
 
     use crate::proxy::AppState;
+    use crate::refusal::{failed, refuse, JsonBody};
 
     #[derive(Deserialize)]
     pub struct SetReq {
@@ -364,37 +367,37 @@ pub mod api {
         Json(body)
     }
 
-    pub async fn set(State(state): State<Arc<AppState>>, Json(req): Json<SetReq>) -> axum::response::Response {
-        use axum::response::IntoResponse;
+    /// Refusals answer with an error status (see `refusal`): until they did, the dashboard
+    /// read a refused password as "set".
+    pub async fn set(State(state): State<Arc<AppState>>, JsonBody(req): JsonBody<SetReq>) -> Response {
         if state.auth.pinned() {
-            return (
-                axum::http::StatusCode::CONFLICT,
-                Json(json!({
-                    "ok": false,
-                    "error": format!(
-                        "the password is set by the deployment ({}); change the Secret and restart the router",
-                        crate::config::SERVER_PASSWORD_ENV
-                    ),
-                })),
-            )
-                .into_response();
+            // 409: nothing is wrong with the request, but the deployment's Secret decides
+            // the password here, and would put its own back at the next start.
+            return refuse(
+                StatusCode::CONFLICT,
+                format!(
+                    "the password is set by the deployment ({}); change the Secret and restart the router",
+                    crate::config::SERVER_PASSWORD_ENV
+                ),
+            );
         }
         if req.clear {
             return match state.auth.clear(&state.config.db_path).await {
-                Ok(()) => Json(json!({ "ok": true, "configured": false })),
-                Err(e) => Json(json!({ "error": e.to_string() })),
-            }
-            .into_response();
+                Ok(()) => Json(json!({ "ok": true, "configured": false })).into_response(),
+                // The store would not take the write: the router failing, not a refusal.
+                Err(e) => failed(e),
+            };
         }
-        // Not trimmed: a password is whatever was typed, spaces included.
+        // Not trimmed: a password is whatever was typed, spaces included. 400, because the
+        // request itself falls short of what any password here must be, whatever the
+        // router's state — a longer one is the fix.
         if req.password.chars().count() < super::MIN_LEN {
-            return Json(json!({ "error": format!("use at least {} characters", super::MIN_LEN) })).into_response();
+            return refuse(StatusCode::BAD_REQUEST, format!("use at least {} characters", super::MIN_LEN));
         }
         match state.auth.set(&state.config.db_path, &req.password).await {
-            Ok(()) => Json(json!({ "ok": true, "configured": true })),
-            Err(e) => Json(json!({ "error": e.to_string() })),
+            Ok(()) => Json(json!({ "ok": true, "configured": true })).into_response(),
+            Err(e) => failed(e),
         }
-        .into_response()
     }
 }
 

@@ -1085,11 +1085,14 @@ pub mod api {
     use std::sync::Arc;
 
     use axum::extract::State;
+    use axum::http::StatusCode;
+    use axum::response::{IntoResponse, Response};
     use axum::Json;
     use serde::Deserialize;
     use serde_json::{json, Value};
 
     use crate::proxy::AppState;
+    use crate::refusal::{failed, refuse, JsonBody};
 
     #[derive(Deserialize)]
     pub struct ConfigBody {
@@ -1178,59 +1181,67 @@ pub mod api {
         }))
     }
 
-    pub async fn config(State(state): State<Arc<AppState>>, Json(req): Json<ConfigBody>) -> Json<Value> {
+    /// Refusals answer with an error status (see `refusal`): until they did, the dashboard
+    /// read a key that does not sign as "saved".
+    pub async fn config(State(state): State<Arc<AppState>>, JsonBody(req): JsonBody<ConfigBody>) -> Response {
         if req.platform.as_deref() == Some("fcm") {
             return fcm_config(state, req);
         }
         if req.clear {
             return match crate::accounts::store_push_key(None) {
-                Ok(()) => { state.push.apns_forget(); Json(json!({ "ok": true, "configured": false })) }
-                Err(e) => Json(json!({ "error": e.to_string() })),
+                Ok(()) => { state.push.apns_forget(); Json(json!({ "ok": true, "configured": false })).into_response() }
+                // The secrets file would not take the write: the router failing.
+                Err(e) => failed(e),
             };
         }
         let key = crate::apns::Key { team_id: req.team_id.trim().to_string(), key_id: req.key_id.trim().to_string(), p8: req.p8.trim().to_string() };
         if key.team_id.is_empty() || key.key_id.is_empty() || key.p8.is_empty() {
-            return Json(json!({ "error": "team id, key id and the .p8 key are all needed" }));
+            // 400: part of the key is missing from the request.
+            return refuse(StatusCode::BAD_REQUEST, "team id, key id and the .p8 key are all needed");
         }
-        // Prove the key signs before keeping it.
+        // Prove the key signs before keeping it. 422: everything a key needs was sent, but
+        // this one does not work — a different key is the fix, not a different request.
         if let Err(e) = crate::apns::mint_jwt(&key, crate::db::now_ms() / 1000) {
-            return Json(json!({ "error": format!("that key does not sign: {e}") }));
+            return refuse(StatusCode::UNPROCESSABLE_ENTITY, format!("that key does not sign: {e}"));
         }
         let stored = crate::accounts::PushKey {
             team_id: key.team_id, key_id: key.key_id, p8: key.p8,
             bundle_id: req.bundle_id.map(|b| b.trim().to_string()).filter(|b| !b.is_empty()),
         };
         match crate::accounts::store_push_key(Some(stored)) {
-            Ok(()) => { state.push.apns_forget(); Json(json!({ "ok": true, "configured": true })) }
-            Err(e) => Json(json!({ "error": e.to_string() })),
+            Ok(()) => { state.push.apns_forget(); Json(json!({ "ok": true, "configured": true })).into_response() }
+            Err(e) => failed(e),
         }
     }
 
     /// The Firebase half of `/api/push/config`. Takes the console's file whole rather
     /// than four fields: it is what the user actually has in hand, it cannot drift
-    /// between fields, and one parse gives one precise complaint instead of four.
-    fn fcm_config(state: Arc<AppState>, req: ConfigBody) -> Json<Value> {
+    /// between fields, and one parse gives one precise complaint instead of four. Its
+    /// statuses follow the Apple half's.
+    fn fcm_config(state: Arc<AppState>, req: ConfigBody) -> Response {
         if req.clear {
             return match crate::accounts::store_fcm_key(None) {
                 Ok(()) => {
                     state.push.fcm_forget();
-                    Json(json!({ "ok": true, "configured": false }))
+                    Json(json!({ "ok": true, "configured": false })).into_response()
                 }
-                Err(e) => Json(json!({ "error": e.to_string() })),
+                Err(e) => failed(e),
             };
         }
         let text = req.service_account.unwrap_or_default();
         let text = text.trim();
         if text.is_empty() {
-            return Json(json!({ "error": "paste the service-account JSON the Firebase console downloads" }));
+            return refuse(StatusCode::BAD_REQUEST, "paste the service-account JSON the Firebase console downloads");
         }
+        // 400: what was pasted is not the file the console hands out, so a key in it was
+        // never reached — unlike the refusal below, where it was, and did not work.
         let key = match crate::fcm::parse_service_account(text) {
             Ok(k) => k,
-            Err(e) => return Json(json!({ "error": format!("that is not a service account: {e}") })),
+            Err(e) => return refuse(StatusCode::BAD_REQUEST, format!("that is not a service account: {e}")),
         };
         // Prove the key signs before keeping it — the same gate the `.p8` gets.
         if let Err(e) = crate::fcm::mint_jwt(&key, crate::db::now_ms() / 1000) {
-            return Json(json!({ "error": format!("that key does not sign: {e}") }));
+            return refuse(StatusCode::UNPROCESSABLE_ENTITY, format!("that key does not sign: {e}"));
         }
         let stored = crate::accounts::FcmKey {
             project_id: key.project_id.clone(),
@@ -1242,9 +1253,9 @@ pub mod api {
         match crate::accounts::store_fcm_key(Some(stored)) {
             Ok(()) => {
                 state.push.fcm_forget();
-                Json(json!({ "ok": true, "configured": true, "project_id": key.project_id }))
+                Json(json!({ "ok": true, "configured": true, "project_id": key.project_id })).into_response()
             }
-            Err(e) => Json(json!({ "error": e.to_string() })),
+            Err(e) => failed(e),
         }
     }
 
@@ -1308,11 +1319,13 @@ pub mod api {
         pub session: Option<String>,
     }
 
-    pub async fn test(State(state): State<Arc<AppState>>, body: Option<Json<TestBody>>) -> Json<Value> {
+    pub async fn test(State(state): State<Arc<AppState>>, body: Option<JsonBody<TestBody>>) -> Response {
         if !state.push.configured() {
-            return Json(json!({ "error": "no push credentials are set" }));
+            // 409: asking is fine, but nothing is set to sign a push with yet, and setting
+            // a key is the fix.
+            return refuse(StatusCode::CONFLICT, "no push credentials are set");
         }
-        let session = body.and_then(|Json(b)| b.session).filter(|s| !s.trim().is_empty());
+        let session = body.and_then(|JsonBody(b)| b.session).filter(|s| !s.trim().is_empty());
         let results = match &session {
             Some(id) => {
                 let (project, title) = crate::live::session_label(id).unwrap_or_else(|| ("session".into(), None));
@@ -1324,10 +1337,13 @@ pub mod api {
             }
             None => state.push.notify("Agent Router", "Test", "Notifications reach this phone.", None, "test").await,
         };
+        // A 200 whatever each phone's service said: the test was run, and what came back
+        // for each phone — delivered, or Apple's or Google's reason — is the answer.
         Json(json!({
             "ok": results.iter().any(|(_, r)| r.is_ok()),
             "results": results.into_iter().map(|(tail, r)| json!({ "device": tail, "ok": r.is_ok(), "error": r.err() })).collect::<Vec<_>>(),
         }))
+        .into_response()
     }
 }
 

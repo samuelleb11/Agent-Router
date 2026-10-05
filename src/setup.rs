@@ -383,12 +383,15 @@ pub mod api {
     use std::sync::Arc;
 
     use axum::extract::State;
+    use axum::http::StatusCode;
+    use axum::response::{IntoResponse, Response};
     use axum::Json;
     use serde::Deserialize;
     use serde_json::{json, Value};
 
     use super::*;
     use crate::proxy::AppState;
+    use crate::refusal::{failed, refuse, JsonBody};
 
     fn snapshot(state: &AppState) -> Value {
         // The address entries only: a password `agent install` manages is no business of
@@ -431,10 +434,12 @@ pub mod api {
         pub enable: bool,
     }
 
+    /// Refusals answer with an error status (see `refusal`): until they did, the dashboard
+    /// read a switch that could not be thrown as "done".
     pub async fn service_toggle(
         State(state): State<Arc<AppState>>,
-        Json(req): Json<Toggle>,
-    ) -> Json<Value> {
+        JsonBody(req): JsonBody<Toggle>,
+    ) -> Response {
         let result = tokio::task::spawn_blocking(move || -> Result<()> {
             if req.enable {
                 let exe = install_binary()?;
@@ -452,10 +457,14 @@ pub mod api {
             Ok(Ok(())) => {
                 let mut out = snapshot(&state);
                 out["ok"] = json!(true);
-                Json(out)
+                Json(out).into_response()
             }
-            Ok(Err(e)) => Json(json!({ "error": e.to_string() })),
-            Err(e) => Json(json!({ "error": e.to_string() })),
+            // 500 either way: a request that says only on or off cannot be wrong, so a
+            // failure here is launchctl, systemd or the file system not doing what the
+            // router asked. (A platform with no login item to register says so in GET
+            // /api/setup's `supported`, and no client offers the switch there.)
+            Ok(Err(e)) => failed(e),
+            Err(e) => failed(e),
         }
     }
 
@@ -469,13 +478,15 @@ pub mod api {
 
     pub async fn config_toggle(
         State(state): State<Arc<AppState>>,
-        Json(req): Json<ConfigReq>,
-    ) -> Json<Value> {
+        JsonBody(req): JsonBody<ConfigReq>,
+    ) -> Response {
         let url = format!("http://127.0.0.1:{}", state.config.bind.port());
         let project = req.project.clone().map(PathBuf::from);
         if let Some(dir) = &project {
             if !dir.is_dir() {
-                return Json(json!({ "error": format!("{} is not a directory", dir.display()) }));
+                // 400: the path sent is not a directory on this machine, and the project's
+                // own directory is the fix.
+                return refuse(StatusCode::BAD_REQUEST, format!("{} is not a directory", dir.display()));
             }
         }
         let scope = if project.is_some() { "project" } else { "global" };
@@ -511,10 +522,23 @@ pub mod api {
                 let mut out = snapshot(&state);
                 out["ok"] = json!(true);
                 out["detail"] = json!(detail);
-                Json(out)
+                Json(out).into_response()
             }
-            Ok(Err(e)) => Json(json!({ "error": e.to_string() })),
-            Err(e) => Json(json!({ "error": e.to_string() })),
+            Ok(Err(e)) => refuse(settings_status(&e), e.to_string()),
+            Err(e) => failed(e),
+        }
+    }
+
+    /// What `apply` or `revert` failing means. A file the router could not read or write
+    /// is the router failing: 500. Anything else they refuse is the settings file as it
+    /// stands — not JSON, not an object, an `env` that is not one — which they will not
+    /// rewrite, because replacing a file they cannot parse would lose what the person put
+    /// there: 409, fixed by fixing the file, never by sending the request again.
+    fn settings_status(e: &anyhow::Error) -> StatusCode {
+        if e.downcast_ref::<std::io::Error>().is_some() {
+            StatusCode::INTERNAL_SERVER_ERROR
+        } else {
+            StatusCode::CONFLICT
         }
     }
 }

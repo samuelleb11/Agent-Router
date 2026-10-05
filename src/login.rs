@@ -302,39 +302,48 @@ pub mod api {
     use std::sync::Arc;
 
     use axum::extract::State;
+    use axum::http::StatusCode;
+    use axum::response::{IntoResponse, Response};
     use axum::Json;
     use serde::Deserialize;
-    use serde_json::{json, Value};
+    use serde_json::Value;
 
     use super::*;
     use crate::proxy::AppState;
+    use crate::refusal::{failed, refuse, JsonBody};
 
     #[derive(Deserialize)]
     pub struct StartReq {
         pub label: String,
     }
 
+    /// Refusals answer with an error status (see `refusal`), and the words under `error`
+    /// as they always were.
     pub async fn start_login(
         State(state): State<Arc<AppState>>,
-        Json(req): Json<StartReq>,
-    ) -> Json<Value> {
+        JsonBody(req): JsonBody<StartReq>,
+    ) -> Response {
         let label = req.label.trim().to_string();
         if label.is_empty() {
-            return Json(json!({ "error": "give the account a name first" }));
+            // 400: the account needs a name, and the request has none.
+            return refuse(StatusCode::BAD_REQUEST, "give the account a name first");
         }
         // One at a time: `setup-token` binds a fixed local callback port, so two
-        // flows at once would collide.
+        // flows at once would collide. 409: the request is fine, and once the running
+        // sign-in finishes or fails, the same one goes through.
         {
             let flow = state.login.lock().unwrap();
             if flow.phase == Some(Phase::Starting) || flow.phase == Some(Phase::AwaitingSignIn) {
-                return Json(json!({ "error": "a sign-in is already in progress" }));
+                return refuse(StatusCode::CONFLICT, "a sign-in is already in progress");
             }
         }
         let shared = state.login.clone();
         match tokio::task::spawn_blocking(move || super::start(label, shared)).await {
-            Ok(Ok(())) => Json(state.login.lock().unwrap().to_json()),
-            Ok(Err(e)) => Json(json!({ "error": e.to_string() })),
-            Err(e) => Json(json!({ "error": e.to_string() })),
+            Ok(Ok(())) => Json(state.login.lock().unwrap().to_json()).into_response(),
+            // 500: the router could not start `claude setup-token` — no profile directory,
+            // no pty, or no `claude` on its PATH — and the request had nothing to do with it.
+            Ok(Err(e)) => failed(e),
+            Err(e) => failed(e),
         }
     }
 

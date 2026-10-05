@@ -205,6 +205,9 @@ pub fn state_of(bin: &Path) -> State {
     }
 }
 
+/// Why nothing can be installed: the router was put somewhere without its wrapper.
+const NO_WRAPPER: &str = "claude-wrapper binary not found beside agent-router";
+
 /// The wrapper binary to install, shipped beside the router.
 fn wrapper_source() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
@@ -222,8 +225,7 @@ fn wrapper_source() -> Option<PathBuf> {
 }
 
 pub fn install(bin: &Path) -> anyhow::Result<()> {
-    let src = wrapper_source()
-        .ok_or_else(|| anyhow::anyhow!("claude-wrapper binary not found beside agent-router"))?;
+    let src = wrapper_source().ok_or_else(|| anyhow::anyhow!(NO_WRAPPER))?;
     let real = real_beside(bin);
 
     match state_of(bin) {
@@ -286,12 +288,15 @@ pub mod api {
     use std::sync::Arc;
 
     use axum::extract::State as AxState;
+    use axum::http::StatusCode;
+    use axum::response::{IntoResponse, Response};
     use axum::Json;
     use serde::Deserialize;
     use serde_json::{json, Value};
 
     use super::*;
     use crate::proxy::AppState;
+    use crate::refusal::{refuse_with_reason, JsonBody};
 
     #[derive(Deserialize)]
     pub struct Body {
@@ -322,33 +327,51 @@ pub mod api {
     }
 
     /// The switch. Turning it on also does the work now rather than in three seconds.
-    pub async fn auto(AxState(state): AxState<Arc<AppState>>, Json(body): Json<AutoBody>) -> Json<Value> {
+    ///
+    /// Refusals answer with an error status (see `refusal`), in this switch's own
+    /// `{ok: false, reason}`.
+    pub async fn auto(AxState(state): AxState<Arc<AppState>>, JsonBody(body): JsonBody<AutoBody>) -> Response {
         match set_auto(&state.config.db_path, body.enabled) {
             Ok(()) => {
                 note(format!("automatic wrapper: turned {}", if body.enabled { "on" } else { "off" }));
-                Json(json!({ "ok": true, "shim": snapshot(&state.config.db_path) }))
+                Json(json!({ "ok": true, "shim": snapshot(&state.config.db_path) })).into_response()
             }
-            Err(e) => Json(json!({ "ok": false, "reason": e.to_string() })),
+            // 500: an on or an off cannot be wrong; the store would not keep it.
+            Err(e) => refuse_with_reason(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
         }
     }
 
-    pub async fn toggle(AxState(state): AxState<Arc<AppState>>, Json(body): Json<Body>) -> Json<Value> {
-        let path = PathBuf::from(&body.path);
-        // Only ever touch a path the listing itself produced.
-        if !targets().iter().any(|t| t.path == body.path) {
-            return Json(json!({ "ok": false, "reason": "Not a known extension binary." }));
-        }
-        let done = match body.action.as_str() {
-            "install" => install(&path),
-            "remove" => remove(&path),
-            other => Err(anyhow::anyhow!("unknown action {other:?}")),
+    /// Refusals answer with an error status, as `auto`'s do.
+    pub async fn toggle(AxState(state): AxState<Arc<AppState>>, JsonBody(body): JsonBody<Body>) -> Response {
+        // The action first: telling a bad one needs nothing read from the disk. 400: there
+        // are two actions, and this is neither.
+        let install_it = match body.action.as_str() {
+            "install" => true,
+            "remove" => false,
+            other => return refuse_with_reason(StatusCode::BAD_REQUEST, format!("unknown action {other:?}")),
         };
+        let path = PathBuf::from(&body.path);
+        // Only ever touch a path the listing itself produced. 409 rather than 400: a client
+        // only ever sends a path the listing gave it, so one that is missing from it now is
+        // a listing that changed underneath — an editor update moves the extension to a new
+        // directory — and reading it again is the fix.
+        if !targets().iter().any(|t| t.path == body.path) {
+            return refuse_with_reason(StatusCode::CONFLICT, "Not a known extension binary.");
+        }
+        // 409: the router has no wrapper of its own to put there. It ships beside the
+        // router's binary, and installing the router with it is the fix.
+        if install_it && wrapper_source().is_none() {
+            return refuse_with_reason(StatusCode::CONFLICT, NO_WRAPPER);
+        }
+        let done = if install_it { install(&path) } else { remove(&path) };
         match done {
             Ok(()) => {
                 tracing::info!(path = %body.path, action = %body.action, "shim changed");
-                Json(json!({ "ok": true, "shim": snapshot(&state.config.db_path) }))
+                Json(json!({ "ok": true, "shim": snapshot(&state.config.db_path) })).into_response()
             }
-            Err(e) => Json(json!({ "ok": false, "reason": e.to_string() })),
+            // 500: a rename or a copy in the extension's directory failed, and a failed
+            // install has already put the real binary back.
+            Err(e) => refuse_with_reason(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
         }
     }
 }

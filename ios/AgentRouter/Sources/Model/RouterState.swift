@@ -8,6 +8,9 @@ import Observation
 final class RouterState {
     private(set) var router: Router
     @ObservationIgnored private var client: RouterClient?
+    /// The session every client made here calls through: the app's own, unless a test
+    /// hands over one that answers without a network. A `let`, so not observed.
+    private let calls: URLSession
 
     var health: Health?
     var auth: AuthStatus?
@@ -25,14 +28,15 @@ final class RouterState {
     /// The account id whose activation is in flight, for the row to show progress.
     var switching: String?
 
-    init(router: Router, password: String?) {
+    init(router: Router, password: String?, calls: URLSession = RouterClient.session) {
         self.router = router
+        self.calls = calls
         apply(router: router, password: password)
     }
 
     func apply(router: Router, password: String?) {
         self.router = router
-        client = router.baseURL.map { RouterClient(baseURL: $0, password: password) }
+        client = router.baseURL.map { RouterClient(baseURL: $0, password: password, calls: calls) }
     }
 
     var isReachable: Bool { health?.ok == true && failure == nil }

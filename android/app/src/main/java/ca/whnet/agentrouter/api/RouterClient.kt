@@ -41,6 +41,14 @@ sealed class RouterFailure(message: String) : Exception(message) {
         const val HOSTED = "This router has no password yet — a hosted router's password is set by its deployment"
     }
 
+    /**
+     * An error status that says why in the router's own words — `error`, or the live
+     * endpoints' `reason` — which are the message as they are. A refused change answers this
+     * way: a password too short, a key that does not sign, a sign-in already running.
+     */
+    class Refused(val code: Int, val words: String) : RouterFailure(words)
+
+    /** An error status with nothing to say for itself: a guard's plain text, a proxy's page. */
     class Status(val code: Int, val body: String) :
         RouterFailure("Router returned $code" + if (body.isEmpty()) "" else ": $body")
 
@@ -83,8 +91,8 @@ class RouterClient(baseUrl: String, private val password: String?) {
             .build()
 
         /**
-         * The live endpoints refuse with `{"ok":false,"reason":…}` and the read API with
-         * `{"error":…}`; either is better than the raw body.
+         * The live endpoints refuse with `{"ok":false,"reason":…}` and the rest with
+         * `{"error":…}` (the wrapper switches send both); either is better than the raw body.
          */
         fun reasonIn(body: String): String? = runCatching {
             val o = routerJson.parseToJsonElement(body) as? JsonObject ?: return null
@@ -112,10 +120,15 @@ class RouterClient(baseUrl: String, private val password: String?) {
             val body = it.body?.string().orEmpty()
             val trimmed = body.trim()
             if (it.isSuccessful) return body
+            // A refusal arrives as an error status with its reason inside — a router from
+            // before that answered the same refusal as a 200 carrying `error`, which is why
+            // [OkReply.problem] still looks there. Either way the screen shows those words.
+            val words = reasonIn(body)?.takeIf { w -> w.isNotEmpty() }
             when {
                 it.code == 401 -> throw RouterFailure.Unauthorized
                 it.code == 403 && trimmed.contains("no password set") -> throw RouterFailure.NoPasswordSet
-                else -> throw RouterFailure.Status(it.code, reasonIn(body) ?: trimmed.take(160))
+                words != null -> throw RouterFailure.Refused(it.code, words)
+                else -> throw RouterFailure.Status(it.code, trimmed.take(160))
             }
         }
     }

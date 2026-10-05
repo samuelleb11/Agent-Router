@@ -14,6 +14,7 @@ import ca.whnet.agentrouter.api.Forecast
 import ca.whnet.agentrouter.api.Health
 import ca.whnet.agentrouter.api.LiveReply
 import ca.whnet.agentrouter.api.LiveSession
+import ca.whnet.agentrouter.api.OkReply
 import ca.whnet.agentrouter.api.Quota
 import ca.whnet.agentrouter.api.SetupStatus
 import ca.whnet.agentrouter.api.ShimStatus
@@ -201,3 +202,12 @@ class RouterState(router: Router, private val store: RouterStore) {
         }
     }
 }
+
+/**
+ * Make one change and say what came of it: null when the router made it, and otherwise the
+ * sentence to show — the router's own words when it refused, whether as an error status
+ * ([RouterFailure.Refused]) or, from a router older than that, as a 200 carrying `error` or
+ * `ok: false` ([OkReply.problem]). For the switches that have no reply of their own to read.
+ */
+suspend inline fun <reified B> RouterClient.change(path: String, body: B): String? =
+    runCatching { post<B, OkReply>(path, body).problem }.getOrElse { RouterState.describe(it) }

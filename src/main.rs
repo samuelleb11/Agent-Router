@@ -12,6 +12,8 @@ mod activity;
 mod agent;
 mod analyze;
 mod api;
+#[cfg(test)]
+mod api_refusals;
 mod apns;
 mod auth;
 mod capture;
@@ -32,6 +34,7 @@ mod login;
 mod notify;
 mod proxy;
 mod quota;
+mod refusal;
 mod registry;
 mod setup;
 mod shim;
@@ -405,35 +408,7 @@ async fn serve_here(args: config::ServeArgs) -> anyhow::Result<()> {
         }
     }
 
-    let app = Router::new()
-        .route("/", get(api::index))
-        .route("/favicon.svg", get(api::favicon))
-        .route("/api/summary", get(api::summary))
-        .route("/api/projects", get(api::projects))
-        .route("/api/sessions", get(api::sessions))
-        .route("/api/requests", get(api::requests))
-        .route("/api/search", get(api::search))
-        .route("/api/tools", get(api::tools))
-        .route("/api/accounts/activate", post(api::accounts_activate))
-        .route("/api/accounts/remove", post(api::accounts_remove))
-        .route("/api/accounts/edit", post(api::accounts_edit))
-        .route("/api/forecast", get(api::forecast))
-        .route("/api/auth", get(auth::api::status).post(auth::api::set))
-        .route("/api/push", get(notify::api::status))
-        .route("/api/push/config", post(notify::api::config))
-        .route("/api/push/register", post(notify::api::register))
-        .route("/api/push/unregister", post(notify::api::unregister))
-        .route("/api/push/test", post(notify::api::test))
-        .route("/api/quota", get(quota::quota))
-        .route("/api/quota/raw", get(quota::raw_usage))
-        .route("/api/usage-token", post(quota::set_usage_token))
-        .route("/live", get(live::page))
-        .route("/api/live/options", get(live::options))
-        .route("/_router/health", get(api::health));
-    let app = if server { hosted::routes(app) } else { machine_routes(app) }
-        .fallback(any(proxy::handle))
-        .layer(axum::middleware::from_fn_with_state(state.clone(), guard::layer))
-        .with_state(state.clone());
+    let app = app(state.clone());
 
     if server {
         return serve_hosted(app, state, capture_task, stopping).await;
@@ -480,6 +455,42 @@ async fn serve_here(args: config::ServeArgs) -> anyhow::Result<()> {
     network.drain().await;
     finish_capture(state, capture_task).await;
     Ok(())
+}
+
+/// Everything a router serves: its routes, the proxy behind them for whatever else
+/// arrives, and the guard in front of all of it. One function, so the tests that hold the
+/// API to what its clients rely on (`api_refusals`) drive exactly what `serve` does.
+fn app(state: Arc<proxy::AppState>) -> Router {
+    let common = Router::new()
+        .route("/", get(api::index))
+        .route("/favicon.svg", get(api::favicon))
+        .route("/api/summary", get(api::summary))
+        .route("/api/projects", get(api::projects))
+        .route("/api/sessions", get(api::sessions))
+        .route("/api/requests", get(api::requests))
+        .route("/api/search", get(api::search))
+        .route("/api/tools", get(api::tools))
+        .route("/api/accounts/activate", post(api::accounts_activate))
+        .route("/api/accounts/remove", post(api::accounts_remove))
+        .route("/api/accounts/edit", post(api::accounts_edit))
+        .route("/api/forecast", get(api::forecast))
+        .route("/api/auth", get(auth::api::status).post(auth::api::set))
+        .route("/api/push", get(notify::api::status))
+        .route("/api/push/config", post(notify::api::config))
+        .route("/api/push/register", post(notify::api::register))
+        .route("/api/push/unregister", post(notify::api::unregister))
+        .route("/api/push/test", post(notify::api::test))
+        .route("/api/quota", get(quota::quota))
+        .route("/api/quota/raw", get(quota::raw_usage))
+        .route("/api/usage-token", post(quota::set_usage_token))
+        .route("/live", get(live::page))
+        .route("/api/live/options", get(live::options))
+        .route("/_router/health", get(api::health));
+    let routes = if state.config.server { hosted::routes(common) } else { machine_routes(common) };
+    routes
+        .fallback(any(proxy::handle))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), guard::layer))
+        .with_state(state)
 }
 
 /// The routes that act on the machine the router runs on: its Claude Code settings, its

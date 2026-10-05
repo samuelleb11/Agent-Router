@@ -304,11 +304,14 @@ pub mod api {
     use std::sync::Arc;
 
     use axum::extract::State;
+    use axum::http::StatusCode;
+    use axum::response::{IntoResponse, Response};
     use axum::Json;
     use serde::Deserialize;
-    use serde_json::{json, Value};
+    use serde_json::Value;
 
     use crate::proxy::AppState;
+    use crate::refusal::{failed, refuse, JsonBody};
 
     #[derive(Deserialize)]
     pub struct Req {
@@ -321,21 +324,26 @@ pub mod api {
     /// Only ever reached over loopback in practice: a caller that is not on this
     /// machine can only get here when the switch is already on, and `guard` has already
     /// made them present the password.
-    pub async fn set(State(state): State<Arc<AppState>>, Json(req): Json<Req>) -> Json<Value> {
+    ///
+    /// Refusals answer with an error status (see `refusal`), and say why there.
+    pub async fn set(State(state): State<Arc<AppState>>, JsonBody(req): JsonBody<Req>) -> Response {
         let want = match parse(&state, &req).await {
             Ok(want) => want,
-            Err(why) => return Json(json!({ "error": why })),
+            Err((status, why)) => return refuse(status, why),
         };
 
         if let Err(err) = state.network.set(want).await {
-            return Json(json!({ "error": err }));
+            // 409: the request was fine, but the machine as it stands would not give that
+            // socket — the address is not one of its own, or something else holds the
+            // port there. Nothing changed.
+            return refuse(StatusCode::CONFLICT, err);
         }
         // Stored only once the socket has agreed, so what is stored is always something
         // that worked. This is the half that survives the reboot.
         if let Err(err) = super::store(&state.config.db_path, want) {
-            return Json(json!({
-                "error": format!("listening changed, but it could not be saved for next time: {err:#}")
-            }));
+            // 500: the store failed, not the request — and the socket did move, which is
+            // why the words say so.
+            return failed(format!("listening changed, but it could not be saved for next time: {err:#}"));
         }
         // A login item registered before this was a setting may still carry the old
         // environment variable, which would outvote the setting on the next boot.
@@ -343,26 +351,33 @@ pub mod api {
 
         let mut out = super::report(&state);
         out.insert("ok".into(), true.into());
-        Json(Value::Object(out))
+        Json(Value::Object(out)).into_response()
     }
 
-    async fn parse(state: &AppState, req: &Req) -> Result<Option<IpAddr>, String> {
+    async fn parse(state: &AppState, req: &Req) -> Result<Option<IpAddr>, (StatusCode, String)> {
         if !req.enable {
             return Ok(None);
         }
         // Without a password every caller from another machine is refused anyway, so
         // widening the socket would buy nothing but exposure. Said here, where the
-        // choice is being made, rather than discovered later from a phone.
+        // choice is being made, rather than discovered later from a phone. 409: the
+        // request is fine; the router's state is what stands in the way, and setting a
+        // password is the fix.
         if !state.auth.configured().await {
-            return Err("set a password first — until one exists, callers from other machines are refused".into());
+            return Err((
+                StatusCode::CONFLICT,
+                "set a password first — until one exists, callers from other machines are refused".into(),
+            ));
         }
+        // 400 for either refusal below: the address sent is wrong whatever the router's
+        // state, and a different one is the fix.
         let raw = req.address.as_deref().unwrap_or("0.0.0.0").trim().to_string();
         match raw.parse::<IpAddr>() {
             Ok(ip) if ip.is_loopback() => {
-                Err(format!("{raw} is loopback, which is what this turns off"))
+                Err((StatusCode::BAD_REQUEST, format!("{raw} is loopback, which is what this turns off")))
             }
             Ok(ip) => Ok(Some(ip)),
-            Err(_) => Err(format!("{raw:?} is not an IP address")),
+            Err(_) => Err((StatusCode::BAD_REQUEST, format!("{raw:?} is not an IP address"))),
         }
     }
 }

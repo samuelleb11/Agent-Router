@@ -812,10 +812,14 @@ const get = async (path, params = {}) => {
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 };
+// The router refuses a change with an error status and says why under `error`; the wrapper
+// switches say it under `reason` too, as the live endpoints do. Either is better than the
+// status text. A router older than that answered a refusal as a 200 carrying `error`, which
+// is why the callers that looked for one after a 200 still do.
 const post = async (path, body) => {
   const r = await fetch(path, { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(body) });
   const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(j.error || r.statusText);
+  if (!r.ok) throw new Error(j.error || j.reason || r.statusText);
   return j;
 };
 
@@ -2477,8 +2481,10 @@ async function renderPush() {
     try { await post('/api/push/config', { team_id: team.value, key_id: kid.value, p8: p8.value, bundle_id: bundle.value }); setText(msg, 'saved'); renderPush(); }
     catch (e) { setText(msg, e.message); }
   } });
+  // An empty object, not no body: post() always says JSON, and the router refuses a JSON
+  // request with nothing in it before the test ever runs.
   const test = h('button', { class:'btn ghost', text:'Send a test', onclick: async () => {
-    try { const r = await post('/api/push/test'); setText(msg, r.results.map(x => `…${x.device}: ${x.ok ? 'delivered' : x.error}`).join(' · ') || 'no phones registered'); renderPush(); }
+    try { const r = await post('/api/push/test', {}); setText(msg, r.results.map(x => `…${x.device}: ${x.ok ? 'delivered' : x.error}`).join(' · ') || 'no phones registered'); renderPush(); }
     catch (e) { setText(msg, e.message); }
   } });
   const clear = h('button', { class:'btn sm danger', text:'Remove key', onclick: async () => {

@@ -17,7 +17,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::State;
-use axum::response::IntoResponse;
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use axum::Json;
 use http_body_util::BodyExt;
 use rusqlite::{Connection, OpenFlags};
@@ -25,6 +26,7 @@ use serde_json::{json, Value};
 
 use crate::db::now_ms;
 use crate::proxy::AppState;
+use crate::refusal::{failed, refuse, JsonBody};
 
 const UPSTREAM_PATH: &str = "/api/oauth/usage";
 const CACHE_MS: i64 = 45_000;
@@ -59,25 +61,31 @@ fn set_flag(state: &AppState, account_id: &str, set: bool) {
     }
 }
 
+/// Refusals answer with an error status (see `refusal`). Unlike `quota` below, which keeps
+/// its 200: what reads that is a menu bar and a status bar, not a form.
 pub async fn set_usage_token(
     State(state): State<Arc<AppState>>,
-    Json(req): Json<UsageToken>,
-) -> impl IntoResponse {
+    JsonBody(req): JsonBody<UsageToken>,
+) -> Response {
     if req.clear {
         let id = req.account_id.clone();
         let _ = tokio::task::spawn_blocking(move || crate::accounts::forget_usage_token(&id)).await;
         set_flag(&state, &req.account_id, false);
         *state.quota_cache.write().await = None;
-        return Json(json!({ "ok": true, "cleared": true }));
+        return Json(json!({ "ok": true, "cleared": true })).into_response();
     }
+    // 400 for either refusal below: what was sent is not a session key — nothing, or most
+    // often an API key or an OAuth token pasted into the wrong field — and no state of the
+    // router's would make it one.
     let token = req.token.trim().to_string();
     if token.is_empty() {
-        return Json(json!({ "error": "no token supplied" }));
+        return refuse(StatusCode::BAD_REQUEST, "no token supplied");
     }
     if !token.starts_with("sk-ant-sid") {
-        return Json(json!({
-            "error": "that does not look like a claude.ai session key (expected sk-ant-sid…)"
-        }));
+        return refuse(
+            StatusCode::BAD_REQUEST,
+            "that does not look like a claude.ai session key (expected sk-ant-sid…)",
+        );
     }
     let id = req.account_id.clone();
     let stored = tokio::task::spawn_blocking(move || crate::accounts::store_usage_token(&id, &token))
@@ -87,10 +95,11 @@ pub async fn set_usage_token(
             set_flag(&state, &req.account_id, true);
             // The stored key changes where quota comes from, so drop what we cached.
             *state.quota_cache.write().await = None;
-            Json(json!({ "ok": true, "account_id": req.account_id }))
+            Json(json!({ "ok": true, "account_id": req.account_id })).into_response()
         }
-        Ok(Err(e)) => Json(json!({ "error": e.to_string() })),
-        Err(e) => Json(json!({ "error": e.to_string() })),
+        // 500: the secrets file would not take it, which is the router failing.
+        Ok(Err(e)) => failed(e),
+        Err(e) => failed(e),
     }
 }
 

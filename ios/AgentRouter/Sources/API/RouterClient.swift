@@ -6,6 +6,9 @@ import Foundation
 struct RouterClient: Sendable {
     let baseURL: URL
     let password: String?
+    /// Where `get` and `post` go: the app's one session, unless a test hands over one that
+    /// answers from a table instead of the network.
+    var calls: URLSession = RouterClient.session
 
     enum Failure: Error, LocalizedError, Sendable, Equatable {
         case unreachable(String)
@@ -13,6 +16,11 @@ struct RouterClient: Sendable {
         case unauthorized
         /// 403 with the router's own message: nobody has set a password on it yet.
         case noPasswordSet
+        /// An error status that says why in the router's own words — `error`, or the live
+        /// endpoints' `reason` — which are shown as they are. A refused change answers this
+        /// way: a password too short, a key that does not sign, a sign-in already running.
+        case refused(Int, String)
+        /// An error status with nothing to say for itself: a guard's plain text, a proxy's page.
         case status(Int, String)
         case decoding(String)
 
@@ -21,13 +29,14 @@ struct RouterClient: Sendable {
             case .unreachable(let why): "Can't reach the router — \(why)"
             case .unauthorized: "Wrong password for this router"
             case .noPasswordSet: "This router has no password yet — set one on its dashboard, on the Mac"
+            case .refused(_, let words): words
             case .status(let code, let body): "Router returned \(code)\(body.isEmpty ? "" : ": \(body)")"
             case .decoding(let why): "Unexpected reply from the router — \(why)"
             }
         }
     }
 
-    private static let session: URLSession = {
+    static let session: URLSession = {
         let c = URLSessionConfiguration.ephemeral
         c.timeoutIntervalForRequest = 12
         c.timeoutIntervalForResource = 30
@@ -92,7 +101,7 @@ struct RouterClient: Sendable {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await Self.session.data(for: req)
+            (data, response) = try await calls.data(for: req)
         } catch let e as URLError {
             throw Failure.unreachable(e.localizedDescription)
         } catch {
@@ -109,12 +118,16 @@ struct RouterClient: Sendable {
         case 403 where text.contains("no password set"):
             throw Failure.noPasswordSet
         default:
-            throw Failure.status(http.statusCode, Self.reason(in: data) ?? text.prefix(160).description)
+            // A refusal arrives as an error status with its reason inside — a router from
+            // before that answered the same refusal as a 200 carrying `error`, which is why
+            // `OkReply.problem` still looks there. Either way the screen shows those words.
+            if let words = Self.reason(in: data), !words.isEmpty { throw Failure.refused(http.statusCode, words) }
+            throw Failure.status(http.statusCode, text.prefix(160).description)
         }
     }
 
-    /// The live endpoints refuse with `{"ok":false,"reason":…}` and the read API with
-    /// `{"error":…}`; either is better than the raw body.
+    /// The live endpoints refuse with `{"ok":false,"reason":…}` and the rest with
+    /// `{"error":…}` (the wrapper switches send both); either is better than the raw body.
     static func reason(in data: Data) -> String? {
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
         return (obj["reason"] as? String) ?? (obj["error"] as? String)
