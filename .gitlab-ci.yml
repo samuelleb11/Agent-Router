@@ -217,6 +217,19 @@ build:linux:
     - scripts/build-target.sh aarch64-unknown-linux-musl
     - scripts/package-vsix.sh linux-arm64
 
+# Windows is the GNU ABI, cross-built through zig as Linux is, so no Windows runner. Only
+# the machine agent runs there (docs/hosting-machine-agent.md). Its package goes to the
+# release's registry but not to the marketplaces, which `publish` leaves to the build jobs
+# it needs, until it has been tried on a Windows machine.
+build:windows:
+  extends: .vsix-build
+  image: rust:1-bookworm
+  before_script:
+    - !reference [build:linux, before_script]
+  script:
+    - scripts/build-target.sh x86_64-pc-windows-gnu
+    - scripts/package-vsix.sh win32-x64
+
 # ---------------------------------------------------------------- tag
 
 # On `dev` too: the chart published from `dev` names this tag, not the moving `dev` one.
@@ -296,7 +309,7 @@ release:
   image: registry.gitlab.com/gitlab-org/release-cli:latest
   rules:
     - if: $CI_COMMIT_TAG =~ /^v/
-  needs: ["build:macos", "build:linux"]
+  needs: ["build:macos", "build:linux", "build:windows"]
   script:
     - apk add --no-cache curl
     - |
@@ -307,7 +320,7 @@ release:
       done
   release:
     tag_name: $CI_COMMIT_TAG
-    description: "Agent Router $CI_COMMIT_TAG — VS Code extension packages for macOS (Apple Silicon, Intel) and Linux (x64, arm64) are in the package registry."
+    description: "Agent Router $CI_COMMIT_TAG — VS Code extension packages for macOS (Apple Silicon, Intel), Linux (x64, arm64) and Windows (x64) are in the package registry."
 
 publish:
   stage: release

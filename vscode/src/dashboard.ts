@@ -1,11 +1,29 @@
 // The router's own pages, inside the editor. VS Code's Simple Browser opens a loopback
 // page in an editor tab, and hands off to the Integrated Browser where that exists; a
 // webview with a frame is the fallback, and the system browser is always a click away.
+//
+// A hosted router's pages open in the system browser instead: every request to it
+// carries the password, and Simple Browser cannot answer the Basic prompt reliably.
 
 import * as vscode from 'vscode';
-import { base } from './router';
+import { base, mode } from './router';
+import { localModeAvailable } from './remote';
+import { offerConnect, WINDOWS_LOCAL } from './connect';
 
 export async function open(pagePath: '/' | '/live', title: string): Promise<void> {
+  const m = mode();
+  if (m.kind === 'remote') {
+    await vscode.env.openExternal(vscode.Uri.parse(`${m.server}${pagePath}`));
+    return;
+  }
+  if (m.kind === 'invalid') {
+    await offerConnect(`agentRouter.server is not usable: ${m.why}`);
+    return;
+  }
+  if (!localModeAvailable()) {
+    await offerConnect(WINDOWS_LOCAL);
+    return;
+  }
   const url = `${base()}${pagePath}`;
   try {
     await vscode.commands.executeCommand('simpleBrowser.api.open', vscode.Uri.parse(url), { viewColumn: vscode.ViewColumn.Active });

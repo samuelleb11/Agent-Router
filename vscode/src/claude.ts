@@ -1,7 +1,8 @@
 // Claude Code's side of the arrangement, done through its own documented settings and
 // nothing else: `claudeCode.claudeProcessWrapper` launches Claude through the router's
 // wrapper, which is what makes a session answerable from the phone. The base URL goes
-// through Claude Code's settings file, written by the router's `install` (see router.ts).
+// through Claude Code's settings file, written by the router's `install` (see router.ts),
+// or in remote mode by `agent install` with the server's password beside it (agent.ts).
 
 import * as vscode from 'vscode';
 import { wrapperPath } from './router';
