@@ -1,10 +1,11 @@
 //! Self-install: register the service, and point Claude Code at the router.
 //!
-//! The rule this module exists to honour: **only ever touch our own key.** A user's
-//! settings file is theirs. We add exactly one entry, remember precisely what was
-//! there before, and on removal put that back — but only if the value is still the
-//! one we wrote. If the user has since changed it, we leave it alone and say so.
-//! Nothing else in the file is rewritten, reordered or reformatted.
+//! The rule this module exists to honour: **only ever touch our own keys.** A user's
+//! settings file is theirs. We add exactly the entries we need — the router's address,
+//! and for a hosted router the password it asks for — remember precisely what was
+//! there before, and on removal put that back, but only if the value is still the one
+//! we wrote. If the user has since changed it, we leave it alone and say so. Nothing
+//! else in the file is rewritten, reordered or reformatted.
 
 use std::path::{Path, PathBuf};
 
@@ -12,8 +13,28 @@ use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-/// The one settings key the router manages.
+/// Where Claude Code sends its requests: the key every install manages.
 const ENV_KEY: &str = "ANTHROPIC_BASE_URL";
+/// What a Claude Code pointed at a hosted router presents: its password. Managed only by
+/// `agent install`, and never recorded in the clear (see `fingerprint`).
+pub const TOKEN_KEY: &str = "ANTHROPIC_AUTH_TOKEN";
+
+fn base_url_key() -> String {
+    ENV_KEY.to_string()
+}
+
+/// What `managed.json` keeps of a value we wrote: the value itself, except a password,
+/// which is kept as a fingerprint — enough to tell it from a later edit, and nothing
+/// worth stealing from a file that lists what was changed.
+fn fingerprint(key: &str, value: &str) -> String {
+    if key == TOKEN_KEY {
+        use sha2::Digest;
+        let digest = sha2::Sha256::digest(value.as_bytes());
+        format!("sha256:{}", digest.iter().map(|b| format!("{b:02x}")).collect::<String>())
+    } else {
+        value.to_string()
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Managed {
@@ -27,6 +48,9 @@ pub struct Managed {
     pub applied_at: i64,
     /// A full copy of the file as it was, for a manual restore.
     pub backup_path: Option<String>,
+    /// Which `env` key. Records from before there was more than one are the address.
+    #[serde(default = "base_url_key")]
+    pub key: String,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -44,8 +68,15 @@ pub fn data_dir() -> Result<PathBuf> {
     crate::config::data_dir()
 }
 
-/// `$HOME` on Unix, `%USERPROFILE%` on Windows.
+/// `$HOME` on Unix, `%USERPROFILE%` on Windows — first there, because Git Bash and MSYS
+/// set a `HOME` of their own, and the editor extension and Claude Code use the profile.
 pub fn home_dir() -> Result<PathBuf> {
+    #[cfg(windows)]
+    if let Ok(h) = std::env::var("USERPROFILE") {
+        if !h.is_empty() {
+            return Ok(PathBuf::from(h));
+        }
+    }
     if let Ok(h) = std::env::var("HOME") {
         if !h.is_empty() {
             return Ok(PathBuf::from(h));
@@ -69,7 +100,14 @@ pub fn load_state() -> State {
 
 pub fn save_state(state: &State) -> Result<()> {
     let path = state_path()?;
-    write_atomic(&path, &serde_json::to_string_pretty(state)?)
+    write_atomic(&path, &serde_json::to_string_pretty(state)?)?;
+    // A value it must restore can be a password someone had there before us.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
 }
 
 /// Global settings live at `~/.claude/settings.json`; a project's machine-local
@@ -88,7 +126,7 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-fn write_atomic(path: &Path, text: &str) -> Result<()> {
+fn write_atomic(path: &Path, text: impl AsRef<[u8]>) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -124,22 +162,30 @@ pub enum Applied {
 
 /// Point a settings file at the router, recording what was there before.
 pub fn apply(path: &Path, url: &str, scope: &str) -> Result<Applied> {
+    apply_key(path, ENV_KEY, url, scope)
+}
+
+/// Set one of our `env` keys in a settings file, recording what was there before.
+pub fn apply_key(path: &Path, key: &str, value: &str, scope: &str) -> Result<Applied> {
     let mut settings = read_settings(path)?;
+    let file = path.to_string_lossy().into_owned();
 
     let previous = settings
         .get("env")
         .and_then(Value::as_object)
-        .and_then(|e| e.get(ENV_KEY))
+        .and_then(|e| e.get(key))
         .and_then(Value::as_str)
         .map(str::to_owned);
 
-    let already = previous.as_deref() == Some(url);
-    if already && load_state().managed.iter().any(|m| m.settings_path == path.to_string_lossy()) {
+    let already = previous.as_deref() == Some(value);
+    let state = load_state();
+    if already && state.managed.iter().any(|m| m.settings_path == file && m.key == key) {
         return Ok(Applied::AlreadySet);
     }
+    let backed_up = state.managed.iter().any(|m| m.settings_path == file);
 
     // Back up the whole file once, before the first change we make to it.
-    let backup_path = if path.exists() && !already {
+    let backup_path = if path.exists() && !already && !backed_up {
         let backup = path.with_extension(format!("json.before-agent-router.{}", now_ms()));
         std::fs::copy(path, &backup)?;
         Some(backup.to_string_lossy().into_owned())
@@ -155,22 +201,23 @@ pub fn apply(path: &Path, url: &str, scope: &str) -> Result<Applied> {
     let Some(env) = env.as_object_mut() else {
         return Err(anyhow!("\"env\" in {} is not an object", path.display()));
     };
-    env.insert(ENV_KEY.to_string(), Value::String(url.to_string()));
+    env.insert(key.to_string(), Value::String(value.to_string()));
 
     if !already {
         write_atomic(path, &(serde_json::to_string_pretty(&Value::Object(settings))? + "\n"))?;
     }
 
     let mut state = load_state();
-    state.managed.retain(|m| m.settings_path != path.to_string_lossy());
+    state.managed.retain(|m| !(m.settings_path == file && m.key == key));
     state.managed.push(Managed {
-        settings_path: path.to_string_lossy().into_owned(),
+        settings_path: file,
         scope: scope.to_string(),
-        value: url.to_string(),
+        value: fingerprint(key, value),
         // When adopting, there is no knowable prior value: the key already held ours.
         previous: if already { None } else { previous.clone() },
         applied_at: now_ms(),
         backup_path,
+        key: key.to_string(),
     });
     save_state(&state)?;
 
@@ -190,11 +237,30 @@ pub enum Reverted {
     NotManaged,
 }
 
-/// Undo what `apply` did — and nothing else.
+/// Undo what `apply` and `apply_key` did to one file — and nothing else. Says what
+/// became of the address; a password's fate is never echoed.
 pub fn revert(path: &Path) -> Result<Reverted> {
+    let file = path.to_string_lossy().into_owned();
+    let keys: Vec<String> = load_state()
+        .managed
+        .iter()
+        .filter(|m| m.settings_path == file)
+        .map(|m| m.key.clone())
+        .collect();
+    let mut address = Reverted::NotManaged;
+    for key in keys {
+        let outcome = revert_key(path, &key)?;
+        if key == ENV_KEY {
+            address = outcome;
+        }
+    }
+    Ok(address)
+}
+
+fn revert_key(path: &Path, key: &str) -> Result<Reverted> {
     let mut state = load_state();
-    let key = path.to_string_lossy().into_owned();
-    let Some(idx) = state.managed.iter().position(|m| m.settings_path == key) else {
+    let file = path.to_string_lossy().into_owned();
+    let Some(idx) = state.managed.iter().position(|m| m.settings_path == file && m.key == key) else {
         return Ok(Reverted::NotManaged);
     };
     let managed = state.managed[idx].clone();
@@ -203,15 +269,16 @@ pub fn revert(path: &Path) -> Result<Reverted> {
     let current = settings
         .get("env")
         .and_then(Value::as_object)
-        .and_then(|e| e.get(ENV_KEY))
+        .and_then(|e| e.get(key))
         .and_then(Value::as_str)
         .map(str::to_owned);
 
     // If it is no longer the value we wrote, the user changed it deliberately.
     // Reverting would undo their edit, so stop and leave the file alone.
     match current.as_deref() {
-        Some(found) if found != managed.value => {
-            return Ok(Reverted::NotOurs { found: found.to_string() })
+        Some(found) if fingerprint(key, found) != managed.value => {
+            let found = if key == TOKEN_KEY { "a different password".to_string() } else { found.to_string() };
+            return Ok(Reverted::NotOurs { found })
         }
         None => {
             state.managed.remove(idx);
@@ -228,11 +295,11 @@ pub fn revert(path: &Path) -> Result<Reverted> {
             .ok_or_else(|| anyhow!("\"env\" vanished from {}", path.display()))?;
         match &managed.previous {
             Some(previous) => {
-                env.insert(ENV_KEY.to_string(), Value::String(previous.clone()));
+                env.insert(key.to_string(), Value::String(previous.clone()));
                 Reverted::Restored { to: previous.clone() }
             }
             None => {
-                env.remove(ENV_KEY);
+                env.remove(key);
                 // Leave no debris: an `env` we created and then emptied goes too.
                 if env.is_empty() {
                     settings.remove("env");
@@ -258,9 +325,53 @@ pub fn install_binary() -> Result<PathBuf> {
     if current != dest {
         let tmp = dest.with_extension("new");
         std::fs::copy(&current, &tmp)?;
-        std::fs::rename(&tmp, &dest)?;
+        replace(&tmp, &dest)?;
     }
     Ok(dest)
+}
+
+/// Rename `fresh` over `to`. Windows will not let a running program's file be replaced,
+/// but it will let it be renamed: the running copy moves aside, under the name the
+/// extension gives it (`vscode/src/router.ts`, `replace`), and goes at a later install
+/// once nothing runs it. Elsewhere this is a plain rename.
+fn replace(fresh: &Path, to: &Path) -> Result<()> {
+    if let (true, Some(dir)) = (cfg!(windows), to.parent()) {
+        sweep_aside(dir);
+    }
+    let Err(e) = std::fs::rename(fresh, to) else {
+        return Ok(());
+    };
+    if !cfg!(windows) {
+        let _ = std::fs::remove_file(fresh);
+        return Err(e.into());
+    }
+    let aside = PathBuf::from(format!("{}.old-{}-{}", to.display(), std::process::id(), crate::db::now_ms()));
+    let moved = std::fs::rename(to, &aside).is_ok();
+    if let Err(again) = std::fs::rename(fresh, to) {
+        // Never leave the place empty: put back the copy that was there.
+        if moved {
+            let _ = std::fs::rename(&aside, to);
+        }
+        let _ = std::fs::remove_file(fresh);
+        return Err(again).with_context(|| format!("replacing {}", to.display()));
+    }
+    Ok(())
+}
+
+/// The copies `replace` moved aside, removed once nothing runs them any more.
+fn sweep_aside(dir: &Path) {
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let name = entry.file_name();
+        let aside = name.to_str().and_then(|n| n.rsplit_once(".old-")).is_some_and(|(_, tail)| {
+            tail.split_once('-').is_some_and(|(pid, ms)| {
+                [pid, ms].iter().all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+            })
+        });
+        if aside {
+            // Still running is still locked, and stays for the next time.
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -280,9 +391,12 @@ pub mod api {
     use crate::proxy::AppState;
 
     fn snapshot(state: &AppState) -> Value {
+        // The address entries only: a password `agent install` manages is no business of
+        // a page that lists where Claude Code is pointed.
         let managed = load_state()
             .managed
             .into_iter()
+            .filter(|m| m.key == ENV_KEY)
             .map(|m| {
                 json!({
                     "path": m.settings_path,
@@ -619,6 +733,159 @@ pub mod service {
     }
 }
 
+/// The machine agent's login item, beside the router's own: a machine pointed at a
+/// hosted router runs the agent and no router, but the two never share a label, so
+/// installing one can never remove the other.
+#[cfg(target_os = "macos")]
+pub const AGENT_LABEL: &str = "ca.whnet.agent-router.agent";
+
+#[cfg(target_os = "macos")]
+pub mod agent_service {
+    use super::*;
+
+    fn plist_path() -> Result<PathBuf> {
+        let dir = home_dir()?.join("Library").join("LaunchAgents");
+        std::fs::create_dir_all(&dir)?;
+        Ok(dir.join(format!("{AGENT_LABEL}.plist")))
+    }
+
+    fn domain() -> String {
+        // SAFETY: getuid() cannot fail and touches no memory we own.
+        format!("gui/{}", unsafe { libc::getuid() })
+    }
+
+    pub fn install(exe: &Path) -> Result<PathBuf> {
+        let dir = data_dir()?;
+        std::fs::create_dir_all(dir.join("logs"))?;
+        let logs = dir.join("logs").join("agent.log");
+        let plist = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>{AGENT_LABEL}</string>
+  <!-- `--ensure`: when the editor has already started an agent this one exits cleanly,
+       and a clean exit is not restarted. -->
+  <key>ProgramArguments</key><array><string>{exe}</string><string>agent</string><string>--ensure</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+  <key>ThrottleInterval</key><integer>5</integer>
+  <key>ProcessType</key><string>Background</string>
+  <!-- Where the router is, and its password, are in agent.json beside the store, not
+       here: this file is world-readable. -->
+  <key>EnvironmentVariables</key><dict>
+    <key>PATH</key><string>/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key><string>{home}</string>
+  </dict>
+  <key>StandardOutPath</key><string>{logs}</string>
+  <key>StandardErrorPath</key><string>{logs}</string>
+</dict>
+</plist>
+"#,
+            exe = exe.display(),
+            home = home_dir()?.display(),
+            logs = logs.display(),
+        );
+        let path = plist_path()?;
+        write_atomic(&path, &plist)?;
+        let target = format!("{}/{AGENT_LABEL}", domain());
+        let _ = launchctl(&["bootout", &target]);
+        launchctl(&["bootstrap", &domain(), &path.to_string_lossy()])?;
+        let _ = launchctl(&["enable", &target]);
+        Ok(path)
+    }
+
+    pub fn uninstall() -> Result<()> {
+        let _ = launchctl(&["bootout", &format!("{}/{AGENT_LABEL}", domain())]);
+        if let Ok(p) = plist_path() {
+            let _ = std::fs::remove_file(p);
+        }
+        Ok(())
+    }
+
+    pub fn is_registered() -> bool {
+        plist_path().map(|p| p.exists()).unwrap_or(false)
+    }
+
+    fn launchctl(args: &[&str]) -> Result<()> {
+        let out = std::process::Command::new("launchctl").args(args).output()?;
+        if !out.status.success() {
+            return Err(anyhow!("launchctl {}: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim()));
+        }
+        Ok(())
+    }
+}
+
+/// On Windows the agent starts at logon from the user's Startup folder, through a small
+/// script that runs it hidden: it is a console program, and started directly it would
+/// keep a console window open for as long as the user is logged on. Nothing here needs
+/// administrator rights, and nothing touches the registry.
+#[cfg(windows)]
+pub mod agent_service {
+    use super::*;
+
+    fn script_path() -> Result<PathBuf> {
+        let appdata = std::env::var_os("APPDATA").ok_or_else(|| anyhow!("APPDATA is not set"))?;
+        let dir = PathBuf::from(appdata).join("Microsoft").join("Windows").join("Start Menu").join("Programs").join("Startup");
+        std::fs::create_dir_all(&dir)?;
+        Ok(dir.join("Agent Router agent.vbs"))
+    }
+
+    pub fn install(exe: &Path) -> Result<PathBuf> {
+        let exe = exe.display().to_string().replace('"', "");
+        // Run(command, 0 = hidden, False = do not wait). A doubled quote is a quote in VBScript.
+        let script = format!(
+            "' Starts the Agent Router agent at logon, without a window.\r\n\
+             CreateObject(\"WScript.Shell\").Run \"\"\"{exe}\"\" agent --ensure\", 0, False\r\n"
+        );
+        let path = script_path()?;
+        // UTF-16 with its mark: without one, Windows Script Host reads a script in the ANSI
+        // code page, and a profile folder named outside it would name the wrong program.
+        let utf16: Vec<u8> = format!("\u{feff}{script}")
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        write_atomic(&path, utf16)?;
+        // Started now as well, as launchd does on macOS.
+        std::process::Command::new("wscript.exe")
+            .arg(&path)
+            .spawn()
+            .with_context(|| format!("starting {}", path.display()))?;
+        Ok(path)
+    }
+
+    pub fn uninstall() -> Result<()> {
+        if let Ok(p) = script_path() {
+            let _ = std::fs::remove_file(p);
+        }
+        // The running agent is asked to stop through its lock, by `agent uninstall`.
+        Ok(())
+    }
+
+    pub fn is_registered() -> bool {
+        script_path().map(|p| p.exists()).unwrap_or(false)
+    }
+}
+
+/// Linux has no agent login item yet: live features through a hosted router are built for
+/// macOS and Windows first.
+#[cfg(not(any(target_os = "macos", windows)))]
+pub mod agent_service {
+    use super::*;
+
+    pub fn install(_exe: &Path) -> Result<PathBuf> {
+        Err(anyhow!("the agent's login item is built for macOS and Windows so far; start it with `agent-router agent`"))
+    }
+
+    pub fn uninstall() -> Result<()> {
+        Ok(())
+    }
+
+    pub fn is_registered() -> bool {
+        false
+    }
+}
+
 #[cfg(target_os = "linux")]
 pub mod service {
     use super::*;
@@ -900,6 +1167,34 @@ mod tests {
             assert_eq!(v["env"]["FOO"], "bar");
             assert_eq!(v["other"]["deep"][1], 2);
             assert_eq!(v["env"]["ANTHROPIC_BASE_URL"], "http://127.0.0.1:8787");
+        });
+    }
+
+    /// `agent install` manages the password beside the address: recorded only as a
+    /// fingerprint, backed up once, and both put back together.
+    #[test]
+    fn a_password_is_kept_as_a_fingerprint_and_put_back_with_the_address() {
+        with_home(|| {
+            let path = scratch("token");
+            std::fs::write(&path, r#"{"env":{"ANTHROPIC_AUTH_TOKEN":"old-token","FOO":"bar"}}"#).unwrap();
+            apply(&path, "https://router.example.com", "global").unwrap();
+            apply_key(&path, TOKEN_KEY, "s3cret-password", "global").unwrap();
+
+            let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            assert_eq!(v["env"]["ANTHROPIC_BASE_URL"], "https://router.example.com");
+            assert_eq!(v["env"]["ANTHROPIC_AUTH_TOKEN"], "s3cret-password");
+            let recorded = std::fs::read_to_string(state_path().unwrap()).unwrap();
+            assert!(!recorded.contains("s3cret-password"), "the password is never recorded");
+            assert!(recorded.contains("sha256:"));
+            let backups = load_state().managed.iter().filter(|m| m.backup_path.is_some()).count();
+            assert_eq!(backups, 1, "one backup per file, not one per key");
+
+            assert!(matches!(revert(&path).unwrap(), Reverted::Removed));
+            let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            assert!(v["env"].get("ANTHROPIC_BASE_URL").is_none());
+            assert_eq!(v["env"]["ANTHROPIC_AUTH_TOKEN"], "old-token", "the password that was there before is back");
+            assert_eq!(v["env"]["FOO"], "bar");
+            assert!(load_state().managed.is_empty());
         });
     }
 

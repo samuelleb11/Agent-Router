@@ -138,7 +138,7 @@ pub struct Snapshot {
 pub fn claude_dir() -> PathBuf {
     claude_dir_from(
         std::env::var_os("CLAUDE_CONFIG_DIR"),
-        std::env::var_os("HOME"),
+        crate::setup::home_dir().ok().map(OsString::from),
     )
 }
 
@@ -247,7 +247,7 @@ impl Procs for System {
         kill_probe(p)
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(all(unix, not(target_os = "macos")))]
     fn info(&self, pid: u32) -> ProcState {
         let Ok(p) = libc::c_int::try_from(pid) else {
             return ProcState::Dead;
@@ -257,9 +257,78 @@ impl Procs for System {
         }
         kill_probe(p)
     }
+
+    /// The process's exit code says whether it runs, its creation time is the start to
+    /// match `procStart` against, and the toolhelp snapshot names its parent.
+    #[cfg(windows)]
+    fn info(&self, pid: u32) -> ProcState {
+        use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ACCESS_DENIED, FILETIME, STILL_ACTIVE};
+        use windows_sys::Win32::System::Threading::{
+            GetExitCodeProcess, GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+        if pid == 0 {
+            return ProcState::Dead;
+        }
+        // SAFETY: plain Win32 calls on a handle this function opens and closes.
+        unsafe {
+            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if handle.is_null() {
+                // Refused rather than absent: another user's process, alive.
+                return if GetLastError() == ERROR_ACCESS_DENIED {
+                    ProcState::Alive { start_secs: None, ppid: None }
+                } else {
+                    ProcState::Dead
+                };
+            }
+            let mut code = 0u32;
+            let running = GetExitCodeProcess(handle, &mut code) != 0 && code == STILL_ACTIVE as u32;
+            let zero = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+            let (mut created, mut exited, mut kernel, mut user) = (zero, zero, zero, zero);
+            let start_secs = (GetProcessTimes(handle, &mut created, &mut exited, &mut kernel, &mut user) != 0).then(|| {
+                // 100 ns ticks since 1601-01-01, to seconds since 1970-01-01.
+                let ticks = (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime);
+                (ticks / 10_000_000) as i64 - 11_644_473_600
+            });
+            CloseHandle(handle);
+            if !running {
+                return ProcState::Dead;
+            }
+            ProcState::Alive { start_secs, ppid: parent_of(pid) }
+        }
+    }
+}
+
+/// A process's parent, from a snapshot of the process table.
+#[cfg(windows)]
+fn parent_of(pid: u32) -> Option<u32> {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+    };
+    // SAFETY: the snapshot handle is checked and closed; the entry is sized as required.
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snapshot == INVALID_HANDLE_VALUE {
+            return None;
+        }
+        let mut entry: PROCESSENTRY32W = std::mem::zeroed();
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        let mut found = None;
+        let mut more = Process32FirstW(snapshot, &mut entry) != 0;
+        while more {
+            if entry.th32ProcessID == pid {
+                found = Some(entry.th32ParentProcessID);
+                break;
+            }
+            more = Process32NextW(snapshot, &mut entry) != 0;
+        }
+        CloseHandle(snapshot);
+        found
+    }
 }
 
 /// Liveness alone: signal 0 delivers nothing, and EPERM still proves the pid exists.
+#[cfg(unix)]
 fn kill_probe(pid: libc::c_int) -> ProcState {
     // SAFETY: signal 0 performs the permission and existence checks only; pid > 0.
     let r = unsafe { libc::kill(pid, 0) };
@@ -561,6 +630,7 @@ pub(crate) fn civil_from_days(z: i64) -> (i64, i64, i64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
     /// `ps -o lstart=` in UTC, as the CLI stores it.
@@ -703,6 +773,7 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    #[cfg(unix)]
     fn records_are_read_and_verified_and_keys_are_never_opened() {
         let dir = tempdir("fixtures");
         let me = std::process::id();

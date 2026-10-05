@@ -417,8 +417,9 @@ fetch('/api/live/options').then(r => r.json()).then(o => { options = o; }).catch
 // a 503 saying so. It names itself in /api/auth's `mode`; one that predates it is local.
 const hostedRouter = fetch('/api/auth').then(r => r.json())
   .then(a => !!a && a.mode === 'server').catch(() => false);
-const AGENTLESS = 'Live sessions need the Agent Router agent on the machine that runs them. '
-  + 'A hosted router does not have one yet.';
+const AGENTLESS = 'No sessions from a connected machine. A machine shows its sessions here once it '
+  + 'runs the Agent Router agent: agent-router agent install --server <this router\'s address>.';
+const OFF_MACHINE = 'That session is not on a connected machine.';
 /// What a hosted router refused a per-session route with: a 503 and its `error`. A local
 /// router says why in `reason`, its own 503s included, so this is only read after that.
 const unavailable = (res, body) =>
@@ -476,7 +477,7 @@ const num = n => n >= 1e9 ? (n / 1e9).toFixed(1) + 'B'
 // option's value), where an unescaped " ends the value and starts an attribute of the
 // transcript's choosing — an onmouseover on a page that can answer prompts.
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const base = p => (p || '').split('/').filter(Boolean).pop() || p || '—';
+const base = p => (p || '').split(/[\\/]/).filter(Boolean).pop() || p || '—';
 
 // ---------- what a session is doing ----------
 // The router works that out once, for every surface, and says it three ways: `activity`
@@ -654,6 +655,10 @@ async function loadSessions() {
     list.prepend(n);
   }
 
+  // A hosted router lists several machines' sessions: name the machine whenever there is
+  // more than one, and keep one machine's project apart from the same path on another.
+  const several = new Set(rows.map(r => r.machine && r.machine.label).filter(Boolean)).size > 1;
+  const onMachine = (r) => several && r.machine ? r.machine.label : '';
   const card = (r) => {
     const el = document.createElement('div');
     el.className = 'card';
@@ -667,7 +672,8 @@ async function loadSessions() {
       `<span class="ago">${ago(r.last_activity_ms)}</span></div>` +
       (r.title ? `<div class="title">${esc(r.title)}</div>` : '') +
       (line ? `<div class="doing ${toneClass(r)}">${esc(line)}</div>` : '') +
-      `<div class="meta">${esc(r.session_id.slice(0, 8))}${r.git_branch ? ' · ' + esc(r.git_branch) : ''}</div>`;
+      `<div class="meta">${esc(r.session_id.slice(0, 8))}${r.git_branch ? ' · ' + esc(r.git_branch) : ''}` +
+      `${onMachine(r) ? ' · on ' + esc(onMachine(r)) : ''}</div>`;
     el.onclick = () => openSession(r);
     return el;
   };
@@ -677,7 +683,7 @@ async function loadSessions() {
   const groupInto = (target, rows) => {
     const byProject = new Map();
     for (const r of rows) {
-      const k = base(r.cwd) || r.project;
+      const k = (base(r.cwd) || r.project) + (onMachine(r) ? ' · ' + onMachine(r) : '');
       if (!byProject.has(k)) byProject.set(k, []);
       byProject.get(k).push(r);
     }
@@ -1537,7 +1543,7 @@ findRows.onclick = async e => {
   const rows = await fetchSessions();
   const row = rows.find(r => r.session_id === id);
   // A hosted router lists none, so "no longer" would be the wrong reason.
-  if (!row) { say((await hostedRouter) ? AGENTLESS : 'That session is no longer listed.'); return; }
+  if (!row) { say((await hostedRouter) ? OFF_MACHINE : 'That session is no longer listed.'); return; }
   closeFind();
   openSession(row, false);
 };

@@ -253,6 +253,14 @@ pub fn data_dir() -> anyhow::Result<PathBuf> {
     }
 }
 
+/// Settle the data directory for a process that never builds a `Config` (the machine
+/// agent): `--data-dir`, else the usual resolution, kept for the rest of the process.
+pub fn settle_data_dir(flag: Option<&Path>) -> anyhow::Result<PathBuf> {
+    let dir = resolve_data_dir(flag)?;
+    let _ = DATA_DIR.set(dir);
+    data_dir()
+}
+
 /// Where the store lives, without building a whole `Config` around it: `install` needs
 /// to write a setting into it before there is a router to ask.
 pub fn db_path() -> anyhow::Result<PathBuf> {

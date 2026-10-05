@@ -9,8 +9,8 @@
 //! field of `/api/setup` and `/api/setup/shim`, so an error there would be a decode
 //! failure on the phone — and every action refuses with a sentence that says why.
 //!
-//! The live routes come back with the per-machine agent (phase 2), which runs the code
-//! behind them where the sessions are and relays it here.
+//! The live routes are not here: `machines` relays them to the agent on the machine
+//! holding each session.
 
 use std::sync::Arc;
 
@@ -29,15 +29,13 @@ const NO_SIGN_IN: &str = "signing in runs Claude Code's own login on the router'
     router does not have — run `claude setup-token` on your machine and paste the token";
 const NO_PROFILE: &str = "a profile account is a Claude Code login directory on the router's machine, which \
     a hosted router does not have — run `claude setup-token` on your machine and paste the token";
-const NO_AGENT: &str = "live sessions need the Agent Router agent on the machine that runs them; a hosted \
-    router does not have one yet";
 
 /// Every path `main::machine_routes` registers, answered for a router with no machine.
 pub fn routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
     router
         .route("/api/accounts", get(crate::api::accounts_list).post(accounts_add))
         .route("/api/accounts/probe", post(no_profile))
-        .route("/api/push/pending", get(no_pending))
+        .route("/api/push/pending", get(crate::machines::api::pending))
         .route("/api/login/start", post(no_sign_in))
         .route("/api/login/status", get(no_login))
         .route("/api/setup", get(setup_status))
@@ -46,19 +44,23 @@ pub fn routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
         .route("/api/setup/shim", get(shim_status).post(no_machine))
         .route("/api/setup/shim/auto", post(no_machine))
         .route("/api/network", post(no_machine))
-        .route("/api/live/sessions", get(no_sessions))
-        .route("/api/live/stream", get(no_agent))
-        .route("/api/live/stats", get(no_agent))
-        .route("/api/live/send", post(no_agent))
-        .route("/api/live/interrupt", post(no_agent))
-        .route("/api/live/prompt", get(no_agent))
-        .route("/api/live/answer", post(no_agent))
-        .route("/api/live/archive", post(no_agent))
-        .route("/api/live/project", get(no_agent))
-        .route("/api/live/model", post(no_agent))
-        .route("/api/live/effort", post(no_agent))
-        .route("/api/live/mode", post(no_agent))
-        .route("/api/live/aside", post(no_agent))
+        // The live view is on the developer machines: each route is relayed to the
+        // agent of the machine holding the session (see `machines`).
+        .route("/api/live/sessions", get(crate::machines::api::sessions))
+        .route("/api/live/stream", get(crate::machines::api::by_query))
+        .route("/api/live/stats", get(crate::machines::api::by_query))
+        .route("/api/live/prompt", get(crate::machines::api::by_query))
+        .route("/api/live/project", get(crate::machines::api::project))
+        .route("/api/live/send", post(crate::machines::api::by_body))
+        .route("/api/live/interrupt", post(crate::machines::api::by_body))
+        .route("/api/live/answer", post(crate::machines::api::by_body))
+        .route("/api/live/model", post(crate::machines::api::by_body))
+        .route("/api/live/effort", post(crate::machines::api::by_body))
+        .route("/api/live/mode", post(crate::machines::api::by_body))
+        .route("/api/live/aside", post(crate::machines::api::by_body))
+        .route("/api/live/archive", post(crate::machines::api::archive))
+        .route("/api/machines", get(crate::machines::api::machines))
+        .route(crate::tunnel::PATH, get(crate::machines::api::connect))
 }
 
 /// The refusal for anything that would act on the router's own machine. A sentence the
@@ -96,10 +98,6 @@ async fn no_profile() -> Response {
     refuse_profile()
 }
 
-async fn no_agent() -> Response {
-    refuse(StatusCode::SERVICE_UNAVAILABLE, NO_AGENT)
-}
-
 /// `GET /api/setup`: nothing managed, nothing registered, and nothing created on disk to
 /// find that out. `supported: false` is what hides "Start at login" on both phones.
 async fn setup_status(State(state): State<Arc<AppState>>) -> Json<Value> {
@@ -123,12 +121,3 @@ async fn no_login() -> Json<Value> {
     Json(json!({}))
 }
 
-async fn no_sessions() -> Response {
-    ([(axum::http::header::CACHE_CONTROL, "no-store")], Json(json!([]))).into_response()
-}
-
-/// Nothing is announced on a hosted router yet, so nothing is waiting — which is also
-/// the truth the phones reconcile their banners against.
-async fn no_pending() -> Json<Value> {
-    Json(json!({ "waiting": [] }))
-}

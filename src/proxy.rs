@@ -94,6 +94,8 @@ pub struct AppState {
     pub network: crate::network::Switch,
     /// Phones to tell when a session is waiting on a person.
     pub push: std::sync::Arc<crate::notify::Push>,
+    /// A hosted router's connected machine agents. Empty, and never used, locally.
+    pub machines: std::sync::Arc<crate::machines::Machines>,
     pub capture: Sender<CaptureEvent>,
     /// Read-only connections for the dashboard API, kept warm. See `api::ReadPool`.
     pub reads: crate::api::ReadPool,
@@ -134,6 +136,7 @@ impl AppState {
             auth,
             network,
             push,
+            machines: Default::default(),
             capture,
             reads,
             memo,

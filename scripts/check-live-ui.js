@@ -331,6 +331,28 @@ acheck('tabs cover the project and keep creation order', async () => {
 const THIRD = () => ({ session_id: 'ddd-4', cwd: '/code/project-a', project: 'p1', title: 'Third one',
   created_ms: 7000, last_activity_ms: Date.now(), active: false, wrapped: false, state: 'idle' });
 
+// A hosted router lists several machines' sessions (docs/hosting-machine-agent.md): each
+// row then names its machine, and one path on two machines is two projects, not one.
+acheck('sessions from two machines say which, and one project on each stays apart', async () => {
+  // Both recent, so neither folds into the older section.
+  const [a, b] = BASE().map((r) => ({ ...r, last_activity_ms: Date.now() }));
+  const mac = { id: 'm-1', label: 'mac' }, win = { id: 'm-2', label: 'win-box' };
+  try {
+    SESSIONS = [{ ...a, machine: mac }, { ...b, machine: win }];
+    await api.showList(true);
+    const groups = api.list.children.filter((c) => c.className === 'grp').map((g) => g._html || '');
+    if (!groups.some((h) => h.includes('project-a · mac')) || !groups.some((h) => h.includes('project-a · win-box'))) {
+      throw new Error(`one project on two machines should be two groups: ${groups.join(' | ')}`);
+    }
+    if (!cardOf('aaa-1')._html.includes(' · on mac')) throw new Error('a card should name its machine');
+    SESSIONS = [{ ...a, machine: mac }, { ...b, machine: mac }];
+    await api.showList(true);
+    if (cardsIn(api.list).some((c) => c._html.includes(' · on '))) throw new Error('one machine needs no naming');
+  } finally {
+    SESSIONS = BASE();
+  }
+});
+
 acheck('archived sessions leave the tabs, but come back when live', async () => {
   const [open, other, elsewhere] = BASE();
   const shelved = { ...other, archived: true, active: false, state: 'idle', last_activity_ms: Date.now() };
@@ -1044,8 +1066,9 @@ check('an empty result says so rather than showing nothing', () => {
 // --- a hosted router: docs/hosting-on-kubernetes.md, "Web UI in server mode" ---
 // The last notice, as the page shows it: say() writes the words, then a dismiss mark.
 const noticeIn = (note) => { const c = note.children; return c.length > 1 ? c[c.length - 2].textContent : ''; };
-const AGENTLESS = 'Live sessions need the Agent Router agent on the machine that runs them. '
-  + 'A hosted router does not have one yet.';
+const AGENTLESS = 'No sessions from a connected machine. A machine shows its sessions here once it '
+  + 'runs the Agent Router agent: agent-router agent install --server <this router\'s address>.';
+const OFF_MACHINE = 'That session is not on a connected machine.';
 
 // Every per-session route of a hosted router answers 503 and why. Whichever action the
 // reader tried, that is what they are told, not a generic failure. Driven on an open
@@ -1091,7 +1114,7 @@ acheck('a per-session action a hosted router refuses says what it said', async (
 });
 
 // A hosted router as a fresh load of the page meets one: /api/auth says `server`, and the
-// list is empty, because live sessions need the machine agent, which it does not have yet.
+// list is empty until a machine's agent connects.
 acheck('a hosted router says why its list is empty, and warns of no wrapper', async () => {
   const timers = intervals.length;
   SESSIONS = [];
@@ -1112,7 +1135,7 @@ acheck('a hosted router says why its list is empty, and warns of no wrapper', as
     if (warned(hosted)) throw new Error('a hosted router warned of a wrapper it has no use for');
     // A search hit cannot be opened there either, and says why rather than "no longer listed".
     await hosted.findRows.onclick({ target: { closest: () => ({ dataset: { open: 'zzz-9' } }) } });
-    eq(noticeIn(hosted.note), AGENTLESS, 'a search hit on a hosted router');
+    eq(noticeIn(hosted.note), OFF_MACHINE, 'a search hit on a hosted router');
   } finally {
     AUTH = {}; SHIM = {}; SESSIONS = BASE();
     // The hosted page's own timers are not the ones the checks above tick.

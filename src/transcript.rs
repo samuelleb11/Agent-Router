@@ -37,9 +37,7 @@ pub struct Resolver {
 
 impl Resolver {
     pub fn new() -> Self {
-        let root = std::env::var("HOME")
-            .map(|h| PathBuf::from(h).join(".claude").join("projects"))
-            .unwrap_or_default();
+        let root = crate::registry::claude_dir().join("projects");
         Self { root, cache: HashMap::new() }
     }
 

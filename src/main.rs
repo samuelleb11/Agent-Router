@@ -1,4 +1,7 @@
 //! agent-router — a local proxy between Claude Code and Anthropic.
+// On Windows the binary runs only as the machine agent, so the router's own machinery is
+// compiled there but never reached.
+#![cfg_attr(windows, allow(dead_code, unused_imports))]
 //!
 //! Phase 1: one endpoint, one credential, byte-faithful streaming passthrough.
 //! Capture, the transcript join, multi-account switching and the web UI follow.
@@ -6,6 +9,7 @@
 
 mod accounts;
 mod activity;
+mod agent;
 mod analyze;
 mod api;
 mod apns;
@@ -20,6 +24,7 @@ mod guard;
 mod hosted;
 mod lifecycle;
 mod live;
+mod machines;
 mod network;
 mod peer;
 mod pricing;
@@ -31,6 +36,7 @@ mod registry;
 mod setup;
 mod shim;
 mod transcript;
+mod tunnel;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -51,6 +57,7 @@ USAGE:
   agent-router install [OPTIONS]     point Claude Code at it, and start it at login
   agent-router uninstall             undo exactly what install changed
   agent-router status                show what is installed and what is managed
+  agent-router agent [OPTIONS]       connect this machine's sessions to a hosted router
 
 SERVE OPTIONS:
   --bind <ip>            also listen here, not only on loopback (like AGENT_ROUTER_BIND)
@@ -112,6 +119,7 @@ async fn main() -> anyhow::Result<()> {
                 }
             };
         }
+        Some("agent") => return agent::main(&args[1..]).await,
         Some("install") => return cmd_install(&args[1..]),
         Some("uninstall") => return cmd_uninstall(),
         Some("status") => return cmd_status(),
@@ -278,6 +286,20 @@ fn cmd_status() -> anyhow::Result<()> {
 }
 
 async fn serve(args: config::ServeArgs) -> anyhow::Result<()> {
+    // The router holds its port with SO_REUSEPORT and hands it over with signals, and
+    // neither exists here; a hosted router runs in a Linux container. What a Windows
+    // machine runs is the agent that connects its sessions to one.
+    #[cfg(windows)]
+    {
+        let _ = args;
+        anyhow::bail!("on Windows, Agent Router runs as a machine agent: agent-router agent install --server <url>");
+    }
+    #[cfg(not(windows))]
+    serve_here(args).await
+}
+
+#[cfg(not(windows))]
+async fn serve_here(args: config::ServeArgs) -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_env("AGENT_ROUTER_LOG")
@@ -365,6 +387,8 @@ async fn serve(args: config::ServeArgs) -> anyhow::Result<()> {
     let state = proxy::AppState::new(config, capture, network.clone())?;
     if let Some(password) = server_password {
         state.auth.pin(&db_path, &password).await?;
+        // What is waiting on a person is on the developer machines; their agents say so.
+        state.push.use_machines(state.machines.clone());
     }
     // Watches for prompts for the life of the process; a restart announces nothing.
     tokio::spawn(state.push.clone().watch());

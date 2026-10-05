@@ -233,6 +233,7 @@ mod secrets {
     use super::*;
     use std::collections::BTreeMap;
     use std::io::Write;
+    #[cfg(unix)]
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
     #[derive(Debug, Default, Serialize, Deserialize)]
@@ -307,6 +308,7 @@ mod secrets {
     fn path() -> Result<PathBuf> {
         let dir = crate::config::data_dir()?;
         // The directory holds secrets; keep it owner-only too.
+        #[cfg(unix)]
         let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
         Ok(dir.join("credentials.json"))
     }
@@ -325,12 +327,11 @@ mod secrets {
     fn store(file: &File) -> Result<()> {
         let path = path()?;
         let tmp = path.with_extension("json.tmp");
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&tmp)?;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        let mut f = options.open(&tmp)?;
         f.write_all(serde_json::to_string_pretty(file)?.as_bytes())?;
         f.write_all(b"\n")?;
         f.sync_all()?;

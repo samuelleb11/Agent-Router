@@ -27,6 +27,7 @@
 //! unaffected if this whole module stops working.
 
 use std::io::Write;
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -39,16 +40,32 @@ use sha2::{Digest, Sha256};
 /// stores, so one parser serves both.
 use crate::registry::parse_proc_start;
 
+#[cfg(unix)]
 const SOCK_DIR: &str = "/tmp/cc-socks";
 /// Where a wrapped session offers its control socket (see `wrapper/`).
+#[cfg(unix)]
 const WRAPPER_DIR: &str = "/tmp/agent-router-sessions";
 
 /// Where wrapped sessions keep their sockets and records. A function rather than the
 /// constant at every use, so everything that reads the directory has a `_in` twin that
 /// takes it as an argument: tests point those at a temp dir instead of the real one,
 /// which live sessions are using.
+#[cfg(unix)]
 pub fn wrapper_dir() -> PathBuf {
     PathBuf::from(WRAPPER_DIR)
+}
+
+/// On Windows the records live in the user's local application data, by the wrapper's own
+/// rule (`wrapper/src/main.rs`, `sessions_dir_from`); the control channel itself is a named
+/// pipe (see `pipe`). With neither variable absolute the wrapper writes no records at all,
+/// and a directory nobody writes finds none.
+#[cfg(windows)]
+pub fn wrapper_dir() -> PathBuf {
+    let absolute = |v: &str| std::env::var_os(v).map(PathBuf::from).filter(|p| p.is_absolute());
+    absolute("LOCALAPPDATA")
+        .or_else(|| absolute("USERPROFILE").map(|p| p.join("AppData").join("Local")))
+        .map(|local| local.join("agent-router").join("sessions"))
+        .unwrap_or_else(|| std::env::temp_dir().join("agent-router-no-profile"))
 }
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 /// A session started within this long of a transcript's first event is taken to own it.
@@ -85,6 +102,7 @@ fn key_path(socket: &str) -> PathBuf {
     crate::registry::sessions_dir().join(format!("{pid}.{hex}.key"))
 }
 
+#[cfg(unix)]
 fn proc_cwd(pid: u32) -> Option<String> {
     let out = Command::new("/usr/sbin/lsof")
         .args(["-a", "-d", "cwd", "-p", &pid.to_string(), "-Fn"])
@@ -95,6 +113,7 @@ fn proc_cwd(pid: u32) -> Option<String> {
         .find_map(|l| l.strip_prefix('n').map(str::to_owned))
 }
 
+#[cfg(unix)]
 fn proc_resumed(pid: u32) -> Option<String> {
     let out = Command::new("/bin/ps")
         .args(["-o", "command=", "-p", &pid.to_string()])
@@ -105,7 +124,15 @@ fn proc_resumed(pid: u32) -> Option<String> {
         .find_map(|a| a.strip_prefix("--resume=").map(str::to_owned))
 }
 
+/// Claude Code's own peer sockets are a Unix-socket feature: on Windows the wrapper is the
+/// only way in.
+#[cfg(windows)]
+pub fn live_peers() -> Vec<Peer> {
+    Vec::new()
+}
+
 /// Every session currently listening for peer input.
+#[cfg(unix)]
 pub fn live_peers() -> Vec<Peer> {
     let Ok(dir) = std::fs::read_dir(SOCK_DIR) else {
         return Vec::new();
@@ -182,8 +209,19 @@ pub fn wrapper_socket_in(dir: &Path, session_id: &str) -> Option<PathBuf> {
     {
         return None;
     }
-    let p = dir.join(format!("{session_id}.sock"));
-    p.exists().then_some(p)
+    #[cfg(unix)]
+    {
+        let p = dir.join(format!("{session_id}.sock"));
+        p.exists().then_some(p)
+    }
+    // No file stands for a pipe: the name is the address, and present is whether a
+    // wrapper holds it now.
+    #[cfg(windows)]
+    {
+        let _ = dir;
+        let name = pipe::name(session_id);
+        pipe::present(&name).then(|| PathBuf::from(name))
+    }
 }
 
 /// Is a wrapped session actually there to take a message?
@@ -199,6 +237,21 @@ pub fn wrapper_alive(session_id: &str) -> bool {
     wrapper_alive_in(&wrapper_dir(), session_id)
 }
 
+#[cfg(windows)]
+pub fn wrapper_alive_in(dir: &Path, session_id: &str) -> bool {
+    // A pipe never outlives its wrapper, so asking whether the name is held is the whole
+    // check, and costs the wrapper nothing. A wrapper killed mid-prompt leaves its
+    // `.pending` behind, which must not read as a prompt still open.
+    if wrapper_socket_in(dir, session_id).is_some() {
+        return true;
+    }
+    if !session_id.is_empty() && session_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        let _ = std::fs::remove_file(dir.join(format!("{session_id}.pending")));
+    }
+    false
+}
+
+#[cfg(unix)]
 pub fn wrapper_alive_in(dir: &Path, session_id: &str) -> bool {
     let Some(path) = wrapper_socket_in(dir, session_id) else {
         return false;
@@ -356,19 +409,23 @@ fn write_via_wrapper_in(
     if line.len() > WRAPPER_LINE_MAX {
         return Err(TooLong { bytes: line.len() }.into());
     }
-    let addr = std::os::unix::net::SocketAddr::from_pathname(&path)?;
-    let mut s = UnixStream::connect_addr(&addr)?;
-    s.set_write_timeout(Some(CONNECT_TIMEOUT))?;
-    s.set_read_timeout(Some(CONNECT_TIMEOUT))?;
-
-    s.write_all(line.as_bytes())?;
-    s.flush()?;
-
     // The wrapper answers once it has written into the child's stdin, so unlike the
     // peer socket this is a real delivery receipt rather than a successful write.
-    let mut reply = String::new();
-    use std::io::Read;
-    let _ = s.take(256).read_to_string(&mut reply);
+    #[cfg(unix)]
+    let reply = {
+        let addr = std::os::unix::net::SocketAddr::from_pathname(&path)?;
+        let mut s = UnixStream::connect_addr(&addr)?;
+        s.set_write_timeout(Some(CONNECT_TIMEOUT))?;
+        s.set_read_timeout(Some(CONNECT_TIMEOUT))?;
+        s.write_all(line.as_bytes())?;
+        s.flush()?;
+        let mut reply = String::new();
+        use std::io::Read;
+        let _ = s.take(256).read_to_string(&mut reply);
+        reply
+    };
+    #[cfg(windows)]
+    let reply = pipe::exchange(&path.to_string_lossy(), line.as_bytes(), CONNECT_TIMEOUT)?;
     if reply.contains("\"ok\":true") {
         Ok(())
     } else {
@@ -486,7 +543,13 @@ pub fn set_mode_via_wrapper(session_id: &str, mode: &str) -> anyhow::Result<Stri
     Ok(request_id)
 }
 
+#[cfg(windows)]
+pub fn send(_peer: &Peer, _text: &str) -> anyhow::Result<String> {
+    anyhow::bail!("Claude Code's peer sockets do not exist on Windows; only a wrapped session can take a message")
+}
+
 /// Push a user message into a live session's input queue.
+#[cfg(unix)]
 pub fn send(peer: &Peer, text: &str) -> anyhow::Result<String> {
     let raw = std::fs::read_to_string(key_path(&peer.socket.to_string_lossy()))
         .map_err(|e| anyhow::anyhow!("no peer key for pid {}: {e}", peer.pid))?;
@@ -510,6 +573,160 @@ pub fn send(peer: &Peer, text: &str) -> anyhow::Result<String> {
     // The receiver acknowledges by acting, not by replying on this socket, so the write
     // completing is all the confirmation the protocol offers.
     Ok(msg_id)
+}
+
+/// The wrapper's control channel on Windows: a named pipe per session, under a name the
+/// wrapper and this module both derive (`wrapper/src/main.rs`, `pipe_name`), carrying the
+/// same frames and receipts as the Unix socket. See `wrapper/src/windows.rs` for the
+/// server side, and docs/hosting-machine-agent.md.
+#[cfg(windows)]
+mod pipe {
+    use std::io::{Read, Write};
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use std::time::{Duration, Instant};
+
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, GetLastError, ERROR_ACCESS_DENIED, ERROR_PIPE_BUSY, ERROR_SEM_TIMEOUT, HANDLE,
+    };
+    use windows_sys::Win32::Security::{GetLengthSid, GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER};
+    use windows_sys::Win32::System::Pipes::{GetNamedPipeServerProcessId, WaitNamedPipeW};
+    use windows_sys::Win32::System::Threading::{OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION};
+    use windows_sys::Win32::System::WindowsProgramming::GetUserNameW;
+
+    /// `SecurityIdentification << 16`: the server may learn who connected, and may not act
+    /// as us — a pipe whose name someone else took cannot borrow this process's identity.
+    const SECURITY_IDENTIFICATION: u32 = 1 << 16;
+
+    fn wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    /// `\\.\pipe\agent-router-<user>-<session>`, the user part cut down exactly as the
+    /// wrapper does it (`pipe_name_part`): `[A-Za-z0-9_-]`, anything else `_`, at most 64
+    /// characters. Without a user name the wrapper publishes no pipe, and an empty part
+    /// names one nobody holds.
+    pub fn name(session_id: &str) -> String {
+        static USER: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        let user = USER.get_or_init(|| {
+            // UNLEN, the longest user name, and its terminating nul.
+            let mut buf = [0u16; 257];
+            let mut len = buf.len() as u32;
+            // SAFETY: a buffer of `len` characters.
+            if unsafe { GetUserNameW(buf.as_mut_ptr(), &mut len) } == 0 {
+                return String::new();
+            }
+            let raw = buf.split(|&c| c == 0).next().unwrap_or_default();
+            String::from_utf16_lossy(raw)
+                .chars()
+                .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+                .take(64)
+                .collect()
+        });
+        format!(r"\\.\pipe\agent-router-{user}-{session_id}")
+    }
+
+    /// Whether a wrapper holds the name now. Waiting a millisecond answers at once: true
+    /// when an instance listens, a timeout when every instance is busy (still alive), and
+    /// "not found" when no wrapper holds it.
+    pub fn present(name: &str) -> bool {
+        let w = wide(name);
+        // SAFETY: a NUL-terminated name.
+        if unsafe { WaitNamedPipeW(w.as_ptr(), 1) } != 0 {
+            return true;
+        }
+        (unsafe { GetLastError() }) == ERROR_SEM_TIMEOUT
+    }
+
+    /// One frame, one receipt. On a worker thread, because a pipe handle has no read or
+    /// write timeout, and an exchange must never hold up a request for long.
+    pub fn exchange(name: &str, line: &[u8], budget: Duration) -> anyhow::Result<String> {
+        let (name, line) = (name.to_string(), line.to_vec());
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(exchange_blocking(&name, &line, budget));
+        });
+        rx.recv_timeout(budget + Duration::from_secs(1))
+            .map_err(|_| anyhow::anyhow!("the wrapper did not answer in time"))?
+    }
+
+    fn exchange_blocking(name: &str, line: &[u8], budget: Duration) -> anyhow::Result<String> {
+        let deadline = Instant::now() + budget;
+        let mut file = loop {
+            let opened = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .security_qos_flags(SECURITY_IDENTIFICATION)
+                .open(name);
+            match opened {
+                Ok(f) => break f,
+                // The instant between one client and the wrapper's next instance.
+                Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY as i32) && Instant::now() < deadline => {
+                    // SAFETY: a NUL-terminated name.
+                    unsafe { WaitNamedPipeW(wide(name).as_ptr(), 250) };
+                }
+                // The wrapper's pipe admits its own user only, and an elevated editor's
+                // admits only elevated processes of that user.
+                Err(e) if e.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) => anyhow::bail!(
+                    "that session's control pipe does not admit this agent: it belongs to another \
+                     user, or the editor runs as administrator and the agent does not"
+                ),
+                Err(e) => return Err(e.into()),
+            }
+        };
+        // The name is machine-wide: a wrapper that died and lapsed can have its name taken
+        // by another account's process, which must never receive what someone typed.
+        anyhow::ensure!(
+            served_by_this_user(file.as_raw_handle() as HANDLE),
+            "that session's control pipe is not served by this user; refusing to write to it"
+        );
+        file.write_all(line)?;
+        let mut reply = String::new();
+        let _ = (&mut file).take(256).read_to_string(&mut reply);
+        Ok(reply)
+    }
+
+    fn served_by_this_user(pipe: HANDLE) -> bool {
+        let mut pid = 0u32;
+        // SAFETY: a valid client handle to a named pipe.
+        if unsafe { GetNamedPipeServerProcessId(pipe, &mut pid) } == 0 {
+            return false;
+        }
+        match (user_sid(pid), user_sid(std::process::id())) {
+            (Some(theirs), Some(ours)) => theirs == ours,
+            _ => false,
+        }
+    }
+
+    /// The bytes of the SID a process runs as.
+    fn user_sid(pid: u32) -> Option<Vec<u8>> {
+        // SAFETY: handles opened here are closed here; the token buffer is u64-aligned and
+        // as long as GetTokenInformation asked for.
+        unsafe {
+            let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if process.is_null() {
+                return None;
+            }
+            let mut token: HANDLE = std::ptr::null_mut();
+            let opened = OpenProcessToken(process, TOKEN_QUERY, &mut token) != 0;
+            CloseHandle(process);
+            if !opened {
+                return None;
+            }
+            let mut len = 0u32;
+            GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut len);
+            let mut buf = vec![0u64; (len as usize).div_ceil(8).max(1)];
+            let got = GetTokenInformation(token, TokenUser, buf.as_mut_ptr().cast(), len, &mut len) != 0;
+            CloseHandle(token);
+            if !got {
+                return None;
+            }
+            let user = &*(buf.as_ptr() as *const TOKEN_USER);
+            let sid = user.User.Sid;
+            let sid_len = GetLengthSid(sid) as usize;
+            Some(std::slice::from_raw_parts(sid as *const u8, sid_len).to_vec())
+        }
+    }
 }
 
 /// A v4 UUID without pulling in a crate for it.
@@ -581,6 +798,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn a_socket_nobody_listens_on_is_not_a_live_session() {
         let dir = scratch("sock");
         let id = "s-1";
@@ -644,6 +862,7 @@ mod tests {
     /// newline added, and the CLI exits on the line it cannot parse. A frame up to the
     /// limit arrives whole; anything longer is refused here, and never connects.
     #[test]
+    #[cfg(unix)]
     fn a_frame_the_wrapper_would_cut_short_is_never_sent() {
         use std::io::Read;
         let dir = scratch("big");

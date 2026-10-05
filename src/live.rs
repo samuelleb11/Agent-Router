@@ -32,7 +32,6 @@ use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -75,7 +74,7 @@ fn archive_path() -> PathBuf {
 /// shelved since the end of time, which keeps them exactly where their reader left
 /// them — nothing is known about when they were put away, and guessing would either
 /// resurrect them at random or hide them for good.
-fn archived_set() -> std::collections::HashMap<String, i64> {
+pub(crate) fn archived_set() -> std::collections::HashMap<String, i64> {
     let Ok(raw) = std::fs::read_to_string(archive_path()) else {
         return Default::default();
     };
@@ -88,12 +87,12 @@ fn archived_set() -> std::collections::HashMap<String, i64> {
 }
 
 /// Whether a session is on the shelf *now*: put away, and quiet ever since.
-fn is_shelved(archived: &std::collections::HashMap<String, i64>, session_id: &str, last_activity_ms: i64) -> bool {
+pub(crate) fn is_shelved(archived: &std::collections::HashMap<String, i64>, session_id: &str, last_activity_ms: i64) -> bool {
     archived.get(session_id).is_some_and(|at| last_activity_ms <= *at)
 }
 
 /// Write the shelf back, sorted so the file reads the same way twice.
-fn write_archived(set: &std::collections::HashMap<String, i64>) -> std::io::Result<usize> {
+pub(crate) fn write_archived(set: &std::collections::HashMap<String, i64>) -> std::io::Result<usize> {
     let ordered: std::collections::BTreeMap<&String, &i64> = set.iter().collect();
     let path = archive_path();
     if let Some(dir) = path.parent() {
@@ -875,7 +874,7 @@ pub(crate) fn tracked(path: &Path) -> Option<Seen> {
     // are the same file even if it is replaced in between.
     let mut file = fs::File::open(path).ok()?;
     let meta = file.metadata().ok()?;
-    let id = (meta.dev(), meta.ino());
+    let id = file_identity(&file, &meta);
     let len = meta.len();
     let stale = match guard.as_ref() {
         Some(t) => t.id != id || len < t.offset || len - t.offset > CATCH_UP_LIMIT,
@@ -2116,7 +2115,7 @@ fn claude_binary() -> Option<PathBuf> {
         .into_iter()
         .map(|t| {
             let shim = PathBuf::from(&t.path);
-            let real = PathBuf::from(format!("{}.real", t.path));
+            let real = crate::shim::real_beside(&shim);
             if real.is_file() { real } else { shim }
         })
         .filter(|p| p.is_file())
@@ -2124,11 +2123,45 @@ fn claude_binary() -> Option<PathBuf> {
     if newest.is_some() {
         return newest;
     }
-    let home = std::env::var("HOME").unwrap_or_default();
-    [format!("{home}/.local/bin/claude"), "/opt/homebrew/bin/claude".into(), "/usr/local/bin/claude".into()]
-        .into_iter()
-        .map(PathBuf::from)
-        .find(|p| p.is_file())
+    let home = crate::setup::home_dir().unwrap_or_default();
+    #[cfg(windows)]
+    let candidates = vec![home.join(".local").join("bin").join("claude.exe")];
+    #[cfg(not(windows))]
+    let candidates = vec![
+        home.join(".local/bin/claude"),
+        PathBuf::from("/opt/homebrew/bin/claude"),
+        PathBuf::from("/usr/local/bin/claude"),
+    ];
+    candidates.into_iter().find(|p| p.is_file())
+}
+
+/// Which file this is, beyond its name: a transcript replaced under the same path is a
+/// new file to read from the start. Device and inode on Unix; on Windows the volume and
+/// file index, asked of the open handle. Not the creation time there: NTFS gives a file
+/// made under a name that was deleted moments before the old file's creation time.
+#[cfg(unix)]
+fn file_identity(_file: &fs::File, meta: &fs::Metadata) -> (u64, u64) {
+    use std::os::unix::fs::MetadataExt;
+    (meta.dev(), meta.ino())
+}
+
+#[cfg(windows)]
+fn file_identity(file: &fs::File, meta: &fs::Metadata) -> (u64, u64) {
+    use std::os::windows::fs::MetadataExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION};
+    // SAFETY: an all-zero BY_HANDLE_FILE_INFORMATION is valid, and the handle is open.
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
+        return (0, meta.creation_time());
+    }
+    let index = (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow);
+    (u64::from(info.dwVolumeSerialNumber), index)
+}
+
+/// The last part of a path, whichever separator the machine that wrote it uses.
+pub(crate) fn basename(path: &str) -> &str {
+    path.trim_end_matches(['/', '\\']).rsplit(['/', '\\']).next().unwrap_or(path)
 }
 
 /// Put a session on the shelf without a request: for the forks a side question leaves.
@@ -2328,7 +2361,7 @@ pub fn session_label(session_id: &str) -> Option<(String, Option<String>)> {
         .head
         .cwd
         .as_deref()
-        .and_then(|c| c.rsplit('/').next())
+        .map(basename)
         .filter(|s| !s.is_empty())
         .map(str::to_owned)
         .unwrap_or_else(|| "session".into());
@@ -2882,6 +2915,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn wrapper_prompts_keep_the_order_they_arrived_in_and_ride_out_a_torn_read() {
         let lab = Lab::new("prompts");
         let now = now_ms();
@@ -2933,6 +2967,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn an_empty_read_after_a_long_gap_is_believed() {
         let lab = Lab::new("gap");
         let now = now_ms();
@@ -2948,6 +2983,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn a_prompt_left_over_in_an_idle_session_is_not_waited_on() {
         let lab = Lab::new("idleprompt");
         let now = now_ms();
@@ -3161,12 +3197,14 @@ mod tests {
     /// A wrapper's control socket, as far as the router can tell: it answers the bare
     /// probe, records every frame written to it — what would reach the session — and
     /// acknowledges each one the way a wrapper does. Stops when dropped.
+    #[cfg(unix)]
     struct FakeWrapper {
         frames: Arc<Mutex<Vec<String>>>,
         stop: Arc<std::sync::atomic::AtomicBool>,
         thread: Option<std::thread::JoinHandle<()>>,
     }
 
+    #[cfg(unix)]
     impl FakeWrapper {
         fn bind(path: &Path) -> FakeWrapper {
             use std::io::Write;
@@ -3210,6 +3248,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     impl Drop for FakeWrapper {
         fn drop(&mut self) {
             self.stop.store(true, Ordering::Relaxed);
@@ -3222,6 +3261,7 @@ mod tests {
     /// Q1 was answered in the editor and the model asked Q2. A phone still showing Q1's
     /// form names the prompt live now — Q2's — and sends Q1's answers.
     #[test]
+    #[cfg(unix)]
     fn answers_for_a_question_that_is_not_the_one_waiting_never_reach_it() {
         let lab = Lab::new("ans");
         let now = now_ms();
@@ -3263,6 +3303,7 @@ mod tests {
     /// A frame the wrapper would cut short and write into the CLI half-finished — which the
     /// CLI exits on — is refused as too large, whichever path it would have gone by.
     #[test]
+    #[cfg(unix)]
     fn what_the_wrapper_would_cut_short_is_refused_as_too_large() {
         let lab = Lab::new("toolong");
         let now = now_ms();

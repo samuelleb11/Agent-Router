@@ -144,7 +144,7 @@ pub struct Target {
 }
 
 fn extensions_root() -> PathBuf {
-    PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".vscode/extensions")
+    crate::setup::home_dir().unwrap_or_default().join(".vscode").join("extensions")
 }
 
 /// Every Claude Code extension on this machine that spawns a native binary.
@@ -158,7 +158,11 @@ pub fn targets() -> Vec<Target> {
         if !name.starts_with("anthropic.claude-code-") {
             continue;
         }
-        let bin = d.path().join("resources/native-binary/claude");
+        let bin = d
+            .path()
+            .join("resources")
+            .join("native-binary")
+            .join(if cfg!(windows) { "claude.exe" } else { "claude" });
         if !bin.is_file() {
             continue;
         }
@@ -172,7 +176,17 @@ pub fn targets() -> Vec<Target> {
     out
 }
 
-fn real_beside(bin: &Path) -> PathBuf {
+/// Where the real binary is parked beside the shim, by the wrapper's own rule
+/// (`wrapper/src/main.rs`, `real_beside`): `claude` -> `claude.real`, and on Windows
+/// `claude.exe` -> `claude.real.exe`, a name that is still a program there.
+pub(crate) fn real_beside(bin: &Path) -> PathBuf {
+    #[cfg(windows)]
+    if let (Some(stem), Some(ext)) = (bin.file_stem(), bin.extension()) {
+        let mut name = stem.to_os_string();
+        name.push(".real.");
+        name.push(ext);
+        return bin.with_file_name(name);
+    }
     let mut p = bin.as_os_str().to_owned();
     p.push(".real");
     PathBuf::from(p)
@@ -462,6 +476,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn a_wrapper_is_replaced_by_rename_never_written_in_place() {
         // Open sessions are executing the installed wrapper: the file under them must stay
         // exactly as it was, and the next session must find the new one.

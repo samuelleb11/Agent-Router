@@ -110,7 +110,7 @@ pub fn describe(p: &Prompt) -> (String, String) {
         "Bash" => ("Bash wants to run".into(), clip(&s("command"), 140)),
         "Edit" | "Write" | "MultiEdit" | "NotebookEdit" => {
             let file = s("file_path").or_else(|| s("notebook_path"));
-            let name = file.rsplit('/').next().unwrap_or("").to_owned();
+            let name = crate::live::basename(&file).to_owned();
             (format!("{} wants to change", p.display), if name.is_empty() { "a file".into() } else { name })
         }
         "WebFetch" => ("WebFetch wants to fetch".into(), clip(&s("url"), 140)),
@@ -134,6 +134,9 @@ pub struct Push {
     /// A hosted router's push keys: a Secret mounted read-only, looked in after the
     /// store's own directory.
     keys_dir: Option<PathBuf>,
+    /// A hosted router's machines, whose agents say what is waiting — it has no
+    /// transcripts or registry of its own to read.
+    machines: std::sync::OnceLock<Arc<crate::machines::Machines>>,
     seen: Mutex<(HashSet<String>, VecDeque<String>)>,
     /// What Apple last said, and what Google last said. Two slots, not one: a working
     /// iPhone clearing the field would quietly erase a standing Android failure.
@@ -163,6 +166,7 @@ impl Push {
             fcm: Fcm::new(),
             db_path: db_path.to_path_buf(),
             keys_dir: None,
+            machines: std::sync::OnceLock::new(),
             seen: Mutex::new((HashSet::new(), VecDeque::new())),
             last_error: Mutex::new(None),
             fcm_last_error: Mutex::new(None),
@@ -182,6 +186,11 @@ impl Push {
     pub fn with_keys_dir(mut self, dir: Option<PathBuf>) -> Self {
         self.keys_dir = dir;
         self
+    }
+
+    /// Take what is waiting from these machines' agents (a hosted router).
+    pub fn use_machines(&self, machines: Arc<crate::machines::Machines>) {
+        let _ = self.machines.set(machines);
     }
 
     /// Where a dropped key file is looked for: beside the store, then the deployment's
@@ -583,27 +592,45 @@ impl Push {
     /// each with the name to announce it under.
     fn sweep(&self, now: i64) -> (Vec<String>, Vec<Announce>) {
         let waiting = self.waiting();
-        let still: HashSet<&str> = waiting.iter().map(|(k, ..)| k.as_str()).collect();
-        let due: HashSet<String> = {
-            let mut since = self.waiting_since.lock().unwrap_or_else(|e| e.into_inner());
-            waited(&mut since, &still, now)
-        };
-
         // Gone from the sweep is not the same as answered — see `still_waiting`, asked
         // without holding the lock, since it reads the session.
-        let candidates: Vec<(String, String)> = self
-            .announced
+        let elsewhere: HashSet<String> = self
+            .missing_from(&waiting)
+            .into_iter()
+            .filter(|(key, session)| still_waiting(key, session))
+            .map(|(key, _)| key)
+            .collect();
+        self.sweep_with(now, waiting, elsewhere, crate::live::session_label)
+    }
+
+    /// The announced prompts that a sweep no longer shows, as (key, session): answered,
+    /// or only gone from view (see `still_waiting`).
+    pub fn missing_from(&self, waiting: &[(String, String, String, String)]) -> Vec<(String, String)> {
+        let still: HashSet<&str> = waiting.iter().map(|(k, ..)| k.as_str()).collect();
+        self.announced
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .iter()
             .filter(|(key, _)| !still.contains(key.as_str()))
             .map(|(k, s)| (k.clone(), s.clone()))
-            .collect();
-        let elsewhere: HashSet<String> = candidates
-            .into_iter()
-            .filter(|(key, session)| still_waiting(key, session))
-            .map(|(key, _)| key)
-            .collect();
+            .collect()
+    }
+
+    /// A sweep over evidence gathered elsewhere: what is waiting, which of the announced
+    /// prompts missing from it are still waiting, and how to name a session. The local
+    /// router reads all three from this machine; a hosted router hears them from agents.
+    fn sweep_with(
+        &self,
+        now: i64,
+        waiting: Vec<(String, String, String, String)>,
+        elsewhere: HashSet<String>,
+        label: impl Fn(&str) -> Option<(String, Option<String>)>,
+    ) -> (Vec<String>, Vec<Announce>) {
+        let still: HashSet<&str> = waiting.iter().map(|(k, ..)| k.as_str()).collect();
+        let due: HashSet<String> = {
+            let mut since = self.waiting_since.lock().unwrap_or_else(|e| e.into_inner());
+            waited(&mut since, &still, now)
+        };
         let answered = {
             let mut announced = self.announced.lock().unwrap_or_else(|e| e.into_inner());
             let mut missing = self.missing.lock().unwrap_or_else(|e| e.into_inner());
@@ -614,8 +641,7 @@ impl Push {
             .into_iter()
             .filter(|(key, ..)| due.contains(key) && !self.seen(key))
             .map(|(key, session, head, detail)| {
-                let (project, title) = crate::live::session_label(&session)
-                    .unwrap_or_else(|| ("session".into(), None));
+                let (project, title) = label(&session).unwrap_or_else(|| ("session".into(), None));
                 let name = match title {
                     Some(t) => format!("{project} · {}", clip(&t, 40)),
                     None => project,
@@ -663,13 +689,32 @@ impl Push {
                     tracing::info!(cleared, "removed what dead wrappers left behind");
                 }
             }
-            if !local || !self.configured() {
+            if !self.configured() {
                 continue;
             }
-            let me = self.clone();
-            let Ok((answered, fresh)) =
+            let swept = if local {
+                let me = self.clone();
                 tokio::task::spawn_blocking(move || me.sweep(crate::db::now_ms())).await
-            else {
+            } else {
+                let Some(machines) = self.machines.get().cloned() else {
+                    continue;
+                };
+                let evidence = machines.evidence(true).await;
+                // What a machine had waiting when it connected is not news, for the same
+                // reason a restart is not.
+                for key in &evidence.first {
+                    self.mark(key);
+                }
+                let elsewhere = machines.still_waiting(self.missing_from(&evidence.waiting)).await;
+                let me = self.clone();
+                let labels = evidence.labels;
+                let waiting = evidence.waiting;
+                tokio::task::spawn_blocking(move || {
+                    me.sweep_with(crate::db::now_ms(), waiting, elsewhere, |s| labels.get(s).cloned())
+                })
+                .await
+            };
+            let Ok((answered, fresh)) = swept else {
                 continue;
             };
             if !answered.is_empty() {
@@ -828,17 +873,33 @@ pub(crate) fn keys_of(session: &str, o: &Observed) -> Vec<(String, String, Strin
 
 /// The session ids of the sockets in the wrapper directory.
 fn socket_ids(dir: &Path) -> Vec<String> {
-    std::fs::read_dir(dir)
+    // A pipe has no file, so on Windows the records a wrapper keeps stand for its channel.
+    #[cfg(unix)]
+    const MARKS: &[&str] = &[".sock"];
+    #[cfg(windows)]
+    const MARKS: &[&str] = &[".ctl", ".pending"];
+    let mut ids: Vec<String> = std::fs::read_dir(dir)
         .into_iter()
         .flatten()
         .flatten()
         .filter_map(|e| {
-            e.file_name()
-                .to_str()
-                .and_then(|n| n.strip_suffix(".sock"))
-                .map(str::to_owned)
+            let name = e.file_name();
+            let name = name.to_str()?;
+            MARKS.iter().find_map(|m| name.strip_suffix(m)).map(str::to_owned)
         })
-        .collect()
+        .collect();
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
+/// Whether a wrapper still holds the session's channel, without asking it anything: its
+/// socket file, or on Windows, where a pipe has no file, its pipe name.
+fn channel_held(dir: &Path, id: &str) -> bool {
+    #[cfg(unix)]
+    return dir.join(format!("{id}.sock")).symlink_metadata().is_ok();
+    #[cfg(windows)]
+    return crate::peer::wrapper_socket_in(dir, id).is_some();
 }
 
 /// Ask every wrapper socket no live session holds whether anything listens on it, and
@@ -850,7 +911,7 @@ fn socket_ids(dir: &Path) -> Vec<String> {
 /// backlog and the recording is what `set_model` reads its answer back from. Sockets of
 /// open sessions are left alone — everything else probes those often enough. Then the
 /// orphans (`sweep_orphans`). Returns how many sockets and orphans were removed.
-fn janitor(dir: &Path, reg: &Snapshot) -> usize {
+pub(crate) fn janitor(dir: &Path, reg: &Snapshot) -> usize {
     let mut cleared = 0;
     for id in socket_ids(dir) {
         if reg.by_session.contains_key(&id) {
@@ -887,7 +948,7 @@ fn sweep_orphans(dir: &Path, reg: &Snapshot, now: SystemTime) -> usize {
         let is_id = !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
         if !is_id
             || !entry.file_type().is_ok_and(|t| t.is_file())
-            || dir.join(format!("{id}.sock")).symlink_metadata().is_ok()
+            || channel_held(dir, id)
             || reg.by_session.contains_key(id)
         {
             continue;
@@ -916,7 +977,7 @@ fn sweep_orphans(dir: &Path, reg: &Snapshot, now: SystemTime) -> usize {
 /// transcript that is only swept while the session is moving, and a session waiting on a
 /// question does not move; that one has to be asked about directly, and quiet is never
 /// taken for an answer.
-fn still_waiting(key: &str, session: &str) -> bool {
+pub(crate) fn still_waiting(key: &str, session: &str) -> bool {
     let reg = crate::registry::snapshot();
     still_waiting_in(&Roots::system(), &reg, key, session, crate::db::now_ms())
 }
@@ -1400,6 +1461,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn each_kind_of_wait_gets_a_key_the_phones_can_dismiss() {
         use crate::live::testkit::*;
         let lab = Lab::new("keys");
@@ -1482,6 +1544,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn dead_wrapper_sockets_are_cleared_but_open_sessions_are_left_alone() {
         use crate::live::testkit::*;
         let lab = Lab::new("janitor");
@@ -1504,6 +1567,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn what_a_dead_wrapper_leaves_goes_with_it_and_orphans_go_once_ten_minutes_old() {
         use crate::live::testkit::*;
         let lab = Lab::new("orphans");
@@ -1558,6 +1622,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn without_a_registry_wrapped_sessions_are_still_swept_however_quiet() {
         use crate::live::testkit::*;
         let lab = Lab::new("noreg");
