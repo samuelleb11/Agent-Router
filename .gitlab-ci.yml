@@ -156,6 +156,20 @@ check chart:
     # What `publish chart` runs, so a packaging failure stops a merge and not a publish.
     - scripts/package-chart.sh 0 "$CI_COMMIT_SHA" registry.example.com/check/agent-router /tmp/chart
 
+# The two pages the binary serves today, run outside a browser by their own check scripts.
+# They pin the dashboard's forecast and password behaviour and the live view's stream, list
+# and markdown, and until now nothing ran them: a regression on either page reached the user
+# first. The pages stay authoritative while ui/ replaces them (AGEN-0001), so they are guarded
+# until then. The switch that deletes them (AGEN-0013) deletes this job with them. Plain node:
+# the scripts need no packages.
+check web pages:
+  stage: check
+  extends: .rules-agent-router
+  image: node:22
+  script:
+    - node scripts/check-dashboard-ui.js
+    - node scripts/check-live-ui.js
+
 # ---------------------------------------------------------------- build
 
 build docker image:
