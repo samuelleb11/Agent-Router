@@ -600,11 +600,7 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
 - **OV-C28** A range named in a link that is not one of the five reads as all, never as a property
   every object has (`constructor`, `__proto__`). *Why:* the address is input anyone can type.
   *Regression:* no. *Source:* `assets/index.html:912-913`, `assets/index.html:928-929`.
-- **OV-C29** The scope, the range and the open request rows are in the address, so a scoped view is
-  a link; the dashboard's own spelling `#a=&p=&s=&r=&o=` (range left out when all, open request ids
-  joined by dots) keeps working, read once on load and rewritten into the query string. *Why:* every
-  external consumer opens a bare `/`, and bookmarks carry the hash. *Regression:* no. *Source:*
-  `assets/index.html:914-931`, `assets/index.html:2658`.
+- **OV-C29** The scope, the range and the open request rows are in the address, so a scoped view is a link. An address in the old dashboard's spelling, `#a=&p=&s=&r=&o=`, opens the Overview unscoped: it is neither read nor rewritten. *Why:* a link to a scoped view has to survive a reload; the clean cut (decision J) keeps no compatibility code for the old page's addresses. *Regression:* no. *Source:* `assets/index.html:908-925` (the old spelling); plan, decision J.
 - **OV-C30** A scope or range change pushes a history entry, so Back un-scopes the page. *Why:*
   Northstar's rule, adopted by the plan; the dashboard replaces the entry today, so Back leaves the
   page. *Regression:* no. *Source:* `assets/index.html:914-923`.
@@ -818,7 +814,7 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
   *Why:* "fall back to the old boolean there rather than going quiet"; check "a router that predates
   the band still renders as it always did". *Regression:* no. *Source:*
   `assets/index.html:1237-1238`, `assets/index.html:1244`, `assets/index.html:1308-1309`,
-  `scripts/check-dashboard-ui.js:242-254`. *Phones:* `testAnOlderRouterStillRendersAsItAlwaysDid`.
+  `scripts/check-dashboard-ui.js:242-254`. *Phones:* `testAnOlderRouterStillRendersAsItAlwaysDid`. *Under decision J:* the console ships inside the router it reads, so the older-router case here never reaches it; the rest of the rule stands, and the phones still meet older routers.
 - **OV-C72** A window whose reset has passed reads "window rolled over <ago> · nothing seen since",
   plain, with no basis, no meter value and no burn-down: an old utilisation is never shown as
   current. *Why:* "reporting the old utilisation as current would be a lie with a number on it"
@@ -835,7 +831,7 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
   did" keeps its at-the-limit window red. *Regression:* no. *Source:* `assets/index.html:1242-1252`,
   `scripts/check-dashboard-ui.js:189-195`. *Today:* broken — when the router has no fitted burn for
   that window (basis `none`), the page tests the basis first and reads "not enough burn yet to
-  project" under a full meter.
+  project" under a full meter. *Under decision J:* the console ships inside the router it reads, so the older-router case here never reaches it; the rest of the rule stands, and the phones still meet older routers.
 - **OV-C75** With no forecast for a window at all — the endpoint is absent, or the account never
   carried a rate-limit header — the meter gets no forecast line, rather than "no reading" under a
   meter that is showing one. *Why:* the comment on `fcLine`; check "every window state produces a
@@ -882,7 +878,7 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
   older router — it draws the single ray and no cone. *Why:* "a ray alone reads as a prediction",
   and a 5-hour window measures the session you are in and must not hedge because the weekly one
   learned to (`src/forecast.rs:496-498`). *Regression:* no. *Source:* `assets/index.html:1300-1306`,
-  `scripts/check-dashboard-ui.js:247-253`.
+  `scripts/check-dashboard-ui.js:247-253`. *Under decision J:* the console ships inside the router it reads, so the older-router case here never reaches it; the rest of the rule stands, and the phones still meet older routers.
 - **OV-C84** A window that cannot be drawn is not: an expired or absent window, one with no start,
   or one whose reset is not after its start draws nothing rather than dividing by zero; values
   outside the window are held to its edges; and the panel survives an account with nothing current.
@@ -1050,7 +1046,7 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
   `assets/index.html:459-465`, `assets/index.html:1590-1600`.
 - **OV-C119** Paid in full is the router's uncached input; for a router that does not send it, it is
   everything read less cache reads and writes, never below zero. *Why:* older routers still draw a
-  whole bar. *Regression:* no. *Source:* `assets/index.html:1592`.
+  whole bar. *Regression:* no. *Source:* `assets/index.html:1592`. *Under decision J:* the console ships inside the router it reads, so the older-router case here never reaches it; the rest of the rule stands, and the phones still meet older routers.
 - **OV-C120** The note under it gives the hit rate as its formula — "Hit rate = cache reads ÷
   everything read = N%." — and that cached tokens are far cheaper against the quota than tokens paid
   in full; with nothing read it says "Nothing read yet." *Why:* the explanation sits next to the
@@ -1464,7 +1460,7 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
 - **OV-C203** The page learns what the router can do from `/api/auth`'s `mode`, never assuming a
   Mac, and a router that predates the field is local with nothing changed. *Why:* the comment above
   `hosted()`. *Regression:* no. *Source:* `assets/index.html:2278-2282`,
-  `assets/index.html:2507-2509`.
+  `assets/index.html:2507-2509`. *Under decision J:* the console ships inside the router it reads, so the older-router case here never reaches it; the rest of the rule stands, and the phones still meet older routers.
 - **OV-C204** A hosted router hides the Claude Code setup section (login item, wrapper, route a
   project) and the network switch, and does not even ask for the setup state; a local router shows
   and reads both. *Why:* check "a hosted router hides what only a Mac has, and a local one keeps all
@@ -1565,7 +1561,7 @@ the rewrite keeps the rule, not the defect.
   (`scripts/check-live-ui.js:389-401`). *Phones:* iOS `testDotsTakeTheRoutersTone`; Android
   `the router's tone decides the colour, then the activity, then the old state`,
   `an activity this app does not know is neutral, never a crash and never a Stop` (an unknown tone
-  defers to the activity).
+  defers to the activity). *Under decision J:* the console ships inside the router it reads, so the older-router case here never reaches it; the rest of the rule stands, and the phones still meet older routers.
 - **SE-C3** An activity the screen does not know has no tone: the plain neutral dot, never the
   legacy `state`'s colour and never an error, while its words and duration still show. *Why:* a
   newer router saying something this screen has not heard of is not an error. *Regression:*
@@ -1605,7 +1601,7 @@ the rewrite keeps the rule, not the defect.
   `active` is all a payload can say. *Regression:* no. *Source:*
   `assets/live.html:502-510`. *Phones:* iOS `testWorkingAndWaitingSessionsAreNeverFoldedAway`;
   Android `stop follows the activity when there is one, and the old state otherwise` (background is
-  still live).
+  still live). *Under decision J:* the console ships inside the router it reads, so the older-router case here never reaches it; the rest of the rule stands, and the phones still meet older routers.
 - **SE-C9** A live session's dot wears a halo in its list row and in its project's heading, whatever
   tone wins the colour; a tab's dot and the header's pip never do. *Why:* the halo still answers "is
   anything there busy or waiting" when a failure wins the colour. *Regression:* no. *Source:*
@@ -1622,7 +1618,7 @@ the rewrite keeps the rule, not the defect.
   work). *Source:* `assets/live.html:511-518`; check
   `Stop is offered for a running turn only — never for background work alone`
   (`scripts/check-live-ui.js:720-742`). *Phones:* iOS `testStopIsOfferedOnlyForARunningTurn`;
-  Android `stop follows the activity when there is one, and the old state otherwise`.
+  Android `stop follows the activity when there is one, and the old state otherwise`. *Under decision J:* the console ships inside the router it reads, so the older-router case here never reaches it; the rest of the rule stands, and the phones still meet older routers.
 - **SE-C11** Every session from a current router has a row line, whatever it is doing, idle and
   failed included: the router's `detail`, then " · " and how long it has been at it since `since_ms`
   — "Waiting for you · 1h", "Waiting for you · background shell running · 10h", "API error: 529
@@ -1641,7 +1637,7 @@ the rewrite keeps the rule, not the defect.
   `assets/live.html:522-526, 530-534`, `scripts/check-live-ui.js:696-700, 714-717`. *Phones:* iOS
   `testEveryRowSaysWhatItIsDoingAndSinceWhen`, `testTheHeaderMeasuresEverythingOnTheRoutersClock`;
   Android `every row carries the router's line, idle and ended included`,
-  `a row from a router that reads the process decodes every new key`.
+  `a row from a router that reads the process decodes every new key`. *Under decision J:* the console ships inside the router it reads, so the older-router case here never reaches it; the rest of the rule stands, and the phones still meet older routers.
 - **SE-C13** A closed session's line says how long ago it ended — "Session ended · 3h ago", "Session
   ended mid-turn · 3h ago" — from `ended_ms` against `as_of_ms`; with either missing, the router's
   words alone. *Why:* for an ended session the useful time is how long it has been
@@ -1662,7 +1658,7 @@ the rewrite keeps the rule, not the defect.
   `assets/live.html:529`; check `a payload from an older router renders as it always did`
   (`scripts/check-live-ui.js:840-843`). *Phones:* iOS `testRowsAndDotsDrawForEveryActivity`; Android
   `every row carries the router's line, idle and ended included`,
-  `a row from an older router reads exactly as it always did`.
+  `a row from an older router reads exactly as it always did`. *Under decision J:* the console ships inside the router it reads, so the older-router case here never reaches it; the rest of the rule stands, and the phones still meet older routers.
 - **SE-C16** A stretch of time is spelled the way it is glanced at: one unit, rounded — "12s", "5m",
   "3h", "2d" — and never negative. *Why:* a row line is read in passing. The phones spell two units
   ("3m 07s"); that is a known difference, not converged here. *Regression:* no. *Source:*
@@ -1676,7 +1672,7 @@ the rewrite keeps the rule, not the defect.
   `a payload from an older router renders as it always did`
   (`scripts/check-live-ui.js:825-875`). *Phones:* iOS `testDotsTakeTheRoutersTone`,
   `testRowsAndDotsDrawForEveryActivity`; Android
-  `a row from an older router reads exactly as it always did`.
+  `a row from an older router reads exactly as it always did`. *Under decision J:* the console ships inside the router it reads, so the older-router case here never reaches it; the rest of the rule stands, and the phones still meet older routers.
 - **SE-C18** A project heading's dot is its most pressing session: attention (any waiting) over
   error (any failed) over warn (any stalled) over busy (any generating, tool or background) over
   idle (any open and idle), and the hollow ring only when every session in it has ended. An activity
@@ -1694,7 +1690,7 @@ the rewrite keeps the rule, not the defect.
   something moved lately. *Regression:* no. *Source:* `assets/live.html:543-547`,
   `scripts/check-live-ui.js:844-848`. *Phones:* iOS `testTheProjectDotRanksTheSameEverywhere`;
   Android `a project's heading is ranked the same on every client` (Android draws no dot for such a
-  project with nothing live: each client keeps its previous behaviour with an older router).
+  project with nothing live: each client keeps its previous behaviour with an older router). *Under decision J:* the console ships inside the router it reads, so the older-router case here never reaches it; the rest of the rule stands, and the phones still meet older routers.
 - **SE-C20** No dot carries its meaning by colour alone. Every dot — row, heading, tab and header —
   has its words as visible text or as its accessible name, in the phones' words: "working", "running
   a tool", "waiting for you", "stalled", "failed", "idle", "ended". *Why:* under deuteranopia
@@ -1800,7 +1796,7 @@ the rewrite keeps the rule, not the defect.
 - **SE-C37** From an older router, when no row carries an activity, the header says what it always
   did: "N active" from `active`, busy when N is not zero, else the idle line. *Why:* `active` is all
   such a router can say. *Regression:* no. *Source:* `assets/live.html:641-646`,
-  `scripts/check-live-ui.js:844-846`. *Phones:* iOS `testCountsSayWorkingAndWaiting` ("2 active").
+  `scripts/check-live-ui.js:844-846`. *Phones:* iOS `testCountsSayWorkingAndWaiting` ("2 active"). *Under decision J:* the console ships inside the router it reads, so the older-router case here never reaches it; the rest of the rule stands, and the phones still meet older routers.
 - **SE-C38** An empty list says which empty it is: from a local router "No sessions in the last
   week.", and from a hosted router why it lists none (SE-C187). *Why:* an empty list and a router
   that cannot have sessions are different facts. *Regression:* no. *Source:*
@@ -1846,7 +1842,7 @@ the rewrite keeps the rule, not the defect.
   `assets/live.html:603-605, 995-1002`; check `stale sessions do not clutter the tabs`
   (`scripts/check-live-ui.js:352-359`). *Phones:* iOS
   `testWorkingAndWaitingSessionsAreNeverFoldedAway` (an ended session is not a tab; an older
-  router's ask is).
+  router's ask is). *Under decision J:* the console ships inside the router it reads, so the older-router case here never reaches it; the rest of the rule stands, and the phones still meet older routers.
 - **SE-C45** The open session always has its tab, archived, stale or ended, so a tab never
   disappears from under the reader. *Why:* the strip must hold what you are looking
   at. *Regression:* no. *Source:* `assets/live.html:1000-1002`.
@@ -2631,7 +2627,7 @@ the rewrite keeps the rule, not the defect.
   router, and a router that predates the field, or does not answer, is local, so the screen keeps
   working against it. *Why:* a hosted router has no Mac to assume. *Regression:* no. *Source:*
   `assets/live.html:415-419`; check
-  `a hosted router says why its list is empty, and warns of no wrapper`.
+  `a hosted router says why its list is empty, and warns of no wrapper`. *Under decision J:* the console ships inside the router it reads, so the older-router case here never reaches it; the rest of the rule stands, and the phones still meet older routers.
 - **SE-C187** A hosted router's empty list says why it is empty — its sessions come only from
   machines that run the Agent Router agent — and never blames the week as a local router's empty
   list does. *Why:* live sessions run on machines, which a hosted router reaches only through their
@@ -2765,7 +2761,7 @@ the rewrite keeps the rule, not the defect.
 - **SE-C212** Fixtures come in both shapes, the current router's keys and an older router's, whose
   rows must render exactly as before, and the router's clock is set off the test machine's so that a
   duration measured on the wrong clock shows. *Why:* a check fed only one shape never sees the other
-  break. *Regression:* no. *Source:* `scripts/check-live-ui.js:9-12, 239-266`.
+  break. *Regression:* no. *Source:* `scripts/check-live-ui.js:9-12, 239-266`. *Under decision J:* the console ships inside the router it reads, so the older-router case here never reaches it; the rest of the rule stands, and the phones still meet older routers.
 - **SE-C213** A fake `EventSource` lets a test speak as the router — a row, a named status, the
   connection's error, the router's `error` event — and frames the wire as a browser does: an event
   ends at a blank line, `event:` names it and one without a name is a message, `data:` lines join
@@ -2789,7 +2785,7 @@ the rewrite keeps the rule, not the defect.
   and "Waiting for you · 15m". *Why:* synthetic checks only ever see the payloads they were written
   with, and the replay is what the router really sends — which once skipped every status, so no
   captured status ever reached the header. *Regression:* yes —
-  `scripts/check-live-ui.js:884-885`. *Source:* `scripts/check-live-ui.js:877-986`.
+  `scripts/check-live-ui.js:884-885`. *Source:* `scripts/check-live-ui.js:877-986`. *Under decision J:* the console ships inside the router it reads, so the older-router case here never reaches it; the rest of the rule stands, and the phones still meet older routers.
 - **SE-C215** A capture of a real stream, handed to the test run, replays the same way, and a path
   that names no file fails rather than skipping. *Why:* it is a mistake to hear about, not a replay
   to skip in silence. *Regression:* no. *Source:* `scripts/check-live-ui.js:988-996`.
@@ -2856,7 +2852,7 @@ disclosure, and each explanation next to the field it concerns.
   every 30-second poll repeats a lookup per account for nothing. *Regression:* no. *Source:*
   `assets/index.html:947-948`, `assets/index.html:2506`, `assets/index.html:2516`,
   `src/api.rs:1326-1376`, `docs/web-console-carbon.md:443`. *Today:* broken — the router
-  ignores `probe` and resolves every credential on every call (AGEN-0015).
+  ignores `probe` and resolves every credential on every call (AGEN-0015). *Amended:* the Overview also makes ONE probed read per load, the read ST-C7 needs to open Settings by itself; every other read outside the Accounts page resolves no credential (185f609, and the console's OpensSettings spec).
 - **ST-C7** At most once per load, and only from the Overview, the console opens Settings →
   Accounts by itself when nothing can sign or when an account that could sign reports a
   credential that does not work. *Why:* "Nothing configured, or a credential that stopped
@@ -3418,7 +3414,7 @@ disclosure, and each explanation next to the field it concerns.
   assuming a Mac, and older routers keep working. *Regression:* yes — check "a hosted router
   hides what only a Mac has, and a local one keeps all of it". *Source:*
   `assets/index.html:2277-2282`, `src/auth.rs:352-356`, `scripts/check-dashboard-ui.js:328-335`,
-  `docs/web-console-carbon.md:485-488`.
+  `docs/web-console-carbon.md:485-488`. *Under decision J:* the console ships inside the router it reads, so the older-router case here never reaches it; the rest of the rule stands, and the phones still meet older routers.
 - **ST-C101** Until `/api/auth` has said which kind of router this is, Settings offers none
   of the machine-only controls: the Claude Code and Network pages, and the sign-in and
   profile ways to add an account. *Why:* offering them first would flash controls a hosted
@@ -3655,14 +3651,7 @@ URLs that must keep answering, development, and what a hosted router changes.
   the extension opens `/live`, and a bookmark carries the id. *Regression:* no. *Source:*
   `assets/live.html:1140-1145`, `assets/live.html:1397-1401`, `assets/live.html:1545-1552`,
   `assets/live.html:1681-1689`, `vscode/src/extension.ts:19`.
-- **SV-C37** A dashboard address in today's hash form,
-  `/#a=<account>&p=<project>&s=<session>&r=<range>&o=<open requests>`, is read once and
-  rewritten into the new query string with the same scope: `a` an account id, `p` a project
-  path or `(unresolved)`, `s` a session id, `r` one of `1h`, `24h`, `7d` and `30d` (anything
-  else is all time), `o` open request ids joined by dots. *Why:* the dashboard writes that
-  form into every scoped address, so bookmarks and pasted links carry it. *Regression:* no.
-  *Source:* `assets/index.html:914-931`, `docs/web-console-carbon.md:73-74`,
-  `docs/web-console-carbon.md:218-220`.
+- **SV-C37** A dashboard address in the old hash form, `/#a=…&p=…&s=…&r=…&o=…`, opens the console at `/` unscoped; nothing reads or rewrites the old hash. *Why:* the clean cut (decision J) keeps no compatibility code for the old pages' addresses. *Regression:* no. *Source:* `assets/index.html:908-925` (the old spelling); plan, decision J.
 - **SV-C38** No other console address is promised outside the app: push payloads carry no
   URL, and the phones route a tap natively by session id. *Why:* the rewrite is free to
   shape every other path. *Regression:* no. *Source:* `docs/web-console-carbon.md:64-74`.
