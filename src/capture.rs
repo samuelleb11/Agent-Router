@@ -316,7 +316,23 @@ pub fn spawn(db_path: PathBuf) -> (mpsc::Sender<CaptureEvent>, tokio::task::Join
         let mut resolver = Resolver::new();
         while let Some(ev) = rx.recv().await {
             if let Some(session) = &ev.session_id {
-                let info = resolver.resolve(session);
+                // The transcript decides where there is one. A hosted router never has
+                // one to look for; elsewhere it is missing for sessions on other
+                // machines and ones the CLI never wrote to disk. Either way the request
+                // said where it runs, and that fills whatever the transcript did not.
+                let mut info = if crate::config::is_server() {
+                    Default::default()
+                } else {
+                    resolver.resolve(session)
+                };
+                if let Some(shape) = &ev.shape {
+                    if info.cwd.is_none() {
+                        info.cwd = shape.cwd.clone();
+                    }
+                    if info.git_branch.is_none() {
+                        info.git_branch = shape.git_branch.clone();
+                    }
+                }
                 if let Err(err) = db.touch_session(
                     session,
                     info.cwd.as_deref(),

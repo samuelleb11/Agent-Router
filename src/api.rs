@@ -64,7 +64,9 @@ pub struct Filter {
 /// The scope predicate every read shares. Requests are joined to their session as
 /// `s` (LEFT, so a request whose transcript has not appeared yet still counts) and
 /// the parameters are always bound in this order: project, session, since, account.
-const SCOPE: &str = "(?1 IS NULL OR s.cwd = ?1)
+/// `(unresolved)` is the label the dashboard gives sessions with no project; no real
+/// working directory is spelt that way, so it selects them rather than nothing.
+const SCOPE: &str = "(?1 IS NULL OR s.cwd = ?1 OR (?1 = '(unresolved)' AND s.cwd IS NULL))
                      AND (?2 IS NULL OR r.session_id = ?2)
                      AND (?3 IS NULL OR r.started_at >= ?3)
                      AND (?4 IS NULL OR r.account_id = ?4)";
@@ -1470,7 +1472,16 @@ pub async fn accounts_activate(
 ) -> ApiResult {
     let store = crate::accounts::Store::new(state.config.db_path.clone());
     let id = req.id.clone();
-    tokio::task::spawn_blocking(move || store.activate(&id)).await??;
+    // A hosted router can only sign with a pasted token. Switching to a Claude Code login
+    // that came with a copied store would leave every request with nothing to sign with.
+    let server = state.config.server;
+    tokio::task::spawn_blocking(move || {
+        if server && store.source_of(&id)? != Some(crate::accounts::Source::Token) {
+            anyhow::bail!("{}", crate::accounts::NOT_ON_A_SERVER);
+        }
+        store.activate(&id)
+    })
+    .await??;
     // Drop the cached credential: the switch takes effect on the very next request,
     // mid-session, with nothing restarted.
     state.invalidate().await;
@@ -1482,7 +1493,9 @@ pub async fn accounts_remove(
     State(state): State<Arc<AppState>>,
     Json(req): Json<AccountRef>,
 ) -> ApiResult {
-    if req.id == crate::proxy::ACCOUNT_ID {
+    // On a hosted router there is no discovery to bring it back, and a `default` row
+    // can only have come with a store copied from a machine: it can never sign there.
+    if req.id == crate::proxy::ACCOUNT_ID && !state.config.server {
         return Err(ApiError(anyhow::anyhow!(
             "the default account is discovered automatically and cannot be removed"
         )));
@@ -1494,11 +1507,14 @@ pub async fn accounts_remove(
     Ok(Json(json!({ "ok": true })))
 }
 
-/// Health, and the pid a replacement instance needs in order to hand over.
+/// Health, and the pid a replacement instance needs in order to hand over. `build` names
+/// the source tree the binary was compiled from (see `build.rs`): the crate version is
+/// the same for every build, so it cannot say whether what serves is what was deployed.
 pub async fn health() -> Json<Value> {
     Json(json!({
         "ok": true,
         "pid": std::process::id(),
         "version": env!("CARGO_PKG_VERSION"),
+        "build": env!("AGENT_ROUTER_BUILD"),
     }))
 }

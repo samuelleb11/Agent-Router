@@ -200,6 +200,11 @@ pub struct RequestShape {
     pub tool_results: Vec<ToolResult>,
     /// Every distinct piece of text in this request's conversation. The search corpus.
     pub blocks: Vec<Block>,
+    /// The working directory and git branch Claude Code told the model it runs in. Read
+    /// when no transcript can say: a hosted router, a session on another machine, one
+    /// the CLI never wrote to disk. See `environment_of`.
+    pub cwd: Option<String>,
+    pub git_branch: Option<String>,
 }
 
 /// One content block out of the conversation, as the search index stores it.
@@ -226,9 +231,12 @@ const MAX_BLOCK_CHARS: usize = 1 << 20;
 
 pub fn analyze_request(body: &[u8]) -> Option<RequestShape> {
     let v: Value = serde_json::from_slice(body).ok()?;
+    let (cwd, git_branch) = environment_of(&v);
     let mut shape = RequestShape {
         model: v.get("model").and_then(Value::as_str).map(str::to_owned),
         streaming: v.get("stream").and_then(Value::as_bool).unwrap_or(false),
+        cwd,
+        git_branch,
         ..Default::default()
     };
 
@@ -317,6 +325,67 @@ pub fn analyze_request(body: &[u8]) -> Option<RequestShape> {
         _ => {}
     }
     Some(shape)
+}
+
+/// Where the session runs, as Claude Code tells the model: its environment block names
+/// the directory (` - Primary working directory: <path>`, or `Working directory: <path>`
+/// from older builds) and its git status the branch (`Current branch: <name>`).
+///
+/// Looked for only where Claude Code puts them — the `system` field, then the first
+/// user message, where newer builds carry the same blocks — and only as whole lines of
+/// those exact shapes. Anywhere later in a conversation the same words are quoted text:
+/// a tool result, a file being edited, this very comment. The format is Claude Code's
+/// and undocumented, so a miss is a session with no project, as it was before; a
+/// transcript, where there is one, still decides.
+fn environment_of(v: &Value) -> (Option<String>, Option<String>) {
+    let mut texts: Vec<&str> = Vec::new();
+    match v.get("system") {
+        Some(Value::String(t)) => texts.push(t),
+        Some(Value::Array(parts)) => texts.extend(parts.iter().filter_map(|p| p.get("text").and_then(Value::as_str))),
+        _ => {}
+    }
+    let first = v.get("messages").and_then(Value::as_array).and_then(|m| m.first());
+    if let Some(first) = first.filter(|m| m.get("role").and_then(Value::as_str) == Some("user")) {
+        match first.get("content") {
+            Some(Value::String(t)) => texts.push(t),
+            Some(Value::Array(blocks)) => texts.extend(
+                blocks
+                    .iter()
+                    .filter(|b| b.get("type").and_then(Value::as_str) == Some("text"))
+                    .filter_map(|b| b.get("text").and_then(Value::as_str)),
+            ),
+            _ => {}
+        }
+    }
+
+    let lines = || texts.iter().flat_map(|t| t.lines()).map(str::trim_start);
+    let primary = lines().find_map(|l| {
+        let l = l.strip_prefix("- ").unwrap_or(l);
+        l.strip_prefix("Primary working directory: ").and_then(as_path)
+    });
+    // The older line, only when the newer one is not there. A note that the directory
+    // changed reads "Working directory: <new> (was <old>)", and is not where it started.
+    let cwd = primary.or_else(|| {
+        lines()
+            .filter(|l| !l.contains(" (was "))
+            .find_map(|l| l.strip_prefix("Working directory: ").and_then(as_path))
+    });
+    let branch = lines().find_map(|l| {
+        let name = l.strip_prefix("Current branch: ")?.trim();
+        (!name.is_empty() && name.len() <= 255 && !name.contains(char::is_whitespace)).then(|| name.to_string())
+    });
+    (cwd, branch)
+}
+
+/// An absolute path as Claude Code prints one: POSIX, a Windows drive (`C:\…`), or a
+/// UNC share. Anything else — a relative path, a sentence — is not taken.
+fn as_path(raw: &str) -> Option<String> {
+    let p = raw.trim();
+    let b = p.as_bytes();
+    let absolute = p.starts_with('/')
+        || p.starts_with("\\\\")
+        || (b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/'));
+    (absolute && p.len() <= 4096 && !p.chars().any(char::is_control)).then(|| p.to_string())
 }
 
 /// Pull the conversation apart into indexable text.
@@ -526,6 +595,66 @@ fn json_chars(v: &Value) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    fn env_of(v: Value) -> (Option<String>, Option<String>) {
+        environment_of(&v)
+    }
+
+    /// Both places Claude Code puts its environment, in the shapes it writes them.
+    #[test]
+    fn the_request_says_where_the_session_runs() {
+        let env = "# Environment\nYou have been invoked in the following environment: \n \
+                   - Primary working directory: /Users/u/code/project\n - Is a git repository: true\n";
+        let git = "gitStatus: ...\n\nCurrent branch: feature/x\n\nMain branch (you will usually use this for PRs): main";
+        let in_system = json!({ "system": [{ "type": "text", "text": env }, { "type": "text", "text": git }], "messages": [] });
+        assert_eq!(
+            env_of(in_system),
+            (Some("/Users/u/code/project".into()), Some("feature/x".into()))
+        );
+        let in_first_message = json!({
+            "system": "You are Claude Code.",
+            "messages": [{ "role": "user", "content": [
+                { "type": "text", "text": format!("<system-reminder>{env}</system-reminder>") },
+                { "type": "text", "text": git },
+                { "type": "text", "text": "fix the tests" },
+            ]}],
+        });
+        assert_eq!(
+            env_of(in_first_message),
+            (Some("/Users/u/code/project".into()), Some("feature/x".into()))
+        );
+        let windows = json!({ "system": " - Primary working directory: C:\\Users\\u\\proj\n", "messages": [] });
+        assert_eq!(env_of(windows).0.as_deref(), Some("C:\\Users\\u\\proj"));
+        let older = json!({ "system": "<env>\nWorking directory: /home/u/p\nIs directory a git repo: Yes\n</env>", "messages": [] });
+        assert_eq!(env_of(older).0.as_deref(), Some("/home/u/p"));
+    }
+
+    /// The same words anywhere else are text about a directory, not this session's.
+    #[test]
+    fn quoted_or_malformed_lines_are_not_taken() {
+        let later = json!({
+            "system": "You are Claude Code.",
+            "messages": [
+                { "role": "user", "content": "hello" },
+                { "role": "assistant", "content": "Primary working directory: /assistant/said" },
+                { "role": "user", "content": [{ "type": "tool_result", "tool_use_id": "t", "content":
+                    " - Primary working directory: /from/a/tool\nCurrent branch: tool-branch" }] },
+            ],
+        });
+        assert_eq!(env_of(later), (None, None));
+        for bad in [
+            " - Primary working directory: relative/path",
+            " - Primary working directory: ",
+            "The Primary working directory: /in/a/sentence",
+            "Current branch: two words",
+        ] {
+            let v = json!({ "system": bad, "messages": [] });
+            assert_eq!(env_of(v), (None, None), "{bad:?}");
+        }
+        let moved = json!({ "system": "Working directory: /new (was /old)", "messages": [] });
+        assert_eq!(env_of(moved).0, None, "a note that it moved is not where it started");
+    }
 
     /// One block per content block, carrying where it sat and what kind it was — and
     /// nothing for the blocks that hold no text.

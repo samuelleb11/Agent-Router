@@ -2037,7 +2037,7 @@ mod tests {
             json!({"type":"user","uuid":"u7","timestamp":at(0),"message":{"role":"user","content":"Continue from where you left off."}}),
         ] {
             assert!(
-                !fold(&[not_a_prompt.clone()]).summary().turn_open,
+                !fold(std::slice::from_ref(&not_a_prompt)).summary().turn_open,
                 "{not_a_prompt}"
             );
         }

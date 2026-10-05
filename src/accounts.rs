@@ -17,7 +17,7 @@
 //! the default profile's `.claude.json` copied in, so adding an account here cannot
 //! disturb the account you use day to day.
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -119,6 +119,11 @@ pub struct AuthStatus {
 /// Ask Claude Code who a profile is logged in as; `None` probes the default profile.
 /// Blocking; call from a blocking task.
 pub fn probe_profile(dir: Option<&Path>) -> Result<AuthStatus> {
+    // A hosted router has no Claude Code to ask, and spawning a binary that is not
+    // there costs a failed exec on every account listing for nothing.
+    if crate::config::is_server() {
+        return Ok(AuthStatus::default());
+    }
     let mut cmd = std::process::Command::new("claude");
     cmd.args(["auth", "status", "--json"]);
     if let Some(dir) = dir {
@@ -133,6 +138,11 @@ pub fn probe_profile(dir: Option<&Path>) -> Result<AuthStatus> {
     Ok(serde_json::from_str(&text[start..])?)
 }
 
+/// Why a Claude Code login or a profile cannot sign on a hosted router: both are files on
+/// a developer's machine, and the router is not on one.
+pub const NOT_ON_A_SERVER: &str = "this account is a Claude Code login on a developer's machine, which a hosted \
+    router cannot read — add an account with a `claude setup-token` value in the dashboard";
+
 /// Resolve an account to a token to sign with. Blocking; call from a blocking task.
 pub fn resolve(account: &Account) -> Result<Resolved> {
     match account.source {
@@ -141,6 +151,9 @@ pub fn resolve(account: &Account) -> Result<Resolved> {
                 if !token.is_empty() {
                     return Ok(Resolved { token, identity: None, expires_at_ms: 0 });
                 }
+            }
+            if crate::config::is_server() {
+                bail!("{}", NOT_ON_A_SERVER);
             }
             // `claude /login` overwrites this one Keychain entry in place, so this
             // account means "whoever Claude Code is logged into now" — deliberately
@@ -165,6 +178,9 @@ pub fn resolve(account: &Account) -> Result<Resolved> {
             })
         }
         Source::Profile => {
+            if crate::config::is_server() {
+                bail!("{}", NOT_ON_A_SERVER);
+            }
             let dir = account
                 .profile_dir
                 .as_ref()
@@ -289,9 +305,7 @@ mod secrets {
     }
 
     fn path() -> Result<PathBuf> {
-        let home = std::env::var("HOME").map_err(|_| anyhow!("HOME is not set"))?;
-        let dir = PathBuf::from(home).join(".agent-router");
-        std::fs::create_dir_all(&dir)?;
+        let dir = crate::config::data_dir()?;
         // The directory holds secrets; keep it owner-only too.
         let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
         Ok(dir.join("credentials.json"))
@@ -499,7 +513,7 @@ impl Store {
             })
             .optional()?;
         let (id, label, source, profile_dir, email) =
-            account.ok_or_else(|| anyhow!("no active account"))?;
+            account.ok_or_else(|| anyhow!("no account to sign with — add one in the dashboard"))?;
         Ok(Account {
             id,
             label,
@@ -536,7 +550,22 @@ impl Store {
                 now_ms()
             ],
         )?;
+        // Never leave the router with nothing to sign with: the first account a store
+        // gets is the one it signs with. Locally the discovered default always holds
+        // that place, so this matters to a hosted router, whose store starts empty.
+        conn_activate_if_none(&self.conn()?, id)?;
         Ok(())
+    }
+
+    /// Where an account's credential comes from, if there is such an account.
+    pub fn source_of(&self, id: &str) -> Result<Option<Source>> {
+        let source: Option<Option<String>> = self
+            .conn()?
+            .query_row("SELECT source FROM accounts WHERE id = ?1", [id], |r| r.get(0))
+            .optional()?;
+        source
+            .map(|s| Source::parse(s.as_deref().unwrap_or("keychain")))
+            .transpose()
     }
 
     /// Exactly one account is active; switching is a single transaction.
@@ -577,10 +606,18 @@ impl Store {
     }
 }
 
+fn conn_activate_if_none(conn: &rusqlite::Connection, id: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE accounts SET active = 1
+          WHERE id = ?1 AND NOT EXISTS (SELECT 1 FROM accounts WHERE active = 1)",
+        [id],
+    )?;
+    Ok(())
+}
+
 /// Where the router keeps the isolated profile directories it creates.
 pub fn profiles_root() -> Result<PathBuf> {
-    let home = std::env::var("HOME").map_err(|_| anyhow!("HOME is not set"))?;
-    let dir = PathBuf::from(home).join(".agent-router").join("accounts");
+    let dir = crate::config::data_dir()?.join("accounts");
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
 }

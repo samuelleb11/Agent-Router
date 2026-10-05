@@ -265,8 +265,18 @@ pub fn lan_url(bound: Option<IpAddr>, port: u16) -> Option<String> {
 /// What the dashboard and the phone apps need to know about the socket. Shared with
 /// `GET /api/auth`, which is where both already look for `remote_bind`.
 pub fn report(state: &crate::proxy::AppState) -> serde_json::Map<String, serde_json::Value> {
-    let bound = state.network.current();
     let mut out = serde_json::Map::new();
+    // A hosted router listens on its one bind address, always beyond loopback, and is
+    // reached at its public URL — not at the pod's own address, which the routing table
+    // would offer and nothing outside the cluster can reach. No switch, no override.
+    if state.config.server {
+        out.insert("remote_bind".into(), true.into());
+        out.insert("listening_on".into(), state.config.bind.ip().to_string().into());
+        out.insert("lan_url".into(), state.config.public_url.clone().into());
+        out.insert("env_override".into(), false.into());
+        return out;
+    }
+    let bound = state.network.current();
     out.insert("remote_bind".into(), bound.is_some().into());
     out.insert(
         "listening_on".into(),

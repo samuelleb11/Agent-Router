@@ -251,8 +251,7 @@ pub fn start(label: String, shared: Shared) -> Result<()> {
 /// Store the minted token as an ordinary long-lived account.
 fn finish(id: &str, label: &str, token: &str, email: Option<&str>) -> Result<()> {
     crate::accounts::store_token(id, token)?;
-    let db = crate::setup::data_dir()?.join("agent-router.db");
-    let db = std::env::var("AGENT_ROUTER_DB").map(PathBuf::from).unwrap_or(db);
+    let db = crate::config::db_path()?;
     let store = crate::accounts::Store::new(db);
     let status = crate::accounts::AuthStatus {
         email: email.map(str::to_owned),

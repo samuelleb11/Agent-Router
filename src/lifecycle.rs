@@ -151,7 +151,29 @@ pub fn has_exited_within(pid: i32, within: Duration) -> bool {
     false
 }
 
-/// Resolves when the process is asked to stop, either way.
+/// Whether the process has been asked to stop, and why. Cloned by everything that has to
+/// wind down on the same signal.
+#[derive(Clone)]
+pub struct Stopping(tokio::sync::watch::Receiver<Option<&'static str>>);
+
+impl Stopping {
+    /// Resolves once the process is asked to stop, with what asked.
+    pub async fn wait(&mut self) -> &'static str {
+        // Copied out at once: the borrow `wait_for` hands back must not live across
+        // another await.
+        let why = self.0.wait_for(Option::is_some).await.ok().map(|w| *w);
+        match why {
+            Some(why) => why.unwrap_or("stop"),
+            // The listener went away without a word. Never resolving keeps serving,
+            // which beats stopping a router nobody asked to stop.
+            None => std::future::pending().await,
+        }
+    }
+}
+
+/// Resolves when the process is asked to stop, either way. For a listener that winds
+/// down on its own; the router itself listens from the start, through
+/// `listen_for_shutdown`.
 pub async fn shutdown_signal() -> &'static str {
     use tokio::signal::unix::{signal, SignalKind};
     let mut term = match signal(SignalKind::terminate()) {
@@ -165,6 +187,30 @@ pub async fn shutdown_signal() -> &'static str {
         _ = tokio::signal::ctrl_c() => "interrupt",
         _ = term.recv()             => "SIGTERM",
     }
+}
+
+/// Start listening for SIGTERM and Ctrl-C now. The SIGTERM handler is registered before
+/// this returns, not when something first waits: for PID 1 in a container the kernel
+/// drops a signal that has no handler yet, so one sent during a slow startup would be
+/// lost and the kubelet would wait out its grace period for a SIGKILL.
+pub fn listen_for_shutdown() -> Stopping {
+    use tokio::signal::unix::{signal, SignalKind};
+    let (tx, rx) = tokio::sync::watch::channel(None);
+    let term = signal(SignalKind::terminate()).ok();
+    tokio::spawn(async move {
+        let why = match term {
+            Some(mut term) => tokio::select! {
+                _ = tokio::signal::ctrl_c() => "interrupt",
+                _ = term.recv()             => "SIGTERM",
+            },
+            None => {
+                tokio::signal::ctrl_c().await.ok();
+                "interrupt"
+            }
+        };
+        let _ = tx.send(Some(why));
+    });
+    Stopping(rx)
 }
 
 #[cfg(test)]

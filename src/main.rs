@@ -17,6 +17,7 @@ mod fcm;
 mod fold;
 mod forecast;
 mod guard;
+mod hosted;
 mod lifecycle;
 mod live;
 mod network;
@@ -31,6 +32,7 @@ mod setup;
 mod shim;
 mod transcript;
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::routing::{any, get, post};
@@ -41,6 +43,7 @@ agent-router — a local proxy between Claude Code and Anthropic
 
 USAGE:
   agent-router                       run the router (default)
+  agent-router serve [OPTIONS]       the same, with options
   agent-router --ensure              run only if no router is serving, or an older
                                      build is — then take the port over without a gap
   agent-router --if-not-running      run only if no router is serving
@@ -48,6 +51,22 @@ USAGE:
   agent-router install [OPTIONS]     point Claude Code at it, and start it at login
   agent-router uninstall             undo exactly what install changed
   agent-router status                show what is installed and what is managed
+
+SERVE OPTIONS:
+  --bind <ip>            also listen here, not only on loopback (like AGENT_ROUTER_BIND)
+  --port <n>             router port (default 8787)
+  --data-dir <dir>       where everything the router writes lives (default
+                         ~/.agent-router; AGENT_ROUTER_DATA_DIR)
+  --db <path>            the store (default <data-dir>/agent-router.db; AGENT_ROUTER_DB)
+  --server               run as a hosted server, behind an HTTPS ingress: --bind is
+                         the only listener, every caller presents the password, which
+                         is pinned from AGENT_ROUTER_SERVER_PASSWORD, and nothing of a
+                         developer's machine is read. These need --server:
+  --allow-host <name>    a name clients reach the router by; repeatable
+  --public-url <url>     the https URL clients use; its host is allowed too
+  --push-keys-dir <dir>  a read-only directory of push keys (AuthKey_<id>.p8, or a
+                         Firebase service-account JSON)
+  --drain-seconds <n>    how long a stop waits for open requests (default 20)
 
 INSTALL OPTIONS:
   --project <dir>   configure one project instead of every project
@@ -84,6 +103,15 @@ fn loopback_addr_on(port: u16) -> std::net::SocketAddr {
 async fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
+        Some("serve") => {
+            return match config::ServeArgs::parse(&args[1..]) {
+                Ok(serve_args) => serve(serve_args).await,
+                Err(why) => {
+                    eprintln!("{why}\n\n{USAGE}");
+                    std::process::exit(2);
+                }
+            };
+        }
         Some("install") => return cmd_install(&args[1..]),
         Some("uninstall") => return cmd_uninstall(),
         Some("status") => return cmd_status(),
@@ -101,7 +129,7 @@ async fn main() -> anyhow::Result<()> {
             if lifecycle::incumbent(loopback_addr()).is_some() {
                 return Ok(());
             }
-            return serve().await;
+            return serve(config::ServeArgs::default()).await;
         }
         Some("--ensure") => {
             // Serve only if nobody does, or if whoever does is an older build — then
@@ -119,7 +147,7 @@ async fn main() -> anyhow::Result<()> {
                 }
                 None => {}
             }
-            return serve().await;
+            return serve(config::ServeArgs::default()).await;
         }
         Some(other) if other.starts_with('-') => {
             eprintln!("unknown option {other:?}\n\n{USAGE}");
@@ -131,7 +159,7 @@ async fn main() -> anyhow::Result<()> {
         }
         None => {}
     }
-    serve().await
+    serve(config::ServeArgs::default()).await
 }
 
 fn flag_value(args: &[String], name: &str) -> Option<String> {
@@ -249,7 +277,7 @@ fn cmd_status() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn serve() -> anyhow::Result<()> {
+async fn serve(args: config::ServeArgs) -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_env("AGENT_ROUTER_LOG")
@@ -262,14 +290,25 @@ async fn serve() -> anyhow::Result<()> {
         .install_default()
         .ok();
 
-    let config = config::Config::from_env()?;
+    // Listen for SIGTERM before anything slow. In a container the router is PID 1, and
+    // the kernel drops a signal PID 1 has no handler for: a rollout landing during
+    // startup would otherwise wait out the whole grace period for its SIGKILL.
+    let stopping = lifecycle::listen_for_shutdown();
+
+    // Read first, so a hosted router with no password stops with a sentence before it
+    // has opened (and perhaps migrated) the store.
+    let server_password = if args.server { Some(config::server_password()?) } else { None };
+
+    let config = config::Config::load(&args)?;
+    let server = config.server;
     // Loopback is always served, and a wider bind adds a second listener beside it
     // rather than moving this one — see `network`. It keeps every local tool working
     // whatever the switch is set to, and it keeps the handover probe honest: it has to
-    // reach the incumbent on *this* machine.
+    // reach the incumbent on *this* machine. A hosted router has neither: it serves its
+    // one bind address, which covers loopback as well when it is 0.0.0.0.
     let port = config.bind.port();
     let bind = loopback_addr_on(port);
-    let wide = (!config.bind.ip().is_loopback()).then(|| config.bind.ip());
+    let wide = (!server && !config.bind.ip().is_loopback()).then(|| config.bind.ip());
     // Built before the app it will serve, because the app is built from the state that
     // holds it. The supervisor takes the other half once the app exists.
     let (network, pending) = network::switch();
@@ -277,6 +316,8 @@ async fn serve() -> anyhow::Result<()> {
 
     // Create the schema and make sure there is always something to route as: the
     // account Claude Code is already logged into, discovered rather than configured.
+    // Not on a server: that login lives on the developer's machine, and looking for it
+    // would mean running a `claude` the container does not have.
     {
         let db = db::Db::open(&db_path)?;
         {
@@ -284,44 +325,54 @@ async fn serve() -> anyhow::Result<()> {
             let conn = rusqlite::Connection::open(&db_path)?;
             pricing::ensure_table(&conn)?;
         }
-        let status = accounts::probe_profile(None).unwrap_or_default();
-        let label = status
-            .email
-            .clone()
-            .unwrap_or_else(|| "Claude Code (default profile)".to_string());
-        db.upsert_default_account(proxy::ACCOUNT_ID, &label, &status)?;
-        match wide {
-            // The wide listener announces itself as it comes up, in `network`.
-            Some(ip) => tracing::info!("agent-router listening on http://{bind} and on {ip}"),
-            None => tracing::info!("agent-router listening on http://{bind} (loopback only)"),
-        }
-        tracing::info!("  dashboard:    http://{bind}");
-        tracing::info!("  upstream:     {}", config.upstream);
-        tracing::info!("  database:     {}", db_path.display());
-        if status.logged_in {
-            tracing::info!(
-                "  default acct: {label}{}",
-                status
-                    .subscription_type
-                    .as_deref()
-                    .map(|s| format!(" · {s}"))
-                    .unwrap_or_default()
-            );
+        if server {
+            log_hosted_start(&config);
         } else {
-            tracing::warn!("  default acct: not logged in — run `claude` and log in, or add an account in the UI");
+            let status = accounts::probe_profile(None).unwrap_or_default();
+            let label = status
+                .email
+                .clone()
+                .unwrap_or_else(|| "Claude Code (default profile)".to_string());
+            db.upsert_default_account(proxy::ACCOUNT_ID, &label, &status)?;
+            match wide {
+                // The wide listener announces itself as it comes up, in `network`.
+                Some(ip) => tracing::info!("agent-router listening on http://{bind} and on {ip}"),
+                None => tracing::info!("agent-router listening on http://{bind} (loopback only)"),
+            }
+            tracing::info!("  dashboard:    http://{bind}");
+            tracing::info!("  upstream:     {}", config.upstream);
+            tracing::info!("  database:     {}", db_path.display());
+            if status.logged_in {
+                tracing::info!(
+                    "  default acct: {label}{}",
+                    status
+                        .subscription_type
+                        .as_deref()
+                        .map(|s| format!(" · {s}"))
+                        .unwrap_or_default()
+                );
+            } else {
+                tracing::warn!("  default acct: not logged in — run `claude` and log in, or add an account in the UI");
+            }
         }
     }
 
     // Ask before binding: after our own bind, a health probe could be answered by
     // this process and we would signal ourselves.
-    let incumbent = lifecycle::incumbent(bind);
+    let incumbent = if server { None } else { lifecycle::incumbent(bind) };
 
     let (capture, capture_task) = capture::spawn(db_path.clone());
     let state = proxy::AppState::new(config, capture, network.clone())?;
+    if let Some(password) = server_password {
+        state.auth.pin(&db_path, &password).await?;
+    }
     // Watches for prompts for the life of the process; a restart announces nothing.
     tokio::spawn(state.push.clone().watch());
-    // Wraps every Claude Code extension VSCode adds, when the switch is on.
-    tokio::spawn(shim::watch(db_path.clone(), state.push.clone()));
+    // Wraps every Claude Code extension VSCode adds, when the switch is on. A hosted
+    // router has no editor to watch.
+    if !server {
+        tokio::spawn(shim::watch(db_path.clone(), state.push.clone()));
+    }
     if wide.is_some() {
         if state.auth.configured().await {
             tracing::info!("  callers from other machines must present the router password");
@@ -339,9 +390,7 @@ async fn serve() -> anyhow::Result<()> {
         .route("/api/requests", get(api::requests))
         .route("/api/search", get(api::search))
         .route("/api/tools", get(api::tools))
-        .route("/api/accounts", get(api::accounts_list).post(api::accounts_add))
         .route("/api/accounts/activate", post(api::accounts_activate))
-        .route("/api/accounts/probe", post(api::accounts_probe))
         .route("/api/accounts/remove", post(api::accounts_remove))
         .route("/api/accounts/edit", post(api::accounts_edit))
         .route("/api/forecast", get(api::forecast))
@@ -351,37 +400,20 @@ async fn serve() -> anyhow::Result<()> {
         .route("/api/push/register", post(notify::api::register))
         .route("/api/push/unregister", post(notify::api::unregister))
         .route("/api/push/test", post(notify::api::test))
-        .route("/api/push/pending", get(notify::api::pending))
         .route("/api/quota", get(quota::quota))
         .route("/api/quota/raw", get(quota::raw_usage))
         .route("/api/usage-token", post(quota::set_usage_token))
-        .route("/api/login/start", post(login::api::start_login))
-        .route("/api/login/status", get(login::api::login_status))
-        .route("/api/setup", get(setup::api::status))
-        .route("/api/setup/service", post(setup::api::service_toggle))
-        .route("/api/setup/config", post(setup::api::config_toggle))
-        .route("/api/setup/shim", get(shim::api::status).post(shim::api::toggle))
-        .route("/api/setup/shim/auto", post(shim::api::auto))
-        .route("/api/network", post(network::api::set))
         .route("/live", get(live::page))
-        .route("/api/live/sessions", get(live::sessions))
-        .route("/api/live/stream", get(live::stream))
-        .route("/api/live/stats", get(live::stats))
-        .route("/api/live/send", post(live::send))
-        .route("/api/live/interrupt", post(live::interrupt))
-        .route("/api/live/prompt", get(live::prompt))
-        .route("/api/live/answer", post(live::answer))
-        .route("/api/live/archive", post(live::archive))
-        .route("/api/live/project", get(live::project_stats))
         .route("/api/live/options", get(live::options))
-        .route("/api/live/model", post(live::set_model))
-        .route("/api/live/effort", post(live::set_effort))
-        .route("/api/live/mode", post(live::set_mode))
-        .route("/api/live/aside", post(live::aside))
-        .route("/_router/health", get(api::health))
+        .route("/_router/health", get(api::health));
+    let app = if server { hosted::routes(app) } else { machine_routes(app) }
         .fallback(any(proxy::handle))
         .layer(axum::middleware::from_fn_with_state(state.clone(), guard::layer))
         .with_state(state.clone());
+
+    if server {
+        return serve_hosted(app, state, capture_task, stopping).await;
+    }
 
     // SO_REUSEPORT: the incumbent keeps serving until it has drained, so the port is
     // never unbound and no agent sees a refused connection.
@@ -396,37 +428,7 @@ async fn serve() -> anyhow::Result<()> {
             departing = Some(pid);
         }
     }
-
-    // Captured bodies moved out of the main store into their own file. The move waits
-    // for the outgoing router to finish draining, because until it exits it is still
-    // writing the very table this drops — see `db::migrate_bodies_if_needed`. Off the
-    // startup path either way: it is housekeeping, and the port is already being served.
-    {
-        let db_path = db_path.clone();
-        tokio::task::spawn_blocking(move || {
-            if let Some(pid) = departing {
-                if !lifecycle::has_exited_within(pid, Duration::from_secs(60)) {
-                    tracing::warn!(pid, "previous router still running; leaving the bodies where they are");
-                    return;
-                }
-            }
-            match db::migrate_bodies_if_needed(&db_path) {
-                Ok(()) => {}
-                // Nothing is lost by failing: the rows stay in the main store and the
-                // next start tries again. New bodies already go to the sidecar.
-                Err(err) => {
-                    tracing::warn!(%err, "could not move the captured bodies yet");
-                    return;
-                }
-            }
-            // Only once every body is in the sidecar, because the backfill reads from
-            // there and remembers how far it got: run it over a half-moved store and it
-            // would mark the rows still sitting in the main file as already seen.
-            if let Err(err) = db::backfill_blocks(&db_path) {
-                tracing::warn!(%err, "could not finish indexing the bodies captured before the index");
-            }
-        });
-    }
+    spawn_store_housekeeping(db_path.clone(), departing);
 
     // The wider listener, when there is to be one, serves this same app from a second
     // socket. Started last, once loopback is about to be accepted on and the incumbent
@@ -437,12 +439,13 @@ async fn serve() -> anyhow::Result<()> {
         tracing::warn!("{err}; staying on loopback only");
     }
 
+    let mut told = stopping;
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
-    .with_graceful_shutdown(async {
-        let why = lifecycle::shutdown_signal().await;
+    .with_graceful_shutdown(async move {
+        let why = told.wait().await;
         tracing::info!("{why} received; draining in-flight requests");
     })
     .await?;
@@ -451,14 +454,148 @@ async fn serve() -> anyhow::Result<()> {
     // one. Wait for it before going any further, or a phone's open stream would be
     // cut by our exit rather than finished. `drain` bounds its own wait.
     network.drain().await;
+    finish_capture(state, capture_task).await;
+    Ok(())
+}
 
-    // Serving has stopped and every connection has finished. Dropping the last
-    // AppState closes the capture channel, which is what lets the capture task know
-    // it can stop; wait for it so nothing already queued is lost on the way out.
+/// The routes that act on the machine the router runs on: its Claude Code settings, its
+/// login item, its editor extensions, its listening socket, the `claude` it can run to
+/// sign in, and the sessions whose transcripts and sockets are on its disk. A hosted
+/// router answers the same paths from `hosted` instead.
+fn machine_routes(router: Router<Arc<proxy::AppState>>) -> Router<Arc<proxy::AppState>> {
+    router
+        .route("/api/accounts", get(api::accounts_list).post(api::accounts_add))
+        .route("/api/accounts/probe", post(api::accounts_probe))
+        .route("/api/push/pending", get(notify::api::pending))
+        .route("/api/login/start", post(login::api::start_login))
+        .route("/api/login/status", get(login::api::login_status))
+        .route("/api/setup", get(setup::api::status))
+        .route("/api/setup/service", post(setup::api::service_toggle))
+        .route("/api/setup/config", post(setup::api::config_toggle))
+        .route("/api/setup/shim", get(shim::api::status).post(shim::api::toggle))
+        .route("/api/setup/shim/auto", post(shim::api::auto))
+        .route("/api/network", post(network::api::set))
+        .route("/api/live/sessions", get(live::sessions))
+        .route("/api/live/stream", get(live::stream))
+        .route("/api/live/stats", get(live::stats))
+        .route("/api/live/send", post(live::send))
+        .route("/api/live/interrupt", post(live::interrupt))
+        .route("/api/live/prompt", get(live::prompt))
+        .route("/api/live/answer", post(live::answer))
+        .route("/api/live/archive", post(live::archive))
+        .route("/api/live/project", get(live::project_stats))
+        .route("/api/live/model", post(live::set_model))
+        .route("/api/live/effort", post(live::set_effort))
+        .route("/api/live/mode", post(live::set_mode))
+        .route("/api/live/aside", post(live::aside))
+}
+
+/// A hosted router: one listener on its bind address, no handover (Kubernetes replaces
+/// the pod instead), and a stop that waits for open requests only so long. The kubelet
+/// sends SIGKILL when its grace period runs out, and capture still needs a moment after
+/// the last connection.
+async fn serve_hosted(
+    app: Router,
+    state: Arc<proxy::AppState>,
+    capture_task: tokio::task::JoinHandle<()>,
+    stopping: lifecycle::Stopping,
+) -> anyhow::Result<()> {
+    use std::future::IntoFuture;
+
+    let addr = state.config.bind;
+    let drain = state.config.drain;
+    // Every caller is on another machine — behind the ingress, or a probe by pod IP —
+    // so the peer and Host checks work from names and the password from the first
+    // request, not from a switch thrown later.
+    guard::allow_off_host(true);
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .map_err(|e| anyhow::anyhow!("binding {addr}: {e}"))?;
+    spawn_store_housekeeping(state.config.db_path.clone(), None);
+
+    let mut told = stopping.clone();
+    let serving = axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(async move {
+        let why = told.wait().await;
+        tracing::info!("{why} received; draining in-flight requests for at most {}s", drain.as_secs());
+    })
+    .into_future();
+    let mut limit = stopping;
+    let limit = async move {
+        limit.wait().await;
+        tokio::time::sleep(drain).await;
+    };
+    tokio::select! {
+        served = serving => served?,
+        () = limit => tracing::warn!("drain limit reached; closing the connections still open"),
+    }
+    finish_capture(state, capture_task).await;
+    Ok(())
+}
+
+/// What a hosted router says about itself at startup: where it listens, the names it
+/// answers to, and where its data lives — and that TLS is someone else's job.
+fn log_hosted_start(config: &config::Config) {
+    tracing::info!("agent-router serving on http://{} as a hosted router", config.bind);
+    if let Some(url) = &config.public_url {
+        tracing::info!("  public url:   {url}");
+    }
+    if config.allow_hosts.is_empty() {
+        tracing::warn!("  answers to:   IP addresses and localhost only; pass --public-url or --allow-host for the names clients use");
+    } else {
+        tracing::info!("  answers to:   {} (and IP addresses)", config.allow_hosts.join(", "));
+    }
+    tracing::info!("  upstream:     {}", config.upstream);
+    tracing::info!("  database:     {}", config.db_path.display());
+    if let Ok(dir) = config::data_dir() {
+        tracing::info!("  data dir:     {}", dir.display());
+    }
+    tracing::info!(
+        "  every caller presents the password from {}; whatever presents these names to clients must terminate TLS",
+        config::SERVER_PASSWORD_ENV
+    );
+}
+
+/// Captured bodies moved out of the main store into their own file. The move waits for
+/// the outgoing router to finish draining, because until it exits it is still writing
+/// the very table this drops — see `db::migrate_bodies_if_needed`. Off the startup path
+/// either way: it is housekeeping, and the port is already being served.
+fn spawn_store_housekeeping(db_path: std::path::PathBuf, departing: Option<i32>) {
+    tokio::task::spawn_blocking(move || {
+        if let Some(pid) = departing {
+            if !lifecycle::has_exited_within(pid, Duration::from_secs(60)) {
+                tracing::warn!(pid, "previous router still running; leaving the bodies where they are");
+                return;
+            }
+        }
+        match db::migrate_bodies_if_needed(&db_path) {
+            Ok(()) => {}
+            // Nothing is lost by failing: the rows stay in the main store and the
+            // next start tries again. New bodies already go to the sidecar.
+            Err(err) => {
+                tracing::warn!(%err, "could not move the captured bodies yet");
+                return;
+            }
+        }
+        // Only once every body is in the sidecar, because the backfill reads from
+        // there and remembers how far it got: run it over a half-moved store and it
+        // would mark the rows still sitting in the main file as already seen.
+        if let Err(err) = db::backfill_blocks(&db_path) {
+            tracing::warn!(%err, "could not finish indexing the bodies captured before the index");
+        }
+    });
+}
+
+/// Serving has stopped and every connection has finished. Dropping the last AppState
+/// closes the capture channel, which is what lets the capture task know it can stop;
+/// wait for it so nothing already queued is lost on the way out.
+async fn finish_capture(state: Arc<proxy::AppState>, capture_task: tokio::task::JoinHandle<()>) {
     drop(state);
     match tokio::time::timeout(Duration::from_secs(5), capture_task).await {
         Ok(_) => tracing::info!("shutdown complete"),
         Err(_) => tracing::warn!("capture did not drain within 5s; exiting anyway"),
     }
-    Ok(())
 }

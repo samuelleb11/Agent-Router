@@ -41,10 +41,7 @@ pub fn state_path() -> Result<PathBuf> {
 }
 
 pub fn data_dir() -> Result<PathBuf> {
-    let home = home_dir()?;
-    let dir = home.join(".agent-router");
-    std::fs::create_dir_all(&dir)?;
-    Ok(dir)
+    crate::config::data_dir()
 }
 
 /// `$HOME` on Unix, `%USERPROFILE%` on Windows.

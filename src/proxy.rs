@@ -41,6 +41,17 @@ const HOP_BY_HOP: &[&str] = &[
     "host",
 ];
 
+/// Headers a proxy in front of the router adds about the client — its address, the name
+/// it asked for, the scheme it spoke. They describe a developer's machine and network,
+/// not the request, and Anthropic has no use for them: dropped before the request goes
+/// upstream. An ingress sets them on every request to a hosted router; nothing sets them
+/// locally, so there this changes nothing.
+const FORWARDING: &[&str] = &["x-real-ip", "forwarded", "via", "x-request-id"];
+
+fn is_forwarding(name: &str) -> bool {
+    name.starts_with("x-forwarded-") || FORWARDING.contains(&name)
+}
+
 /// Ceiling on a buffered request body. Claude Code sends complete JSON with a
 /// content-length, so buffering costs microseconds; this only stops a pathological
 /// body from being held in memory.
@@ -107,7 +118,9 @@ impl AppState {
         let client = Client::builder(TokioExecutor::new()).build(tls);
         let dumps_left = AtomicUsize::new(config.dump_headers);
         let auth = crate::auth::Auth::load(&config.db_path)?;
-        let push = std::sync::Arc::new(crate::notify::Push::new(&config.db_path));
+        let push = std::sync::Arc::new(
+            crate::notify::Push::new(&config.db_path).with_keys_dir(config.push_keys_dir.clone()),
+        );
         let reads = crate::api::ReadPool::new(&config.db_path);
         // Shorter than the fastest thing the dashboard polls (1.5s), so the page is no
         // less live than it was before there was a cache here.
@@ -265,6 +278,11 @@ async fn forward(state: Arc<AppState>, req: Request<Body>) -> anyhow::Result<Res
     {
         let headers = out.headers_mut().expect("builder has headers");
         copy_forwardable(&parts.headers, headers);
+        let forwarding: Vec<HeaderName> =
+            headers.keys().filter(|n| is_forwarding(n.as_str())).cloned().collect();
+        for name in forwarding {
+            headers.remove(&name);
+        }
         headers.insert("host", HeaderValue::from_str(&authority)?);
         // The credential swap: whatever the agent sent is discarded, ours goes on.
         headers.remove("x-api-key");
@@ -300,6 +318,13 @@ async fn forward(state: Arc<AppState>, req: Request<Body>) -> anyhow::Result<Res
     );
     if resp_parts.status.is_client_error() || resp_parts.status.is_server_error() {
         dump_response_headers(&resp_parts.headers);
+    }
+    // Anthropic no longer takes the credential we signed with — revoked, rotated
+    // elsewhere, or replaced in the dashboard. Forget it, so the next request reads the
+    // stored one again instead of repeating the refusal until a restart.
+    if resp_parts.status == StatusCode::UNAUTHORIZED {
+        *state.active.write().await = None;
+        tracing::warn!("upstream refused the credential; it will be read again for the next request");
     }
 
     let mut resp = Response::builder().status(resp_parts.status);
@@ -402,5 +427,40 @@ fn dump_request(method: &axum::http::Method, path: &str, headers: &HeaderMap) {
 fn dump_response_headers(headers: &HeaderMap) {
     for (name, value) in headers {
         tracing::warn!("  <- {}: {}", name.as_str(), value.to_str().unwrap_or("<non-utf8>"));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_forwarding;
+
+    #[test]
+    fn what_a_proxy_adds_about_the_client_stays_behind() {
+        for h in [
+            "x-forwarded-for",
+            "x-forwarded-host",
+            "x-forwarded-proto",
+            "x-forwarded-port",
+            "x-forwarded-scheme",
+            "x-real-ip",
+            "forwarded",
+            "via",
+            "x-request-id",
+        ] {
+            assert!(is_forwarding(h), "{h} should be dropped");
+        }
+        for h in [
+            "authorization",
+            "anthropic-beta",
+            "anthropic-version",
+            "x-claude-code-session-id",
+            "x-claude-code-agent-id",
+            "user-agent",
+            "x-app",
+            "content-type",
+            "x-stainless-retry-count",
+        ] {
+            assert!(!is_forwarding(h), "{h} must reach Anthropic");
+        }
     }
 }

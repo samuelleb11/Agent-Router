@@ -131,6 +131,9 @@ pub struct Push {
     apns: Apns,
     fcm: Fcm,
     db_path: PathBuf,
+    /// A hosted router's push keys: a Secret mounted read-only, looked in after the
+    /// store's own directory.
+    keys_dir: Option<PathBuf>,
     seen: Mutex<(HashSet<String>, VecDeque<String>)>,
     /// What Apple last said, and what Google last said. Two slots, not one: a working
     /// iPhone clearing the field would quietly erase a standing Android failure.
@@ -159,6 +162,7 @@ impl Push {
             apns: Apns::new(),
             fcm: Fcm::new(),
             db_path: db_path.to_path_buf(),
+            keys_dir: None,
             seen: Mutex::new((HashSet::new(), VecDeque::new())),
             last_error: Mutex::new(None),
             fcm_last_error: Mutex::new(None),
@@ -171,6 +175,19 @@ impl Push {
             waiting_since: Mutex::new(HashMap::new()),
             missing: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Also take key files from `dir` — the Secret a deployment mounts for a hosted
+    /// router, which has no one to drop a file beside its store.
+    pub fn with_keys_dir(mut self, dir: Option<PathBuf>) -> Self {
+        self.keys_dir = dir;
+        self
+    }
+
+    /// Where a dropped key file is looked for: beside the store, then the deployment's
+    /// Secret when there is one.
+    fn key_dirs(&self) -> Vec<&Path> {
+        self.db_path.parent().into_iter().chain(self.keys_dir.as_deref()).collect()
     }
 
     pub fn apns_key(&self) -> Option<Key> {
@@ -241,8 +258,7 @@ impl Push {
         if self.fcm_configured() {
             return None;
         }
-        let dir = self.db_path.parent()?;
-        let (path, key) = service_account_in(dir)?;
+        let (path, key) = self.key_dirs().into_iter().find_map(service_account_in)?;
         let name = path.file_name()?.to_string_lossy().into_owned();
         let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok()?;
         if self.fcm_tried.lock().unwrap().as_ref() == Some(&(name.clone(), mtime)) {
@@ -284,8 +300,7 @@ impl Push {
         if self.apns_configured() {
             return None;
         }
-        let dir = self.db_path.parent()?;
-        let (path, key_id) = key_file_in(dir)?;
+        let (path, key_id) = self.key_dirs().into_iter().find_map(key_file_in)?;
         let name = path.file_name()?.to_string_lossy().into_owned();
         let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok()?;
         if self.tried.lock().unwrap().as_ref() == Some(&(name.clone(), mtime)) {
@@ -614,10 +629,16 @@ impl Push {
     /// Runs for the life of the router. What is already waiting at startup is not
     /// announced — a restart is not news.
     pub async fn watch(self: Arc<Self>) {
-        let me = self.clone();
-        if let Ok(already) = tokio::task::spawn_blocking(move || me.waiting()).await {
-            for (key, ..) in already {
-                self.mark(&key);
+        // A hosted router has none of what the sweep and the janitor read — no
+        // transcripts, no session registry, no wrapper sockets — so it only takes keys
+        // in, and delivers. What is waiting will come from the machine agents.
+        let local = !crate::config::is_server();
+        if local {
+            let me = self.clone();
+            if let Ok(already) = tokio::task::spawn_blocking(move || me.waiting()).await {
+                for (key, ..) in already {
+                    self.mark(&key);
+                }
             }
         }
         self.import_key_file();
@@ -631,7 +652,7 @@ impl Push {
             self.import_key_file();
             self.import_service_account_file();
             // Housekeeping, not notification: it runs whether or not a phone can be told.
-            if swept_sockets.is_none_or(|at| at.elapsed() >= JANITOR_EVERY) {
+            if local && swept_sockets.is_none_or(|at| at.elapsed() >= JANITOR_EVERY) {
                 swept_sockets = Some(Instant::now());
                 let cleared = tokio::task::spawn_blocking(|| {
                     janitor(&crate::peer::wrapper_dir(), &crate::registry::snapshot())
@@ -642,7 +663,7 @@ impl Push {
                     tracing::info!(cleared, "removed what dead wrappers left behind");
                 }
             }
-            if !self.configured() {
+            if !local || !self.configured() {
                 continue;
             }
             let me = self.clone();

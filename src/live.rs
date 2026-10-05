@@ -59,8 +59,8 @@ const LISTED_WITHIN_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 /// Where the archive list lives. A session id in here is one the reader has finished
 /// with; it stays hidden until it shows signs of life again.
 fn archive_path() -> PathBuf {
-    PathBuf::from(std::env::var("HOME").unwrap_or_default())
-        .join(".agent-router")
+    crate::config::data_dir()
+        .unwrap_or_else(|_| PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".agent-router"))
         .join("archived.json")
 }
 
@@ -1425,7 +1425,7 @@ fn price(st: &Stats) -> Option<f64> {
 }
 
 fn db_path() -> PathBuf {
-    std::env::var("AGENT_ROUTER_DB").map(PathBuf::from).unwrap_or_else(|_| {
+    crate::config::db_path().unwrap_or_else(|_| {
         PathBuf::from(std::env::var("HOME").unwrap_or_default())
             .join(".agent-router")
             .join("agent-router.db")
