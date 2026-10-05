@@ -440,10 +440,24 @@ everything that assumed otherwise, is in
 block names the working directory and the branch (`analyze::environment_of`). That also
 covers sessions on other machines and SDK sessions with no transcript on this one.
 
-**What it cannot do alone** is everything under "Reaching a running session" below. The
-next step is a per-machine agent: the same binary on each developer machine, dialling out
-to the server. It runs `live`, `registry`, `activity` and `peer` where the sessions are,
-since those already take every local input as a parameter.
+**Live sessions through the machine agent (`agent`, `tunnel`, `machines`).** What a pod
+cannot do alone is everything under "Reaching a running session" below, so each developer
+machine runs the same binary as `agent-router agent`:
+- The agent dials out to `/_router/agent` over one WebSocket, with the router password,
+  and listens on nothing.
+- The router sends each live request down that socket as framed HTTP (`tunnel`). The
+  agent answers it with the same `live` handlers a local router serves, in-process, and
+  the response comes back the same way, event streams included.
+- `machines` merges every machine's session list and labels each row with its machine.
+  It routes a request to the machine holding that session, keeps the archive shelf, and
+  feeds the prompt notifier with each agent's evidence. A machine that drops reads as
+  offline (503), never as closed.
+- On Windows only the agent runs. The wrapper's control channel there is a named pipe,
+  written to only after the agent has checked that the pipe is served by its own user
+  (`peer::pipe`).
+
+The protocol, the decisions and the Windows port are in
+[docs/hosting-machine-agent.md](docs/hosting-machine-agent.md).
 
 ## Build order
 

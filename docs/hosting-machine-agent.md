@@ -1,0 +1,253 @@
+# The machine agent: live sessions through a hosted router
+
+2026-10-05. Design for phase 2 of [hosting](hosting-on-kubernetes.md). A hosted router
+proxies and records every machine's traffic, but it cannot see the sessions themselves.
+They are transcripts, a session registry and wrapper sockets on each developer's
+machine, and a pod cannot open a connection into a laptop. The agent is the piece that
+can: the same binary, run on each machine, connecting out to the router.
+
+Written for the maintainer, and as the contract the pieces of phase 2 are built against.
+Built the same day; [Status](#status) says what has run where, and what still has to be
+tried on a Windows machine.
+
+## Decisions (owner, 2026-10-05)
+
+| Question | Answer |
+| --- | --- |
+| How an agent proves itself | The router password, which every machine already holds for Claude Code (`ANTHROPIC_AUTH_TOKEN`). No per-machine tokens. |
+| What keeps it running | A login item, from `agent-router agent install --server <url>` (launchd on macOS, a launcher in the Startup folder on Windows). The VS Code extension also starts it when a window opens. |
+| Platforms | macOS and Windows. Windows ships with both following and steering working, not one before the other. Linux later. |
+
+## The shape
+
+```
+phone / browser ──https──▶ hosted router ◀──wss, outbound── agent ── wrapper ── claude
+                            (pod)                            (each developer machine)
+```
+
+- **The agent connects out.** It keeps one WebSocket to the router at
+  `wss://<host>/_router/agent`, authenticated with the router password, and reconnects
+  with backoff when it drops. It listens on nothing.
+- **The router forwards live requests to the agent.** Each request for a session (follow
+  it, answer a prompt, send a message, stop, change the model) goes down that socket
+  as an HTTP request. The agent runs it against the same `live` handlers a local router
+  serves, in-process. The response, event streams included, comes back up the same
+  socket.
+
+This needs no new handler code: every `live` handler is stateless, and takes only its
+query or JSON body plus the machine it runs on.
+
+**What the router does itself:**
+- **Session list.** It asks every connected agent for its list and merges the answers,
+  labelling each session with its machine. It remembers which machine holds which
+  session.
+- **Per-session routing.** Session ids are UUIDs, so they are a global key. The router
+  sends each per-session request to the machine holding that session.
+- **Prompt notifications.** It decides when to announce a waiting prompt and when to take
+  the banner down, as today. The evidence comes from the agents.
+- **The archive shelf.** The shelf lives on the router, so every phone sees the same one.
+
+**Offline machines.** A machine whose agent is offline reads as offline, never as closed:
+- its sessions leave the list;
+- requests for them answer 503, naming the machine;
+- its banners stay on the phones until it comes back and says otherwise.
+
+## The agent
+
+```
+agent-router agent --server <url> [--label <name>] [--data-dir <dir>]
+agent-router agent --ensure            start only if no agent from this build runs
+agent-router agent install --server <url> [--project <dir>] [--no-service] [--no-config]
+agent-router agent uninstall
+agent-router agent status
+```
+
+**The password.** It comes from `AGENT_ROUTER_PASSWORD`, or from `<data-dir>/agent.json`,
+which `install` writes. That file holds `{server, password, machine, label}`, is
+owner-only (0600), and on Windows sits in the user's profile.
+
+**The machine id.** A random UUID made on first run and kept in `agent.json`. It
+survives a rename. The label defaults to the host name.
+
+**`install` does four things:**
+1. Checks the password against `GET <server>/api/auth`.
+2. Writes `agent.json`.
+3. Points Claude Code at the server: `env.ANTHROPIC_BASE_URL` and
+   `env.ANTHROPIC_AUTH_TOKEN` in `~/.claude/settings.json`, or in one project's
+   `.claude/settings.local.json`. The bookkeeping is the same as `install` uses today,
+   extended to two keys: touch only our own keys, adopt an existing value, and leave a
+   changed one alone.
+4. Registers the login item.
+
+`uninstall` reverts all of it.
+
+**Single instance.** `<data-dir>/agent.lock` holds the running agent's pid and build.
+`--ensure` exits if a same-or-newer build holds it. An older build is asked to stop,
+then replaced.
+
+**What it runs:**
+- **Request routes.** Only these answer tunneled requests: the `live` routes, and two
+  for the notifier, `GET /agent/waiting` and `GET /agent/still-waiting`. Nothing else is
+  reachable through the tunnel: no setup, no shim install, no files.
+- **Housekeeping.** The wrapper janitor runs every 60 s, as the router does locally today.
+- **Clock.** It derives activity on its own clock. Rows carry `as_of_ms` and the router
+  never re-derives them, because a few seconds of clock skew would misread turn
+  boundaries.
+
+## The tunnel
+
+One WebSocket, binary frames. Each frame is `kind: u8`, `id: u32` (big-endian, the
+request it belongs to), then the payload:
+
+| kind | direction | payload |
+| --- | --- | --- |
+| 1 `HELLO` | agent → router | JSON `{machine, label, platform, version, build}`; id 0, first frame |
+| 2 `REQUEST` | router → agent | JSON `{method, path, headers: [[name, value]], body}`; path includes the query, body is base64 |
+| 3 `HEAD` | agent → router | JSON `{status, headers: [[name, value]]}` |
+| 4 `BODY` | agent → router | raw bytes, at most 64 KiB per frame |
+| 5 `END` | agent → router | empty: the response is complete |
+| 6 `CANCEL` | router → agent | empty: nobody wants this response any more (a viewer closed the page) |
+| 7 `FAIL` | agent → router | UTF-8 text: the request failed before any `HEAD` |
+
+**Requests.** The router numbers them; ids are not reused while live.
+
+**Bodies.** A wrapper frame can be up to 1 MiB, so a request body can too. The WebSocket
+message limit is 4 MiB.
+
+**Keepalive.** The router pings every 20 s. A side that hears nothing for 60 s closes
+the socket, and the agent reconnects with backoff (1 s, then up to 30 s, with jitter).
+
+**The ingress.** It passes WebSocket upgrades as it is (ingress-nginx does by default).
+The `proxy-read-timeout` already documented for event streams also covers this socket,
+and the pings keep it under that timeout.
+
+**Authentication** is the router's guard, unchanged: `Authorization: Bearer <password>`
+on the upgrade request. Only a hosted router serves `/_router/agent`; a local router
+answers it 404.
+
+## What the router answers
+
+| Route | Hosted router with agents |
+| --- | --- |
+| `GET /api/live/sessions` | Every connected agent's list, merged and filtered by the shelf. Each row gains `machine: {id, label}`. Old phones ignore the key. |
+| `GET /api/live/stream`, `/stats`, `/prompt` | Tunneled to the session's machine. A stream is relayed byte for byte. |
+| `POST /api/live/send`, `/interrupt`, `/answer`, `/model`, `/effort`, `/mode`, `/aside` | Tunneled to the session's machine. |
+| `GET /api/live/project` | Every agent's answer for that working directory, summed. |
+| `POST /api/live/archive` | On the router: the shelf. |
+| `GET /api/push/pending` | The waiting keys of connected agents, plus the announced keys of machines that are offline. |
+| `GET /api/machines` | New: every machine seen, with label, platform, build, online, and since when. |
+
+**Errors:**
+- A session no agent knows answers 404.
+- A session whose machine is offline answers 503: "the machine running this session
+  (<label>) is offline".
+- With no agent connected at all, the list is `[]`, and the pages say how to install one.
+
+## Windows
+
+Everything above has to work on Windows, steering included. Six things are Unix-only today.
+
+1. **The router crate must build for Windows** (`x86_64-pc-windows-msvc`, or `-gnu`
+   from the Mac). Agent mode is the only mode it runs there. Local and server mode refuse
+   with a sentence; they do not compile in half-working form.
+2. **Process liveness.** The `registry::Procs` trait gets a Windows implementation:
+   - liveness from `OpenProcess` plus `GetExitCodeProcess`;
+   - start time from `GetProcessTimes`, matched against the record's `procStart`;
+   - the parent pid from a toolhelp snapshot.
+3. **File identity.** The live view keys transcripts by `(dev, ino)`. Windows keys them
+   by volume serial and file index (`GetFileInformationByHandle`), not by creation time:
+   NTFS gives a file made under a name deleted moments before the old file's creation
+   time.
+4. **The wrapper's control transport.** A named pipe,
+   `\\.\pipe\agent-router-<user>-<session>`, carries the same frames, the same
+   whole-frame-or-nothing rule and the same `{ok}` receipt.
+   - `.pending` and `.ctl` live in `%LOCALAPPDATA%\agent-router\sessions\`. There is
+     no `.sock`: a session is wrapped while its pipe name is held.
+   - The pipe admits only its own user, and an elevated editor's only elevated processes,
+     so steering an editor run as administrator needs an agent run the same way.
+   - Before writing, the agent checks that the process serving the pipe runs as the same
+     user, by its token's SID, and it connects at identification level: a pipe whose name
+     another account took never receives what someone typed, and cannot act as the agent.
+   - A stop is the same `interrupt` control request as on macOS, never a console control
+     event, which would reach every process on that console.
+   - Installed in place of the extension's binary, the wrapper parks the real one as
+     `claude.real.exe`, a name that is still a program.
+5. **Paths.** `%USERPROFILE%\.claude`, `claude.exe`, and the extension's
+   `native-binary\claude.exe`.
+6. **Packaging.**
+   - A `win32-x64` VS Code package carries `agent-router.exe` and `claude-wrapper.exe`,
+     cross-built from a Mac or the Linux runner through zig (`build:windows` in CI). It
+     goes to a release's package registry, and not to the marketplaces until it has run
+     on Windows.
+   - The login item is a script in the user's Startup folder, `Agent Router agent.vbs`,
+     that starts `agent-router.exe agent --ensure` without a console window. Unlike a
+     logon task it needs no administrator rights, and it touches no registry. It is
+     written in UTF-16, which Windows Script Host reads whatever the profile folder is
+     called. Where policy turns Script Host off, the editor still starts the agent.
+
+## The clients
+
+- **VS Code extension.**
+  - A remote mode: `agentRouter.server` (a URL) plus the password in the editor's secret
+    storage.
+  - In remote mode it installs and supervises the agent instead of a router
+    (`agent-router agent --ensure`).
+  - It keeps `claudeCode.claudeProcessWrapper`.
+  - It reads quota from the server with the password, and opens the pages in the
+    browser.
+- **Phones and `/live`.** They show the machine label on each session, and group by
+  machine when there is more than one.
+- **Northstar.** It needs a URL and password pinned from its deployment. That is handed
+  to a Northstar session separately.
+
+## Build order
+
+1. **The tunnel and the router side, built and tested on macOS.** The agent mode, the
+   protocol, the merged list, per-session routing, notifications from agents, and the
+   machine label.
+2. **`agent install` and the login items.** Then the extension's remote mode.
+3. **Windows.** The crate for Windows, liveness and identity, the wrapper on named
+   pipes, the login item, and the `win32-x64` package.
+4. **The machine label on the phones.**
+
+Each step is tested on its own: unit tests for the frame codec, and a real router with a
+real agent over loopback. The Windows pieces build on the Mac with a cross toolchain and
+run on the Windows machine.
+
+## Status
+
+**On macOS, tried end to end** with a router in server mode and an agent over loopback:
+- the merged list, stats, prompts, an event stream relayed as it is written, sending, the
+  shelf, and pending prompts;
+- a session nobody holds (404), a machine gone offline (503), and a wrong password;
+- `agent install`, `status`, `--ensure` and `uninstall`, with Claude Code's settings put
+  back as they were and the password kept only as a fingerprint.
+
+**The phones** show the machine on each session. iOS is installed; Android is built and
+waits for a device.
+
+**On Windows, built and not yet run.** Both programs cross-build and pass clippy, and
+the wrapper's own tests compile for Windows. On the Windows machine, in this order:
+
+1. `cargo test -p claude-wrapper`: 52 unit tests and 9 lab tests (build the lab's fake
+   CLI first with `cargo build -p claude-wrapper --example fake_cli`).
+2. Claude Code's records: `%USERPROFILE%\.claude\sessions\<pid>.json` and
+   `projects\<slug>\<uuid>.jsonl` in the shapes macOS writes, and how a Windows path is
+   slugged. The session list is built from them.
+3. The extension honours `claudeCode.claudeProcessWrapper`, and the arguments survive
+   being quoted again: compare `Get-CimInstance Win32_Process -Filter
+   "Name='claude.exe'" | select CommandLine` for a wrapped and an unwrapped session.
+4. The pipe is there under the expected name:
+   `[IO.Directory]::GetFiles('\\.\pipe\') | ? { $_ -like '*agent-router-*' }`.
+5. From a phone through the hosted router: follow a session, send a message, stop a
+   turn, answer a permission prompt (its `.pending` goes), then `/clear` (the pipe and
+   the records move to the new id).
+6. Closing panels: an idle one leaves nothing behind; a busy one leaves no `claude.exe`
+   two seconds later; no console window flashes.
+7. Access: only the user can open the pipe (`accesschk -v \pipe\agent-router-…`);
+   another account is refused; with the editor run as administrator, an ordinary agent
+   is refused and says so.
+8. The login item: `agent install --server <url>` writes the Startup script and starts
+   the agent hidden; it comes back after logging off and on; `agent uninstall` removes
+   it and stops the agent.
+9. Defender lets the unsigned, zig-built programs run.

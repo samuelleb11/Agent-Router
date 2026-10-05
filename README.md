@@ -22,14 +22,17 @@ see [Running it as a server](#running-it-as-a-server).
 
 | | macOS | Linux | Windows |
 | --- | --- | --- | --- |
-| Router and dashboard | yes | yes | not built |
+| Router and dashboard | yes | yes | — |
 | Credential store | Keychain, via `/usr/bin/security` | `~/.claude/.credentials.json` | — |
 | Run at login | launchd agent | systemd user service | — |
-| VS Code extension | arm64, x64 | x64, arm64 (static musl) | — |
+| VS Code extension | arm64, x64 | x64, arm64 (static musl) | x64, agent only |
 | Hosted server | — | container image (glibc, distroless) | — |
+| Machine agent, for a hosted router | yes, at login through launchd | by hand | yes, at login from the Startup folder |
 
-Windows is deliberately absent rather than half-written: it would need a per-user logon
-task, and an untested installer that edits the registry is worse than none.
+On Windows only the machine agent runs: it serves a hosted router the sessions on that
+machine, to follow and to steer, and the router itself refuses to start there. The
+Windows build is cross-compiled and has not yet run on Windows; the checklist for its
+first run is in [docs/hosting-machine-agent.md](docs/hosting-machine-agent.md#status).
 
 The phone apps are **iOS 26+** (SwiftUI) and **Android 10+** (API 29, Jetpack Compose).
 Either one can watch any number of routers.
@@ -58,6 +61,11 @@ The extension is not the router. Every editor window runs its own copy of the
 extension, so each one only makes sure a current router is serving on this machine —
 `agent-router --ensure` exits when a same-or-newer build already answers, and takes the
 port over without dropping a request when an older one does.
+
+Connected to a hosted router instead (**Agent Router: Connect to a Server…**, which sets
+`agentRouter.server` and keeps the password in the editor's secret storage), it runs the
+machine agent rather than a router, and points Claude Code at the server. That is the
+only way it runs on Windows.
 
 ## Quick start
 
@@ -226,18 +234,26 @@ agent-router serve --server --bind 0.0.0.0 --data-dir /data \
 - **Nothing of a developer's machine.** No `~/.claude`, no Keychain, no wrapper sockets.
   The settings that act on a machine (Claude Code setup, start at login, the wrapper) are
   not offered.
-- **No live view yet.** The live view, steering and prompt notifications need a small
-  agent on each machine that runs the sessions. That agent is the next step; until it
-  exists, a hosted router records and reports, and does not follow sessions.
+- **Live sessions come from the machines.** The live view, steering and prompt
+  notifications need the machine a session runs on. Each machine runs the same binary as
+  an agent that dials out to the router over one WebSocket and answers for its sessions;
+  the router lists every machine's sessions, labelled with the machine, and sends each
+  request to the one that holds it. A machine that goes offline reads as offline, not as
+  closed.
 
-**Pointing Claude Code at it.** On each machine, set two variables under `env` in
-`~/.claude/settings.json`, or in a project's `.claude/settings.local.json`:
-`ANTHROPIC_BASE_URL` (the server's URL) and `ANTHROPIC_AUTH_TOKEN` (the password).
+**Joining a machine.** `agent-router agent install --server <url>` asks for the password
+and checks it against the server, points Claude Code at the server
+(`ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN` under `env` in `~/.claude/settings.json`,
+or in one project's `.claude/settings.local.json` with `--project <dir>`), and starts the
+agent now and at every login. `agent-router agent uninstall` puts all of it back. The VS
+Code extension does the same from its remote mode. By hand, the two variables are all
+Claude Code needs; the agent is what the live view needs.
 
 **Deploying it.** The image is built from the `Dockerfile`. The Helm chart is in
 `charts/agent-router`. The pipeline that checks, builds, publishes and deploys both is
 `.gitlab-ci.yml`. The design, the decisions behind it and the first-install steps are in
-[docs/hosting-on-kubernetes.md](docs/hosting-on-kubernetes.md).
+[docs/hosting-on-kubernetes.md](docs/hosting-on-kubernetes.md); the agent, its protocol
+and the Windows port are in [docs/hosting-machine-agent.md](docs/hosting-machine-agent.md).
 
 ## Security
 
@@ -461,27 +477,30 @@ Firebase is optional — see Notifications above.
 
 ## Building and packaging
 
-The router builds for four platforms and ships as a VS Code extension per platform, with
+The router builds for five platforms and ships as a VS Code extension per platform, with
 the router and the wrapper inside the package:
 
 ```sh
 scripts/build-target.sh aarch64-apple-darwin        # or x86_64-apple-darwin,
 scripts/package-vsix.sh darwin-arm64                #    x86_64-unknown-linux-musl,
-                                                    #    aarch64-unknown-linux-musl
+                                                    #    aarch64-unknown-linux-musl,
+                                                    #    x86_64-pc-windows-gnu (win32-x64)
 ```
 
 Linux builds are static (musl). From a Mac they cross-build through `cargo zigbuild`
 (`brew install zig && cargo install cargo-zigbuild`) or a musl cross compiler; on Linux
-they build natively.
+they build natively. Windows builds are the GNU ABI and cross-build the same way, through
+zig or mingw-w64.
 
 Claude Code is pointed at the router through its settings file and launched through the
 wrapper by way of Claude Code's own `claudeCode.claudeProcessWrapper` setting, so nothing
 inside Anthropic's extension is ever touched.
 
-`.gitlab-ci.yml` does all four on a tag — the Linux job in Docker through zig, the Mac
-job on a shell runner tagged `macos` that has rustup, node and zig — puts the VSIX files
-in the package registry, makes a release, and publishes to the Marketplace and Open VSX
-when the `VSCE_PAT` and `OVSX_PAT` variables are set. The extension's manifest lives in
+`.gitlab-ci.yml` does all of them on a tag — the Linux and Windows jobs in Docker through
+zig, the Mac job on a shell runner tagged `macos` that has rustup, node and zig — puts
+the VSIX files in the package registry, makes a release, and publishes to the
+Marketplace and Open VSX when the `VSCE_PAT` and `OVSX_PAT` variables are set. The
+Windows package stays off the marketplaces until it has run on Windows. The extension's manifest lives in
 `vscode/`; its version follows `Cargo.toml`. **Change the `publisher` id in it to your
 own** before publishing — it must match the Marketplace publisher you create.
 
@@ -501,10 +520,11 @@ per finding with its sources.
 * **Context composition is an estimate.** Totals are exact; the split across system /
   tools / history / tool results apportions that exact total by character share,
   because there is no local tokenizer for current Claude models.
-* **No Windows build.** See [Platforms](#platforms).
-* **A hosted router has no live view yet.** Following and steering sessions needs an
-  agent on the machine that runs them, which is not built yet. See
-  [Running it as a server](#running-it-as-a-server).
+* **Windows is untried.** The agent and the wrapper build for Windows and pass their
+  checks on a Mac, and have not run on Windows yet. See [Platforms](#platforms).
+* **On Linux the agent does not start at login.** `agent install` points Claude Code at
+  the server but registers no login item there; start the agent with
+  `agent-router agent`.
 
 ## License
 
