@@ -285,3 +285,227 @@ async fn a_hosted_router_refuses_what_would_act_on_its_machine_in_the_same_shape
     let refused = lab.post("/api/auth", r#"{"password":"a different one"}"#).await;
     assert!(words(refused, StatusCode::CONFLICT).starts_with("the password is set by the deployment"));
 }
+
+// ---------------------------------------------------------------------------
+// Push registration, and the accounts writes
+// ---------------------------------------------------------------------------
+//
+// The accounts tests keep a token where the router keeps one, in its secrets file. Under
+// test that file is in a directory of the test process's own (`accounts::secrets`), never
+// in ~/.agent-router, and every id here is used by one test only.
+
+/// A device token of each kind, in the shapes that occur.
+const APNS: &str = "740f4707bebcf74f9b7c25d48e3358945f6aa01da5ddb387462c7eaf61bb78ad";
+const FCM: &str = "cjE9vT2zRk6mQq1sLp0aBc:APA91bH-x_9Kd3fQz7YwVn2pRt5uXsA0bCdEfGhIjKlMnOpQrStUvWxYz01234567890abcdefghijklmnopqrstuvwxyzAB";
+
+/// Only the phones call these. A refusal was a 200 carrying `error` until it was not.
+#[tokio::test]
+async fn push_registration_refusal_is_an_error_status_in_words() {
+    let lab = Lab::local("push-register");
+    let junk = [
+        r#"{"token":"hello"}"#.to_string(),
+        r#"{"token":"   "}"#.to_string(),
+        // A service the router does not speak, and a token that is not what it claims.
+        json!({ "token": APNS, "platform": "webpush" }).to_string(),
+        json!({ "token": FCM, "platform": "apns" }).to_string(),
+    ];
+    for body in &junk {
+        let refused = lab.post("/api/push/register", body).await;
+        assert_eq!(words(refused, StatusCode::BAD_REQUEST), "that is not a device token", "{body}");
+    }
+    let refused = lab.post("/api/push/register", r#"{"name":"a phone"}"#).await;
+    assert!(words(refused, StatusCode::UNPROCESSABLE_ENTITY).contains("token"));
+    let refused = lab.post("/api/push/register", "register this phone").await;
+    assert!(words(refused, StatusCode::BAD_REQUEST).contains("JSON"));
+    let refused = lab.send("/api/push/register", None, &json!({ "token": APNS }).to_string()).await;
+    assert!(words(refused, StatusCode::UNSUPPORTED_MEDIA_TYPE).contains("Content-Type"));
+    assert!(lab.state.push.devices().is_empty(), "no phone was registered");
+
+    let refused = lab.post("/api/push/unregister", r#"{"token":"  "}"#).await;
+    assert_eq!(words(refused, StatusCode::BAD_REQUEST), "no device token supplied");
+    let refused = lab.post("/api/push/unregister", r#"{"token":42}"#).await;
+    assert!(words(refused, StatusCode::UNPROCESSABLE_ENTITY).contains("token"));
+    let refused = lab.post("/api/push/unregister", "forget me").await;
+    assert!(words(refused, StatusCode::BAD_REQUEST).contains("JSON"));
+}
+
+/// An account as far as signing goes: its name, where its credential comes from, its
+/// profile directory, and the token stored under its id.
+#[derive(Debug, Clone, PartialEq)]
+struct Held {
+    label: String,
+    source: String,
+    profile_dir: Option<String>,
+    token: Option<String>,
+}
+
+/// What the account with this id is now, if there is one.
+fn held(lab: &Lab, id: &str) -> Option<Held> {
+    use rusqlite::OptionalExtension;
+    let conn = rusqlite::Connection::open(&lab.state.config.db_path).unwrap();
+    let (label, source, profile_dir) = conn
+        .query_row("SELECT label, source, profile_dir FROM accounts WHERE id = ?1", [id], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })
+        .optional()
+        .unwrap()?;
+    // Read as the router reads a token account's credential to sign with.
+    let as_token = crate::accounts::Account {
+        id: id.to_string(),
+        label: String::new(),
+        source: crate::accounts::Source::Token,
+        profile_dir: None,
+        email: None,
+    };
+    let token = crate::accounts::resolve(&as_token).ok().map(|r| r.token);
+    Some(Held { label, source, profile_dir, token })
+}
+
+/// An account already in the store, as an earlier add would have left it.
+fn existing(lab: &Lab, id: &str, label: &str, source: &str, profile_dir: Option<&str>, token: Option<&str>) -> Held {
+    let conn = rusqlite::Connection::open(&lab.state.config.db_path).unwrap();
+    conn.execute(
+        "INSERT INTO accounts (id, label, source, profile_dir, active, created_at) VALUES (?1, ?2, ?3, ?4, 0, 1)",
+        rusqlite::params![id, label, source, profile_dir],
+    )
+    .unwrap();
+    if let Some(token) = token {
+        crate::accounts::store_token(id, token).unwrap();
+    }
+    let now = held(lab, id).unwrap();
+    assert_eq!(now.token.as_deref(), token, "the store holds what the test put there");
+    now
+}
+
+/// The token an account already has, and the one a clashing add brings. Neither is a
+/// credential.
+const THEIRS: &str = "sk-ant-oat01-theirs-QZ9JX8QZ9JX8QZ9JX8QZ9JX8QZ9JX8QZ9JX8QZ9JX8QZ9JX8QZ9JX8QZ9JX8QZ9JX8QZ9JX8QZ9JX8";
+const OURS: &str = "sk-ant-oat01-ours-JX8QZ9JX8QZ9JX8QZ9JX8QZ9JX8QZ9JX8QZ9JX8QZ9JX8QZ9JX8QZ9JX8QZ9JX8QZ9JX8QZ9JX8QZ9";
+
+/// A refused add's words name the account that has the id: its id and its name.
+fn names(why: &str, id: &str, holder: &str) {
+    assert!(why.contains(&format!("{id:?}")), "the id is said: {why}");
+    assert!(why.contains(&format!("{holder:?}")), "the account is named: {why}");
+}
+
+#[tokio::test]
+async fn account_name_clash_refuses_a_token_account_and_leaves_the_one_there() {
+    let lab = Lab::local("clash-token");
+    let before = existing(&lab, "clash-token-work", "Clash token work", "token", None, Some(THEIRS));
+    let body = json!({ "label": "CLASH Token-Work", "source": "token", "token": OURS }).to_string();
+    let why = words(lab.post("/api/accounts", &body).await, StatusCode::CONFLICT);
+    names(&why, "clash-token-work", "Clash token work");
+    assert_eq!(held(&lab, "clash-token-work"), Some(before), "its name, source and token are its own");
+
+    // The built-in account: a new "Default" would have made it a token account.
+    let before = existing(&lab, "default", "Claude Code (default profile)", "keychain", None, None);
+    let body = json!({ "label": "Default", "source": "token", "token": OURS }).to_string();
+    let why = words(lab.post("/api/accounts", &body).await, StatusCode::CONFLICT);
+    names(&why, "default", "Claude Code (default profile)");
+    assert_eq!(held(&lab, "default"), Some(before), "still Claude Code's own login, with no token of ours");
+}
+
+#[tokio::test]
+async fn account_name_clash_refuses_a_profile_account_and_leaves_the_one_there() {
+    let lab = Lab::local("clash-profile");
+    let before = existing(&lab, "clash-profile-work", "Clash profile work", "token", None, Some(THEIRS));
+    let body = json!({ "label": "Clash Profile Work", "source": "profile" }).to_string();
+    let why = words(lab.post("/api/accounts", &body).await, StatusCode::CONFLICT);
+    names(&why, "clash-profile-work", "Clash profile work");
+    assert_eq!(held(&lab, "clash-profile-work"), Some(before));
+
+    // A profile account, whose credential is its directory: neither kind of add takes it.
+    let dir = lab.dir.join("accounts").join("clash-profile-home");
+    let before = existing(&lab, "clash-profile-home", "Clash profile home", "profile", dir.to_str(), None);
+    for body in [
+        json!({ "label": "clash profile HOME", "source": "token", "token": OURS }),
+        json!({ "label": "Clash Profile Home", "source": "profile" }),
+    ] {
+        let why = words(lab.post("/api/accounts", &body.to_string()).await, StatusCode::CONFLICT);
+        names(&why, "clash-profile-home", "Clash profile home");
+        assert_eq!(held(&lab, "clash-profile-home").as_ref(), Some(&before), "{body}");
+    }
+}
+
+/// Refused before `claude setup-token` is run at all: its token would have been stored
+/// over this account's when the reader finished signing in.
+#[tokio::test]
+async fn account_name_clash_refuses_a_sign_in_before_it_starts() {
+    let lab = Lab::local("clash-sign-in");
+    let before = existing(&lab, "clash-signin-work", "Clash sign-in work", "token", None, Some(THEIRS));
+    let why = words(lab.post("/api/login/start", r#"{"label":"Clash Signin Work"}"#).await, StatusCode::CONFLICT);
+    names(&why, "clash-signin-work", "Clash sign-in work");
+    assert_eq!(lab.state.login.lock().unwrap().phase, None, "no sign-in was started");
+    assert_eq!(held(&lab, "clash-signin-work"), Some(before));
+}
+
+/// 400 for what is wrong whatever the store holds, 409 for what the store's state stands
+/// in the way of — never the 500 every one of these once was.
+#[tokio::test]
+async fn accounts_bad_input_refusal_is_400_and_a_conflict_with_the_store_is_409() {
+    let lab = Lab::local("accounts-writes");
+    let default = existing(&lab, "default", "Claude Code (default profile)", "keychain", None, None);
+    let work = existing(&lab, "bad-input-work", "Bad input work", "token", None, None);
+
+    for (body, said) in [
+        (r#"{"label":"x","source":"keychain"}"#, "the default Keychain account is discovered automatically and cannot be added"),
+        (r#"{"label":"x","source":"oauth"}"#, r#"unknown account source "oauth""#),
+        (r#"{"label":"x","source":"token"}"#, "a token is required for this account type"),
+        (r#"{"label":"x","source":"token","token":"   "}"#, "a token is required for this account type"),
+    ] {
+        assert_eq!(words(lab.post("/api/accounts", body).await, StatusCode::BAD_REQUEST), said, "{body}");
+    }
+
+    for (body, status, said) in [
+        (r#"{"id":"bad-input-work","email":"me at work"}"#, StatusCode::BAD_REQUEST, r#""me at work" is not an email address"#),
+        (
+            r#"{"id":"bad-input-work","token":"sk-ant-sid01-abc"}"#,
+            StatusCode::BAD_REQUEST,
+            "that is a claude.ai session key — it belongs in the session-key field, and cannot sign API requests",
+        ),
+        (r#"{"id":"bad-input-work","token":"hunter2"}"#, StatusCode::BAD_REQUEST, "expected a token starting sk-ant- (from `claude setup-token`)"),
+        (r#"{"id":"nobody","label":"x"}"#, StatusCode::CONFLICT, r#"no account with id "nobody""#),
+        (
+            r#"{"id":"default","token":"sk-ant-oat01-abc"}"#,
+            StatusCode::CONFLICT,
+            "a keychain account takes its credential from Claude Code, so there is nothing here to replace — log in again instead",
+        ),
+    ] {
+        assert_eq!(words(lab.post("/api/accounts/edit", body).await, status), said, "{body}");
+    }
+
+    let refused = lab.post("/api/accounts/activate", r#"{"id":"nobody"}"#).await;
+    assert_eq!(words(refused, StatusCode::CONFLICT), r#"no account with id "nobody""#);
+    let refused = lab.post("/api/accounts/remove", r#"{"id":"default"}"#).await;
+    assert_eq!(
+        words(refused, StatusCode::BAD_REQUEST),
+        "the default account is discovered automatically and cannot be removed"
+    );
+    let refused = lab.post("/api/accounts/probe", r#"{"id":"nobody"}"#).await;
+    assert_eq!(words(refused, StatusCode::CONFLICT), r#"no account with id "nobody""#);
+    let refused = lab.post("/api/accounts/probe", r#"{"id":"bad-input-work"}"#).await;
+    assert!(words(refused, StatusCode::CONFLICT).starts_with(r#""bad-input-work" is not a profile account"#));
+
+    // A body they cannot read, in the same shape as every other refusal.
+    for path in ["/api/accounts/edit", "/api/accounts/activate", "/api/accounts/remove", "/api/accounts/probe"] {
+        assert!(words(lab.post(path, "default").await, StatusCode::BAD_REQUEST).contains("JSON"), "{path}");
+        assert!(words(lab.post(path, "{}").await, StatusCode::UNPROCESSABLE_ENTITY).contains("id"), "{path}");
+    }
+
+    assert_eq!(held(&lab, "default"), Some(default), "nothing refused changed anything");
+    assert_eq!(held(&lab, "bad-input-work"), Some(work));
+    assert_eq!(held(&lab, "x"), None);
+    assert_eq!(held(&lab, "nobody"), None);
+}
+
+/// A hosted router signs only with a pasted token, so a Claude Code login that came with
+/// a copied store is the state in the way of switching to it.
+#[tokio::test]
+async fn accounts_bad_input_refusal_on_a_hosted_router_names_the_login_it_cannot_sign_with() {
+    let lab = Lab::hosted("accounts-hosted").await;
+    existing(&lab, "default", "Claude Code (default profile)", "keychain", None, None);
+    let refused = lab.post("/api/accounts/activate", r#"{"id":"default"}"#).await;
+    assert_eq!(words(refused, StatusCode::CONFLICT), crate::accounts::NOT_ON_A_SERVER);
+    let refused = lab.post("/api/accounts/activate", r#"{"id":"nobody"}"#).await;
+    assert_eq!(words(refused, StatusCode::CONFLICT), r#"no account with id "nobody""#);
+}

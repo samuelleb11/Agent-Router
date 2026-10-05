@@ -114,9 +114,12 @@ object StatusText {
      * The open session's second header line. A status is shown only while the stream still
      * vouches for it ([fresh]: connected, heard from lately, and sent on this connection
      * rather than the last). Otherwise the last word it had is the past — "Running Bash ·
-     * 12s" frozen on a phone that left the LAN — and saying "reconnecting…" is the truth.
+     * 12s" frozen on a phone that left the LAN — and saying "reconnecting…" is the truth,
+     * unless the router [refused] the stream and said why: a machine offline is that, and
+     * not a session that ended.
      */
-    fun header(st: LiveStatus?, connected: Boolean, fresh: Boolean, before: String): String = when {
+    fun header(st: LiveStatus?, connected: Boolean, fresh: Boolean, before: String, refused: String? = null): String = when {
+        !connected && refused != null -> refused
         st == null && !connected -> "connecting…"
         st == null -> before
         !fresh -> "reconnecting…"

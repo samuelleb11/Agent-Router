@@ -57,9 +57,8 @@ struct SessionView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     } else if let feed, !feed.connected {
-                        // Never the last line the stream sent: "Running Bash · 12s" frozen
-                        // in the header reads as the truth long after it stopped being so.
-                        Text(feed.status == nil ? "connecting…" : "reconnecting…")
+                        // Never the last line the stream sent: see `LiveFeed.linkLine`.
+                        Text(feed.linkLine)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .accessibilityIdentifier("feed-link")

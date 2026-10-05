@@ -208,12 +208,45 @@ fn find_url(text: &str) -> Option<String> {
     url.contains("oauth").then_some(url)
 }
 
+/// How the token `setup-token` mints begins.
+const MINTED: &str = "sk-ant-oat01-";
+
+/// The token `setup-token` printed, once something after it says where it ends.
+///
+/// A read of the terminal can stop anywhere, partway through the token included, and what
+/// has been read so far then ends inside it. Taking that end for the token's stored the
+/// part read so far, and the account got a credential that did not work. So a run of
+/// token characters is taken only once a character that cannot be part of one follows
+/// it; a run that reaches the end of what has been read may go on in the next read, and is
+/// left for it. Only [`token_at_exit`] lets the end of the text end a token.
 fn find_token(text: &str) -> Option<String> {
-    let start = text.find("sk-ant-oat01-")?;
-    let rest = &text[start..];
-    let end = rest.find(|c: char| !token_char(c)).unwrap_or(rest.len());
-    // A truncated capture is worse than none: the shortest real token seen is ~100.
-    (end >= 80).then(|| rest[..end].to_string())
+    token_runs(text)
+        .find(|&(run, ended)| ended && whole(run))
+        .map(|(run, _)| run.to_string())
+}
+
+/// The token, once the program has exited. Nothing more will be read, so a run that
+/// reaches the end of its output was ended by the exit, not by a read: it is whole as
+/// printed.
+fn token_at_exit(text: &str) -> Option<String> {
+    token_runs(text).find(|&(run, _)| whole(run)).map(|(run, _)| run.to_string())
+}
+
+/// Every run of token characters from [`MINTED`] on, and whether something after it ends it.
+fn token_runs(text: &str) -> impl Iterator<Item = (&str, bool)> {
+    text.match_indices(MINTED).map(move |(at, _)| {
+        let rest = &text[at..];
+        match rest.find(|c: char| !token_char(c)) {
+            Some(end) => (&rest[..end], true),
+            None => (rest, false),
+        }
+    })
+}
+
+/// A truncated capture is worse than none: the shortest real token seen is ~100, so a
+/// shorter run is a line still being drawn, not a credential.
+fn whole(run: &str) -> bool {
+    run.len() >= 80
 }
 
 /// A `$BROWSER` stand-in: records the URL rather than opening anything, so the
@@ -288,15 +321,25 @@ impl Terminal {
     }
 
     /// The terminal closed: the token, if it printed one.
-    fn end(self, f: &mut Flow) -> Option<String> {
+    fn end(mut self, f: &mut Flow) -> Option<String> {
+        if self.token.is_none() {
+            self.token = token_at_exit(&plain(&self.raw));
+            if self.token.is_some() {
+                f.tail.close();
+            }
+        }
         f.tail.end();
         self.token
     }
 }
 
-/// Start a login. Returns immediately; progress is polled from `Shared`.
-pub fn start(label: String, shared: Shared) -> Result<()> {
+/// Start a login. Returns immediately; progress is polled from `Shared`. The account is
+/// added to the store at `db`, and never over one already there: a name whose id another
+/// account has is refused here ([`crate::accounts::Conflict::NameTaken`]), before the
+/// profile directory, which would be that account's, is made or `setup-token` run in it.
+pub fn start(label: String, db: PathBuf, shared: Shared) -> Result<()> {
     let id = crate::accounts::slugify(&label);
+    crate::accounts::Store::new(db.clone()).check_free(&id)?;
     let profile = crate::accounts::profiles_root()?.join(&id);
     std::fs::create_dir_all(&profile)?;
     let capture = profile.join("browser-url.txt");
@@ -353,28 +396,11 @@ pub fn start(label: String, shared: Shared) -> Result<()> {
 
         let _ = child.wait();
         let mut f = shared.lock().unwrap();
-        match term.end(&mut f) {
-            Some(token) => {
-                let email = crate::accounts::probe_profile(Some(&profile))
-                    .ok()
-                    .and_then(|s| s.email);
-                f.email = email.clone();
-                f.account_id = Some(id.clone());
-                match finish(&id, email.as_deref().unwrap_or(&f.label), &token, email.as_deref()) {
-                    Ok(()) => f.phase = Some(Phase::Done),
-                    Err(e) => {
-                        f.phase = Some(Phase::Failed);
-                        f.error = Some(e.to_string());
-                    }
-                }
-            }
-            None => {
-                f.phase = Some(Phase::Failed);
-                f.error = Some(
-                    "the sign-in did not complete, so no token was issued".to_string(),
-                );
-            }
-        }
+        let token = term.end(&mut f);
+        let email = token.as_ref().and_then(|_| {
+            crate::accounts::probe_profile(Some(&profile)).ok().and_then(|s| s.email)
+        });
+        settle(&mut f, &db, &id, token, email);
         // The profile directory has done its job; the token is ours now.
         let _ = std::fs::remove_file(&capture);
         let _ = std::fs::remove_file(&shim);
@@ -383,17 +409,43 @@ pub fn start(label: String, shared: Shared) -> Result<()> {
     Ok(())
 }
 
-/// Store the minted token as an ordinary long-lived account.
-fn finish(id: &str, label: &str, token: &str, email: Option<&str>) -> Result<()> {
-    crate::accounts::store_token(id, token)?;
-    let db = crate::config::db_path()?;
-    let store = crate::accounts::Store::new(db);
+/// How a sign-in ends once `setup-token` has exited: the account it added, or why there
+/// is none. `email` is who the profile it ran in says it signed in as.
+fn settle(f: &mut Flow, db: &std::path::Path, id: &str, token: Option<String>, email: Option<String>) {
+    let Some(token) = token else {
+        f.phase = Some(Phase::Failed);
+        f.error = Some("the sign-in did not complete, so no token was issued".to_string());
+        return;
+    };
+    f.email = email.clone();
+    let label = email.clone().unwrap_or_else(|| f.label.clone());
+    match finish(db, id, &label, &token, email.as_deref()) {
+        Ok(()) => {
+            // Only an account that was added is named: a refused one is another's.
+            f.account_id = Some(id.to_string());
+            f.phase = Some(Phase::Done);
+        }
+        Err(e) => {
+            f.phase = Some(Phase::Failed);
+            f.error = Some(e.to_string());
+        }
+    }
+}
+
+/// Store the minted token as an ordinary long-lived account, in the store at `db`.
+///
+/// The name was free when the sign-in started, but an account can be added under it
+/// while the reader is signing in. `add` refuses it then, and stores the token only once
+/// the row is in, so this token never lands on that account's.
+fn finish(db: &std::path::Path, id: &str, label: &str, token: &str, email: Option<&str>) -> Result<()> {
+    let store = crate::accounts::Store::new(db.to_path_buf());
     let status = crate::accounts::AuthStatus {
         email: email.map(str::to_owned),
         ..Default::default()
     };
-    store.add(id, label, crate::accounts::Source::Token, None, &status)?;
-    Ok(())
+    store.add(id, label, crate::accounts::Source::Token, None, &status, || {
+        crate::accounts::store_token(id, token)
+    })
 }
 
 #[cfg(test)]
@@ -626,6 +678,101 @@ mod tests {
         assert_eq!(status["phase"], "awaiting_sign_in");
         assert_eq!(status["label"], "work");
     }
+
+    // The token is taken whole however the terminal's reads cut it: only once something
+    // after it ends it, or the program exits. `fake` makes one of 109 characters, as long as
+    // a real one; split 80 to 108 characters in, it was stored cut where the read ended.
+
+    #[test]
+    fn setup_token_split_across_reads_is_captured_whole_wherever_the_split_falls() {
+        let token = fake("sk-ant-oat01-");
+        let frame = success(&token);
+        let start = frame.find(&token).expect("the frame shows the token");
+        // Every boundary within the token, and either edge of it.
+        for at in start..=start + token.len() {
+            let (first, second) = frame.as_bytes().split_at(at);
+            let mut f = Flow::default();
+            let mut term = terminal();
+            term.feed(WAITING.as_bytes(), &mut f);
+            term.feed(first, &mut f);
+            assert_eq!(term.token, None, "nothing has ended the token yet: split at {at}");
+            assert!(!shows(&f.to_json()), "split at {at}: {}", f.to_json());
+            term.feed(second, &mut f);
+            assert_eq!(term.token.as_deref(), Some(token.as_str()), "split at {at}");
+            assert_eq!(f.to_json()["tail"], Value::Null, "captured, so no tail: split at {at}");
+            assert_eq!(term.end(&mut f).as_deref(), Some(token.as_str()), "split at {at}");
+        }
+    }
+
+    #[test]
+    fn setup_token_split_across_reads_and_cut_off_by_the_exit_is_captured_as_printed() {
+        // The program prints the token and goes, with nothing after it — not even the escape
+        // that ends its colour — so only the exit says where it ends.
+        let token = fake("sk-ant-oat01-");
+        let screen = format!("\r\nYour OAuth token (valid for 1 year):\r\n\r\n\u{1b}[33m{token}");
+        let start = screen.find(&token).expect("the screen shows the token");
+        for at in start..=start + token.len() {
+            let (first, second) = screen.as_bytes().split_at(at);
+            let mut f = Flow::default();
+            let mut term = terminal();
+            term.feed(WAITING.as_bytes(), &mut f);
+            term.feed(first, &mut f);
+            term.feed(second, &mut f);
+            assert_eq!(term.token, None, "a further read could still add to it: split at {at}");
+            assert!(!shows(&f.to_json()), "split at {at}: {}", f.to_json());
+            assert_eq!(term.end(&mut f).as_deref(), Some(token.as_str()), "split at {at}");
+            assert_eq!(f.to_json()["tail"], Value::Null, "captured, so no tail: split at {at}");
+        }
+
+        // A line drawn only partway when the program went is not a credential.
+        let mut f = Flow::default();
+        let mut term = terminal();
+        term.feed(format!("\u{1b}[33m{}", &token[..60]).as_bytes(), &mut f);
+        assert_eq!(term.end(&mut f), None);
+        assert!(!shows(&f.to_json()), "{}", f.to_json());
+    }
+
+    /// The name was free when the sign-in started and was taken while the reader signed
+    /// in: the minted token is not stored over that account's, and the sign-in fails
+    /// saying whose the name is. Settled as the reader thread settles it, against a store of
+    /// its own.
+    #[test]
+    fn account_name_clash_when_a_sign_in_ends_stores_nothing_over_the_account() {
+        use crate::accounts::{AuthStatus, Source, Store};
+        let dir = std::env::temp_dir().join(format!("ar-login-clash-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("agent-router.db");
+        crate::db::Db::open(&db).unwrap();
+        let store = Store::new(db.clone());
+        let theirs = fake("sk-ant-oat01-");
+        let ours = format!("sk-ant-oat01-ours-{}", FILLER.repeat(12));
+        store
+            .add("late-clash-work", "Late clash work", Source::Token, None, &AuthStatus::default(), || {
+                crate::accounts::store_token("late-clash-work", &theirs)
+            })
+            .unwrap();
+
+        let mut f = Flow { phase: Some(Phase::AwaitingSignIn), label: "Late Clash Work".into(), ..Flow::default() };
+        settle(&mut f, &db, "late-clash-work", Some(ours.clone()), Some("someone@example.com".into()));
+        assert_eq!(f.phase, Some(Phase::Failed));
+        let why = f.error.clone().expect("the sign-in says why it failed");
+        assert!(why.contains(r#""late-clash-work""#) && why.contains(r#""Late clash work""#), "{why}");
+        assert_eq!(f.account_id, None, "nothing was added, so nothing is named");
+        let account = store.get("late-clash-work").unwrap().expect("still there");
+        assert_eq!((account.label.as_str(), account.source), ("Late clash work", Source::Token));
+        assert_eq!(crate::accounts::resolve(&account).unwrap().token, theirs, "its own token");
+
+        // A name still free when the sign-in ends: added, under the address it signed in as.
+        let mut f = Flow { phase: Some(Phase::AwaitingSignIn), label: "Late Clash Home".into(), ..Flow::default() };
+        settle(&mut f, &db, "late-clash-home", Some(ours.clone()), Some("someone@example.com".into()));
+        assert_eq!(f.phase, Some(Phase::Done), "{:?}", f.error);
+        assert_eq!(f.account_id.as_deref(), Some("late-clash-home"));
+        let account = store.get("late-clash-home").unwrap().expect("added");
+        assert_eq!((account.label.as_str(), account.source), ("someone@example.com", Source::Token));
+        assert_eq!(crate::accounts::resolve(&account).unwrap().token, ours);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -672,11 +819,14 @@ pub mod api {
             }
         }
         let shared = state.login.clone();
-        match tokio::task::spawn_blocking(move || super::start(label, shared)).await {
+        let db = state.config.db_path.clone();
+        match tokio::task::spawn_blocking(move || super::start(label, db, shared)).await {
             Ok(Ok(())) => Json(state.login.lock().unwrap().to_json()).into_response(),
-            // 500: the router could not start `claude setup-token` — no profile directory,
-            // no pty, or no `claude` on its PATH — and the request had nothing to do with it.
-            Ok(Err(e)) => failed(e),
+            // 409 for a name whose id another account has: its token would have gone over
+            // that account's (`crate::accounts::Conflict`). Otherwise 500: the router could
+            // not start `claude setup-token` — no profile directory, no pty, or no `claude`
+            // on its PATH — and the request had nothing to do with it.
+            Ok(Err(e)) => crate::api::not_made(e),
             Err(e) => failed(e),
         }
     }

@@ -185,7 +185,7 @@ fun SessionScreen(app: AppState, router: Router, opened: LiveSession, onBack: ((
                             }
                         }
                         Text(
-                            StatusText.header(feed.status, feed.connected, feed.statusFresh, session.projectName),
+                            StatusText.header(feed.status, feed.connected, feed.statusFresh, session.projectName, feed.refused),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,

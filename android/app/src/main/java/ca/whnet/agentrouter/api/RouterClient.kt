@@ -99,6 +99,32 @@ class RouterClient(baseUrl: String, private val password: String?) {
             (o["reason"] ?: o["error"])?.jsonPrimitive?.content
         }.getOrNull()
 
+        /**
+         * What an error status stands for, read the same way from a call's reply and from a
+         * stream's: the router's own words when the body carries them ([RouterFailure.Refused]),
+         * and otherwise the status it sent with what little the body says. A stream once
+         * threw the bare status without reading the body at all, so a hosted router's "the
+         * machine running this session (…) is offline" reached the screen as "Router
+         * returned 503".
+         *
+         * A refusal arrives as an error status with its reason inside — a router from before
+         * that answered the same refusal as a 200 carrying `error`, which is why
+         * [OkReply.problem] still looks there. Either way the screen shows those words.
+         */
+        fun failure(code: Int, body: String): RouterFailure {
+            val trimmed = body.trim()
+            val words = reasonIn(body)?.takeIf { it.isNotEmpty() }
+            return when {
+                code == 401 -> RouterFailure.Unauthorized
+                code == 403 && trimmed.contains("no password set") -> RouterFailure.NoPasswordSet
+                words != null -> RouterFailure.Refused(code, words)
+                else -> RouterFailure.Status(code, trimmed.take(160))
+            }
+        }
+
+        /** More than any refusal's few words, and all of an error body a stream reads. */
+        private const val ERROR_BODY_MAX = 16_384L
+
         private val JSON = "application/json".toMediaTypeOrNull()
     }
 
@@ -118,18 +144,8 @@ class RouterClient(baseUrl: String, private val password: String?) {
         }
         response.use {
             val body = it.body?.string().orEmpty()
-            val trimmed = body.trim()
             if (it.isSuccessful) return body
-            // A refusal arrives as an error status with its reason inside — a router from
-            // before that answered the same refusal as a 200 carrying `error`, which is why
-            // [OkReply.problem] still looks there. Either way the screen shows those words.
-            val words = reasonIn(body)?.takeIf { w -> w.isNotEmpty() }
-            when {
-                it.code == 401 -> throw RouterFailure.Unauthorized
-                it.code == 403 && trimmed.contains("no password set") -> throw RouterFailure.NoPasswordSet
-                words != null -> throw RouterFailure.Refused(it.code, words)
-                else -> throw RouterFailure.Status(it.code, trimmed.take(160))
-            }
+            throw failure(it.code, body)
         }
     }
 
@@ -176,11 +192,11 @@ class RouterClient(baseUrl: String, private val password: String?) {
             }
             try {
                 response.use {
-                    when {
-                        it.isSuccessful -> Unit
-                        it.code == 401 -> throw RouterFailure.Unauthorized
-                        it.code == 403 -> throw RouterFailure.NoPasswordSet
-                        else -> throw RouterFailure.Status(it.code, "")
+                    // Refused: the body says why, as any call's does, in a few words. A body
+                    // that cannot be read still leaves the status that was sent.
+                    if (!it.isSuccessful) {
+                        val why = runCatching { it.peekBody(ERROR_BODY_MAX).string() }.getOrDefault("")
+                        throw failure(it.code, why)
                     }
                     val source = it.body?.source() ?: throw RouterFailure.Unreachable("no body")
                     val splitter = SseLineSplitter()

@@ -13,7 +13,6 @@ use axum::http::{header, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::Json;
 use rusqlite::types::ValueRef;
-use rusqlite::OptionalExtension;
 use rusqlite::{Connection, OpenFlags};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
@@ -1259,6 +1258,38 @@ fn global_rollup(accounts: &[Value], now: i64) -> Value {
 // ---------------------------------------------------------------------------
 // Accounts
 // ---------------------------------------------------------------------------
+//
+// The writes refuse in `refusal`'s shape: 400 and `{ok: false, error}` for a request that
+// is wrong whatever the store holds, 409 for one the store's state stands in the way of,
+// and 500 only for the router failing. They all answered 500 once, refusals included, so a
+// client could not tell a name already taken from a disk that would not write.
+
+use crate::accounts::{Conflict, Source, Store};
+use crate::refusal::{failed, refuse, JsonBody};
+
+/// What an accounts write the store did not make answers: 409 and its words when the
+/// store's state stood in the way ([`Conflict`]), and 500 when the store failed.
+pub(crate) fn not_made(e: anyhow::Error) -> Response {
+    let (status, why) = why_not(e);
+    refuse(status, why)
+}
+
+/// The status and the words of an answer decided inside a blocking task, which becomes
+/// a response once it is back out: a whole `Response` is too big to return through every
+/// step of one.
+type Unmade = (StatusCode, String);
+
+fn why_not(e: anyhow::Error) -> Unmade {
+    match e.downcast::<Conflict>() {
+        Ok(conflict) => (StatusCode::CONFLICT, conflict.to_string()),
+        Err(e) => failure(e),
+    }
+}
+
+/// The router failed, and nothing the caller sent was wrong (see `refusal::failed`).
+fn failure(e: impl std::fmt::Display) -> Unmade {
+    (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+}
 
 #[derive(Deserialize)]
 pub struct AddAccount {
@@ -1297,62 +1328,71 @@ fn looks_like_email(s: &str) -> bool {
 
 /// Rename an account, or tell the router which identity it serves. The id and the
 /// stored credential are untouched, so history keyed to this account stays intact.
+///
+/// What the edit carries is checked first, against nothing the store holds (400); then
+/// the account it names, which may be gone or may not be the router's to give a token
+/// (409).
 pub async fn accounts_edit(
     State(state): State<Arc<AppState>>,
-    Json(req): Json<AccountEdit>,
-) -> ApiResult {
-    let conn = rusqlite::Connection::open(&state.config.db_path)?;
+    JsonBody(req): JsonBody<AccountEdit>,
+) -> Response {
     let label = req.label.map(|l| l.trim().to_string()).filter(|l| !l.is_empty());
     let email = req.email.map(|e| e.trim().to_string()).filter(|e| !e.is_empty());
     if let Some(email) = &email {
         if !looks_like_email(email) {
-            return Err(ApiError(anyhow::anyhow!("{email:?} is not an email address")));
+            return refuse(StatusCode::BAD_REQUEST, format!("{email:?} is not an email address"));
         }
     }
-    let source: Option<String> = conn
-        .query_row("SELECT source FROM accounts WHERE id = ?1", [&req.id], |r| {
-            r.get::<_, Option<String>>(0)
-        })
-        .optional()?
-        .flatten();
-    let Some(source) = source else {
-        return Err(ApiError(anyhow::anyhow!("no account with id {:?}", req.id)));
-    };
-
-    // Removing an account's stored session key must also clear the flag.
-    // Rotating the credential: replace it in the Keychain, in place, so the account
-    // keeps its id and everything recorded against it.
-    if let Some(token) = req.token.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
-        if source != "token" {
-            return Err(ApiError(anyhow::anyhow!(
-                "a {source} account takes its credential from Claude Code, so there is \
-                 nothing here to replace — log in again instead"
-            )));
-        }
+    let token = req.token.as_deref().map(str::trim).filter(|t| !t.is_empty()).map(str::to_owned);
+    if let Some(token) = &token {
         if token.starts_with("sk-ant-sid") {
-            return Err(ApiError(anyhow::anyhow!(
+            return refuse(
+                StatusCode::BAD_REQUEST,
                 "that is a claude.ai session key — it belongs in the session-key field, \
-                 and cannot sign API requests"
-            )));
+                 and cannot sign API requests",
+            );
         }
         if !token.starts_with("sk-ant-") {
-            return Err(ApiError(anyhow::anyhow!(
-                "expected a token starting sk-ant- (from `claude setup-token`)"
-            )));
+            return refuse(
+                StatusCode::BAD_REQUEST,
+                "expected a token starting sk-ant- (from `claude setup-token`)",
+            );
         }
-        let id = req.id.clone();
-        let token = token.to_string();
-        tokio::task::spawn_blocking(move || crate::accounts::store_token(&id, &token)).await??;
     }
 
-    conn.execute(
-        "UPDATE accounts SET label = COALESCE(?2, label), email = COALESCE(?3, email)
-         WHERE id = ?1",
-        rusqlite::params![req.id, label, email],
-    )?;
-    // The cached credential carries the label and identity, so re-resolve it.
-    state.invalidate().await;
-    Ok(Json(json!({ "ok": true, "id": req.id })))
+    let store = Store::new(state.config.db_path.clone());
+    let id = req.id.clone();
+    let done = tokio::task::spawn_blocking(move || -> Result<(), Unmade> {
+        let Some(account) = store.get(&id).map_err(failure)? else {
+            return Err((StatusCode::CONFLICT, Conflict::NoAccount(id).to_string()));
+        };
+        // Rotating the credential: replace it in the secrets file, in place, so the
+        // account keeps its id and everything recorded against it.
+        if let Some(token) = token {
+            if account.source != Source::Token {
+                return Err((
+                    StatusCode::CONFLICT,
+                    format!(
+                        "a {} account takes its credential from Claude Code, so there is \
+                         nothing here to replace — log in again instead",
+                        account.source.as_str()
+                    ),
+                ));
+            }
+            crate::accounts::store_token(&id, &token).map_err(failure)?;
+        }
+        store.edit(&id, label.as_deref(), email.as_deref()).map_err(why_not)
+    })
+    .await;
+    match done {
+        Ok(Ok(())) => {
+            // The cached credential carries the label and identity, so re-resolve it.
+            state.invalidate().await;
+            Json(json!({ "ok": true, "id": req.id })).into_response()
+        }
+        Ok(Err((status, why))) => refuse(status, why),
+        Err(e) => failed(e),
+    }
 }
 
 /// What `GET /api/accounts` takes.
@@ -1477,24 +1517,46 @@ where
     Ok(list)
 }
 
+/// Add an account: a pasted `claude setup-token` value, or a Claude Code profile the
+/// router makes for a login run in a terminal. A sign-in the router drives itself, the
+/// third way in, is `login`.
+///
+/// Adding never replaces. The id is the name made safe (`accounts::slugify`), and a name
+/// whose id another account has — a "Work" beside a "work", a "Default" beside the
+/// built-in account — is refused with 409, naming that account, and nothing of it is
+/// written: not its row, not its token, not its profile directory.
+///
+/// The body is read with axum's own `Json`, unlike the other writes: the hosted router's
+/// `POST /api/accounts` (`hosted::accounts_add`) calls this with one it has read already.
 pub async fn accounts_add(
     State(state): State<Arc<AppState>>,
     Json(req): Json<AddAccount>,
-) -> ApiResult {
-    let source = crate::accounts::Source::parse(&req.source)?;
+) -> Response {
+    let source = match Source::parse(&req.source) {
+        Ok(source) => source,
+        Err(e) => return refuse(StatusCode::BAD_REQUEST, e.to_string()),
+    };
+    let token = req.token.as_deref().map(str::trim).filter(|t| !t.is_empty()).map(str::to_owned);
+    // 400, both: whatever the store holds, neither request can be met.
+    let token = match (source, token) {
+        (Source::Keychain, _) => {
+            return refuse(
+                StatusCode::BAD_REQUEST,
+                "the default Keychain account is discovered automatically and cannot be added",
+            )
+        }
+        (Source::Token, None) => {
+            return refuse(StatusCode::BAD_REQUEST, "a token is required for this account type")
+        }
+        (Source::Token, token) => token,
+        (Source::Profile, _) => None,
+    };
     let id = crate::accounts::slugify(&req.label);
-    let store = crate::accounts::Store::new(state.config.db_path.clone());
+    let store = Store::new(state.config.db_path.clone());
 
-    let result = tokio::task::spawn_blocking(move || -> anyhow::Result<Value> {
-        match source {
-            crate::accounts::Source::Token => {
-                let token = req
-                    .token
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|t| !t.is_empty())
-                    .ok_or_else(|| anyhow::anyhow!("a token is required for this account type"))?;
-                crate::accounts::store_token(&id, token)?;
+    let done = tokio::task::spawn_blocking(move || -> anyhow::Result<Value> {
+        match token {
+            Some(token) => {
                 // A long-lived token cannot tell us who it belongs to — the usage
                 // endpoint refuses it — so if the name given is an email address,
                 // take it as the identity. It is the only signal available.
@@ -1502,16 +1564,21 @@ pub async fn accounts_add(
                     email: looks_like_email(&req.label).then(|| req.label.trim().to_string()),
                     ..Default::default()
                 };
-                store.add(&id, &req.label, source, None, &status)?;
+                // The token is stored by `add`, and only once the id is known to be free.
+                store.add(&id, &req.label, source, None, &status, || {
+                    crate::accounts::store_token(&id, &token)
+                })?;
                 Ok(json!({ "id": id, "ready": true }))
             }
-            crate::accounts::Source::Profile => {
+            None => {
+                // Before the directory: for a name already taken, it is that account's.
+                store.check_free(&id)?;
                 // The router creates and owns the profile directory; the login itself
                 // is a terminal program, so the UI hands back the command to run.
                 let dir = crate::accounts::profiles_root()?.join(&id);
                 std::fs::create_dir_all(&dir)?;
                 let status = crate::accounts::probe_profile(Some(&dir)).unwrap_or_default();
-                store.add(&id, &req.label, source, Some(&dir.to_string_lossy()), &status)?;
+                store.add(&id, &req.label, source, Some(&dir.to_string_lossy()), &status, || Ok(()))?;
                 Ok(json!({
                     "id": id,
                     "ready": status.logged_in,
@@ -1519,94 +1586,112 @@ pub async fn accounts_add(
                     "command": format!("CLAUDE_CONFIG_DIR={} claude auth login", dir.display()),
                 }))
             }
-            crate::accounts::Source::Keychain => Err(anyhow::anyhow!(
-                "the default Keychain account is discovered automatically and cannot be added"
-            )),
         }
     })
-    .await??;
-    Ok(Json(result))
+    .await;
+    match done {
+        Ok(Ok(added)) => Json(added).into_response(),
+        Ok(Err(e)) => not_made(e),
+        Err(e) => failed(e),
+    }
 }
 
 /// Re-check a profile account's login state, and pick up its email and org once the
 /// terminal login completes. The UI polls this so the flow finishes on its own.
+///
+/// An id that names no profile account is refused with 409. It answered a 200 once, with
+/// `logged_in: false`, which a poller could not tell from a login not finished yet.
 pub async fn accounts_probe(
     State(state): State<Arc<AppState>>,
-    Json(req): Json<AccountRef>,
-) -> ApiResult {
-    let conn = open(&state)?;
-    let dir: Option<String> = rows(
-        &conn,
-        "SELECT profile_dir FROM accounts WHERE id = ?1",
-        &[&req.id],
-    )?
-    .as_array()
-    .and_then(|a| a.first().cloned())
-    .and_then(|v| v.get("profile_dir").and_then(Value::as_str).map(str::to_owned));
-    let Some(dir) = dir else {
-        return Ok(Json(json!({ "logged_in": false, "detail": "not a profile account" })));
-    };
-
-    let store = crate::accounts::Store::new(state.config.db_path.clone());
+    JsonBody(req): JsonBody<AccountRef>,
+) -> Response {
+    let store = Store::new(state.config.db_path.clone());
     let id = req.id.clone();
-    let label_dir = dir.clone();
-    let status = tokio::task::spawn_blocking(move || -> anyhow::Result<Value> {
-        let status = crate::accounts::probe_profile(Some(std::path::Path::new(&label_dir)))?;
+    let done = tokio::task::spawn_blocking(move || -> Result<Value, Unmade> {
+        let Some(account) = store.get(&id).map_err(failure)? else {
+            return Err((StatusCode::CONFLICT, Conflict::NoAccount(id).to_string()));
+        };
+        let Some(dir) = account.profile_dir else {
+            return Err((
+                StatusCode::CONFLICT,
+                format!("{id:?} is not a profile account, so it has no login of its own to check"),
+            ));
+        };
+        // 500 when `claude` cannot be asked: the router's machine, not the request.
+        let status = crate::accounts::probe_profile(Some(std::path::Path::new(&dir))).map_err(failure)?;
         if status.logged_in {
             let label = status.email.clone().unwrap_or_else(|| id.clone());
-            store.add(
-                &id,
-                &label,
-                crate::accounts::Source::Profile,
-                Some(&label_dir),
-                &status,
-            )?;
+            store.record_login(&id, &dir, &label, &status).map_err(failure)?;
         }
-        Ok(serde_json::to_value(status)?)
+        serde_json::to_value(status).map_err(failure)
     })
-    .await??;
-    Ok(Json(status))
+    .await;
+    match done {
+        Ok(Ok(status)) => Json(status).into_response(),
+        Ok(Err((status, why))) => refuse(status, why),
+        Err(e) => failed(e),
+    }
 }
 
 pub async fn accounts_activate(
     State(state): State<Arc<AppState>>,
-    Json(req): Json<AccountRef>,
-) -> ApiResult {
-    let store = crate::accounts::Store::new(state.config.db_path.clone());
+    JsonBody(req): JsonBody<AccountRef>,
+) -> Response {
+    let store = Store::new(state.config.db_path.clone());
     let id = req.id.clone();
-    // A hosted router can only sign with a pasted token. Switching to a Claude Code login
-    // that came with a copied store would leave every request with nothing to sign with.
     let server = state.config.server;
-    tokio::task::spawn_blocking(move || {
-        if server && store.source_of(&id)? != Some(crate::accounts::Source::Token) {
-            anyhow::bail!("{}", crate::accounts::NOT_ON_A_SERVER);
+    let done = tokio::task::spawn_blocking(move || -> Result<(), Unmade> {
+        // A hosted router can only sign with a pasted token. Switching to a Claude Code
+        // login that came with a copied store would leave every request with nothing to
+        // sign with. 409: that account is what stands in the way.
+        if server {
+            match store.get(&id).map_err(failure)? {
+                Some(account) if account.source != Source::Token => {
+                    return Err((StatusCode::CONFLICT, crate::accounts::NOT_ON_A_SERVER.to_string()));
+                }
+                _ => {}
+            }
         }
-        store.activate(&id)
+        store.activate(&id).map_err(why_not)
     })
-    .await??;
-    // Drop the cached credential: the switch takes effect on the very next request,
-    // mid-session, with nothing restarted.
-    state.invalidate().await;
-    tracing::info!(account = %req.id, "active account switched");
-    Ok(Json(json!({ "ok": true, "active": req.id })))
+    .await;
+    match done {
+        Ok(Ok(())) => {
+            // Drop the cached credential: the switch takes effect on the very next request,
+            // mid-session, with nothing restarted.
+            state.invalidate().await;
+            tracing::info!(account = %req.id, "active account switched");
+            Json(json!({ "ok": true, "active": req.id })).into_response()
+        }
+        Ok(Err((status, why))) => refuse(status, why),
+        Err(e) => failed(e),
+    }
 }
 
 pub async fn accounts_remove(
     State(state): State<Arc<AppState>>,
-    Json(req): Json<AccountRef>,
-) -> ApiResult {
+    JsonBody(req): JsonBody<AccountRef>,
+) -> Response {
     // On a hosted router there is no discovery to bring it back, and a `default` row
     // can only have come with a store copied from a machine: it can never sign there.
+    // 400 on a machine: whatever the store holds, the next start would put it back.
     if req.id == crate::proxy::ACCOUNT_ID && !state.config.server {
-        return Err(ApiError(anyhow::anyhow!(
-            "the default account is discovered automatically and cannot be removed"
-        )));
+        return refuse(
+            StatusCode::BAD_REQUEST,
+            "the default account is discovered automatically and cannot be removed",
+        );
     }
-    let store = crate::accounts::Store::new(state.config.db_path.clone());
+    let store = Store::new(state.config.db_path.clone());
     let id = req.id.clone();
-    tokio::task::spawn_blocking(move || store.remove(&id)).await??;
-    state.invalidate().await;
-    Ok(Json(json!({ "ok": true })))
+    // An id no account has is no refusal: what was asked for, no such account, holds.
+    match tokio::task::spawn_blocking(move || store.remove(&id)).await {
+        Ok(Ok(())) => {
+            state.invalidate().await;
+            Json(json!({ "ok": true })).into_response()
+        }
+        Ok(Err(e)) => failed(e),
+        Err(e) => failed(e),
+    }
 }
 
 /// Health, and the pid a replacement instance needs in order to hand over. `build` names

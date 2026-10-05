@@ -30,6 +30,14 @@ final class LiveFeed {
     /// True from the first status on a connection until that connection ends, fails or
     /// goes silent. While false, the last status is history, not news.
     var connected = false
+    /// Why the router last refused the stream, in its own words, while the feed goes on
+    /// asking: a hosted router's "the machine running this session (…) is offline" (503),
+    /// its "No such session." when no machine holds the session (404), or a relay that
+    /// failed (502). None of them is the session ending — an offline machine comes back,
+    /// and its session with it — so the feed retries as it does after a drop, and the
+    /// header says this rather than "reconnecting…". Cleared by the first thing a
+    /// connection delivers.
+    var refused: String?
     var notice: Notice?
     var stats: SessionStats?
     var project: ProjectStats?
@@ -55,6 +63,9 @@ final class LiveFeed {
     /// transcripts its silence passed ten seconds once, at about eleven. There the cost is
     /// one needless reconnect, whose backfill rebuilds the same feed.
     @ObservationIgnored var staleAfter: Duration = .seconds(10)
+    /// How long the feed waits before asking again, however the last connection ended.
+    /// Shortened by tests.
+    @ObservationIgnored var retryAfter: Duration = .seconds(2)
     /// When the stream last delivered anything at all.
     @ObservationIgnored private var heard = ContinuousClock.now
     /// Set as a connection opens, cleared by the first thing it delivers — which is when
@@ -76,6 +87,12 @@ final class LiveFeed {
     /// the stream is current: a stale status would offer Stop for a turn long over.
     var canStop: Bool { session.wrapped && connected && (status?.isBusy ?? false) }
 
+    /// The header's line while the stream does not vouch for a status: why the router
+    /// refused it, or else that it is connecting, for the first time or again. Never the
+    /// last line the stream sent — "Running Bash · 12s" frozen in the header reads as the
+    /// truth long after it stopped being so.
+    var linkLine: String { refused ?? (status == nil ? "connecting…" : "reconnecting…") }
+
     /// The stream, for as long as the page is open. A dropped connection is retried,
     /// and the feed rebuilt from the router's backfill rather than appended to twice.
     func run() async {
@@ -90,12 +107,23 @@ final class LiveFeed {
             } catch let e as RouterClient.Failure where e == .unauthorized || e == .noPasswordSet {
                 notice = Notice(text: e.errorDescription ?? "Refused.", ok: false)
                 return
+            } catch let e as RouterClient.Failure where e.isErrorStatus {
+                // Retried like a drop, and said in the router's words: see `refused`.
+                refuse(Self.describe(e))
             } catch {
-                // Dropped, refused, or gone silent: all retried the same way.
+                // Dropped, or gone silent: retried, as the header's "reconnecting…" says.
             }
             if Task.isCancelled { return }
-            try? await Task.sleep(for: .seconds(2))
+            try? await Task.sleep(for: retryAfter)
         }
+    }
+
+    /// The stream was refused in these words. Shown once as a notice too, since the header
+    /// has room for only the start of a long sentence — and again only when the words
+    /// change, not on every retry two seconds apart.
+    private func refuse(_ words: String) {
+        if refused != words { notice = Notice(text: words, ok: false) }
+        refused = words
     }
 
     /// One connection's worth of the stream: until it ends, fails, or goes silent for
@@ -140,6 +168,7 @@ final class LiveFeed {
             // append the same rows twice.
             fresh = false
             rows.removeAll()
+            refused = nil
         }
         switch ev.event {
         case nil:

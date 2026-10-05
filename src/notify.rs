@@ -1259,10 +1259,14 @@ pub mod api {
         }
     }
 
-    pub async fn register(State(state): State<Arc<AppState>>, Json(req): Json<RegisterBody>) -> Json<Value> {
+    /// Refusals answer with an error status (see `refusal`). Only the phones call this and
+    /// `unregister`, and both read a refusal's words from one; a 200 carrying `error` was
+    /// the one shape left that they had to look inside a success for.
+    pub async fn register(State(state): State<Arc<AppState>>, JsonBody(req): JsonBody<RegisterBody>) -> Response {
         let token = req.token.trim();
         let Some(platform) = super::platform_of(token, req.platform.as_deref()) else {
-            return Json(json!({ "error": "that is not a device token" }));
+            // 400: no push service would take it, whatever the router holds.
+            return refuse(StatusCode::BAD_REQUEST, "that is not a device token");
         };
         // Apple's token is hex and case-insensitive, and has been stored lowercased from
         // the start; Google's is neither, and has to be kept exactly as the phone gave it.
@@ -1279,15 +1283,22 @@ pub mod api {
                     (state.push.import_service_account_file(), state.push.fcm_configured())
                 };
                 Json(json!({ "ok": true, "platform": platform, "configured": configured, "key_file": key_file }))
+                    .into_response()
             }
-            Err(e) => Json(json!({ "error": e.to_string() })),
+            // The store would not take the row: the router failing, not a refusal.
+            Err(e) => failed(e),
         }
     }
 
-    pub async fn unregister(State(state): State<Arc<AppState>>, Json(req): Json<TokenBody>) -> Json<Value> {
-        match state.push.unregister(req.token.trim()) {
-            Ok(()) => Json(json!({ "ok": true })),
-            Err(e) => Json(json!({ "error": e.to_string() })),
+    pub async fn unregister(State(state): State<Arc<AppState>>, JsonBody(req): JsonBody<TokenBody>) -> Response {
+        let token = req.token.trim();
+        if token.is_empty() {
+            // 400: no token names no phone, so there is nothing it could forget.
+            return refuse(StatusCode::BAD_REQUEST, "no device token supplied");
+        }
+        match state.push.unregister(token) {
+            Ok(()) => Json(json!({ "ok": true })).into_response(),
+            Err(e) => failed(e),
         }
     }
 

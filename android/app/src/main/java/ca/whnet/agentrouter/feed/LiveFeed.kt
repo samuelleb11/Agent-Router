@@ -76,12 +76,24 @@ class LiveFeed(
     var sending: Boolean by mutableStateOf(false)
     var stopping: Boolean by mutableStateOf(false)
 
+    /**
+     * Why the router last refused the stream, in its own words, while the feed goes on
+     * asking: a hosted router's "the machine running this session (…) is offline" (503),
+     * its "No such session." when no machine holds the session (404), or a relay that
+     * failed (502). None of them is the session ending — an offline machine comes back, and
+     * its session with it — so the feed retries as it does after a drop, and the header
+     * says this rather than "reconnecting…". Cleared by the first thing a connection delivers.
+     */
+    var refused: String? by mutableStateOf(null)
+
     /** A status has arrived on the connection now open, not just on one before it. */
     private var statusSeen: Boolean by mutableStateOf(false)
     /** When the stream last said anything, on a clock that never jumps. Only the watchdog reads it. */
     private var heardAt = 0L
     /** [SILENT_MS], shortened by tests that would otherwise wait ten seconds for it. */
     internal var silentMs = SILENT_MS
+    /** How long the feed waits before asking again: [RETRY_MS], shortened by tests. */
+    internal var retryMs = RETRY_MS
 
     /**
      * Whether [status] still describes the session. A dropped or silent stream leaves the
@@ -117,6 +129,9 @@ class LiveFeed(
          * phone off the LAN — which the socket's own read timeout takes 45 s to report.
          */
         const val SILENT_MS = 10_000L
+
+        /** Between one connection and the next, however the last one ended. */
+        const val RETRY_MS = 2_000L
 
         const val STREAM = "/api/live/stream"
         const val PROMPT = "/api/live/prompt"
@@ -205,7 +220,7 @@ class LiveFeed(
         }
         while (coroutineContext.isActive) {
             if (!follow(c)) return
-            delay(2000)
+            delay(retryMs)
         }
     }
 
@@ -230,10 +245,16 @@ class LiveFeed(
             c.events(path(STREAM, session.sessionId))
                 .catch { e ->
                     if (e is CancellationException) throw e
-                    // A wrong password will not come right by retrying.
-                    if (e is RouterFailure.Unauthorized || e is RouterFailure.NoPasswordSet) {
-                        notice = Notice(RouterState.describe(e, hosted()), false)
-                        fatal = true
+                    when (e) {
+                        // A wrong password will not come right by retrying.
+                        is RouterFailure.Unauthorized, is RouterFailure.NoPasswordSet -> {
+                            notice = Notice(RouterState.describe(e, hosted()), false)
+                            fatal = true
+                        }
+                        // An error status: retried, and said in the router's words — see [refused].
+                        is RouterFailure.Refused, is RouterFailure.Status -> refuse(RouterState.describe(e, hosted()))
+                        // Dropped: retried, as the header's "reconnecting…" says.
+                        else -> Unit
                     }
                 }
                 .collect { event ->
@@ -241,6 +262,7 @@ class LiveFeed(
                     if (first) {
                         first = false
                         rows.clear()
+                        refused = null
                     }
                     connected = true
                     when (event.event) {
@@ -271,6 +293,16 @@ class LiveFeed(
     private fun append(row: Row) {
         rows.add(row)
         while (rows.size > CAP) rows.removeAt(0)
+    }
+
+    /**
+     * The stream was refused in these words. Shown once as a notice too, since the header
+     * has room for only the start of a long sentence — and again only when the words
+     * change, not on every retry two seconds apart.
+     */
+    private fun refuse(words: String) {
+        if (refused != words) notice = Notice(words, false)
+        refused = words
     }
 
     suspend fun send(text: String): Boolean {
@@ -307,7 +339,8 @@ class LiveFeed(
     /**
      * Answer the waiting question, by name — the question of the form that was submitted,
      * whose texts are [asked], and no other. If the router says it is no longer waiting —
-     * a 409 once it was named, a 503 from an older router — the picked answers go in as an
+     * a 409 once it was named, a 503 when none was and nothing waits, or from an older
+     * router a 200 with `ok: false` — its words are said, and the picked answers go in as an
      * ordinary message rather than being lost. See [routeForQuestion] for when nothing is
      * sent; the form then keeps what was picked.
      */
@@ -336,21 +369,28 @@ class LiveFeed(
             else -> Unit
         }
         val named = (route as? QuestionRoute.Named)?.requestId
-        return try {
+        val refusal = try {
             val reply: LiveReply = c.post(
                 "/api/live/answer",
                 AnswerBody(session.sessionId, answers, requestId = named),
             )
-            if (!reply.ok) throw RouterFailure.Status(503, reply.reason ?: "not waiting")
-            (reply.requestId ?: named)?.let(::settle)
-            val i = rows.indexOfFirst { it.id == rowId }
-            if (i >= 0) rows[i] = rows[i].copy(answered = true)
-            notice = Notice("Answered.", true)
-            true
+            if (reply.ok) {
+                (reply.requestId ?: named)?.let(::settle)
+                val i = rows.indexOfFirst { it.id == rowId }
+                if (i >= 0) rows[i] = rows[i].copy(answered = true)
+                notice = Notice("Answered.", true)
+                return true
+            }
+            // An older router's refusal, a 200 with `ok: false`: its words, and no status
+            // beside them. This once became "Router returned 503", which nothing had sent.
+            reply.reason ?: "That prompt is no longer waiting."
         } catch (e: Throwable) {
             if (e is CancellationException) throw e
-            send(fallback.joinToString("\n"))
+            RouterState.describe(e, hosted())
         }
+        // Said first, and still on screen when there is no message to send in its place.
+        notice = Notice(refusal, false)
+        return send(fallback.joinToString("\n"))
     }
 
     suspend fun interrupt() {

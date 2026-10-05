@@ -288,10 +288,7 @@ mod secrets {
     }
 
     pub fn store_push_key(key: Option<PushKey>) -> Result<()> {
-        let mut file = load()?;
-        file.version = 1;
-        file.push = key;
-        store(&file)
+        change(|file| file.push = key)
     }
 
     pub fn fcm_key() -> Option<FcmKey> {
@@ -299,18 +296,52 @@ mod secrets {
     }
 
     pub fn store_fcm_key(key: Option<FcmKey>) -> Result<()> {
+        change(|file| file.fcm = key)
+    }
+
+    /// One change at a time. Each is a read of the whole file, an edit and a rename into
+    /// place, so two at once would each write back what the other had not seen, and the
+    /// later rename would drop the earlier change: an account's token, or a push key. A
+    /// read needs no turn, since the rename is atomic and a reader sees one whole file or
+    /// the other.
+    static CHANGING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn change(edit: impl FnOnce(&mut File)) -> Result<()> {
+        let _turn = CHANGING.lock().unwrap_or_else(|e| e.into_inner());
         let mut file = load()?;
         file.version = 1;
-        file.fcm = key;
+        edit(&mut file);
         store(&file)
     }
 
     fn path() -> Result<PathBuf> {
-        let dir = crate::config::data_dir()?;
+        let dir = dir()?;
         // The directory holds secrets; keep it owner-only too.
         #[cfg(unix)]
         let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
         Ok(dir.join("credentials.json"))
+    }
+
+    #[cfg(not(test))]
+    fn dir() -> Result<PathBuf> {
+        crate::config::data_dir()
+    }
+
+    /// Under test, a directory of the test process's own. The real file holds the live
+    /// router's tokens and push keys, and the data directory a test resolves is the
+    /// person's own unless something has moved `HOME`: a test that adds an account would
+    /// otherwise write its token there, beside theirs.
+    #[cfg(test)]
+    fn dir() -> Result<PathBuf> {
+        static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+        let dir = DIR.get_or_init(|| {
+            let dir = std::env::temp_dir().join(format!("ar-secrets-{}", std::process::id()));
+            // An earlier test process may have had the same id, and left its file here.
+            let _ = std::fs::remove_dir_all(&dir);
+            dir
+        });
+        std::fs::create_dir_all(dir)?;
+        Ok(dir.clone())
     }
 
     fn load() -> Result<File> {
@@ -351,19 +382,18 @@ mod secrets {
     }
 
     pub fn update(account_id: &str, f: impl FnOnce(&mut Entry)) -> Result<()> {
-        let mut file = load()?;
-        file.version = 1;
-        f(file.accounts.entry(account_id.to_string()).or_default());
-        // Drop the account entirely once it holds nothing.
-        if file
-            .accounts
-            .get(account_id)
-            .map(|e| e.token.is_none() && e.usage_key.is_none())
-            .unwrap_or(false)
-        {
-            file.accounts.remove(account_id);
-        }
-        store(&file)
+        change(|file| {
+            f(file.accounts.entry(account_id.to_string()).or_default());
+            // Drop the account entirely once it holds nothing.
+            if file
+                .accounts
+                .get(account_id)
+                .map(|e| e.token.is_none() && e.usage_key.is_none())
+                .unwrap_or(false)
+            {
+                file.accounts.remove(account_id);
+            }
+        })
     }
 }
 
@@ -497,33 +527,62 @@ impl Store {
     }
 
     pub fn active(&self) -> Result<Account> {
-        let conn = self.conn()?;
-        let mut stmt = conn.prepare(
-            "SELECT id, label, source, profile_dir, email FROM accounts
-             WHERE active = 1 ORDER BY created_at LIMIT 1",
-        )?;
-        let account = stmt
-            .query_row([], |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, Option<String>>(2)?,
-                    r.get::<_, Option<String>>(3)?,
-                    r.get::<_, Option<String>>(4)?,
-                ))
-            })
+        let account = self
+            .conn()?
+            .query_row(
+                "SELECT id, label, source, profile_dir, email FROM accounts
+                 WHERE active = 1 ORDER BY created_at LIMIT 1",
+                [],
+                account_row,
+            )
             .optional()?;
-        let (id, label, source, profile_dir, email) =
-            account.ok_or_else(|| anyhow!("no account to sign with — add one in the dashboard"))?;
-        Ok(Account {
-            id,
-            label,
-            source: Source::parse(source.as_deref().unwrap_or("keychain"))?,
-            profile_dir,
-            email,
-        })
+        Account::from_row(
+            account.ok_or_else(|| anyhow!("no account to sign with — add one in the dashboard"))?,
+        )
     }
 
+    /// The account with this id, if there is one.
+    pub fn get(&self, id: &str) -> Result<Option<Account>> {
+        self.conn()?
+            .query_row(
+                "SELECT id, label, source, profile_dir, email FROM accounts WHERE id = ?1",
+                [id],
+                account_row,
+            )
+            .optional()?
+            .map(Account::from_row)
+            .transpose()
+    }
+
+    /// The name of the account that has this id, if one does.
+    fn holder(&self, id: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn()?
+            .query_row("SELECT label FROM accounts WHERE id = ?1", [id], |r| r.get(0))
+            .optional()?)
+    }
+
+    /// Refuse an id another account has ([`Conflict::NameTaken`]) before anything is made
+    /// under it. A profile account's directory and a sign-in's are both named by the id, so
+    /// for a taken name the directory is that account's own; `add` refuses the name too,
+    /// but only once that directory had been made and used.
+    pub fn check_free(&self, id: &str) -> Result<()> {
+        match self.holder(id)? {
+            Some(holder) => Err(Conflict::NameTaken { id: id.to_string(), holder }.into()),
+            None => Ok(()),
+        }
+    }
+
+    /// Add an account. Never one whose id another account has: that is refused with
+    /// [`Conflict::NameTaken`], and the other account is left exactly as it was.
+    ///
+    /// `credential` stores what the new account signs with — a token goes in the secrets
+    /// file, under the same id — and runs only once the row is in. The insert is what
+    /// decides, in one statement, whether the id was free, so a refused add never reaches
+    /// the holder's credential, even when two adds race for one name. Storing the token
+    /// first, as this once did, wrote it over the holder's before anything had looked.
+    /// When the credential cannot be stored, the row comes out again: an account with
+    /// nothing behind it would only fail every request it signed.
     pub fn add(
         &self,
         id: &str,
@@ -531,15 +590,14 @@ impl Store {
         source: Source,
         profile_dir: Option<&str>,
         status: &AuthStatus,
+        credential: impl FnOnce() -> Result<()>,
     ) -> Result<()> {
-        self.conn()?.execute(
+        let conn = self.conn()?;
+        let added = conn.execute(
             "INSERT INTO accounts (id, label, source, profile_dir, email, org_name,
                                    subscription_type, active, created_at)
              VALUES (?1,?2,?3,?4,?5,?6,?7,0,?8)
-             ON CONFLICT(id) DO UPDATE SET
-               label = ?2, source = ?3, profile_dir = ?4,
-               email = COALESCE(?5, email), org_name = COALESCE(?6, org_name),
-               subscription_type = COALESCE(?7, subscription_type)",
+             ON CONFLICT(id) DO NOTHING",
             rusqlite::params![
                 id,
                 label,
@@ -551,22 +609,49 @@ impl Store {
                 now_ms()
             ],
         )?;
+        if added == 0 {
+            let holder = self.holder(id)?.unwrap_or_else(|| id.to_string());
+            return Err(Conflict::NameTaken { id: id.to_string(), holder }.into());
+        }
+        if let Err(e) = credential() {
+            let _ = conn.execute("DELETE FROM accounts WHERE id = ?1", [id]);
+            return Err(e);
+        }
         // Never leave the router with nothing to sign with: the first account a store
         // gets is the one it signs with. Locally the discovered default always holds
-        // that place, so this matters to a hosted router, whose store starts empty.
-        conn_activate_if_none(&self.conn()?, id)?;
+        // that place, so this matters to a hosted router, whose store starts empty. Only
+        // now, with the credential stored, so it never signs from an empty entry.
+        conn_activate_if_none(&conn, id)?;
         Ok(())
     }
 
-    /// Where an account's credential comes from, if there is such an account.
-    pub fn source_of(&self, id: &str) -> Result<Option<Source>> {
-        let source: Option<Option<String>> = self
-            .conn()?
-            .query_row("SELECT source FROM accounts WHERE id = ?1", [id], |r| r.get(0))
-            .optional()?;
-        source
-            .map(|s| Source::parse(s.as_deref().unwrap_or("keychain")))
-            .transpose()
+    /// Rename an account, or record who it is: only what is given changes, and never its
+    /// id, its source or its credential.
+    pub fn edit(&self, id: &str, label: Option<&str>, email: Option<&str>) -> Result<()> {
+        let hit = self.conn()?.execute(
+            "UPDATE accounts SET label = COALESCE(?2, label), email = COALESCE(?3, email)
+             WHERE id = ?1",
+            rusqlite::params![id, label, email],
+        )?;
+        if hit == 0 {
+            return Err(Conflict::NoAccount(id.to_string()).into());
+        }
+        Ok(())
+    }
+
+    /// What a profile account's own login says, once `claude auth login` has run in its
+    /// directory: who it is, and its name becomes that. Only ever an update of the profile
+    /// account in `dir`, so a probe can neither add an account nor reach one that has since
+    /// been removed and its name taken by another.
+    pub fn record_login(&self, id: &str, dir: &str, label: &str, status: &AuthStatus) -> Result<()> {
+        self.conn()?.execute(
+            "UPDATE accounts SET label = ?3,
+                    email = COALESCE(?4, email), org_name = COALESCE(?5, org_name),
+                    subscription_type = COALESCE(?6, subscription_type)
+             WHERE id = ?1 AND profile_dir = ?2",
+            rusqlite::params![id, dir, label, status.email, status.org_name, status.subscription_type],
+        )?;
+        Ok(())
     }
 
     /// Exactly one account is active; switching is a single transaction.
@@ -577,7 +662,7 @@ impl Store {
         let _ = n;
         let hit = tx.execute("UPDATE accounts SET active = 1 WHERE id = ?1", [id])?;
         if hit == 0 {
-            return Err(anyhow!("no account with id {id:?}"));
+            return Err(Conflict::NoAccount(id.to_string()).into());
         }
         tx.commit()?;
         Ok(())
@@ -615,6 +700,59 @@ fn conn_activate_if_none(conn: &rusqlite::Connection, id: &str) -> Result<()> {
     )?;
     Ok(())
 }
+
+/// One row as `SELECT id, label, source, profile_dir, email` reads it.
+type AccountRow = (String, String, Option<String>, Option<String>, Option<String>);
+
+fn account_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<AccountRow> {
+    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+}
+
+impl Account {
+    fn from_row((id, label, source, profile_dir, email): AccountRow) -> Result<Self> {
+        Ok(Account {
+            id,
+            label,
+            source: Source::parse(source.as_deref().unwrap_or("keychain"))?,
+            profile_dir,
+            email,
+        })
+    }
+}
+
+/// A change to the accounts that what the store holds stands in the way of, as opposed
+/// to one the store failed at. The API answers these 409 (see `refusal`): the request
+/// was well made, and it is the store's state that has to change for it to go through.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Conflict {
+    /// The name given is, made safe ([`slugify`]), the id of another account. Everything
+    /// an account is hangs off its id — its row, its token in the secrets file, its
+    /// profile directory, the history recorded against it — so adding under that id
+    /// would replace the account: a new "Work" took an existing "work"'s credential and
+    /// source, and a new "Default" turned the built-in account into a token account.
+    /// Adding never replaces; this is said instead, naming the account that has the id.
+    NameTaken {
+        id: String,
+        /// That account's name, as the lists show it.
+        holder: String,
+    },
+    /// No account has this id: removed since it was listed, or never added.
+    NoAccount(String),
+}
+
+impl std::fmt::Display for Conflict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Conflict::NameTaken { id, holder } => write!(
+                f,
+                "that name is the id {id:?}, which the account {holder:?} already has — choose another name"
+            ),
+            Conflict::NoAccount(id) => write!(f, "no account with id {id:?}"),
+        }
+    }
+}
+
+impl std::error::Error for Conflict {}
 
 /// Where the router keeps the isolated profile directories it creates.
 pub fn profiles_root() -> Result<PathBuf> {

@@ -20,7 +20,8 @@
 //!   of the refusals here needs it.
 //! * **409** — the request is fine, but the router's state stands in the way: no password
 //!   yet, a sign-in already running, a password the deployment pins, a settings file that
-//!   is not JSON. Changing that state is the fix; sending the same request again is not.
+//!   is not JSON, an account name whose id another account has. Changing that state is the
+//!   fix; sending the same request again is not.
 //! * **422** — complete and well-formed, but what it carries does not work: a key that does
 //!   not sign. Also what axum answers for a body of the wrong shape, kept as it is.
 //! * **500** — the router tried and failed, and nothing the caller sent was wrong: the
@@ -64,9 +65,10 @@ pub fn failed(why: impl std::fmt::Display) -> Response {
 /// content type — with the right status but a plain-text sentence that no client reads:
 /// the dashboard showed the status text instead, and the phones the raw body. Every handler
 /// that refuses in this module's shape takes its body through this, so that refusal carries
-/// its words where the others do. The statuses are axum's, unchanged: 400 for a body that
-/// is not JSON, 422 for JSON of the wrong shape, 415 without a JSON content type, 413 for a
-/// body over the limit.
+/// its words where the others do — all but `POST /api/accounts`, whose body a hosted router
+/// reads before handing it on (`api::accounts_add`). The statuses are axum's, unchanged:
+/// 400 for a body that is not JSON, 422 for JSON of the wrong shape, 415 without a JSON
+/// content type, 413 for a body over the limit.
 pub struct JsonBody<T>(pub T);
 
 impl<T, S> FromRequest<S> for JsonBody<T>

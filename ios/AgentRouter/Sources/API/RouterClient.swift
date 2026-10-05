@@ -9,6 +9,9 @@ struct RouterClient: Sendable {
     /// Where `get` and `post` go: the app's one session, unless a test hands over one that
     /// answers from a table instead of the network.
     var calls: URLSession = RouterClient.session
+    /// Where `events` goes, likewise: the session made for streams, unless a test hands
+    /// over one of its own.
+    var streams: URLSession = RouterClient.streamSession
 
     enum Failure: Error, LocalizedError, Sendable, Equatable {
         case unreachable(String)
@@ -34,6 +37,15 @@ struct RouterClient: Sendable {
             case .decoding(let why): "Unexpected reply from the router — \(why)"
             }
         }
+
+        /// An error status the router sent, said in its words or not: what a refused
+        /// stream ends with, as against a dropped one.
+        var isErrorStatus: Bool {
+            switch self {
+            case .refused, .status: true
+            default: false
+            }
+        }
     }
 
     static let session: URLSession = {
@@ -47,7 +59,7 @@ struct RouterClient: Sendable {
     /// For event streams, which live as long as the page that opened them. The router
     /// sends a status line at least every few seconds while quiet, so the idle timeout
     /// only fires when something is actually wrong.
-    private static let streamSession: URLSession = {
+    static let streamSession: URLSession = {
         let c = URLSessionConfiguration.ephemeral
         c.timeoutIntervalForRequest = 45
         c.timeoutIntervalForResource = 7 * 24 * 3600
@@ -108,23 +120,35 @@ struct RouterClient: Sendable {
             throw Failure.unreachable(error.localizedDescription)
         }
         guard let http = response as? HTTPURLResponse else { throw Failure.unreachable("not HTTP") }
+        guard (200..<300).contains(http.statusCode) else { throw Self.failure(status: http.statusCode, body: data) }
+        do { return try JSONDecoder().decode(T.self, from: data) }
+        catch { throw Failure.decoding(String(describing: error).prefix(160).description) }
+    }
+
+    /// What an error status stands for, read the same way from a call's reply and from a
+    /// stream's: the router's own words when the body carries them (`refused`), and
+    /// otherwise the status it sent with what little the body says. A stream once threw the
+    /// bare status without reading the body, so a hosted router's "the machine running this
+    /// session (…) is offline" could only have read "Router returned 503".
+    ///
+    /// A refusal arrives as an error status with its reason inside — a router from before
+    /// that answered the same refusal as a 200 carrying `error`, which is why
+    /// `OkReply.problem` still looks there. Either way the screen shows those words.
+    static func failure(status: Int, body data: Data) -> Failure {
         let text = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-        switch http.statusCode {
-        case 200..<300:
-            do { return try JSONDecoder().decode(T.self, from: data) }
-            catch { throw Failure.decoding(String(describing: error).prefix(160).description) }
+        switch status {
         case 401:
-            throw Failure.unauthorized
+            return .unauthorized
         case 403 where text.contains("no password set"):
-            throw Failure.noPasswordSet
+            return .noPasswordSet
         default:
-            // A refusal arrives as an error status with its reason inside — a router from
-            // before that answered the same refusal as a 200 carrying `error`, which is why
-            // `OkReply.problem` still looks there. Either way the screen shows those words.
-            if let words = Self.reason(in: data), !words.isEmpty { throw Failure.refused(http.statusCode, words) }
-            throw Failure.status(http.statusCode, text.prefix(160).description)
+            if let words = reason(in: data), !words.isEmpty { return .refused(status, words) }
+            return .status(status, text.prefix(160).description)
         }
     }
+
+    /// More than any refusal's few words, and all of an error body a stream reads.
+    private static let errorBodyMax = 16_384
 
     /// The live endpoints refuse with `{"ok":false,"reason":…}` and the rest with
     /// `{"error":…}` (the wrapper switches send both); either is better than the raw body.
@@ -140,13 +164,19 @@ struct RouterClient: Sendable {
                 do {
                     var req = try request(path, method: "GET", body: nil)
                     req.setValue("text/event-stream", forHTTPHeaderField: "accept")
-                    let (bytes, response) = try await Self.streamSession.bytes(for: req)
+                    let (bytes, response) = try await streams.bytes(for: req)
                     guard let http = response as? HTTPURLResponse else { throw Failure.unreachable("not HTTP") }
-                    switch http.statusCode {
-                    case 200..<300: break
-                    case 401: throw Failure.unauthorized
-                    case 403: throw Failure.noPasswordSet
-                    default: throw Failure.status(http.statusCode, "")
+                    guard (200..<300).contains(http.statusCode) else {
+                        // Refused: the body says why, as any call's does, in a few words. A body
+                        // that cannot be read still leaves the status that was sent.
+                        var body = Data()
+                        do {
+                            for try await byte in bytes {
+                                body.append(byte)
+                                if body.count >= Self.errorBodyMax { break }
+                            }
+                        } catch {}
+                        throw Self.failure(status: http.statusCode, body: body)
                     }
                     // Not `bytes.lines`: AsyncLineSequence drops empty lines, and an
                     // SSE frame is terminated *by* an empty line — through `.lines` no
