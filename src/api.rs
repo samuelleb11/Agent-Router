@@ -315,10 +315,16 @@ pub async fn summary(State(state): State<Arc<AppState>>, Query(mut f): Query<Fil
 
 fn summary_inner(state: &AppState, f: &Filter) -> anyhow::Result<Value> {
     let conn = open(state)?;
+    summary_of(&conn, f)
+}
+
+/// The summary itself, from whichever connection it is handed: the pool's in the router,
+/// a store built for the purpose in a test.
+fn summary_of(conn: &Connection, f: &Filter) -> anyhow::Result<Value> {
     let now = crate::db::now_ms();
     let p = scope_params(f);
-    let totals = one(
-        &conn,
+    let mut totals = one(
+        conn,
         &format!(
             "SELECT count(*) AS requests,
                     coalesce(sum(u.prompt_tokens),0)   AS prompt_tokens,
@@ -335,7 +341,8 @@ fn summary_inner(state: &AppState, f: &Filter) -> anyhow::Result<Value> {
                     count(DISTINCT r.session_id) AS sessions,
                     count(DISTINCT s.cwd) AS projects,
                     min(r.started_at) AS first_seen,
-                    max(r.started_at) AS last_seen
+                    max(r.started_at) AS last_seen,
+                    coalesce(sum(CASE WHEN s.id IS NULL THEN 1 ELSE 0 END),0) AS unattributed
              FROM requests r
              LEFT JOIN usage u    ON u.request_id = r.id
              LEFT JOIN request_cost c ON c.request_id = r.id
@@ -344,8 +351,25 @@ fn summary_inner(state: &AppState, f: &Filter) -> anyhow::Result<Value> {
         ),
         &p,
     )?;
+    // The requests in the scope that no session holds: Claude Code sent no session id, or
+    // sent one the store has no session row for. Neither the Projects nor the Sessions
+    // list can show them — both join on the session — so the dashboard ends each list
+    // with a row counting them, and the lists never sum to less than the tiles.
+    //
+    // Counted here, because the page cannot count it. It used to take the total and
+    // subtract the rows it had been handed, which is only right while a list is whole,
+    // and `/api/sessions` hands back the 200 most recent sessions at most: past 200
+    // sessions in scope, every request of an older session was blamed on a transcript
+    // that had not appeared. Counted in the totals' own statement, so it comes from the
+    // same read as `requests` and can never claim more than the tiles count; then moved
+    // out beside them, because it is not a figure the tiles show but the row the lists
+    // end with. `shift_remove` keeps the other totals in their order.
+    let unattributed = totals
+        .as_object_mut()
+        .and_then(|t| t.shift_remove("unattributed"))
+        .unwrap_or(Value::Null);
     let quota = one(
-        &conn,
+        conn,
         "SELECT rl_status, rl_5h_utilization, rl_7d_utilization, rl_5h_reset, rl_7d_reset,
                 started_at
          FROM requests
@@ -355,13 +379,13 @@ fn summary_inner(state: &AppState, f: &Filter) -> anyhow::Result<Value> {
         &[],
     )?;
     let account = one(
-        &conn,
+        conn,
         "SELECT id, label, email, org_name, subscription_type
          FROM accounts WHERE active = 1 LIMIT 1",
         &[],
     )?;
     let context = rows(
-        &conn,
+        conn,
         &format!(
             "SELECT c.component, sum(c.est_tokens) AS est_tokens, sum(c.char_count) AS chars,
                     -- Priced as if each component were paid once as fresh input. It is
@@ -385,7 +409,7 @@ fn summary_inner(state: &AppState, f: &Filter) -> anyhow::Result<Value> {
         &p,
     )?;
     let models = rows(
-        &conn,
+        conn,
         &format!(
             "SELECT r.model, count(*) AS requests,
                     coalesce(sum(u.prompt_tokens),0)   AS prompt_tokens,
@@ -407,7 +431,7 @@ fn summary_inner(state: &AppState, f: &Filter) -> anyhow::Result<Value> {
     // Rows captured before the agent_id migration have NULL there; the coalesce keeps
     // them in the main-thread bucket instead of surfacing a third, nameless thread.
     let threads = rows(
-        &conn,
+        conn,
         &format!(
             "SELECT CASE WHEN coalesce(r.is_sidechain,0) = 1 THEN 'subagent' ELSE 'main' END AS thread,
                     count(*) AS requests,
@@ -426,7 +450,7 @@ fn summary_inner(state: &AppState, f: &Filter) -> anyhow::Result<Value> {
         &p,
     )?;
     let by_account = rows(
-        &conn,
+        conn,
         "SELECT r.account_id AS id,
                 coalesce(a.email, a.label, r.account_id) AS label,
                 max(coalesce(a.active, 0)) AS active,
@@ -445,7 +469,7 @@ fn summary_inner(state: &AppState, f: &Filter) -> anyhow::Result<Value> {
         &[&f.since],
     )?;
     let stop_reasons = rows(
-        &conn,
+        conn,
         &format!(
             "SELECT coalesce(r.stop_reason, '(none)') AS stop_reason, count(*) AS requests
              FROM requests r LEFT JOIN sessions s ON s.id = r.session_id
@@ -455,7 +479,7 @@ fn summary_inner(state: &AppState, f: &Filter) -> anyhow::Result<Value> {
         &p,
     )?;
     let latency = one(
-        &conn,
+        conn,
         &format!(
             "SELECT {} AS ttfb_p50, {} AS ttfb_p95, {} AS duration_p50, {} AS duration_p95,
                     (SELECT max(r.duration_ms) FROM requests r
@@ -471,7 +495,7 @@ fn summary_inner(state: &AppState, f: &Filter) -> anyhow::Result<Value> {
     // The timeline spans the requested range when one was given (so a quiet hour
     // still shows as an hour of quiet), and the data's own span otherwise.
     let bounds = one(
-        &conn,
+        conn,
         &format!(
             "SELECT min(r.started_at) AS lo, max(r.started_at) AS hi
              FROM requests r LEFT JOIN sessions s ON s.id = r.session_id WHERE {SCOPE}"
@@ -495,7 +519,7 @@ fn summary_inner(state: &AppState, f: &Filter) -> anyhow::Result<Value> {
         Some((start, end)) => {
             let bucket = pick_bucket(end - start);
             let timeline = rows(
-                &conn,
+                conn,
                 &format!(
                     "SELECT ((r.started_at + ?5) / ?6) * ?6 - ?5 AS t, r.model,
                             count(*) AS requests,
@@ -518,7 +542,7 @@ fn summary_inner(state: &AppState, f: &Filter) -> anyhow::Result<Value> {
             // two charts share an axis. The worst reading in a bucket is the one
             // that matters for headroom.
             let quota_history = rows(
-                &conn,
+                conn,
                 "SELECT ((started_at + ?1) / ?2) * ?2 - ?1 AS t,
                         max(rl_5h_utilization) AS rl_5h, max(rl_7d_utilization) AS rl_7d
                  FROM requests
@@ -533,7 +557,8 @@ fn summary_inner(state: &AppState, f: &Filter) -> anyhow::Result<Value> {
         None => (Value::Array(vec![]), Value::Array(vec![]), 0),
     };
     Ok(json!({
-        "totals": totals, "quota": quota, "account": account, "context": context,
+        "totals": totals, "unattributed": unattributed,
+        "quota": quota, "account": account, "context": context,
         "models": models, "threads": threads, "latency": latency,
         "stop_reasons": stop_reasons, "by_account": by_account,
         "timeline": {
@@ -586,6 +611,13 @@ pub async fn sessions(State(state): State<Arc<AppState>>, Query(f): Query<Filter
 
 fn sessions_inner(state: &AppState, f: &Filter) -> anyhow::Result<Value> {
     let conn = open(state)?;
+    sessions_of(&conn, f)
+}
+
+/// The 200 most recently seen sessions in scope, and no more: a list to pick from, never
+/// a ledger to add up. What falls outside it is still counted in the summary's totals,
+/// and the requests no session holds are counted there too (`unattributed`).
+fn sessions_of(conn: &Connection, f: &Filter) -> anyhow::Result<Value> {
     let sql = "SELECT s.id, s.cwd AS project, s.git_branch, s.entrypoint,
                       s.started_at, s.last_seen_at,
                       count(*) AS requests,
@@ -606,7 +638,7 @@ fn sessions_inner(state: &AppState, f: &Filter) -> anyhow::Result<Value> {
                WHERE (?1 IS NULL OR s.cwd = ?1) AND (?2 IS NULL OR r.started_at >= ?2)
                  AND (?3 IS NULL OR r.account_id = ?3)
                GROUP BY s.id ORDER BY s.last_seen_at DESC LIMIT 200";
-    Ok(rows(&conn, sql, &[&f.project, &f.since, &f.account])?)
+    rows(conn, sql, &[&f.project, &f.since, &f.account])
 }
 
 /// What to look for, and where. Separate from `Filter` because none of the page-wide
@@ -1323,56 +1355,126 @@ pub async fn accounts_edit(
     Ok(Json(json!({ "ok": true, "id": req.id })))
 }
 
-pub async fn accounts_list(State(state): State<Arc<AppState>>) -> ApiResult {
-    let conn = open(&state)?;
-    let mut list = rows(
-        &conn,
-        "SELECT id, label, source, profile_dir, email, org_name, subscription_type,
-                active, created_at, coalesce(usage_key, 0) AS usage_key
-         FROM accounts ORDER BY created_at",
-        &[],
-    )?;
+/// What `GET /api/accounts` takes.
+#[derive(Deserialize)]
+pub struct AccountsQuery {
+    /// `1` asks for every account's credential to be checked. Anything else, or nothing,
+    /// is the cheap read: the rows as stored, with no credential touched.
+    pub probe: Option<String>,
+}
+
+impl AccountsQuery {
+    fn probing(&self) -> bool {
+        self.probe.as_deref() == Some("1")
+    }
+}
+
+/// What checking one account's credential found.
+struct Credential {
+    /// Whether the router could produce a token to sign with right now.
+    ready: bool,
+    /// The token's kind when it could, and the whole reason when it could not.
+    detail: String,
+    /// When that token stops working, in ms since the epoch: 0 when it never does, or
+    /// when there was no token to read an expiry from.
+    expires_at: i64,
+    /// Whether the router holds a token of its own for this account. The value never
+    /// leaves the router; this only lets the edit form say the field is already filled.
+    has_token: bool,
+}
+
+/// Check one credential the way the router would sign with it. Blocking, and not cheap:
+/// a Claude Code login is resolved by running `claude auth status` and reading Claude
+/// Code's Keychain entry or the profile's credentials file, and a token account's token —
+/// like `has_token`, for every account — is read from the router's secrets file.
+fn check_credential(account: &crate::accounts::Account) -> Credential {
+    let (ready, detail, expires_at) = match crate::accounts::resolve(account) {
+        Ok(r) => (true, crate::accounts::token_kind(&r.token).to_string(), r.expires_at_ms),
+        Err(e) => (false, e.to_string(), 0),
+    };
+    Credential { ready, detail, expires_at, has_token: crate::accounts::has_token(&account.id) }
+}
+
+/// `GET /api/accounts`: every configured account, oldest first — and, only when the caller
+/// asks with `probe=1`, whether each one's credential works right now.
+///
+/// Checking used to happen on every call, and it is not free: a process and a Keychain
+/// read per account, on every poll of every open dashboard tab and of the menubar app,
+/// every 30 seconds, whether or not anyone was looking at an account. The rows alone say
+/// what a poll mostly needs — the names, and which one is active. So a check is asked for
+/// by whatever shows its result: the dashboard while its Settings are open, the iPhone's
+/// Accounts page when it opens.
+///
+/// A row nobody asked about carries no `ready`, `detail`, `expires_at` or `has_token`.
+/// Absent rather than false, because "not checked" is a different fact from "checked, and
+/// it failed", and the dashboard says "not checked" for it. A hosted router answers
+/// through this same handler (see `hosted`), and a check there runs no process: `resolve`
+/// refuses a Claude Code login before it would run `claude`, and a pasted token is read
+/// from the secrets file.
+pub async fn accounts_list(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<AccountsQuery>,
+) -> ApiResult {
+    Ok(Json(accounts_of(&state.reads, &q, check_credential).await?))
+}
+
+/// The answer, with the check handed in: `check_credential` in the router, and in a test
+/// one that only counts, so no test ever reaches a Keychain or a `claude` binary.
+async fn accounts_of<C>(reads: &ReadPool, q: &AccountsQuery, check: C) -> anyhow::Result<Value>
+where
+    C: Fn(&crate::accounts::Account) -> Credential + Clone + Send + 'static,
+{
+    // Read, and give the connection back to the pool before anything is checked: a check
+    // can take seconds, and the warm connection is better spent on the next dashboard read.
+    let mut list = {
+        let conn = reads.get()?;
+        rows(
+            &conn,
+            "SELECT id, label, source, profile_dir, email, org_name, subscription_type,
+                    active, created_at, coalesce(usage_key, 0) AS usage_key
+             FROM accounts ORDER BY created_at",
+            &[],
+        )?
+    };
+    if !q.probing() {
+        return Ok(list);
+    }
 
     // Report whether each account can actually produce a token right now, so a
-    // half-finished profile login is visible in the UI instead of failing later.
-    if let Some(items) = list.as_array_mut() {
-        for item in items.iter_mut() {
-            let Some(obj) = item.as_object_mut() else { continue };
-            let account = crate::accounts::Account {
-                id: obj.get("id").and_then(Value::as_str).unwrap_or_default().to_string(),
-                label: String::new(),
-                source: crate::accounts::Source::parse(
-                    obj.get("source").and_then(Value::as_str).unwrap_or("keychain"),
-                )
-                .unwrap_or(crate::accounts::Source::Keychain),
-                profile_dir: obj
-                    .get("profile_dir")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
-                email: obj.get("email").and_then(Value::as_str).map(str::to_owned),
-            };
-            let (ready, detail, expires) =
-                match tokio::task::spawn_blocking(move || crate::accounts::resolve(&account)).await
-                {
-                    Ok(Ok(r)) => (
-                        true,
-                        crate::accounts::token_kind(&r.token).to_string(),
-                        r.expires_at_ms,
-                    ),
-                    Ok(Err(e)) => (false, e.to_string(), 0),
-                    Err(e) => (false, e.to_string(), 0),
-                };
-            let id_for_check = obj.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
-            obj.insert(
-                "has_token".into(),
-                json!(crate::accounts::has_token(&id_for_check)),
-            );
-            obj.insert("ready".into(), json!(ready));
-            obj.insert("detail".into(), json!(detail));
-            obj.insert("expires_at".into(), json!(expires));
+    // half-finished profile login is visible in the UI instead of failing later. A
+    // blocking task per account, so a check that panics fails its own row, not the list.
+    for obj in list.as_array_mut().into_iter().flatten().filter_map(Value::as_object_mut) {
+        let account = crate::accounts::Account {
+            id: obj.get("id").and_then(Value::as_str).unwrap_or_default().to_string(),
+            label: String::new(),
+            source: crate::accounts::Source::parse(
+                obj.get("source").and_then(Value::as_str).unwrap_or("keychain"),
+            )
+            .unwrap_or(crate::accounts::Source::Keychain),
+            profile_dir: obj
+                .get("profile_dir")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            email: obj.get("email").and_then(Value::as_str).map(str::to_owned),
+        };
+        let check = check.clone();
+        match tokio::task::spawn_blocking(move || check(&account)).await {
+            Ok(found) => {
+                obj.insert("has_token".into(), json!(found.has_token));
+                obj.insert("ready".into(), json!(found.ready));
+                obj.insert("detail".into(), json!(found.detail));
+                obj.insert("expires_at".into(), json!(found.expires_at));
+            }
+            // Whether a token is stored was part of what never came back, so it is left
+            // unsaid rather than guessed.
+            Err(e) => {
+                obj.insert("ready".into(), json!(false));
+                obj.insert("detail".into(), json!(e.to_string()));
+                obj.insert("expires_at".into(), json!(0));
+            }
         }
     }
-    Ok(Json(list))
+    Ok(list)
 }
 
 pub async fn accounts_add(
@@ -1517,4 +1619,196 @@ pub async fn health() -> Json<Value> {
         "version": env!("CARGO_PKG_VERSION"),
         "build": env!("AGENT_ROUTER_BUILD"),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::accounts::{Account, Source};
+    use rusqlite::params;
+
+    /// A store of its own under the temp directory, with the schema and the rate table the
+    /// router sets up at startup, read through a pool like the router's. Never the real
+    /// store: nothing here knows where that is.
+    struct Store {
+        dir: std::path::PathBuf,
+        /// For the test to fill the store with.
+        conn: Connection,
+        reads: ReadPool,
+    }
+
+    impl Drop for Store {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    fn store(tag: &str) -> Store {
+        let dir = std::env::temp_dir().join(format!("ar-api-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("agent-router.db");
+        crate::db::Db::open(&path).unwrap();
+        let conn = Connection::open(&path).unwrap();
+        crate::pricing::ensure_table(&conn).unwrap();
+        Store { reads: ReadPool::new(&path), conn, dir }
+    }
+
+    fn scope(
+        project: Option<&str>,
+        session: Option<&str>,
+        account: Option<&str>,
+        since: Option<i64>,
+    ) -> Filter {
+        Filter {
+            project: project.map(str::to_owned),
+            session: session.map(str::to_owned),
+            account: account.map(str::to_owned),
+            since,
+            tz: None,
+        }
+    }
+
+    /// The dashboard's "not yet attributed" row used to be the total less the rows of the
+    /// Sessions list — and that list stops at the 200 most recent sessions, so past 200
+    /// every request of an older session was counted there as if its transcript were
+    /// missing. The router counts the row itself now: the requests in scope that carry no
+    /// session, which is to say no session id, or one the store holds no session for.
+    #[test]
+    fn unattributed_is_counted_by_the_router_past_the_200_sessions_the_list_holds() {
+        const T0: i64 = 1_700_000_000_000;
+        let store = store("unattributed");
+        let tx = store.conn.unchecked_transaction().unwrap();
+        let request = "INSERT INTO requests
+                         (request_id, session_id, account_id, method, path, started_at)
+                       VALUES (?1, ?2, ?3, 'POST', '/v1/messages', ?4)";
+        // 250 sessions in two projects, two requests each: more than the list holds.
+        for i in 0..250i64 {
+            let id = format!("session-{i:03}");
+            let at = T0 + i * 1_000;
+            let cwd = if i % 2 == 0 { "/code/a" } else { "/code/b" };
+            tx.execute(
+                "INSERT INTO sessions (id, cwd, started_at, last_seen_at) VALUES (?1, ?2, ?3, ?4)",
+                params![id, cwd, at, at + 500],
+            )
+            .unwrap();
+            for n in 1..=2i64 {
+                let rid = format!("{id}-{n}");
+                tx.execute(request, params![rid, id, "work", at + n * 100]).unwrap();
+            }
+        }
+        // Seven with no session id at all, split between two accounts...
+        for k in 0..7i64 {
+            let account = if k % 2 == 0 { "work" } else { "side" };
+            let none: Option<&str> = None;
+            let at = T0 + k * 10_000;
+            tx.execute(request, params![format!("orphan-{k}"), none, account, at]).unwrap();
+        }
+        // ...and two naming a session the store has no row for, which neither list can
+        // show either: both join on the session.
+        for k in 0..2i64 {
+            let ghost = format!("ghost-{k}");
+            tx.execute(request, params![ghost, ghost, "work", T0 + 260_000 + k]).unwrap();
+        }
+        tx.commit().unwrap();
+
+        let conn = store.reads.get().unwrap();
+        let everything = scope(None, None, None, None);
+        let listed = sessions_of(&conn, &everything).unwrap();
+        let listed = listed.as_array().unwrap();
+        assert_eq!(listed.len(), 200, "the Sessions list stops at the 200 most recent");
+
+        let summary = summary_of(&conn, &everything).unwrap();
+        assert_eq!(summary["totals"]["requests"], 509);
+        // Seven without a session id, and two whose session has no row.
+        assert_eq!(summary["unattributed"], 9);
+        assert!(summary["totals"].get("unattributed").is_none(), "said once, beside the totals");
+        // What the page worked out instead: the 50 sessions past the cap, 100 requests,
+        // blamed on transcripts that had not appeared.
+        let in_list: i64 = listed.iter().map(|s| s["requests"].as_i64().unwrap()).sum();
+        assert_eq!(509 - in_list, 109);
+
+        // Only what is in scope counts: the range, and the account.
+        let since = summary_of(&conn, &scope(None, None, None, Some(T0 + 30_000))).unwrap();
+        assert_eq!(since["unattributed"], 6, "the last four without an id, and both ghosts");
+        let side = summary_of(&conn, &scope(None, None, Some("side"), None)).unwrap();
+        assert_eq!(side["totals"]["requests"], 3);
+        assert_eq!(side["unattributed"], 3);
+        // A project or a session in scope holds only requests that have one.
+        let project = summary_of(&conn, &scope(Some("/code/a"), None, None, None)).unwrap();
+        assert_eq!(project["totals"]["requests"], 250);
+        assert_eq!(project["unattributed"], 0);
+        let session = summary_of(&conn, &scope(None, Some("session-007"), None, None)).unwrap();
+        assert_eq!(session["totals"]["requests"], 2);
+        assert_eq!(session["unattributed"], 0);
+    }
+
+    /// GET /api/accounts used to check every credential on every call — `claude auth
+    /// status` and a Keychain read per account — for the menubar's poll and the
+    /// dashboard's alike. It checks only when asked now, and then each account once.
+    #[tokio::test]
+    async fn accounts_probe_checks_each_credential_once_and_only_when_asked() {
+        let store = store("accounts");
+        store
+            .conn
+            .execute_batch(
+                "INSERT INTO accounts (id, label, source, profile_dir, email, active, created_at)
+                 VALUES ('default', 'me@example.com', 'keychain', NULL, 'me@example.com', 1, 1),
+                        ('work', 'work', 'token', NULL, NULL, 0, 2),
+                        ('side', 'side', 'profile', '/nowhere/side', NULL, 0, 3);",
+            )
+            .unwrap();
+
+        // In place of `claude auth status`, the Keychain and the secrets file: it answers
+        // from the account alone, and keeps a list of whom it was asked about.
+        let asked = Arc::new(Mutex::new(Vec::<String>::new()));
+        let check = {
+            let asked = asked.clone();
+            move |a: &Account| {
+                asked.lock().unwrap().push(a.id.clone());
+                Credential {
+                    ready: a.source != Source::Profile,
+                    detail: format!("checked as {}", a.source.as_str()),
+                    expires_at: 0,
+                    has_token: a.source == Source::Token,
+                }
+            }
+        };
+        // Parsed the way the handler's `Query` parses it.
+        let query = |uri: &str| {
+            let uri: axum::http::Uri = uri.parse().unwrap();
+            Query::<AccountsQuery>::try_from_uri(&uri).unwrap().0
+        };
+
+        // The menubar's read and the dashboard's poll: the rows as stored, nothing checked,
+        // and nothing said about any credential.
+        for uri in ["/api/accounts", "/api/accounts?probe=0", "/api/accounts?probe="] {
+            let list = accounts_of(&store.reads, &query(uri), check.clone()).await.unwrap();
+            assert!(asked.lock().unwrap().is_empty(), "{uri} checked a credential");
+            let list = list.as_array().unwrap();
+            assert_eq!(list.len(), 3, "{uri}");
+            assert_eq!(list[0]["active"], 1, "{uri} still says which account is active");
+            for row in list {
+                for unsaid in ["ready", "detail", "expires_at", "has_token"] {
+                    assert!(row.get(unsaid).is_none(), "{uri}: an unchecked row says {unsaid}");
+                }
+            }
+        }
+
+        // Asked: every account checked, each exactly once, each row saying what its own
+        // check found.
+        let list = accounts_of(&store.reads, &query("/api/accounts?probe=1"), check.clone())
+            .await
+            .unwrap();
+        let mut seen = asked.lock().unwrap().clone();
+        seen.sort();
+        assert_eq!(seen, ["default", "side", "work"]);
+        for row in list.as_array().unwrap() {
+            let source = row["source"].as_str().unwrap();
+            assert_eq!(row["ready"], source != "profile", "{source}");
+            assert_eq!(row["detail"], format!("checked as {source}"));
+            assert_eq!(row["has_token"], source == "token", "{source}");
+            assert_eq!(row["expires_at"], 0, "{source}");
+        }
+    }
 }

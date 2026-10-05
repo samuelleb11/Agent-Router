@@ -1698,7 +1698,7 @@ function renderAccountSplit(list) {
 
 // ---------- projects & sessions ----------
 const modelChips = csv => { const seen = new Set(); return String(csv || '').split(',').filter(Boolean).map(m => { const f = fam(m); if (seen.has(f)) return null; seen.add(f); return swatch(f, m); }).filter(Boolean).slice(0, 4); };
-function renderProjects(list, totals) {
+function renderProjects(list, totals, unattributed) {
   const el = document.getElementById('projects');
   el.classList.toggle('hassel', !!state.project);
   setText(document.getElementById('projsub'), !list || !list.length ? '' : state.project ? 'click the highlighted project again to clear' : `${list.length} project${list.length === 1 ? '' : 's'} · click one to scope the page`);
@@ -1720,12 +1720,17 @@ function renderProjects(list, totals) {
     });
   // Requests arrive before their transcript does, so some have no session and therefore no
   // project. Without this row the lists would silently sum to less than the tiles.
-  orphanRow(el, list, totals, 'project');
+  orphanRow(el, list, totals, 'project', unattributed);
   fitTips(el);
 }
-function orphanRow(el, list, totals, kind) {
-  const shown = (list || []).reduce((a, r) => a + num(r.requests), 0);
-  const missing = num(totals && totals.requests) - shown;
+// `unattributed` is the router's own count of the requests in scope that no session holds
+// (/api/summary). The page used to work it out as the total less the rows it was handed,
+// which is only right while a list is whole — and the Sessions list stops at the 200 most
+// recent, so past that every request of an older session was counted here as if its
+// transcript were missing. The subtraction stays only for a router too old to send the count.
+function orphanRow(el, list, totals, kind, unattributed) {
+  const missing = unattributed != null ? num(unattributed)
+    : num(totals && totals.requests) - (list || []).reduce((a, r) => a + num(r.requests), 0);
   const old = el.querySelector('.orphan');
   if (!(missing > 0) || state.session) { if (old) old.remove(); return; }
   const row = old || h('div', { class:'brow orphan' },
@@ -1736,7 +1741,7 @@ function orphanRow(el, list, totals, kind) {
     ['—', 'Claude Code labels a request with its session id; the project comes from the transcript file, which can appear a moment later. These are counted in the totals above.']]);
   if (!old) el.append(row);
 }
-function renderSessions(list, totals) {
+function renderSessions(list, totals, unattributed) {
   const el = document.getElementById('sessions');
   el.classList.toggle('hassel', !!state.session);
   const sub = document.getElementById('sesssub');
@@ -1761,7 +1766,7 @@ function renderSessions(list, totals) {
         tipRows: [s.id, [usd(s.cost), 'cost'], [k(prompt), 'prompt tokens', 'var(--tok)'], subp ? [k(subp), 'of it by subagents', 'var(--sub)'] : null, [k(s.output_tokens), 'output tokens'], [pct(s.cache_read_tokens, prompt), 'from cache'], [n(s.requests), 'requests'], [n(s.errors ?? 0), 'errors'], [base(s.project), 'project'], [`${tod(s.started_at)} → ${tod(s.last_seen_at)}`, 'active'], s.entrypoint ? [s.entrypoint, 'launched from'] : null],
       });
     });
-  if (!state.project) orphanRow(el, list, totals, 'session');
+  if (!state.project) orphanRow(el, list, totals, 'session', unattributed);
   fitTips(el);
 }
 
@@ -1944,7 +1949,11 @@ function table(el, cols, data, opts = {}) {
 }
 let accountsCache = null;
 async function renderAccounts(list) {
-  if (list) accountsCache = list; else list = accountsCache || (accountsCache = await get('/api/accounts'));
+  // Read here only after a change made from the settings. The router checks no credential
+  // unless asked to, so this asks while the settings are open, as the poll does; a row read
+  // without a check carries no `ready` and shows as "not checked".
+  if (list) accountsCache = list;
+  else list = accountsCache || (accountsCache = await get('/api/accounts', { probe: settings.open ? 1 : null }));
   table(document.getElementById('accounts'), [
     { label:'Status', get:a => Number(a.active)
         ? '<span class="dot" style="margin-right:6px"></span>active'
@@ -2030,9 +2039,11 @@ function openEdit(a) {
   const tokenInput = document.getElementById('e-token');
   const hasToken = Number(a.has_token) === 1 || a.has_token === true;
   tokenInput.placeholder = hasToken ? DOTS : 'sk-ant-oat01-…';
-  setText(document.getElementById('e-token-state'), hasToken
-    ? '— stored; leave blank to keep it'
-    : '— none stored');
+  // Whether a token is stored is read with the credential checks, so a row read without
+  // them cannot say; "none stored" would be a guess. A blank field keeps it either way.
+  setText(document.getElementById('e-token-state'), a.has_token === undefined
+    ? '— not checked; leave blank to keep whatever is stored'
+    : hasToken ? '— stored; leave blank to keep it' : '— none stored');
   // A Keychain account's identity is whoever Claude Code is logged in as, so it is
   // discovered on every request and anything typed here would be overwritten.
   const isKeychain = a.source === 'keychain';
@@ -2504,6 +2515,11 @@ async function refresh() {
   const since = sinceMs(), tz = -new Date().getTimezoneOffset();
   const acctOpen = settings.open;
   const wantAccounts = !accountsCache || Date.now() - accountsAt > 30000 || (acctOpen && !accountsProbed);
+  // Credentials are checked while the settings are open, and once more on the first read of
+  // a load: that read is how a credential that stopped working gets to open the settings by
+  // itself, once per load (renderAccounts). Every other read checks nothing, since checking
+  // each credential every 30 s repeated a lookup per account for nothing.
+  const probeAccounts = acctOpen || !accountsCache;
   // Asked with the rest rather than after them: whether this is a hosted router decides
   // what the accounts panel may interrupt for. It is applied where it always was, after it.
   const wantAuth = !authInfo || Date.now() - authAt > 30000;
@@ -2513,7 +2529,7 @@ async function refresh() {
     get('/api/sessions', { account:state.account, project:state.project, since }),
     get('/api/tools',    { account:state.account, project:state.project, session:state.session, since }),
     get('/api/requests', { account:state.account, project:state.project, session:state.session, since }),
-    wantAccounts ? get('/api/accounts', { probe: acctOpen ? 1 : null }) : Promise.resolve(null),
+    wantAccounts ? get('/api/accounts', { probe: probeAccounts ? 1 : null }) : Promise.resolve(null),
     // Optional: present only on builds that carry it, and a failure must not blank the page.
     get('/api/quota').catch(() => null),
     get('/api/forecast', { since }).catch(() => null),
@@ -2542,8 +2558,8 @@ async function refresh() {
   renderModels(sum.models);
   renderThreads(sum.threads);
   renderAccountSplit(sum.by_account);
-  renderProjects(projects, t);
-  renderSessions(sessions, t);
+  renderProjects(projects, t, sum.unattributed);
+  renderSessions(sessions, t, sum.unattributed);
   renderTools(tools);
   lastRequests = requests || [];
   renderRequests(lastRequests, sum.latency);
