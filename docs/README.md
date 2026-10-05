@@ -16,6 +16,7 @@ the maintainer who has to act on them. What the code does and why is in
 | [Prompt caching and Claude Code settings, as they affect the router](prompt-caching-and-claude-code-settings.md) | 2026-09-14 | What Claude Code puts on the wire, the caching rules that decide what a turn costs, and the settings that control compaction, effort, MCP scope and headless forks. |
 | [Session liveness](session-liveness.md) | 2026-09-29 | The transcript cannot tell generating, background work, a permission prompt or a closed process from idle; Claude Code's own session registry can, so the router reads it first and derives every session's state in one place. |
 | [Hosting Agent Router on Kubernetes](hosting-on-kubernetes.md) | 2026-10-05 | A pod can proxy, record, analyse and push on its own; the live view and steering need a component on each developer machine that dials out. Phase 1 is `serve --server`, an image, a chart and a pipeline in Northstar's shape. |
+| [Moving the web UI to React and IBM Carbon](web-console-carbon.md) | 2026-10-05 | Feasible, and still one binary: Carbon's theme with our colour coding layered on as tokens, a dozen custom visualisations, and the bundle embedded with rust-embed. The 500-odd behavioural contracts and the phones' parity tests come first, and today's live view has a script injection to fix now. |
 
 The build and packaging chain is in the README, section "Building and packaging for
 Mac and Linux", and in ARCHITECTURE.md, "The editor extension".
