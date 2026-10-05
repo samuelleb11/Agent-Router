@@ -154,13 +154,28 @@ const SEARCH = {
 let PROMPT = { pending: false };
 let ANSWER = { status: 200, body: { ok: true } };
 let LIST_DOWN = false;
+// What /api/auth says — a local router's, with no `mode` at all, unless a check says
+// otherwise — and the wrapper check; and, when set, the [status, body] every per-session
+// route answers with, as a hosted router's do (docs/hosting-on-kubernetes.md).
+let AUTH = {};
+let SHIM = {};
+let LIVE_REFUSES = null;
+const HOSTED_ERROR = 'live sessions need the Agent Router agent on the machine that runs them; '
+  + 'a hosted router does not have one yet';
+// What a session can be switched to, which every router sends — a hosted one included.
+const OPTIONS = { models: ['opus', 'sonnet'], efforts: ['low', 'medium', 'high'],
+                  modes: [{ value: 'default', label: 'Ask first' }] };
 const posts = [];
 global.fetch = (url = '', init = {}) => {
   const u = String(url);
   if (init.method === 'POST') posts.push({ url: u, body: JSON.parse(init.body || '{}') });
   if (LIST_DOWN && u.includes('/api/live/sessions')) return Promise.reject(new Error('connection refused'));
   const [status, body] =
-    u.includes('/api/search') ? [200, SEARCH]
+    LIVE_REFUSES && /\/api\/live\/(?!options|sessions)/.test(u) ? LIVE_REFUSES
+      : u.includes('/api/auth') ? [200, AUTH]
+      : u.includes('/api/setup/shim') ? [200, SHIM]
+      : u.includes('/api/live/options') ? [200, OPTIONS]
+      : u.includes('/api/search') ? [200, SEARCH]
       : u.includes('/api/live/sessions') ? [200, SESSIONS]
       : u.includes('/api/live/prompt') ? [200, PROMPT]
       : u.includes('/api/live/answer') ? [ANSWER.status, ANSWER.body]
@@ -192,6 +207,7 @@ intervals.length = 0;  // the copy above is done with; only the one below may be
 const api = new Function(
   js + '\n; return { render, md, openSession, showList, say, askForm, clampable, loadSessions,' +
        ' pollPrompt, deliver, list, stat, statText, stopBtn, perm, feed, sentLog: () => [...sent],' +
+       ' note, msg, btwBtn, switcher, answerPerm, putAway,' +
        ' tabLabels: () => [...tabs.children].map(t => (t._label || \'\')),' +
        ' tabDots: () => [...tabs.children].map(t => (/class="dot ([^"]*)"/.exec(t.innerHTML) || [0, \'\'])[1].trim()),' +
        ' tabsHidden: () => tabs.classList.contains(\'hide\'),' +
@@ -1023,6 +1039,85 @@ check('a stray marker cannot leave a tag open, and snippet text is escaped', () 
 check('an empty result says so rather than showing nothing', () => {
   api.drawFind({ hits: [] }, 'nothing');
   if (!api.findRows.innerHTML.includes('Nothing matched')) throw new Error('an empty answer was silent');
+});
+
+// --- a hosted router: docs/hosting-on-kubernetes.md, "Web UI in server mode" ---
+// The last notice, as the page shows it: say() writes the words, then a dismiss mark.
+const noticeIn = (note) => { const c = note.children; return c.length > 1 ? c[c.length - 2].textContent : ''; };
+const AGENTLESS = 'Live sessions need the Agent Router agent on the machine that runs them. '
+  + 'A hosted router does not have one yet.';
+
+// Every per-session route of a hosted router answers 503 and why. Whichever action the
+// reader tried, that is what they are told, not a generic failure. Driven on an open
+// session, the only place these actions can be reached from.
+acheck('a per-session action a hosted router refuses says what it said', async () => {
+  SESSIONS = BASE();
+  await api.showList(true);
+  api.openSession(SESSIONS[0], true);
+  const sel = api.switcher('model', 'claude-opus-4-1');
+  sel.value = 'sonnet';
+  api.msg.value = 'a side question';
+  LIVE_REFUSES = [503, { ok: false, error: HOSTED_ERROR }];
+  try {
+    for (const [what, act] of [
+      ['send', () => api.deliver('hello')],
+      ['stop', () => api.stopBtn.onclick()],
+      ['side question', () => api.btwBtn.onclick()],
+      ['model switch', () => sel.onchange()],
+      ['permission answer', () => api.answerPerm({ allow: true, request_id: 'req-1' }, 'Allowed.', mkEl())],
+      ['archive', () => api.putAway(SESSIONS[1], true)],
+    ]) {
+      api.note.children.length = 0;
+      await act();
+      eq(noticeIn(api.note), HOSTED_ERROR, what);
+    }
+    // A question's answer says it beside the form, then sends the text as a message,
+    // which says it too.
+    const wrap = api.askForm({ questions: [{ question: 'Which one?', header: 'Pick', options: [{ label: 'A' }, { label: 'B' }] }] });
+    wrap.children[1]._qa['input[type=radio], input[type=checkbox]'] = [{ checked: true, value: 'B' }];
+    const foot = wrap.children[wrap.children.length - 1];
+    api.note.children.length = 0;
+    await foot.querySelector('.btn').onclick();
+    await flush();
+    eq(foot.querySelector('.ask-hint').textContent, HOSTED_ERROR, 'a question\'s answer');
+    eq(noticeIn(api.note), HOSTED_ERROR, 'that answer, sent as a message');
+    // Only a 503's `error` is a refusal to repeat. A local router's own failures carry it
+    // only on a 500, and those still read as they always did.
+    LIVE_REFUSES = [500, { error: 'database is locked' }];
+    api.note.children.length = 0;
+    await api.stopBtn.onclick();
+    eq(noticeIn(api.note), 'Could not stop this session.', 'a local router\'s internal error');
+  } finally { LIVE_REFUSES = null; }
+});
+
+// A hosted router as a fresh load of the page meets one: /api/auth says `server`, and the
+// list is empty, because live sessions need the machine agent, which it does not have yet.
+acheck('a hosted router says why its list is empty, and warns of no wrapper', async () => {
+  const timers = intervals.length;
+  SESSIONS = [];
+  // An editor that is not wrapped: a local router warns of it above the list.
+  SHIM = { available: true, installed: 0, auto: false, auto_log: [],
+           targets: [{ extension: 'anthropic.claude-code-9.9.9-darwin-arm64', path: '/x/claude', state: 'not_installed' }] };
+  const warned = (page) => page.list.children.some((c) => /is not wrapped/.test(c.textContent || ''));
+  try {
+    await api.showList(true);
+    if (!api.list.innerHTML.includes('No sessions in the last week.')) throw new Error(`a local router's empty list: ${api.list.innerHTML}`);
+    if (!warned(api)) throw new Error('a local router no longer warns of an unwrapped editor');
+    AUTH = { configured: true, from_loopback: false, remote_bind: true, lan_url: 'https://router.example',
+             env_override: false, mode: 'server', password_pinned: true, public_url: 'https://router.example' };
+    const hosted = new Function(js + '\n; return { list, note, findRows };')();
+    await flush(); await flush();
+    if (!hosted.list.innerHTML.includes(AGENTLESS)) throw new Error(`a hosted router's empty list: ${hosted.list.innerHTML}`);
+    if (/in the last week/.test(hosted.list.innerHTML)) throw new Error('a hosted router blamed the week');
+    if (warned(hosted)) throw new Error('a hosted router warned of a wrapper it has no use for');
+    // A search hit cannot be opened there either, and says why rather than "no longer listed".
+    await hosted.findRows.onclick({ target: { closest: () => ({ dataset: { open: 'zzz-9' } }) } });
+    eq(noticeIn(hosted.note), AGENTLESS, 'a search hit on a hosted router');
+  } finally {
+    AUTH = {}; SHIM = {}; SESSIONS = BASE();
+    // The hosted page's own timers are not the ones the checks above tick.
+    intervals.splice(timers);
+  }
 });
 
 queue.then(() => {

@@ -550,7 +550,7 @@ pre.cmd { background:var(--bg); border:1px solid var(--line); border-radius:7px;
           <input id="e-usage" type="password" placeholder="sk-ant-sid…" autocomplete="new-password" spellcheck="false">
         </label>
         <div><button class="btn sm danger" id="e-usage-clear" hidden>Remove stored key</button></div>
-        <p class="note" style="margin:0">Copied from your claude.ai browser cookie. Used <em>only</em> to read usage —
+        <p class="note" id="e-usage-note" style="margin:0">Copied from your claude.ai browser cookie. Used <em>only</em> to read usage —
           it is never sent to api.anthropic.com and never signs a request, and it lives in a separate Keychain entry
           from the credential that does.</p>
       </div>
@@ -574,7 +574,7 @@ pre.cmd { background:var(--bg); border:1px solid var(--line); border-radius:7px;
           <label style="flex:1; width:100%">Token
             <input id="a-token" type="password" placeholder="sk-ant-oat01-…" autocomplete="new-password" spellcheck="false">
           </label>
-          <p class="note" style="margin:0">Run <code>claude setup-token</code> in a terminal that is logged into the other
+          <p class="note" id="a-token-note" style="margin:0">Run <code>claude setup-token</code> in a terminal that is logged into the other
             account and paste the <code>sk-ant-oat01-…</code> value it prints. A <code>sk-ant-sid…</code> session key copied
             from claude.ai is a browser cookie, not an API credential, and will not authenticate.</p>
         </div>
@@ -599,6 +599,8 @@ pre.cmd { background:var(--bg); border:1px solid var(--line); border-radius:7px;
       </div>
     </div>
 
+    <!-- Hidden on a hosted router, with the network switch below: see applyMode. -->
+    <div id="setupsec">
     <h4 class="modal-sec next">Claude Code setup<span class="h2sub" id="setupsub"></span></h4>
     <div id="setupbody"></div>
     <div class="formrow" style="margin-top:10px; align-items:flex-end">
@@ -611,28 +613,31 @@ pre.cmd { background:var(--bg); border:1px solid var(--line); border-radius:7px;
       your settings file is left as it is, and turning this off puts back whatever was there before — unless you have
       changed it yourself since, in which case it is left alone.</p>
     <span class="note" id="s-msg"></span>
+    </div>
 
     <h4 class="modal-sec next">Router</h4>
     <div id="routerinfo"></div>
-    <p class="note">Everything above is stored locally. The router's own settings (port, database
+    <p class="note" id="storenote">Everything above is stored locally. The router's own settings (port, database
       location, upstream, body cap) are environment variables read at startup — see the README.</p>
 
     <h4 class="modal-sec next">Notifications<span class="h2sub" id="pushsub"></span></h4>
     <div id="pushbox"></div>
-    <p class="note" style="margin-top:8px">The iPhone app is told the moment a session waits on you — a permission, a question —
+    <p class="note" id="pushnote" style="margin-top:8px">The iPhone app is told the moment a session waits on you — a permission, a question —
       through Apple's push service. That needs an APNs key from your developer account (Keys → + → Apple Push Notifications
       service); paste the <code>.p8</code> here once. It stays in the router's secrets file, never in the database.</p>
 
+    <div id="netsec">
     <h4 class="modal-sec next">Listen on your network<span class="h2sub" id="netsub"></span></h4>
     <div id="netbox"></div>
     <p class="note" style="margin-top:8px">Off, the router answers only on this Mac. On, it also listens on your local
       network, so the phone apps — and a Claude Code on another machine — can reach it; every one of them is asked for
       the password below. It takes effect at once, with nothing restarted and no session dropped, and it is remembered
       across a reboot.</p>
+    </div>
 
     <h4 class="modal-sec next">Password<span class="h2sub" id="pwsub"></span></h4>
     <div id="pw-settings"></div>
-    <p class="note" style="margin-top:8px">Asked of any device that is not this Mac — a browser gets the usual prompt (any
+    <p class="note" id="pwnote" style="margin-top:8px">Asked of any device that is not this Mac — a browser gets the usual prompt (any
       username), and a Claude Code elsewhere sets <code>ANTHROPIC_AUTH_TOKEN</code> to it. Forgotten? Set a new one from
       here; this Mac never needs the old one.</p>
   </div>
@@ -948,23 +953,39 @@ document.getElementById('settings-close').onclick = () => settings.close();
 settings.addEventListener('click', e => { if (e.target === settings) settings.close(); });
 
 let healthInfo = null;
+/// What points a Claude Code at this router. The address is the page's own origin, so it
+/// is right behind an https ingress too. A caller that is not on the router's machine must
+/// give the password, and so must every caller of a hosted router, loopback included.
+/// Until /api/auth has answered, the page is taken to be at the machine, as before.
+function connectSnippet() {
+  const url = `"ANTHROPIC_BASE_URL": ${JSON.stringify(location.origin)}`;
+  return hosted() || (authInfo && authInfo.from_loopback === false)
+    ? `{ "env": {\n  ${url},\n  "ANTHROPIC_AUTH_TOKEN": "<the router password>"\n} }`
+    : `{ "env": { ${url} } }`;
+}
+const routerSig = () => JSON.stringify([connectSnippet(), hosted()]);
 async function renderRouterInfo() {
   const box = document.getElementById('routerinfo');
   if (!healthInfo) healthInfo = await get('/_router/health').catch(() => ({}));
-  const snippet = `{ "env": { "ANTHROPIC_BASE_URL": "http://${location.host}" } }`;
+  const snippet = connectSnippet();
+  // applyAuth draws it again if it was drawn before the page knew where it was read from.
+  box._sig = routerSig();
   const copy = h('button', { class:'btn sm ghost', text:'Copy' });
   copy.onclick = async () => {
     try { await navigator.clipboard.writeText(snippet); copy.textContent = 'Copied'; }
     catch (e) { copy.textContent = 'Select it manually'; }
     setTimeout(() => { copy.textContent = 'Copy'; }, 2000);
   };
-  box.replaceChildren(
+  box.replaceChildren(...[
     h('div', { class:'kvline' }, h('span', { text:'Listening on' }), h('span', { class:'mono', text: location.host })),
     h('div', { class:'kvline' }, h('span', { text:'Version' }), h('span', { text: healthInfo.version || '—' })),
-    h('div', { class:'kvline' }, h('span', { text:'Process' }), h('span', { class:'mono', text: healthInfo.pid != null ? String(healthInfo.pid) : '—' })),
+    // A hosted router's process id is nothing anyone reading this can act on.
+    hosted() ? null
+      : h('div', { class:'kvline' }, h('span', { text:'Process' }), h('span', { class:'mono', text: healthInfo.pid != null ? String(healthInfo.pid) : '—' })),
     h('p', { class:'note', style:'margin:12px 0 6px' }, 'Point a project at the router by adding this to its .claude/settings.local.json:'),
     h('pre', { class:'cmd', text: snippet }),
-    h('div', { style:'margin-top:8px' }, copy));
+    h('div', { style:'margin-top:8px' }, copy),
+  ].filter(Boolean));
 }
 
 // ---------- back to top ----------
@@ -1942,7 +1963,9 @@ async function renderAccounts(list) {
     { label:'Expires', num:true, get:a => a.expires_at === undefined ? '—'
         : Number(a.expires_at) ? when(a.expires_at) : 'no expiry' },
     { label:'', get:a => `<button class="btn sm ghost" data-edit="${esc(a.id)}">edit</button>`
-        + (a.source === 'keychain'
+        // A hosted router seeds no built-in account, so one brought over in an imported
+        // store is never re-created there: it can go like any other.
+        + (a.source === 'keychain' && !hosted()
             ? ' <span class="muted" style="font-size:11px" title="Discovered from the Claude Code login on this machine, so the router does not own it">built in</span>'
             : ` <button class="btn sm danger" data-del="${esc(a.id)}">remove</button>`) },
   ], list, { empty:'No accounts yet.' });
@@ -1950,7 +1973,13 @@ async function renderAccounts(list) {
   const active = list.find(a => Number(a.active));
   setText(document.getElementById('acctsub'), `${list.length} account${list.length === 1 ? '' : 's'}` + (active ? ` · ${active.email || active.label} active` : ' · none active'));
   // Nothing configured, or a credential that stopped working, is worth interrupting for.
-  if (!settingsAutoShown && (!list.length || list.some(a => a.ready !== undefined && !Number(a.ready)))) {
+  // A hosted router can never sign with a Claude Code login, the built-in account or a
+  // profile: such rows only arrive in a store copied from a Mac, and are never ready
+  // there. One is a reason to interrupt only while it is the account in use.
+  const signers = hosted()
+    ? list.filter(a => (a.source !== 'keychain' && a.source !== 'profile') || Number(a.active))
+    : list;
+  if (!settingsAutoShown && (!signers.length || signers.some(a => a.ready !== undefined && !Number(a.ready)))) {
     settingsAutoShown = true;
     openSettings();
   }
@@ -2009,13 +2038,17 @@ function openEdit(a) {
   const isKeychain = a.source === 'keychain';
   email.disabled = isKeychain;
   setText(document.getElementById('e-idnote'), isKeychain
-    ? 'Identity is read from the Claude Code login on this machine and refreshes on every request, so it cannot be set by hand.'
+    ? (hosted()
+      ? 'Claude Code\u2019s own login, from the machine this store was copied from. A hosted router cannot sign with it.'
+      : 'Identity is read from the Claude Code login on this machine and refreshes on every request, so it cannot be set by hand.')
     : 'A long-lived token cannot report which account it belongs to, so setting the identity here is what labels this account\u2019s traffic in the charts.');
   box.hidden = false;
   box.scrollIntoView({ block: 'nearest' });
 }
 
 async function renderSetup() {
+  // None of it applies to a hosted router, whose answers say so; the section is hidden.
+  if (hosted()) return;
   const d = await get('/api/setup');
   const sh = await get('/api/setup/shim').catch(() => null);
   const rows = [];
@@ -2241,8 +2274,57 @@ wireAddForm();
 let authInfo = null, authAt = 0, pwDismissed = false;
 const pwDialog = document.getElementById('pw');
 
+// ---------- hosted ----------
+// A hosted router (`agent-router serve --server`) has no Mac behind it: no Claude Code
+// settings to write, no login item, no editor to wrap, no network switch — it listens where
+// its deployment says — and no Claude Code login or profile to add an account from. It says
+// so in /api/auth's `mode`; a router that predates the field is local, and nothing changes.
+function hosted() { return !!authInfo && authInfo.mode === 'server'; }
+// Wording that speaks of this Mac, as a hosted router says it. The markup keeps the local
+// wording, and gets it back.
+const HOSTED_COPY = {
+  storenote: 'Everything above is kept in the router’s data directory. Its own settings (port, database '
+    + 'location, upstream, body cap) are set by the deployment and read at startup.',
+  pushnote: 'The iPhone app is told the moment a session waits on you — a permission, a question — through Apple’s '
+    + 'push service. That needs an APNs key from your developer account (Keys → + → Apple Push Notifications service): '
+    + 'put the <code>.p8</code> in the deployment’s push Secret, or paste it here once. A pasted key stays in the '
+    + 'router’s secrets file, never in the database.',
+  pwnote: 'Asked of every caller — a browser gets the usual prompt (any username), and Claude Code sets '
+    + '<code>ANTHROPIC_AUTH_TOKEN</code> to it.',
+  'e-usage-note': 'Copied from your claude.ai browser cookie. Used <em>only</em> to read usage — it is never sent to '
+    + 'api.anthropic.com and never signs a request.',
+  'a-token-note': 'Run <code>claude setup-token</code> in a terminal on any machine, sign in as the account to add, and '
+    + 'paste the <code>sk-ant-oat01-…</code> value it prints. A <code>sk-ant-sid…</code> session key copied from '
+    + 'claude.ai is a browser cookie, not an API credential, and will not authenticate.',
+};
+function applyMode() {
+  const server = hosted();
+  for (const id of ['setupsec', 'netsec']) document.getElementById(id).hidden = server;
+  for (const [id, html] of Object.entries(HOSTED_COPY)) {
+    const el = document.getElementById(id);
+    if (el._local == null) { el._local = el.innerHTML; el._hosted = false; }
+    if (el._hosted !== server) { el._hosted = server; el.innerHTML = server ? html : el._local; }
+  }
+  // Only a pasted token: a hosted router never runs `claude`, so it can neither sign in
+  // from here nor keep a separate profile. The form is redrawn for what is left.
+  const src = document.getElementById('a-source');
+  if (!src._all) src._all = [...src.children];
+  const offer = server ? src._all.filter(o => o.value === 'token') : src._all;
+  if (offer.length && src.children.length !== offer.length) {
+    src.replaceChildren(...offer);
+    src.value = offer[0].value;
+    src.onchange();
+  }
+}
+
 function pwForm(root, firstBoot) {
   root.replaceChildren();
+  // A deployment pins the password from its Secret at every start, so a change made here
+  // would not outlive the next one; the router refuses it, and nothing here offers it.
+  if (!firstBoot && authInfo && authInfo.password_pinned) {
+    root.append(h('p', { style:'margin:0', text:'Set by the deployment. Change the Secret and restart the router.' }));
+    return;
+  }
   const a = h('input', { type:'password', placeholder:'at least 8 characters', autocomplete:'new-password', spellcheck:'false' });
   const b = h('input', { type:'password', placeholder:'again', autocomplete:'new-password', spellcheck:'false' });
   const msg = h('span', { class:'note', style:'margin:0' });
@@ -2322,12 +2404,14 @@ function netForm(info) {
 
 function applyAuth(info) {
   authInfo = info;
+  applyMode();
   const chip = document.getElementById('remote'), dot = document.getElementById('remotedot');
   chip.hidden = !info.remote_bind;
   if (info.remote_bind) {
     dot.className = 'dot' + (info.configured ? '' : ' bad');
     setText(document.getElementById('remotetext'), info.configured ? 'network · password set' : 'network · no password');
-    chip.title = info.configured
+    chip.title = hosted() ? 'Every caller must give the password'
+      : info.configured
       ? 'Reachable from your network; other devices must give the password'
       : 'Reachable from your network, but other devices are refused until a password is set';
   }
@@ -2336,16 +2420,21 @@ function applyAuth(info) {
     : info.remote_bind ? 'not set — other devices are refused' : 'not set — only matters on the network');
   setText(document.getElementById('netsub'), info.remote_bind ? 'on' : 'this Mac only');
   const sroot = document.getElementById('pw-settings');
-  const sig = JSON.stringify([info.configured, info.remote_bind]);
+  const sig = JSON.stringify([info.configured, info.remote_bind, !!info.password_pinned]);
   if (sroot._sig !== sig) { sroot._sig = sig; pwForm(sroot, false); }
   // Its own signature: a half-typed password must not be swept away because the
   // machine picked up a new address on the network.
   const nroot = document.getElementById('netbox');
   const nsig = JSON.stringify([info.configured, info.remote_bind, info.lan_url, info.env_override]);
   if (nroot._sig !== nsig) { nroot._sig = nsig; netForm(info); }
+  // The connection snippet, if it was drawn before the page knew where it is read from.
+  const rbox = document.getElementById('routerinfo');
+  if (rbox._sig != null && rbox._sig !== routerSig()) renderRouterInfo();
   // First boot: ask once, from this machine, while the network can reach us and nothing
-  // guards it yet. Never over the top of the settings dialog.
-  if (info.remote_bind && !info.configured && info.from_loopback && !pwDismissed && !pwDialog.open && !settings.open) {
+  // guards it yet. Never over the top of the settings dialog, and never on a hosted
+  // router: its deployment sets the password.
+  if (info.remote_bind && !info.configured && info.from_loopback && !hosted() && !info.password_pinned
+      && !pwDismissed && !pwDialog.open && !settings.open) {
     pwForm(document.getElementById('pw-first'), true);
     pwDialog.showModal();
   }
@@ -2365,7 +2454,9 @@ async function renderPush() {
   // it still waits on. The paste form below is the other way in.
   const keyFile = st.key_file ? h('p', { class:'note', style:'margin:0 0 8px', text: 'key file: ' + st.key_file })
     : st.configured ? null
-    : h('p', { class:'note', style:'margin:0 0 8px', text: 'Drop the AuthKey_<key id>.p8 that developer.apple.com hands out into ~/.agent-router and the router takes it in by itself — or paste it here.' });
+    : h('p', { class:'note', style:'margin:0 0 8px', text: hosted()
+        ? 'Put the AuthKey_<key id>.p8 that developer.apple.com hands out in the deployment’s push Secret — or paste it here.'
+        : 'Drop the AuthKey_<key id>.p8 that developer.apple.com hands out into ~/.agent-router and the router takes it in by itself — or paste it here.' });
   const team = h('input', { placeholder:'team id, e.g. ABCDE12345', value: st.team_id || '', autocomplete:'off', spellcheck:'false' });
   const kid = h('input', { placeholder:'key id, e.g. ABC123DEF4', value: st.key_id || '', autocomplete:'off', spellcheck:'false' });
   const bundle = h('input', { placeholder:'bundle id', value: st.bundle_id || '', autocomplete:'off', spellcheck:'false' });
@@ -2413,7 +2504,10 @@ async function refresh() {
   const since = sinceMs(), tz = -new Date().getTimezoneOffset();
   const acctOpen = settings.open;
   const wantAccounts = !accountsCache || Date.now() - accountsAt > 30000 || (acctOpen && !accountsProbed);
-  const [sum, projects, sessions, tools, requests, accounts, liveQuota, fcast] = await Promise.all([
+  // Asked with the rest rather than after them: whether this is a hosted router decides
+  // what the accounts panel may interrupt for. It is applied where it always was, after it.
+  const wantAuth = !authInfo || Date.now() - authAt > 30000;
+  const [sum, projects, sessions, tools, requests, accounts, liveQuota, fcast, auth] = await Promise.all([
     get('/api/summary',  { account:state.account, project:state.project, session:state.session, since, tz }),
     get('/api/projects', { account:state.account, since }),
     get('/api/sessions', { account:state.account, project:state.project, since }),
@@ -2423,8 +2517,10 @@ async function refresh() {
     // Optional: present only on builds that carry it, and a failure must not blank the page.
     get('/api/quota').catch(() => null),
     get('/api/forecast', { since }).catch(() => null),
+    wantAuth ? get('/api/auth').catch(() => null) : Promise.resolve(null),
   ]);
   if (accounts) { accountsAt = Date.now(); accountsProbed = acctOpen; }
+  if (auth) { authInfo = auth; authAt = Date.now(); applyMode(); }
   lastSummary = sum;
   lastLists = { projects: projects || [], sessions: sessions || [] };
   const t = sum.totals || {}, bk = buckets(sum.timeline);
@@ -2452,7 +2548,7 @@ async function refresh() {
   lastRequests = requests || [];
   renderRequests(lastRequests, sum.latency);
   await renderAccounts(accounts || undefined);
-  await renderAuth();
+  if (auth) applyAuth(auth);
 }
 // ---------- search ----------
 // Not part of the five-second refresh: this one answers the keyboard, not the clock.

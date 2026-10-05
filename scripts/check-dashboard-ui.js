@@ -86,7 +86,7 @@ global.document = {
   body: mkEl(), documentElement: mkEl(), addEventListener() {},
 };
 global.window = global;
-global.location = { href: 'http://host/', hash: '' };
+global.location = { href: 'http://host/', origin: 'http://host', host: 'host', hash: '' };
 global.history = { pushState() {}, replaceState() {} };
 global.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
 global.matchMedia = () => ({ matches: false, addEventListener() {} });
@@ -114,12 +114,26 @@ const SEARCH = {
       snippet: 'a stray \u2039marker and no close', rank: -7 },
   ],
 };
-global.fetch = (url = '') => Promise.resolve({
+// Every path the page asked for, so a check can see what it did not ask.
+const fetched = [];
+global.fetch = (url = '') => (fetched.push(String(url)), Promise.resolve({
   ok: true,
   json: () => Promise.resolve(
     String(url).includes('/api/search') ? SEARCH
+      : String(url) === '/api/push' ? { configured: false, devices: [] }
       : /\/api\/(projects|sessions|requests|tools|accounts)/.test(String(url)) ? [] : {}),
-});
+}));
+
+// What the markup gives the page that this DOM does not parse: the account form's three
+// ways in, and the notes a hosted router rewords, in their own local words.
+const sourceSelect = document.getElementById('a-source');
+sourceSelect.children.push(...['signin', 'token', 'profile'].map((v) => Object.assign(mkEl('option'), { value: v })));
+sourceSelect.value = 'signin';
+const MARKUP = {};
+for (const id of ['storenote', 'pushnote', 'pwnote', 'e-usage-note', 'a-token-note']) {
+  const m = new RegExp(`<p[^>]*\\sid="${id}"[^>]*>([\\s\\S]*?)</p>`).exec(src);
+  if (m) document.getElementById(id).innerHTML = MARKUP[id] = m[1];
+}
 
 const load = (f, d) => {
   try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return d; }
@@ -130,7 +144,7 @@ check('script evaluates', () => { new Function(js)(); });
 
 const api = new Function(
   js + '\n; return { fcState, fcBasis, fcLine, runwaySvg, renderRunway, renderAllAccounts, hrs, applyAuth, pwForm,' +
-       ' markup, runSearch, qbox,' +
+       ' markup, runSearch, qbox, renderAccounts, renderSetup, renderRouterInfo, renderPush, connectSnippet, openEdit,' +
        ' searchEls: () => ({ box: document.getElementById(\'sresults\'),' +
        '   sess: document.getElementById(\'ssess\'), hits: document.getElementById(\'shits\') }) };'
 )();
@@ -311,6 +325,174 @@ check('the password form builds in both homes without throwing', () => {
   api.pwForm(document.getElementById('pw-settings'), false);
 });
 
+// --- a hosted router: docs/hosting-on-kubernetes.md, "Web UI in server mode" ---
+// What one says at /api/auth, and what a local router says today: no `mode` at all,
+// which has to read as local, exactly as before.
+const HOSTED = { configured: true, updated_at: Date.now() - 3600e3, from_loopback: false, remote_bind: true,
+  listening_on: '0.0.0.0:8787', lan_url: 'https://router.example', env_override: false,
+  mode: 'server', password_pinned: true, public_url: 'https://router.example' };
+const LOCAL = { configured: true, updated_at: Date.now() - 60e3, from_loopback: true, remote_bind: false,
+  listening_on: '127.0.0.1:8787', lan_url: 'http://10.30.0.183:8787', env_override: false };
+const textOf = (el) => (el == null ? '' : (el.textContent || '') + (el.children || []).map(textOf).join(''));
+const eq = (got, want, what) => {
+  if (JSON.stringify(got) !== JSON.stringify(want)) {
+    throw new Error(`${what}: got ${JSON.stringify(got)}, expected ${JSON.stringify(want)}`);
+  }
+};
+
+check('a hosted router hides what only a Mac has, and a local one keeps all of it', () => {
+  // The wrappers hold what they are named for: setup with its login item and wrapper rows
+  // (drawn into #setupbody), and the network switch.
+  const span = (from, to) => src.slice(src.indexOf(from), src.indexOf(to, src.indexOf(from)));
+  if (!/Claude Code setup[\s\S]*id="setupbody"[\s\S]*id="s-project-add"[\s\S]*id="s-msg"[\s\S]*<\/div>\s*$/
+    .test(span('<div id="setupsec">', '<h4 class="modal-sec next">Router</h4>'))) {
+    throw new Error('#setupsec does not wrap the whole Claude Code setup section');
+  }
+  if (!/Listen on your network[\s\S]*id="netbox"[\s\S]*<\/div>\s*$/
+    .test(span('<div id="netsec">', '<h4 class="modal-sec next">Password'))) {
+    throw new Error('#netsec does not wrap the whole network switch');
+  }
+  const shown = () => ['setupsec', 'netsec'].filter((id) => !document.getElementById(id).hidden);
+  api.applyAuth(LOCAL);
+  eq(shown(), ['setupsec', 'netsec'], 'what a local router shows');
+  api.applyAuth(HOSTED);
+  eq(shown(), [], 'what a hosted router shows');
+  // Nothing is drawn into the hidden section either: the setup and wrapper state go unasked.
+  fetched.length = 0;
+  api.renderSetup();
+  if (fetched.length) throw new Error(`a hosted router was asked for ${fetched.join(', ')}`);
+  api.applyAuth(LOCAL);
+  eq(shown(), ['setupsec', 'netsec'], 'what a local router shows once more');
+  fetched.length = 0;
+  api.renderSetup();
+  if (!fetched.includes('/api/setup')) throw new Error('a local router stopped reading its setup');
+});
+
+check('a hosted router adds an account by pasted token only, and a local one every way', () => {
+  const offered = () => sourceSelect.children.map((o) => o.value);
+  const form = () => ({ type: sourceSelect.value, token: !document.getElementById('a-token-row').hidden,
+    signin: !document.getElementById('signin-row').hidden, save: document.getElementById('a-save').textContent });
+  api.applyAuth(LOCAL);
+  eq(offered(), ['signin', 'token', 'profile'], 'what a local router offers');
+  api.applyAuth(HOSTED);
+  eq(offered(), ['token'], 'what a hosted router offers');
+  eq(form(), { type: 'token', token: true, signin: false, save: 'Add account' }, 'the form on a hosted router');
+  api.applyAuth(LOCAL);
+  eq(offered(), ['signin', 'token', 'profile'], 'what a local router offers once more');
+  eq(form(), { type: 'signin', token: false, signin: true, save: 'Start sign-in' }, 'the form on a local router');
+});
+
+check('a pinned password is the deployment\'s: said so, with nothing to set, change or remove', () => {
+  const root = document.getElementById('pw-settings'), dlg = document.getElementById('pw');
+  api.applyAuth(HOSTED);
+  eq(textOf(root), 'Set by the deployment. Change the Secret and restart the router.', 'the password section');
+  // Not even with what would ask for one at the machine itself...
+  dlg.close();
+  api.applyAuth({ ...HOSTED, configured: false, from_loopback: true });
+  if (dlg.open) throw new Error('a hosted router asked for a first password');
+  // ...which a local router does ask with: the mode is what keeps it shut.
+  api.applyAuth({ ...LOCAL, configured: false, remote_bind: true, from_loopback: true });
+  if (!dlg.open) throw new Error('a local router no longer asks on first boot');
+  dlg.close();
+  api.applyAuth(LOCAL);
+  if (!/Change password/.test(textOf(root)) || !/Remove password/.test(textOf(root))) {
+    throw new Error(`a local router lost its password form: ${textOf(root)}`);
+  }
+});
+
+check('the connection snippet is the page\'s own origin, with the password wherever it is asked', () => {
+  const was = global.location;
+  const at = (origin) => { global.location = { ...was, origin, host: origin.replace(/^\w+:\/\//, '') }; };
+  const env = () => JSON.parse(api.connectSnippet()).env;
+  const TOKEN = '<the router password>';
+  try {
+    at('https://router.example');
+    api.applyAuth(HOSTED);
+    eq(env(), { ANTHROPIC_BASE_URL: 'https://router.example', ANTHROPIC_AUTH_TOKEN: TOKEN }, 'a hosted router');
+    // Every caller of a hosted router gives it, a kubectl port-forward to localhost included.
+    at('http://localhost:8787');
+    api.applyAuth({ ...HOSTED, from_loopback: true });
+    eq(env(), { ANTHROPIC_BASE_URL: 'http://localhost:8787', ANTHROPIC_AUTH_TOKEN: TOKEN }, 'through a port-forward');
+    // A local router read from another machine on the network.
+    at('http://10.30.0.183:8787');
+    api.applyAuth({ ...LOCAL, remote_bind: true, from_loopback: false });
+    eq(env(), { ANTHROPIC_BASE_URL: 'http://10.30.0.183:8787', ANTHROPIC_AUTH_TOKEN: TOKEN }, 'a local router, off the machine');
+    // At the machine itself: the very line it always was.
+    at('http://127.0.0.1:8787');
+    api.applyAuth(LOCAL);
+    eq(api.connectSnippet(), '{ "env": { "ANTHROPIC_BASE_URL": "http://127.0.0.1:8787" } }', 'a local router at the machine');
+  } finally { global.location = was; }
+});
+
+check('a hosted router speaks of its deployment, not of this Mac, and a local one as it always did', () => {
+  const ids = ['storenote', 'pushnote', 'pwnote', 'e-usage-note', 'a-token-note'];
+  const missing = ids.filter((id) => !MARKUP[id]);
+  if (missing.length) throw new Error(`not in the markup: #${missing.join(', #')}`);
+  // The local words this looks for are really there to be replaced.
+  if (!/this Mac/.test(MARKUP.pwnote) || !/Keychain/.test(MARKUP['e-usage-note']) || !/stored locally/.test(MARKUP.storenote)) {
+    throw new Error('the local wording changed; this check no longer tests what it says');
+  }
+  const LOCAL_WORDS = /this Mac|this machine|stored locally|Keychain|~\/\.agent-router|the other\s+account/;
+  const builtIn = { id: 'default', label: 'default', source: 'keychain', active: 0 };
+  api.applyAuth(HOSTED);
+  for (const id of ids) {
+    const html = document.getElementById(id).innerHTML;
+    const said = LOCAL_WORDS.exec(html);
+    if (said || html === MARKUP[id]) throw new Error(`#${id} still says ${said ? `"${said[0]}"` : 'what it says locally'}`);
+  }
+  if (!/push Secret/.test(document.getElementById('pushnote').innerHTML)) throw new Error('push keys are not said to come from the deployment');
+  eq(document.getElementById('remote').title, 'Every caller must give the password', 'the network chip');
+  api.openEdit(builtIn);
+  const idnote = document.getElementById('e-idnote').textContent;
+  if (LOCAL_WORDS.test(idnote) || !/hosted router/.test(idnote)) throw new Error(`an imported built-in account reads: ${idnote}`);
+  api.applyAuth(LOCAL);
+  for (const id of ids) eq(document.getElementById(id).innerHTML, MARKUP[id], `#${id} on a local router`);
+  api.openEdit(builtIn);
+  if (!/on this machine/.test(document.getElementById('e-idnote').textContent)) throw new Error('a local built-in account changed its note');
+  document.getElementById('editbox').hidden = true;
+});
+
+check('a hosted router opens the settings for a Claude Code login only while it is the one in use', () => {
+  const dlg = document.getElementById('settings');
+  // What a store copied from a Mac brings: the built-in account and a profile, neither of
+  // which a hosted router can ever sign with, beside a pasted token that it can.
+  const NOT_HERE = 'this account is a Claude Code login on a developer\'s machine, which a hosted router cannot read';
+  const builtIn = { id: 'default', label: 'default', source: 'keychain', active: 0, ready: false, detail: NOT_HERE, expires_at: 0 };
+  const profile = { id: 'side', label: 'side', source: 'profile', active: 0, ready: false, detail: NOT_HERE, expires_at: 0 };
+  const token = { id: 'work', label: 'work', source: 'token', active: 1, ready: true, detail: 'long-lived token', expires_at: 0 };
+  const removable = () => /data-del="default"/.test(document.getElementById('accounts').innerHTML);
+  // One load opens the settings by itself at most once, so each case that should open
+  // them gets a fresh load of its own.
+  const opensOnLoad = (list) => {
+    dlg.close();
+    const page = new Function(js + '\n; return { applyAuth, renderAccounts };')();
+    page.applyAuth(HOSTED);
+    page.renderAccounts(list);
+    const opened = dlg.open;
+    dlg.close();
+    return opened;
+  };
+  dlg.close();
+  api.applyAuth(HOSTED);
+  api.renderAccounts([builtIn, profile, token]);
+  if (dlg.open) throw new Error('opened by itself for accounts a hosted router can never sign with');
+  // There the built-in one goes like any other; nothing re-creates it.
+  if (!removable()) throw new Error('an imported built-in account cannot be removed from a hosted router');
+  // A local router still interrupts for it: its own Claude Code login stopped working.
+  api.applyAuth(LOCAL);
+  api.renderAccounts([builtIn, token]);
+  if (!dlg.open) throw new Error('a local router no longer interrupts for its broken built-in account');
+  if (removable()) throw new Error('a local router offered to remove its built-in account');
+  dlg.close();
+  // With nothing else to sign with, or with the copied login still the one in use, a
+  // hosted router does interrupt: nothing is signing, which is what the panel can fix.
+  if (!opensOnLoad([builtIn])) throw new Error('a hosted router with nothing to sign with stayed quiet');
+  if (!opensOnLoad([{ ...builtIn, active: 1 }, { ...token, active: 0 }])) {
+    throw new Error('a hosted router signing with a login it cannot read stayed quiet');
+  }
+  api.applyAuth(LOCAL);
+});
+
 if (FORECAST) {
   check('the real /api/forecast payload renders end to end', () => {
     api.renderAllAccounts(FORECAST);
@@ -355,6 +537,31 @@ acheck('an empty query puts the panel away rather than searching for nothing', a
   api.qbox.value = '   ';
   await api.runSearch();
   if (!api.searchEls().box.hidden) throw new Error('a blank query left results on screen');
+});
+
+acheck('a hosted router\'s facts leave out its process id, and its key hint names the Secret', async () => {
+  // The page's own first polls, from every copy of it loaded above, settle first: each
+  // applies whatever /api/auth answered, and this check sets its own.
+  await new Promise((r) => setImmediate(r));
+  const box = document.getElementById('routerinfo');
+  const facts = () => box.children.filter((c) => c.class === 'kvline').map((c) => c.children[0].textContent);
+  const snippet = () => (box.children.find((c) => c.tagName === 'pre') || {}).textContent;
+  const keyHint = () => textOf(document.getElementById('pushbox').children[0]);
+  api.applyAuth(LOCAL);
+  await api.renderRouterInfo();
+  eq(facts(), ['Listening on', 'Version', 'Process'], 'a local router\'s facts');
+  eq(snippet(), api.connectSnippet(), 'the snippet a local router shows');
+  if (box.children.some((c) => c == null)) throw new Error('a left-out row reached the page as "null"');
+  await api.renderPush();
+  if (!/~\/\.agent-router/.test(keyHint())) throw new Error(`a local router's key hint: ${keyHint()}`);
+  api.applyAuth(HOSTED);
+  await api.renderRouterInfo();
+  eq(facts(), ['Listening on', 'Version'], 'a hosted router\'s facts');
+  if (!snippet().includes('"ANTHROPIC_AUTH_TOKEN": "<the router password>"')) throw new Error(`no password line: ${snippet()}`);
+  if (box.children.some((c) => c == null)) throw new Error('a left-out row reached the page as "null"');
+  await api.renderPush();
+  if (!/push Secret/.test(keyHint()) || /agent-router/.test(keyHint())) throw new Error(`a hosted router's key hint: ${keyHint()}`);
+  api.applyAuth(LOCAL);
 });
 
 check('a stray marker cannot leave a tag open, and snippet text is escaped', () => {

@@ -412,6 +412,17 @@ let es = null, current = null, listScroll = 0, following = true, watcher = null,
 // What a session can be switched to; one list for every UI, from the router.
 let options = { models: [], efforts: [] };
 fetch('/api/live/options').then(r => r.json()).then(o => { options = o; }).catch(() => {});
+// A hosted router lists no live sessions: they need the Agent Router agent on the machine
+// that runs them, which it does not have yet, and it refuses every per-session route with
+// a 503 saying so. It names itself in /api/auth's `mode`; one that predates it is local.
+const hostedRouter = fetch('/api/auth').then(r => r.json())
+  .then(a => !!a && a.mode === 'server').catch(() => false);
+const AGENTLESS = 'Live sessions need the Agent Router agent on the machine that runs them. '
+  + 'A hosted router does not have one yet.';
+/// What a hosted router refused a per-session route with: a 503 and its `error`. A local
+/// router says why in `reason`, its own 503s included, so this is only read after that.
+const unavailable = (res, body) =>
+  (res.status === 503 && body && typeof body.error === 'string' && body.error) || '';
 // Pinning twice — now and after layout settles — costs nothing and covers the frame
 // in which a row changes height.
 // Show a notice above the composer, dismissible, optionally self-clearing. Text is set
@@ -608,8 +619,10 @@ async function loadSessions() {
     return;
   }
   // An extension update ships a fresh, unwrapped binary, and every session it starts is
-  // view-only with nothing to say so. Say so here, where the reader will be wondering.
-  const shim = await fetch('/api/setup/shim').then(r => r.json()).catch(() => null);
+  // view-only with nothing to say so. Say so here, where the reader will be wondering —
+  // unless this is a hosted router, which wraps nothing and has no editor to warn about.
+  const server = await hostedRouter;
+  const shim = server ? null : await fetch('/api/setup/shim').then(r => r.json()).catch(() => null);
   const newest = shim && Array.isArray(shim.targets) && shim.targets.length
     ? shim.targets[shim.targets.length - 1] : null;
   const lastMoved = () => rows.length
@@ -628,7 +641,8 @@ async function loadSessions() {
     stat.className = live ? 't-busy' : 't-idle';
     statText.textContent = live ? live + ' active' : lastMoved();
   }
-  list.innerHTML = rows.length ? '' : '<div class="empty">No sessions in the last week.</div>';
+  list.innerHTML = rows.length ? ''
+    : `<div class="empty">${server ? AGENTLESS : 'No sessions in the last week.'}</div>`;
   if (newest && newest.state !== 'installed') {
     const n = document.createElement('div');
     n.className = 'empty';
@@ -907,7 +921,7 @@ function askForm(ask) {
       }
       // Not answerable (unwrapped session, or the prompt already went) — the text is
       // still worth sending, and saying so beats losing what was typed.
-      hint.textContent = body.reason || 'could not answer directly';
+      hint.textContent = body.reason || unavailable(res, body) || 'could not answer directly';
       deliver(parts.join('\n'), { ask: true });
     } catch (e) {
       hint.textContent = 'could not answer — ' + e;
@@ -1017,7 +1031,10 @@ async function putAway(row, archived) {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ session: row.session_id, archived })
     });
-    if (!res.ok) { say('Could not archive that session.'); return; }
+    if (!res.ok) {
+      say(unavailable(res, await res.json().catch(() => ({}))) || 'Could not archive that session.');
+      return;
+    }
     row.archived = archived;
     if (current) drawTabs(current);
     if (!feed.classList.contains('hide')) return;
@@ -1236,7 +1253,7 @@ function switcher(kind, currentValue) {
       });
       const body = await res.json().catch(() => ({}));
       if (res.ok) say((body.notices && body.notices.join(' ')) || (body.pending ? `${kind} sent — the session has not confirmed yet` : `${kind} set to ${value} — takes effect on the next turn`), { ok: true, for: 6000 });
-      else { say(body.reason || `Could not set the ${kind}.`); sel.value = cur; }
+      else { say(body.reason || unavailable(res, body) || `Could not set the ${kind}.`); sel.value = cur; }
     } catch (e) { say(`Could not set the ${kind} — ` + e); sel.value = cur; }
     finally { sel.disabled = false; }
   };
@@ -1316,7 +1333,7 @@ async function answerPerm(body, done, row) {
     });
     const j = await res.json().catch(() => ({}));
     if (res.ok && j.ok !== false) { perm.replaceChildren(); permSeen = null; say(done, { ok: true, for: 5000 }); return; }
-    say(j.reason || 'Could not answer that prompt.');
+    say(j.reason || unavailable(res, j) || 'Could not answer that prompt.');
     // 409: that prompt is no longer waiting (answered elsewhere, or withdrawn). The card
     // can only fail again, so it is replaced by whatever is waiting now, if anything.
     if (res.status === 409) { permSeen = null; perm.replaceChildren(); pollPrompt(); return; }
@@ -1358,7 +1375,7 @@ stopBtn.onclick = async () => {
     });
     const body = await res.json().catch(() => ({}));
     if (res.ok) say('Stopped.', { ok: true, for: 4000 });
-    else say(body.reason || 'Could not stop this session.');
+    else say(body.reason || unavailable(res, body) || 'Could not stop this session.');
   } catch (err) {
     say('Could not stop — ' + err);
   } finally { stopBtn.disabled = false; }
@@ -1516,7 +1533,8 @@ findRows.onclick = async e => {
   const id = card.dataset.open;
   const rows = await fetchSessions();
   const row = rows.find(r => r.session_id === id);
-  if (!row) { say('That session is no longer listed.'); return; }
+  // A hosted router lists none, so "no longer" would be the wrong reason.
+  if (!row) { say((await hostedRouter) ? AGENTLESS : 'That session is no longer listed.'); return; }
   closeFind();
   openSession(row, false);
 };
@@ -1600,7 +1618,7 @@ async function deliver(text, opts = {}) {
         else say('Delivered as your message.', { ok: true, for: 4000 });
       }
     } else {
-      say(body.reason || ('Send failed (' + res.status + ')'));
+      say(body.reason || unavailable(res, body) || ('Send failed (' + res.status + ')'));
     }
   } catch (err) {
     say('Send failed — ' + err);
@@ -1633,7 +1651,7 @@ btwBtn.onclick = async () => {
       feed.appendChild(render({ role: 'assistant', kind: 'aside', text: body.answer || '(no answer)' }));
       say(`answered in ${dur(body.took_ms || 0)}${body.cost != null ? ' · ' + usd(body.cost) : ''}`, { ok: true, for: 6000 });
       pin();
-    } else say(body.reason || 'The side question failed.');
+    } else say(body.reason || unavailable(res, body) || 'The side question failed.');
   } catch (e) { say('Side question failed — ' + e); }
   finally { btwBtn.disabled = false; }
 };
