@@ -332,7 +332,7 @@ const HOSTED = { configured: true, updated_at: Date.now() - 3600e3, from_loopbac
   listening_on: '0.0.0.0:8787', lan_url: 'https://router.example', env_override: false,
   mode: 'server', password_pinned: true, public_url: 'https://router.example' };
 const LOCAL = { configured: true, updated_at: Date.now() - 60e3, from_loopback: true, remote_bind: false,
-  listening_on: '127.0.0.1:8787', lan_url: 'http://10.30.0.183:8787', env_override: false };
+  listening_on: '127.0.0.1:8787', lan_url: 'http://192.0.2.10:8787', env_override: false };
 const textOf = (el) => (el == null ? '' : (el.textContent || '') + (el.children || []).map(textOf).join(''));
 const eq = (got, want, what) => {
   if (JSON.stringify(got) !== JSON.stringify(want)) {
@@ -414,9 +414,9 @@ check('the connection snippet is the page\'s own origin, with the password where
     api.applyAuth({ ...HOSTED, from_loopback: true });
     eq(env(), { ANTHROPIC_BASE_URL: 'http://localhost:8787', ANTHROPIC_AUTH_TOKEN: TOKEN }, 'through a port-forward');
     // A local router read from another machine on the network.
-    at('http://10.30.0.183:8787');
+    at('http://192.0.2.10:8787');
     api.applyAuth({ ...LOCAL, remote_bind: true, from_loopback: false });
-    eq(env(), { ANTHROPIC_BASE_URL: 'http://10.30.0.183:8787', ANTHROPIC_AUTH_TOKEN: TOKEN }, 'a local router, off the machine');
+    eq(env(), { ANTHROPIC_BASE_URL: 'http://192.0.2.10:8787', ANTHROPIC_AUTH_TOKEN: TOKEN }, 'a local router, off the machine');
     // At the machine itself: the very line it always was.
     at('http://127.0.0.1:8787');
     api.applyAuth(LOCAL);
