@@ -1,0 +1,139 @@
+{{- include "agent-router.validate" . }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agent-router.fullname" . }}
+  labels:
+    {{- include "agent-router.labels" . | nindent 4 }}
+spec:
+  # One, and never two at once: see the note at the top of values.yaml.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "agent-router.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "agent-router.selectorLabels" . | nindent 8 }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # Kubernetes would otherwise give this pod variables named after every Service in the
+      # namespace. A release named agent-router, as CI's is, names its Service that, and
+      # then AGENT_ROUTER_PORT=tcp://<service ip>:8787 lands on the router's own port
+      # variable. `--port` outranks it today; nothing here needs the variables at all.
+      enableServiceLinks: false
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      # SIGTERM stops new requests and lets open ones finish (server.drainSeconds), then
+      # the capture writes what it holds. Give it the time to do that before the kubelet
+      # escalates; the chart refuses a drain that would not fit.
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      containers:
+        - name: agent-router
+          image: {{ include "agent-router.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - serve
+            # Hosted mode: every caller presents the password, loopback included, and
+            # none of a developer machine's local machinery runs.
+            - --server
+            # Every address in the pod: from inside one, every caller is on another host.
+            - --bind=0.0.0.0
+            - --port=8787
+            # The store, the token file and dropped key files, all on the volume below.
+            # HOME is never consulted for them.
+            - --data-dir=/data
+            - --drain-seconds={{ int64 .Values.server.drainSeconds }}
+            {{- range (include "agent-router.allowHosts" . | fromJsonArray) }}
+            - --allow-host={{ . }}
+            {{- end }}
+            {{- with include "agent-router.publicUrl" . }}
+            - {{ printf "--public-url=%s" . | quote }}
+            {{- end }}
+            {{- if .Values.push.existingSecret }}
+            - --push-keys-dir=/secrets/push
+            {{- end }}
+            {{- with .Values.server.extraArgs }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          env:
+            # Set so that nothing falls back to a path on the read-only root.
+            - name: HOME
+              value: /tmp
+            # Pinned at every start: the Secret is the password that works.
+            - name: AGENT_ROUTER_SERVER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "agent-router.auth.secretName" . }}
+                  key: {{ .Values.auth.passwordKey }}
+            {{- with .Values.server.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: 8787
+              protocol: TCP
+          # /_router/health answers without a password, and the kubelet probes by pod IP,
+          # which the Host guard admits. A probe by NAME would be refused: that is the
+          # rebinding defence, not a fault.
+          startupProbe:
+            httpGet: { path: /_router/health, port: http }
+            periodSeconds: 2
+            # The store's light migrations run before the socket opens; the heavy ones run
+            # after it. Allow the first a minute.
+            failureThreshold: 30
+          readinessProbe:
+            httpGet: { path: /_router/health, port: http }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /_router/health, port: http }
+            periodSeconds: 20
+            failureThreshold: 3
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: data
+              mountPath: /data
+            {{- if .Values.push.existingSecret }}
+            - name: push-keys
+              mountPath: /secrets/push
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "agent-router.data.claimName" . }}
+        {{- if .Values.push.existingSecret }}
+        - name: push-keys
+          secret:
+            secretName: {{ .Values.push.existingSecret }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

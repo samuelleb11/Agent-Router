@@ -1,0 +1,18 @@
+apiVersion: v2
+name: agent-router
+description: >-
+  A proxy between Claude Code and Anthropic, hosted for every machine at once: several
+  accounts, exact per-session token accounting, and push to the phones.
+type: application
+# The chart's own version: bump the minor when a template changes. A published chart keeps
+# this major.minor, takes its pipeline's number as the patch, and names the commit it was
+# built for as appVersion (scripts/package-chart.sh).
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/samuelleb11/agent-router
+sources:
+  - https://github.com/samuelleb11/agent-router
+keywords:
+  - claude-code
+  - anthropic
+  - proxy

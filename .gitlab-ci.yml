@@ -1,20 +1,177 @@
-# Build the router for every supported platform, package the VS Code extension per
-# platform, keep the VSIX files as artifacts, and on a tag attach them to a release and
-# publish them where the tokens exist.
+# Agent Router's pipeline. Two things leave this repository, and each keeps its own path
+# through it.
 #
-# Runners: the `macos` jobs need a shell runner on a Mac with rustup, node and zig
-# (register one on the Mac that builds the iOS app; see the README). The Linux job runs
-# in Docker and cross-builds both Linux targets through zig, so it needs no special
-# runner.
+# The VS Code extension: build the router for every supported platform, package the
+# extension per platform, keep the VSIX files as artifacts, and on a `v*` tag attach them to
+# a release and publish them where the tokens exist. Runners: `build:macos` needs a shell
+# runner on a Mac with rustup, node and zig (register one on the Mac that builds the iOS
+# app; see the README). `build:linux` runs in Docker and cross-builds both Linux targets
+# through zig, so it needs no special runner.
+#
+# The hosted server (docs/hosting-on-kubernetes.md), in the shape the group's other apps
+# use: the shared docker and rules templates, an image per commit, `latest` retagged on main,
+# a deploy on main. Where it differs, it differs as Northstar's pipeline does:
+#
+# - The template project is named by a CI/CD variable rather than written here. This
+#   repository is published, and the path to an internal project must not appear in it.
+#   Set CI_TEMPLATES_PROJECT on the group or the project. (A variable in `variables:` below
+#   would not work: includes are resolved before it exists.) Every pipeline needs it, the
+#   extension's included, because includes are resolved before any rule is.
+# - The deploy is `helm upgrade` of charts/agent-router at the commit's own image tag, not a
+#   restart of `latest`, so a rollback rolls back the binary and not just the manifest.
+# - Every commit on `dev` or `main` publishes the chart to this project's Helm registry,
+#   packaged for that same image tag: `dev` to the dev channel, `main` to stable.
+#
+# Variables the pipeline reads, set in Settings -> CI/CD -> Variables:
+#   CI_TEMPLATES_PROJECT  path of the shared template project
+#   DEPLOY_TOKEN_USER, DEPLOY_TOKEN
+#                         registry login, as the shared docker templates expect
+#   AGENT_ROUTER_VALUES   FILE variable: the chart values for this cluster -- ingress host and
+#                         class, TLS issuer, storage class, image pull secret. They stay out
+#                         of the repository for the same reason as the above.
+#   KUBE_CONTEXT          optional; the kube context to deploy with, when the cluster
+#                         credentials offer more than one
+#   VSCE_PAT, OVSX_PAT    optional; the Visual Studio Marketplace and Open VSX tokens. A `v*`
+#                         tag publishes the extension to each store whose token is set.
 
-stages: [build, release]
+include:
+  - project: $CI_TEMPLATES_PROJECT
+    ref: main
+    file:
+      - /docker/.docker-build.gitlab-ci.yml
+      - /docker/.docker-tag.gitlab-ci.yml
+      - /docker/.docker-tools.gitlab-ci.yml
+      - /rules/.rules.gitlab-ci.yml
+
+stages:
+  - check
+  - build
+  - tag
+  - publish
+  - deploy
+  - release
 
 variables:
+  # Inside the project directory, because that is the only place a cache may live. `.cargo`
+  # is ignored by git and by .dockerignore, so a leftover never reaches an image's build id.
   CARGO_HOME: $CI_PROJECT_DIR/.cargo
   CARGO_TERM_COLOR: always
+  DEPLOYMENT_ENV: production
+  DEPLOYMENT_NAME: agent-router
 
-.build:
+# One pipeline per change: the merge request's, or the branch's when there is none, and a
+# tag's. Without this a push to a branch with an open merge request runs everything twice.
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
+      when: never
+    - if: $CI_COMMIT_BRANCH
+    # A `v*` tag releases and publishes the extension.
+    - if: $CI_COMMIT_TAG
+
+# The shared `.rules-docker-default` names `develop`. This repository's branch is `dev`.
+.rules-agent-router:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_BRANCH == "dev"
+
+# The branches that publish, and the Helm channel each publishes to.
+.rules-publish:
+  rules:
+    - if: $CI_COMMIT_BRANCH == "dev"
+      variables:
+        HELM_CHANNEL: dev
+    - if: $CI_COMMIT_BRANCH == "main"
+      variables:
+        HELM_CHANNEL: stable
+
+# ---------------------------------------------------------------- check
+
+check rust:
+  stage: check
+  extends: .rules-agent-router
+  image: rust:1.98-bookworm
+  cache:
+    key:
+      files: [Cargo.lock]
+    paths:
+      - .cargo/registry/index/
+      - .cargo/registry/cache/
+      - .cargo/git/db/
+  before_script:
+    - rustup component add clippy
+  script:
+    # `-p`, never `--workspace`: the workspace also holds the macOS menubar app, which pulls
+    # in gtk on Linux. The router's build.rs asks git for the build id; this image has git.
+    - cargo test -p agent-router -p claude-wrapper --locked
+    # Style and complexity lints are allowed: the toolchain this job pins flags about a dozen
+    # in code that predates it. Correctness, suspicious and perf lints, and every compiler
+    # warning, still fail the job. There is no `cargo fmt --check` either: the tree is not
+    # rustfmt-clean (hundreds of diffs, across nearly every file), and reformatting it is a
+    # change of its own.
+    - cargo clippy -p agent-router -p claude-wrapper --all-targets --locked -- -D warnings -A clippy::style -A clippy::complexity
+
+check chart:
+  stage: check
+  extends: .rules-agent-router
+  image:
+    name: alpine/helm:4.3.0
+    entrypoint: [""]
+  script:
+    # Each optional part, and the refusals: a chart that renders a bad configuration fails
+    # an hour later, in the cluster, less clearly.
+    - helm lint charts/agent-router
+    - helm lint charts/agent-router --set ingress.enabled=true
+    - helm lint charts/agent-router --set push.existingSecret=agent-router-push
+    - >-
+      helm lint charts/agent-router --set persistence.existingClaim=agent-router-data
+      --set auth.existingSecret=agent-router-auth
+    - >-
+      ! helm template ci charts/agent-router --set auth.password=short > /dev/null 2>&1
+      || { echo "a password the router refuses rendered; it must be refused"; exit 1; }
+    - >-
+      ! helm template ci charts/agent-router --set ingress.enabled=true --set ingress.host=
+      > /dev/null 2>&1
+      || { echo "an ingress with no host rendered; it must be refused"; exit 1; }
+    - >-
+      ! helm template ci charts/agent-router --set server.drainSeconds=30 > /dev/null 2>&1
+      || { echo "a drain the pod's grace period would cut short rendered; it must be refused"; exit 1; }
+    # The router runs in server mode, is given its password, and answers to its Service's
+    # names. Rendered to a file first: a reader that stops at its first match can fail the
+    # writer, and with it the step.
+    - >-
+      helm template ci charts/agent-router --namespace ci
+      --show-only templates/deployment.yaml > /tmp/deployment.yaml
+    - >-
+      grep -qx ' *- --server' /tmp/deployment.yaml
+      || { echo "the router is not started with --server"; exit 1; }
+    - >-
+      grep -q 'name: AGENT_ROUTER_SERVER_PASSWORD' /tmp/deployment.yaml
+      || { echo "the router is not given AGENT_ROUTER_SERVER_PASSWORD"; exit 1; }
+    - >-
+      grep -qx ' *- --allow-host=ci-agent-router.ci.svc.cluster.local' /tmp/deployment.yaml
+      || { echo "the router does not answer to its Service's names"; exit 1; }
+    # What `publish chart` runs, so a packaging failure stops a merge and not a publish.
+    - scripts/package-chart.sh 0 "$CI_COMMIT_SHA" registry.example.com/check/agent-router /tmp/chart
+
+# ---------------------------------------------------------------- build
+
+build docker image:
+  extends:
+    - .docker-build
+    - .rules-agent-router
+
+# The extension builds in every pipeline the workflow lets through, as it did before there
+# was a workflow: a job with no rules is left out of merge request pipelines. `needs: []`
+# starts it at once, as before, instead of after the checks, which do not gate it. Named so
+# that no hidden job in the shared templates can merge into it.
+.vsix-build:
   stage: build
+  needs: []
+  rules:
+    - when: on_success
   cache:
     key: cargo-$CI_JOB_NAME
     paths: [.cargo/registry, target]
@@ -23,7 +180,7 @@ variables:
     expire_in: 2 weeks
 
 build:macos:
-  extends: .build
+  extends: .vsix-build
   tags: [macos]
   script:
     - rustup target add aarch64-apple-darwin x86_64-apple-darwin
@@ -33,7 +190,7 @@ build:macos:
     - scripts/package-vsix.sh darwin-x64
 
 build:linux:
-  extends: .build
+  extends: .vsix-build
   image: rust:1-bookworm
   before_script:
     - apt-get update && apt-get install -y --no-install-recommends python3-pip curl ca-certificates
@@ -46,12 +203,86 @@ build:linux:
     - scripts/build-target.sh aarch64-unknown-linux-musl
     - scripts/package-vsix.sh linux-arm64
 
+# ---------------------------------------------------------------- tag
+
+# On `dev` too: the chart published from `dev` names this tag, not the moving `dev` one.
+tag docker image with commit:
+  stage: tag
+  extends:
+    - .docker-setup
+    - .rules-publish
+  needs: [build docker image]
+  script:
+    - docker buildx imagetools create --tag "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA" "$IMAGE_TAG"
+
+tag docker image with latest:
+  extends:
+    - .docker-tag-latest
+    - .rules-main
+  needs: [build docker image]
+
+# ---------------------------------------------------------------- publish
+
+# The chart, packaged for the image the job above tagged, into this project's registry:
+#
+#   helm repo add agent-router "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/helm/dev" \
+#     --username <user> --password <a token that can read the package registry>
+#
+# The image registry is private as well, so a cluster installing from this needs
+# imagePullSecrets, as the deploy's AGENT_ROUTER_VALUES gives it.
+publish chart:
+  stage: publish
+  extends: .rules-publish
+  needs: [tag docker image with commit]
+  image:
+    name: alpine/helm:4.3.0
+    entrypoint: [""]
+  before_script:
+    - apk add --no-cache curl
+  script:
+    - PACKAGE=$(scripts/package-chart.sh "$CI_PIPELINE_IID" "$CI_COMMIT_SHA" "$CI_REGISTRY_IMAGE" chart)
+    - >-
+      curl --fail-with-body --user "gitlab-ci-token:$CI_JOB_TOKEN"
+      --form "chart=@$PACKAGE"
+      "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/helm/api/$HELM_CHANNEL/charts"
+
+# ---------------------------------------------------------------- deploy
+
+deploy to production:
+  stage: deploy
+  # `$CI_COMMIT_BRANCH`, where the shared `.rules-main` reads `$CI_COMMIT_REF_NAME`: that is
+  # `main` too in a merge request FROM main (main merged back into dev), whose pipeline has
+  # no commit tag for this job to need, and GitLab would then refuse to create it.
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+  needs: [tag docker image with commit]
+  image:
+    name: alpine/helm:4.3.0
+    entrypoint: [""]
+  environment:
+    name: $DEPLOYMENT_ENV
+  script:
+    - >-
+      helm upgrade --install "$DEPLOYMENT_NAME" charts/agent-router
+      --namespace "$DEPLOYMENT_ENV" --create-namespace
+      ${KUBE_CONTEXT:+--kube-context "$KUBE_CONTEXT"}
+      ${AGENT_ROUTER_VALUES:+--values "$AGENT_ROUTER_VALUES"}
+      --set image.repository="$CI_REGISTRY_IMAGE"
+      --set image.tag="$CI_COMMIT_SHA"
+      --wait --timeout 10m
+    # The chart's own test: /_router/health through the Service, by IP.
+    - >-
+      helm test "$DEPLOYMENT_NAME" --namespace "$DEPLOYMENT_ENV" --logs
+      ${KUBE_CONTEXT:+--kube-context "$KUBE_CONTEXT"}
+
+# ---------------------------------------------------------------- release
+
 release:
   stage: release
   image: registry.gitlab.com/gitlab-org/release-cli:latest
   rules:
     - if: $CI_COMMIT_TAG =~ /^v/
-  needs: [build:macos, build:linux]
+  needs: ["build:macos", "build:linux"]
   script:
     - apk add --no-cache curl
     - |
@@ -69,7 +300,7 @@ publish:
   image: node:22
   rules:
     - if: $CI_COMMIT_TAG =~ /^v/ && ($VSCE_PAT || $OVSX_PAT)
-  needs: [build:macos, build:linux]
+  needs: ["build:macos", "build:linux"]
   script:
     - |
       for f in dist/*.vsix; do

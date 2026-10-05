@@ -1,0 +1,134 @@
+# Agent Router's Helm chart: the router as a hosted server (docs/hosting-on-kubernetes.md).
+#
+# ONE router, always. The process holds state beside its store -- the cached signing
+# credential, the quota cache, what the notifier has already pushed -- and two pods must
+# never write one SQLite store. That is why there is no replicaCount to raise, and why a
+# rollout stops the old pod before starting the new one (a Recreate strategy).
+
+image:
+  # CI sets this to the project's registry image.
+  repository: registry.example.com/agent-router/agent-router
+  # Empty means the chart's appVersion. CI deploys the commit's own tag, so a rollback
+  # is a rollback of the binary and not just of the manifest.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+server:
+  # The URL clients use: Claude Code's ANTHROPIC_BASE_URL, and the one the phones are given.
+  # Empty derives it from the ingress -- https://<ingress.host>, or http:// when the
+  # ingress's TLS is off -- and leaves it unset when there is no ingress. Set it when
+  # something in front of the cluster changes the URL. Its host is answered to as well.
+  publicUrl: ""
+  # Host names the router answers to, besides IP literals and localhost. The ingress host
+  # and the Service's own names (<service>, <service>.<namespace>, <service>.<namespace>.svc
+  # and <service>.<namespace>.svc.cluster.local, so Northstar can call it in the cluster)
+  # are added on their own; list anything else a client will reach the router by. Every
+  # other name is refused -- that refusal is the defence against DNS rebinding, and it
+  # stays on.
+  allowHosts: []
+  # How long a stop waits for open requests -- a generation still streaming is one -- before
+  # the router gives its capture 5 s more and exits. Both must end inside the pod's
+  # terminationGracePeriodSeconds, when the kubelet kills it, so the chart refuses a value
+  # that would not fit.
+  drainSeconds: 20
+  # Extra arguments for `agent-router serve`.
+  extraArgs: []
+  # Extra environment. For example, more detail in the logs:
+  #   - name: AGENT_ROUTER_LOG
+  #     value: agent_router=debug
+  extraEnv: []
+
+# Seconds between the kubelet's SIGTERM and its SIGKILL. Raise it together with
+# server.drainSeconds to let longer generations finish across a rollout; a Recreate rollout
+# serves nothing while the old pod drains, so a longer drain is also a longer gap.
+terminationGracePeriodSeconds: 30
+
+# The password every caller presents: the dashboard and the phones ask for it, and Claude
+# Code sends it as ANTHROPIC_AUTH_TOKEN. The router sets it from this Secret at every start,
+# so the Secret is always the password that works, and the dashboard cannot change it. The
+# release's notes (`helm status <release>`) print the command that reads it. A change
+# reaches the router at its next start: `kubectl rollout restart` its Deployment.
+auth:
+  # Empty generates one on first install and keeps it across upgrades. At least 8
+  # characters: the router will not start with fewer.
+  password: ""
+  # Use a Secret you manage instead; it must hold the key named below.
+  existingSecret: ""
+  passwordKey: password
+
+push:
+  # A Secret you manage holding the keys the router pushes to the phones with:
+  # AuthKey_<KEYID>.p8 for Apple (APNs) and/or a Firebase service-account JSON for Android
+  # (FCM). It is mounted read-only at /secrets/push and passed as --push-keys-dir. Empty
+  # mounts nothing. For example:
+  #   kubectl create secret generic agent-router-push \
+  #     --from-file=AuthKey_<KEYID>.p8 --from-file=<service-account>.json
+  existingSecret: ""
+
+# The data directory, /data: the store (two SQLite files), the token file and dropped key
+# files. Captured response bodies grow it by about 100 MB a day. Put it on block storage:
+# SQLite's locking is not safe on NFS, and a store that corrupts itself on a network
+# filesystem does so quietly. The claim outlives an uninstall.
+persistence:
+  size: 20Gi
+  # Empty uses the cluster's default StorageClass.
+  storageClass: ""
+  # Use a claim you created yourself instead of one this chart makes.
+  existingClaim: ""
+
+service:
+  type: ClusterIP
+  port: 8787
+
+ingress:
+  enabled: false
+  className: ""
+  # The one name Claude Code and the phones use. It is passed to the router as an allowed
+  # host, so it must be exactly what clients type.
+  host: agent-router.example.com
+  annotations: {}
+    # cert-manager.io/cluster-issuer: letsencrypt
+    #
+    # ingress-nginx's defaults break the proxy: a 1 MiB body limit refuses Claude Code's
+    # larger requests, buffering delivers the event streams in lumps, and a 60 s timeout
+    # cuts long generations and every open stream. What it needs:
+    # nginx.ingress.kubernetes.io/proxy-body-size: "64m"   # the router accepts up to 64 MiB
+    # nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    # nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    # nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+  tls:
+    # Every caller presents the password. Without TLS it crosses the network in the clear.
+    enabled: true
+    secretName: agent-router-tls
+
+podAnnotations: {}
+
+# The image runs as distroless's `nonroot` (65532). fsGroup makes the data volume writable
+# by it.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+# A request body can be up to 64 MiB and several sessions stream at once, so leave the
+# memory limit generous.
+resources: {}
+  # requests: { cpu: 50m, memory: 128Mi }
+  # limits:   { memory: 1Gi }
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
