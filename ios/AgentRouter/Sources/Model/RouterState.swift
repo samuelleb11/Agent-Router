@@ -59,8 +59,9 @@ final class RouterState {
     /// For the pages that stream: the same address and password this state uses.
     var liveClient: RouterClient? { client }
 
-    /// `/api/accounts` makes the router resolve every credential, so it is asked for
-    /// less often than the rest — on demand, and once a minute while the page is open.
+    /// `probe` makes the router check every credential, so the accounts are asked for less
+    /// often than the rest — on demand, and once a minute while the page is open. Without
+    /// it a row carries no verdict, and the page could not warn of a credential that fails.
     func refresh(includeAccounts: Bool) async {
         guard let client else {
             failure = .unreachable("bad address")
@@ -81,7 +82,7 @@ final class RouterState {
         // Its own failure: a slow or refused listing must not blank the page.
         do { sessions = try await s; sessionsFailure = nil } catch { sessionsFailure = LiveFeed.describe(error) }
         if first == nil, includeAccounts || accounts.isEmpty {
-            do { accounts = try await client.get("/api/accounts") } catch { first = error }
+            do { accounts = try await client.get("/api/accounts", query: ["probe": "1"]) } catch { first = error }
             shim = try? await client.get("/api/setup/shim")
         }
         if let e = first {

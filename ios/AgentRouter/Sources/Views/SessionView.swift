@@ -32,7 +32,23 @@ struct SessionView: View {
         .toolbar {
             ToolbarItem(placement: .principal) {
                 VStack(spacing: 1) {
-                    Text(session.projectName).font(.headline)
+                    if let machine = session.machineName {
+                        // On a hosted router: which machine the session runs on. A toolbar
+                        // draws a Label as its icon alone, so the title is asked for; a long
+                        // name gives way before the project's.
+                        HStack(spacing: 6) {
+                            Text(session.projectName).font(.headline).layoutPriority(1)
+                            Label(machine, systemImage: "desktopcomputer")
+                                .labelStyle(.titleAndIcon)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .accessibilityLabel("on \(machine)")
+                                .accessibilityIdentifier("session-machine")
+                        }
+                        .lineLimit(1)
+                    } else {
+                        Text(session.projectName).font(.headline)
+                    }
                     if let feed, feed.connected, let st = feed.status {
                         HStack(spacing: 5) {
                             StateDot(look: st.look)
@@ -181,11 +197,12 @@ struct SessionView: View {
     }
 
     /// Every session of this project that is current, plus this one — creation order,
-    /// so a tab keeps its place for the life of the session.
+    /// so a tab keeps its place for the life of the session. On this machine only: the same
+    /// project on another machine is another project, as the list shows it.
     private var siblings: [LiveSession] {
         let now = Date()
         return state.sessions
-            .filter { $0.projectName == session.projectName }
+            .filter { $0.projectName == session.projectName && $0.machineName == session.machineName }
             .filter { $0.sessionId == session.sessionId || (SessionGroups.isCurrent($0, now: now) && !$0.archived) }
             .sorted { ($0.createdMs ?? $0.lastActivityMs) < ($1.createdMs ?? $1.lastActivityMs) }
     }

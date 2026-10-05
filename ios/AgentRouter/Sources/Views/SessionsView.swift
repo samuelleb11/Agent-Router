@@ -1,14 +1,16 @@
 import SwiftUI
 
-/// Every session the router can see, grouped the way the web view groups them.
+/// Every session the router can see, grouped the way the web view groups them — machine by
+/// machine when a hosted router merges more than one.
 struct SessionsView: View {
     let state: RouterState
-    @State private var showOlder = false
-    @State private var showArchived = false
+    /// The older and archived folds that are open, by machine: one of each, as there always
+    /// was, when the list names no machines.
+    @State private var unfolded: Set<String> = []
     @State private var notice: String?
 
     var body: some View {
-        let groups = SessionGroups.build(state.sessions)
+        let machines = SessionGroups.byMachine(state.sessions)
         List {
             if let t = state.shim?.newestUnwrapped {
                 Section {
@@ -40,32 +42,42 @@ struct SessionsView: View {
                     .accessibilityIdentifier("sessions-stale")
                 }
             }
-            ForEach(groups.recent) { p in
-                Section {
-                    ForEach(p.sessions) { row($0) }
-                } header: {
-                    ProjectHeader(project: p)
-                }
-            }
-            if !groups.older.isEmpty {
-                Section {
-                    DisclosureGroup(isExpanded: $showOlder) {
-                        ForEach(groups.older) { p in
-                            ForEach(p.sessions) { row($0) }
+            ForEach(machines) { m in
+                ForEach(m.groups.recent) { p in
+                    Section {
+                        ForEach(p.sessions) { row($0) }
+                    } header: {
+                        // A machine's heading rides on its first section, right over what it names.
+                        if let name = m.name, p.id == m.groups.recent.first?.id {
+                            VStack(alignment: .leading, spacing: 10) {
+                                MachineHeader(name: name)
+                                ProjectHeader(project: p)
+                            }
+                        } else {
+                            ProjectHeader(project: p)
                         }
-                    } label: {
-                        let n = groups.older.reduce(0) { $0 + $1.sessions.count }
-                        Text("\(n) older session\(n == 1 ? "" : "s")")
-                            .foregroundStyle(.secondary)
                     }
                 }
-            }
-            if !groups.archived.isEmpty {
-                Section {
-                    DisclosureGroup(isExpanded: $showArchived) {
-                        ForEach(groups.archived) { row($0) }
-                    } label: {
-                        Text("\(groups.archived.count) archived").foregroundStyle(.secondary)
+                if !m.groups.older.isEmpty {
+                    section(heading: m.groups.recent.isEmpty ? m.name : nil) {
+                        DisclosureGroup(isExpanded: expanded("older", m)) {
+                            ForEach(m.groups.older) { p in
+                                ForEach(p.sessions) { row($0) }
+                            }
+                        } label: {
+                            let n = m.groups.older.reduce(0) { $0 + $1.sessions.count }
+                            Text("\(n) older session\(n == 1 ? "" : "s")")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                if !m.groups.archived.isEmpty {
+                    section(heading: m.groups.recent.isEmpty && m.groups.older.isEmpty ? m.name : nil) {
+                        DisclosureGroup(isExpanded: expanded("archived", m)) {
+                            ForEach(m.groups.archived) { row($0) }
+                        } label: {
+                            Text("\(m.groups.archived.count) archived").foregroundStyle(.secondary)
+                        }
                     }
                 }
             }
@@ -80,6 +92,11 @@ struct SessionsView: View {
                         Text(why)
                     }
                     .accessibilityIdentifier("sessions-error")
+                } else if state.auth?.isHosted == true {
+                    // A hosted router runs no sessions of its own: they come from the machines
+                    // running the agent, and until one connects it lists nothing.
+                    ContentUnavailableView("No sessions", systemImage: "bubble.left.and.bubble.right",
+                                           description: Text("Sessions appear here once a machine runs the Agent Router agent:\n`agent-router agent install --server \(agentServer)`"))
                 } else {
                     ContentUnavailableView("No sessions", systemImage: "bubble.left.and.bubble.right",
                                            description: Text("Nothing has run on this Mac in the last week."))
@@ -104,6 +121,46 @@ struct SessionsView: View {
                 }
                 .tint(s.archived ? .blue : .orange)
             }
+    }
+
+    /// Whether one of a machine's folds is open.
+    private func expanded(_ fold: String, _ machine: SessionGroups.Machine) -> Binding<Bool> {
+        let key = fold + ":" + machine.id
+        return Binding(get: { unfolded.contains(key) },
+                       set: { open in if open { unfolded.insert(key) } else { unfolded.remove(key) } })
+    }
+
+    /// A fold's section: under the machine's heading when nothing above it carries that
+    /// heading, and otherwise exactly the plain section the list always drew.
+    @ViewBuilder
+    private func section<Content: View>(heading: String?, @ViewBuilder _ content: () -> Content) -> some View {
+        if let heading {
+            Section { content() } header: { MachineHeader(name: heading) }
+        } else {
+            Section { content() }
+        }
+    }
+
+    /// What a machine's agent connects to: the address the router gives for itself, or the
+    /// one this phone reaches it at.
+    private var agentServer: String {
+        if let url = state.auth?.publicURL?.trimmingCharacters(in: .whitespaces), !url.isEmpty { return url }
+        return state.router.origin
+    }
+}
+
+/// The machine a part of the list runs on, over that part, when the sessions come from more
+/// than one.
+private struct MachineHeader: View {
+    let name: String
+    var body: some View {
+        Label(name, systemImage: "desktopcomputer")
+            .font(.title3.weight(.semibold))
+            // The colour itself: `.primary` in a header is the header's own gray.
+            .foregroundStyle(Color.primary)
+            .textCase(nil)
+            .accessibilityAddTraits(.isHeader)
+            .accessibilityIdentifier("machine-header")
     }
 }
 

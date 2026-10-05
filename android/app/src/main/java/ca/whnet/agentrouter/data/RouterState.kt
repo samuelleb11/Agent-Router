@@ -59,6 +59,14 @@ class RouterState(router: Router, private val store: RouterStore) {
     var sessionsLoaded: Boolean by mutableStateOf(false)
 
     val isReachable: Boolean get() = health?.ok == true && failure == null
+
+    /**
+     * Whether the router said it is hosted, the last time it answered `/api/auth`. False
+     * until it has, so whatever is worded by this reads as for a router on a Mac, as it
+     * always did, until the router itself says otherwise.
+     */
+    val isHosted: Boolean get() = auth?.isHosted == true
+
     val activeAccount: Forecast.ForecastAccount? get() = forecast?.accounts?.firstOrNull { it.isActive }
 
     /** Accounts to offer in the switcher: everything the router lists, in its order. */
@@ -97,13 +105,14 @@ class RouterState(router: Router, private val store: RouterStore) {
                 // Its own failure: a slow or refused listing must not blank the page.
                 s.await()
                     .onSuccess { sessions = it; sessionsFailure = null }
-                    .onFailure { sessionsFailure = describe(it) }
+                    .onFailure { sessionsFailure = describe(it, isHosted) }
                 sessionsLoaded = true
 
-                // `/api/accounts` makes the router resolve every credential, so it is
-                // asked for less often than the rest — on demand, and once a minute.
+                // `probe=1` makes the router check every credential, so the accounts are
+                // asked for less often than the rest — on demand, and once a minute. Without
+                // it a row carries no verdict: no failed dot, and no detail line.
                 if (first == null && (includeAccounts || accounts.isEmpty())) {
-                    runCatching { c.get<List<Account>>("/api/accounts") }
+                    runCatching { c.get<List<Account>>(c.query("/api/accounts", mapOf("probe" to "1"))) }
                         .onSuccess { accounts = it }.onFailure { first = it }
                     runCatching { c.get<SetupStatus>("/api/setup") }.onSuccess { setup = it }
                     runCatching { c.get<ShimStatus>("/api/setup/shim") }.onSuccess { shim = it }
@@ -127,8 +136,20 @@ class RouterState(router: Router, private val store: RouterStore) {
         val c = client ?: return
         runCatching { c.get<List<LiveSession>>("/api/live/sessions") }
             .onSuccess { sessions = it; sessionsFailure = null }
-            .onFailure { sessionsFailure = describe(it) }
+            .onFailure { sessionsFailure = describe(it, isHosted) }
         sessionsLoaded = true
+    }
+
+    /**
+     * Just `/api/auth`, for a page that words itself by [isHosted] and can be reached
+     * before any page that asks for it has — a notification opens straight onto a session.
+     * A failure leaves [auth] as it was: the pages that refresh everything report it.
+     */
+    suspend fun refreshAuth() {
+        val c = client ?: return
+        runCatching { c.get<AuthStatus>("/api/auth") }
+            .onSuccess { auth = it }
+            .onFailure { if (it is CancellationException) throw it }
     }
 
     /** Returns what went wrong, or null. */
@@ -168,9 +189,14 @@ class RouterState(router: Router, private val store: RouterStore) {
     }
 
     companion object {
-        /** A failure as a sentence, with cancellation left alone so it can propagate. */
-        fun describe(e: Throwable): String {
+        /**
+         * A failure as a sentence, with cancellation left alone so it can propagate.
+         * [hosted] is whether the router is a hosted one ([RouterState.isHosted]), which
+         * changes who sets a missing password: its deployment, not a dashboard on a Mac.
+         */
+        fun describe(e: Throwable, hosted: Boolean = false): String {
             if (e is CancellationException) throw e
+            if (hosted && e is RouterFailure.NoPasswordSet) return RouterFailure.NoPasswordSet.HOSTED
             return e.message ?: e::class.simpleName ?: "something went wrong"
         }
     }

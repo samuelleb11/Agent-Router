@@ -1,5 +1,6 @@
 package ca.whnet.agentrouter.ui
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -8,15 +9,19 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.outlined.Computer
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
@@ -49,6 +54,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
@@ -127,10 +133,11 @@ fun SessionScreen(app: AppState, router: Router, opened: LiveSession, onBack: ((
     // The project's sessions worth a tab: what the list shows as recent — moved lately,
     // or live however long ago it last moved — and never one put away, bar the one open.
     // In the order they were started, so a tab keeps its place while the listing
-    // refreshes under it.
+    // refreshes under it. On the same machine, too: a hosted router's list keeps one
+    // machine's project apart from the same project on another, and so do the tabs.
     val now = System.currentTimeMillis()
     val siblings = state.sessions
-        .filter { it.projectName == session.projectName }
+        .filter { it.projectName == session.projectName && it.machineLabel == session.machineLabel }
         .filter { it.sessionId == session.sessionId || (!it.archived && SessionGroups.isRecent(it, now)) }
         .sortedBy { it.createdMs ?: it.lastActivityMs }
 
@@ -157,7 +164,26 @@ fun SessionScreen(app: AppState, router: Router, opened: LiveSession, onBack: ((
             TopAppBar(
                 title = {
                     Column {
-                        Text(session.label, style = MaterialTheme.typography.titleMedium, maxLines = 1)
+                        val machine = session.machineLabel
+                        if (machine == null) {
+                            Text(session.label, style = MaterialTheme.typography.titleMedium, maxLines = 1)
+                        } else {
+                            // Which machine it runs on, from a hosted router: a tag beside the
+                            // title, so the status line under it keeps its whole width.
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                Text(
+                                    session.label,
+                                    Modifier.weight(1f, fill = false),
+                                    style = MaterialTheme.typography.titleMedium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                MachineTag(machine)
+                            }
+                        }
                         Text(
                             StatusText.header(feed.status, feed.connected, feed.statusFresh, session.projectName),
                             style = MaterialTheme.typography.bodySmall,
@@ -447,6 +473,33 @@ fun SessionScreen(app: AppState, router: Router, opened: LiveSession, onBack: ((
  * up to three minutes before it gives up — so this says so rather than looking hung.
  */
 
+
+/** The machine a session runs on, as a small tag, kept narrow so a long host name cannot crowd out the title. */
+@Composable
+private fun MachineTag(label: String) {
+    Row(
+        Modifier
+            .widthIn(max = 140.dp)
+            .clip(CircleShape)
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .padding(horizontal = 8.dp, vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Icon(
+            Icons.Outlined.Computer, "Machine",
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(12.dp),
+        )
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
 
 /** One fact from the session's stats strip. */
 @Composable

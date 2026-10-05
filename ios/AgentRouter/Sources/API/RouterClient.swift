@@ -1,4 +1,5 @@
-// One router, one password. Plain HTTP on the LAN — the router's own trust model.
+// One router, one password. Plain HTTP on the LAN — the router's own trust model — or
+// HTTPS to a hosted router, which is added by its https URL.
 
 import Foundation
 

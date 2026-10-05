@@ -25,7 +25,22 @@ data class AuthStatus(
     @SerialName("remote_bind") val remoteBind: Boolean = false,
     @SerialName("from_loopback") val fromLoopback: Boolean = false,
     @SerialName("updated_at") val updatedAt: Long? = null,
-)
+    /** `server` for a hosted router, `local` for one on a Mac; absent from an older router. */
+    val mode: String? = null,
+) {
+    val isHosted: Boolean get() = mode == "server"
+
+    /**
+     * Whether a device other than the router's own machine can reach it. A hosted router
+     * always listens beyond loopback, and a router on a Mac does once Listen on your network
+     * is on. A reply to a request that arrived from off the machine — as every request to an
+     * https router does, through its ingress — shows it can, whatever else the reply says.
+     *
+     * What remains is a router that listens on loopback alone, answering a request that came
+     * in through loopback: an emulator, or a tunnel on the Mac. This phone could not.
+     */
+    val reachableOffHost: Boolean get() = remoteBind || isHosted || !fromLoopback
+}
 
 // ---------------------------------------------------------------- live sessions
 
@@ -79,6 +94,11 @@ data class LiveSession(
     val source: String? = null,
     /** When the router took this reading, on its own clock — what a duration is measured against. */
     @SerialName("as_of_ms") val asOfMs: Long? = null,
+    /**
+     * The machine the session runs on. Only a hosted router sends it, on every row of the
+     * list it merges from its machines' agents; a router on a Mac never does.
+     */
+    val machine: SessionMachine? = null,
 ) {
     val shortId: String get() = sessionId.take(8)
 
@@ -87,6 +107,9 @@ data class LiveSession(
         get() = cwd?.trimEnd('/')?.substringAfterLast('/')?.takeIf { it.isNotEmpty() } ?: project
 
     val label: String get() = title ?: shortId
+
+    /** The name of the machine it runs on, when the router gave one. */
+    val machineLabel: String? get() = machine?.label?.trim()?.takeIf { it.isNotEmpty() }
 
     /** The process has gone: nothing more happens here unless the session is resumed. */
     val isClosed: Boolean get() = Activity.isClosed(activity, tone, open)
@@ -161,6 +184,14 @@ data class WaitingOn(
 /** Work still running after the turn itself ended. */
 @Serializable
 data class BackgroundWork(val agents: Int = 0, val workflows: Int = 0, val shells: Int = 0)
+
+/**
+ * Which machine a session runs on, as a hosted router names it. [id] is the machine's own,
+ * and survives a rename; [label] is what to call it — its host name, unless its agent was
+ * given another. Both default, so a row that leaves one out still decodes.
+ */
+@Serializable
+data class SessionMachine(val id: String = "", val label: String = "")
 
 /** One rendered row of the feed, as the stream projects it. */
 @Serializable

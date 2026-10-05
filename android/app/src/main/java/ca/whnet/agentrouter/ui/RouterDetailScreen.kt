@@ -35,6 +35,7 @@ import androidx.compose.ui.unit.dp
 import ca.whnet.agentrouter.data.AppState
 import ca.whnet.agentrouter.data.Projection
 import ca.whnet.agentrouter.data.Router
+import ca.whnet.agentrouter.data.RouterState
 import ca.whnet.agentrouter.data.SessionCounts
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
@@ -87,7 +88,7 @@ fun RouterDetailScreen(
             state.failure?.let { f ->
                 SettingsSection(footer = "Everything below is whatever was last seen.") {
                     Text(
-                        f.message ?: "unreachable",
+                        RouterState.describe(f, state.isHosted),
                         Modifier.padding(16.dp),
                         color = MaterialTheme.colorScheme.error,
                     )

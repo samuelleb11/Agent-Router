@@ -478,6 +478,72 @@ final class LiveTests: XCTestCase {
         XCTAssertEqual(rows[0].label, "aaaa")
     }
 
+    /// A local router's rows, which name no machine, and a hosted router's rows from a single
+    /// machine list exactly as they always did: one part, no machine heading, and in it
+    /// what `build` makes of every row.
+    func testOneMachineOrNoneListsExactlyAsBefore() {
+        let now = Date()
+        func rows(_ machine: String) -> [LiveSession] {
+            [
+                session("aaaa", project: "project-b", agoHours: 0.1, active: true, state: "working", extra: machine, now: now),
+                session("bbbb", project: "project-a", agoHours: 2, extra: machine, now: now),
+                session("cccc", project: "project-a", agoHours: 20, extra: machine, now: now),
+                session("dddd", project: "zeta", agoHours: 30, archived: true, extra: machine, now: now),
+            ]
+        }
+        for (what, list) in [("a local router", rows("")),
+                             ("one machine", rows(#","machine":{"id":"5f0c2a8e","label":"studio"}"#))] {
+            let parts = SessionGroups.byMachine(list, now: now)
+            XCTAssertEqual(parts.count, 1, what)
+            XCTAssertNil(parts.first?.name, "\(what): no machine heading")
+            XCTAssertEqual(parts.first?.groups, SessionGroups.build(list, now: now), what)
+            let g = parts.first?.groups
+            XCTAssertEqual(g?.recent.map(\.name), ["project-a", "project-b"], what)
+            XCTAssertEqual(g?.older.flatMap { $0.sessions.map(\.shortId) }, ["cccc"], what)
+            XCTAssertEqual(g?.archived.map(\.shortId), ["dddd"], what)
+        }
+        XCTAssertEqual(SessionGroups.byMachine([], now: now).map(\.name), [nil], "an empty list is one empty part")
+    }
+
+    /// Sessions from two machines: each machine under its own heading, alphabetically, and
+    /// under it exactly what that machine's sessions alone would make — the same project on
+    /// both stays two projects, and each machine has its own older and archived sessions.
+    func testTwoMachinesEachGetTheirOwnHeading() {
+        let now = Date()
+        let studio = #","machine":{"id":"5f0c2a8e","label":"studio"}"#
+        let laptop = #","machine":{"id":"9b3e1d47","label":"Laptop"}"#
+        let rows = [
+            session("s-ar", project: "agent-router", agoHours: 0.1, active: true, state: "working", extra: studio, now: now),
+            session("l-ar", project: "agent-router", agoHours: 1, extra: laptop, now: now),
+            session("s-ns", project: "northstar", agoHours: 2, extra: studio, now: now),
+            session("s-old", project: "northstar", agoHours: 30, extra: studio, now: now),
+            session("l-arc", project: "agent-router", agoHours: 3, archived: true, extra: laptop, now: now),
+        ]
+        let parts = SessionGroups.byMachine(rows, now: now)
+        XCTAssertEqual(parts.map(\.name), ["Laptop", "studio"], "machines alphabetically, whatever their case")
+        XCTAssertEqual(Set(parts.map(\.id)).count, 2, "one identity per machine")
+        guard parts.count == 2 else { return XCTFail("two machines, two parts") }
+        let (l, s) = (parts[0].groups, parts[1].groups)
+        XCTAssertEqual(l.recent.map(\.name), ["agent-router"])
+        XCTAssertEqual(l.recent.flatMap { $0.sessions.map(\.shortId) }, ["l-ar"])
+        XCTAssertTrue(l.older.isEmpty)
+        XCTAssertEqual(l.archived.map(\.shortId), ["l-arc"], "a machine's shelf is under that machine")
+        XCTAssertEqual(s.recent.map(\.name), ["agent-router", "northstar"])
+        XCTAssertEqual(s.recent[0].sessions.map(\.shortId), ["s-ar"], "the same project on another machine is another project")
+        XCTAssertEqual(s.older.flatMap { $0.sessions.map(\.shortId) }, ["s-old"])
+        XCTAssertTrue(s.archived.isEmpty)
+        XCTAssertEqual(s, SessionGroups.build(rows.filter { $0.machineName == "studio" }, now: now))
+        XCTAssertEqual(l, SessionGroups.build(rows.filter { $0.machineName == "Laptop" }, now: now))
+
+        // A row the router named no machine for, beside machines it did name, is not lost:
+        // it has a heading of its own, after the named ones.
+        let stray = session("none", project: "agent-router", agoHours: 0.5, now: now)
+        let withStray = SessionGroups.byMachine(rows + [stray], now: now)
+        XCTAssertEqual(withStray.map(\.name), ["Laptop", "studio", SessionGroups.unnamedMachine])
+        XCTAssertEqual(withStray.last?.groups.recent.flatMap { $0.sessions.map(\.shortId) }, ["none"])
+        XCTAssertEqual(Set(withStray.map(\.id)).count, 3)
+    }
+
     func testAnswersComposeTheWayThePersonWouldHaveTyped() throws {
         let qs = try JSONDecoder().decode([AskQuestion].self, from: Data(#"[{"question":"Colour?","header":"Colour","multiSelect":false,"options":[{"label":"Red"},{"label":"Blue"}]},{"question":"Toppings?","header":"Toppings","multiSelect":true,"options":[{"label":"Olives"},{"label":"Basil"},{"label":"Chili"}]},{"question":"Name?","options":[]}]"#.utf8))
         var sel: [String: AskAnswers.Selection] = [:]

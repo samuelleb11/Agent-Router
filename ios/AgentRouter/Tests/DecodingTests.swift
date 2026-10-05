@@ -53,6 +53,43 @@ final class DecodingTests: XCTestCase {
         XCTAssertEqual(health.pid, 48291)
     }
 
+    /// `/api/auth` says how the router is run: a hosted router adds `mode`, `password_pinned`
+    /// and `public_url`, a current local router says it is local, and one from before hosting
+    /// sends none of the three — and is local.
+    func testAuthSaysWhetherTheRouterIsHosted() throws {
+        func auth(_ json: String) throws -> AuthStatus { try JSONDecoder().decode(AuthStatus.self, from: Data(json.utf8)) }
+        let hosted = try auth(#"{"configured":true,"updated_at":1790000000000,"from_loopback":false,"mode":"server","password_pinned":true,"public_url":"https://agent-router.example.com","remote_bind":true,"lan_url":"https://agent-router.example.com","env_override":false}"#)
+        XCTAssertEqual(hosted.mode, "server")
+        XCTAssertEqual(hosted.passwordPinned, true)
+        XCTAssertEqual(hosted.publicURL, "https://agent-router.example.com")
+        XCTAssertTrue(hosted.isHosted)
+        XCTAssertTrue(hosted.configured && hosted.remoteBind && !hosted.fromLoopback)
+
+        let local = try auth(#"{"configured":true,"updated_at":null,"from_loopback":true,"mode":"local","password_pinned":false,"public_url":null,"remote_bind":false}"#)
+        XCTAssertEqual(local.mode, "local")
+        XCTAssertEqual(local.passwordPinned, false)
+        XCTAssertNil(local.publicURL)
+        XCTAssertFalse(local.isHosted)
+
+        let old = try auth(#"{"configured":true,"updated_at":1789202515395,"remote_bind":true,"from_loopback":false}"#)
+        XCTAssertNil(old.mode)
+        XCTAssertNil(old.passwordPinned)
+        XCTAssertNil(old.publicURL)
+        XCTAssertFalse(old.isHosted, "a router that names no mode is local")
+        XCTAssertEqual(old.updatedAt, 1_789_202_515_395)
+        XCTAssertTrue(old.configured && old.remoteBind && !old.fromLoopback)
+
+        // A shape this build does not expect costs that key, never the status — which would
+        // make the router read as unreachable.
+        let odd = try auth(#"{"configured":false,"remote_bind":false,"from_loopback":true,"mode":7,"password_pinned":"yes","public_url":{}}"#)
+        XCTAssertNil(odd.mode)
+        XCTAssertNil(odd.passwordPinned)
+        XCTAssertNil(odd.publicURL)
+        XCTAssertFalse(odd.isHosted)
+        // The keys every router sends are exactly as strict as before.
+        XCTAssertThrowsError(try auth(#"{"configured":true,"mode":"server","password_pinned":true,"public_url":null}"#))
+    }
+
     func testBasicAuthorizationHeaderCarriesThePassword() throws {
         let header = RouterClient.authorization(password: "hunter22")
         XCTAssertTrue(header.hasPrefix("Basic "))
@@ -171,6 +208,38 @@ final class DecodingTests: XCTestCase {
         XCTAssertNil(st.activity)
         XCTAssertNil(st.waitingOn)
         XCTAssertEqual(st.detail, "Waiting for you")
+    }
+
+    /// A hosted router names the machine each session runs on; a local router never does,
+    /// and its rows read exactly as before.
+    func testASessionRowNamesItsMachineOnAHostedRouter() throws {
+        let hosted = try row(#"""
+        {"session_id":"d6e4d7da-9d0e","cwd":"/code/agent-router","project":"-code-agent-router","git_branch":"dev",
+         "title":"Hosting","created_ms":1790000000000,"last_activity_ms":1790000100000,"active":true,"state":"working",
+         "archived":false,"wrapped":true,"bytes":10,"activity":"generating","tone":"busy","as_of_ms":1790000120000,
+         "machine":{"id":"5f0c2a8e-3b1d-4c6f-9e7a-2d4b6c8e0f13","label":"studio"}}
+        """#)
+        XCTAssertEqual(hosted.machine, SessionMachine(id: "5f0c2a8e-3b1d-4c6f-9e7a-2d4b6c8e0f13", label: "studio"))
+        XCTAssertEqual(hosted.machineName, "studio")
+        XCTAssertEqual(hosted.activity, .generating, "the rest of the row reads as it always did")
+        XCTAssertEqual(hosted.projectName, "agent-router")
+
+        let local = try row(#"{"session_id":"aaaa","cwd":null,"project":"-p","git_branch":null,"title":null,"created_ms":null,"last_activity_ms":1790000000000,"active":true,"state":"working","archived":false,"wrapped":false,"bytes":10}"#)
+        XCTAssertNil(local.machine)
+        XCTAssertNil(local.machineName)
+
+        // A blank label is named by the start of the machine's id.
+        let blank = try row(#"{"session_id":"b","project":"-p","last_activity_ms":1,"active":false,"state":"idle","archived":false,"wrapped":false,"bytes":1,"machine":{"id":"0a1b2c3d-4e5f","label":"  "}}"#)
+        XCTAssertEqual(blank.machineName, "0a1b2c3d")
+        // A machine that is not the object this build expects reads as none, and never costs
+        // the list.
+        let rows = try JSONDecoder().decode([LiveSession].self, from: Data(#"""
+        [{"session_id":"c","project":"-p","last_activity_ms":1,"active":false,"state":"idle","archived":false,"wrapped":false,"bytes":1,"machine":"studio"},
+         {"session_id":"d","project":"-p","last_activity_ms":1,"active":false,"state":"idle","archived":false,"wrapped":false,"bytes":1,"machine":{"label":7}},
+         {"session_id":"e","project":"-p","last_activity_ms":1,"active":false,"state":"idle","archived":false,"wrapped":false,"bytes":1,"machine":null}]
+        """#.utf8))
+        XCTAssertEqual(rows.map(\.sessionId), ["c", "d", "e"])
+        XCTAssertEqual(rows.map(\.machine), [nil, nil, nil])
     }
 
     /// A word this build has never heard is kept and drawn neutral gray — never guessed

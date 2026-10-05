@@ -39,7 +39,12 @@ import java.net.URLEncoder
 import java.util.UUID
 import kotlin.coroutines.coroutineContext
 
-class LiveFeed(val session: LiveSession, private val client: RouterClient?) {
+class LiveFeed(
+    val session: LiveSession,
+    private val client: RouterClient?,
+    /** Whether the router is hosted, as it last said: a refused stream is worded for it. */
+    private val hosted: () -> Boolean = { false },
+) {
 
     data class Row(
         val id: String = UUID.randomUUID().toString(),
@@ -227,7 +232,7 @@ class LiveFeed(val session: LiveSession, private val client: RouterClient?) {
                     if (e is CancellationException) throw e
                     // A wrong password will not come right by retrying.
                     if (e is RouterFailure.Unauthorized || e is RouterFailure.NoPasswordSet) {
-                        notice = Notice(e.message ?: "refused", false)
+                        notice = Notice(RouterState.describe(e, hosted()), false)
                         fatal = true
                     }
                 }

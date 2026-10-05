@@ -49,6 +49,13 @@ data class SessionGroups(
         }
     }
 
+    /**
+     * One machine's share of the list, arranged as a whole list is. [label] is the machine's
+     * name, and null for rows that do not name one — which is every row when the list is not
+     * split by machine at all.
+     */
+    data class Machine(val label: String?, val groups: SessionGroups)
+
     companion object {
         const val WINDOW_MS = 12L * 3600 * 1000
 
@@ -78,6 +85,28 @@ data class SessionGroups(
                 older = group(rest.filterNot { isRecent(it, now) }),
                 archived = shelved.sortedByDescending { it.lastActivityMs },
             )
+        }
+
+        /**
+         * The list a machine at a time, for a hosted router that merges several machines'
+         * sessions: machines by name, alphabetically, each arranged exactly as [build]
+         * arranges a whole list — so one project on two machines stays two projects, and
+         * each machine keeps its own older sessions and its own shelf. Rows that name no
+         * machine come last, together.
+         *
+         * With one machine or none — and a router on a Mac names none — this is a single
+         * entry, unlabelled, holding [build] of every row: the list as it always was.
+         */
+        fun byMachine(rows: List<LiveSession>, now: Long = System.currentTimeMillis()): List<Machine> {
+            if (rows.mapNotNull { it.machineLabel }.distinct().size <= 1) {
+                return listOf(Machine(null, build(rows, now)))
+            }
+            // Sorted as a list rather than through a sorted map: two names that differ only
+            // in case compare equal, and a map would keep one machine and drop the other.
+            return rows.groupBy { it.machineLabel }
+                .toList()
+                .sortedWith(compareBy(nullsLast(String.CASE_INSENSITIVE_ORDER)) { it.first })
+                .map { (label, mine) -> Machine(label, build(mine, now)) }
         }
 
         /**

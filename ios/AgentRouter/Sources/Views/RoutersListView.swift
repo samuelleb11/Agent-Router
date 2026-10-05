@@ -127,6 +127,9 @@ private struct RouterRow: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .monospaced()
+                    // A hosted router's URL is long: one line, keeping its scheme and port.
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
             if let failure = state.failure {
                 Text(failure.errorDescription ?? "Error")

@@ -20,8 +20,39 @@ struct AuthStatus: Decodable, Sendable {
     let fromLoopback: Bool
     let updatedAt: Int?
 
+    // What a router says about how it is run. Absent from one that predates hosting, and
+    // optional for that reason.
+
+    /// `local` (a Mac) or `server` (hosted). A router that sends none is local.
+    let mode: String?
+    /// Whether the password is set by the router's deployment rather than its dashboard.
+    let passwordPinned: Bool?
+    /// The https URL a hosted router's clients use. Null from a local router.
+    let publicURL: String?
+
+    /// Hosted: run by a deployment, with no Mac of its own; its sessions come from the
+    /// machines that run the Agent Router agent.
+    var isHosted: Bool { mode == "server" }
+
     enum CodingKeys: String, CodingKey {
         case configured, updatedAt = "updated_at", remoteBind = "remote_bind", fromLoopback = "from_loopback"
+        case mode, passwordPinned = "password_pinned", publicURL = "public_url"
+    }
+}
+
+extension AuthStatus {
+    /// The keys every router sends decode exactly as they always have; the hosting keys
+    /// leniently, as a session row's newer keys are: a status that fails to decode makes
+    /// the whole router read as unreachable.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        configured = try c.decode(Bool.self, forKey: .configured)
+        remoteBind = try c.decode(Bool.self, forKey: .remoteBind)
+        fromLoopback = try c.decode(Bool.self, forKey: .fromLoopback)
+        updatedAt = try c.decodeIfPresent(Int.self, forKey: .updatedAt)
+        mode = c.lenient(String.self, .mode)
+        passwordPinned = c.lenient(Bool.self, .passwordPinned)
+        publicURL = c.lenient(String.self, .publicURL)
     }
 }
 
@@ -291,6 +322,9 @@ struct LiveSession: Decodable, Sendable, Identifiable, Hashable {
     let source: String?
     /// The router's clock when it worked this out.
     let asOfMs: Int?
+    /// The machine the session runs on, from a hosted router that merges several machines'
+    /// lists. A local router never sends it.
+    let machine: SessionMachine?
 
     var id: String { sessionId }
     var shortId: String { String(sessionId.prefix(8)) }
@@ -298,6 +332,15 @@ struct LiveSession: Decodable, Sendable, Identifiable, Hashable {
     var projectName: String {
         if let cwd, let last = cwd.split(separator: "/").last, !last.isEmpty { return String(last) }
         return project
+    }
+    /// What to call the machine the session runs on: its label, or the start of its id when
+    /// the label is blank. Nil from a local router, which names no machine.
+    var machineName: String? {
+        guard let machine else { return nil }
+        let label = machine.label.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !label.isEmpty { return label }
+        let id = machine.id.trimmingCharacters(in: .whitespacesAndNewlines)
+        return id.isEmpty ? nil : String(id.prefix(8))
     }
     var label: String { title ?? shortId }
     var lastActivity: Date { Date(timeIntervalSince1970: TimeInterval(lastActivityMs) / 1000) }
@@ -331,7 +374,16 @@ struct LiveSession: Decodable, Sendable, Identifiable, Hashable {
         case activity, detail, background, tone, source
         case isOpen = "open", sinceMs = "since_ms", endedMs = "ended_ms", endedHow = "ended_how"
         case midTurn = "mid_turn", waitingOn = "waiting_on", asOfMs = "as_of_ms"
+        case machine
     }
+}
+
+/// Where a session runs (`machine`), as the hosted router that merged its list names it:
+/// the agent's id for the machine, which survives a rename, and what to call it — its host
+/// name unless the agent was given a label.
+struct SessionMachine: Decodable, Sendable, Hashable {
+    let id: String
+    let label: String
 }
 
 extension LiveSession {
@@ -366,6 +418,7 @@ extension LiveSession {
         tone = c.lenient(String.self, .tone).map(SessionTone.init)
         source = c.lenient(String.self, .source)
         asOfMs = c.lenient(Int.self, .asOfMs)
+        machine = c.lenient(SessionMachine.self, .machine)
     }
 }
 

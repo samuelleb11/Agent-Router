@@ -44,6 +44,7 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.unit.dp
 import ca.whnet.agentrouter.data.AppState
 import ca.whnet.agentrouter.data.Router
+import ca.whnet.agentrouter.data.RouterState
 import ca.whnet.agentrouter.data.SessionCounts
 import kotlinx.coroutines.launch
 
@@ -104,7 +105,8 @@ fun RoutersListScreen(
             Column(Modifier.fillMaxSize().padding(pad), verticalArrangement = Arrangement.Center) {
                 EmptyState(
                     title = "No routers yet",
-                    detail = "Add the Mac running Agent Router by its LAN address and password.",
+                    detail = "Add the Mac running Agent Router by its LAN address and password, " +
+                        "or a hosted router by its https URL.",
                 ) {
                     androidx.compose.material3.Button(onClick = onAdd) { Text("Add a router") }
                 }
@@ -166,7 +168,7 @@ private fun RouterRow(
         val account = state.activeAccount
         when {
             failure != null -> Text(
-                failure.message ?: "unreachable",
+                RouterState.describe(failure, state.isHosted),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.error,
                 maxLines = 2,

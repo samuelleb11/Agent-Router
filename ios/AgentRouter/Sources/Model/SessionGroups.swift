@@ -82,6 +82,46 @@ struct SessionGroups: Equatable {
     }
 }
 
+extension SessionGroups {
+    /// One machine's part of the list: its sessions, arranged exactly as a single machine's
+    /// always were.
+    struct Machine: Identifiable, Equatable {
+        let id: String
+        /// The machine's heading. Nil when every session comes from one machine or none — a
+        /// local router names none — and the list has no machine headings at all.
+        let name: String?
+        let groups: SessionGroups
+    }
+
+    /// The heading for sessions the router listed without naming their machine, beside
+    /// others it did name.
+    static let unnamedMachine = "Unnamed machine"
+
+    /// The list machine by machine, when a hosted router merges more than one machine's
+    /// sessions: each machine under its own heading, alphabetically, and under it what
+    /// `build` makes of that machine's sessions alone — so the same project on two machines
+    /// stays two projects, as on the web view. With one machine or none, a single part with
+    /// no heading that is exactly `build` of every row, so that list looks as it always did.
+    static func byMachine(_ rows: [LiveSession], now: Date = .now) -> [Machine] {
+        let names = Set(rows.compactMap(\.machineName))
+        guard names.count > 1 else { return [Machine(id: "", name: nil, groups: build(rows, now: now))] }
+        var parts = names.sorted(by: alphabetically).map { name in
+            Machine(id: "machine:" + name, name: name, groups: build(rows.filter { $0.machineName == name }, now: now))
+        }
+        let unnamed = rows.filter { $0.machineName == nil }
+        if !unnamed.isEmpty {
+            parts.append(Machine(id: "unnamed", name: unnamedMachine, groups: build(unnamed, now: now)))
+        }
+        return parts
+    }
+
+    /// Case-insensitive, and the same order every time for names that differ only in case.
+    private static func alphabetically(_ a: String, _ b: String) -> Bool {
+        let order = a.localizedCaseInsensitiveCompare(b)
+        return order == .orderedSame ? a < b : order == .orderedAscending
+    }
+}
+
 enum StateColor {
     /// A legacy `state`, as this app has always coloured it — what an older router gets.
     static func of(_ state: String?) -> ColorName {

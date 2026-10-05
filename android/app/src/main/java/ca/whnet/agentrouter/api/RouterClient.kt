@@ -1,4 +1,5 @@
-// One router, one password. Plain HTTP on the LAN — the router's own trust model.
+// One router, one password. Plain HTTP on the LAN — the router's own trust model — or
+// HTTPS to a hosted router; the base URL says which, and nothing here depends on it.
 
 package ca.whnet.agentrouter.api
 
@@ -29,9 +30,16 @@ sealed class RouterFailure(message: String) : Exception(message) {
     /** 401: the router has a password and this is not it. */
     data object Unauthorized : RouterFailure("Wrong password for this router")
 
-    /** 403 with the router's own message: nobody has set a password on it yet. */
+    /**
+     * 403 with the router's own message: nobody has set a password on it yet. The message
+     * is for a router on a Mac; [HOSTED] says it for a hosted one, wherever
+     * [ca.whnet.agentrouter.data.RouterState.describe] is told the router is.
+     */
     data object NoPasswordSet :
-        RouterFailure("This router has no password yet — set one on its dashboard, on the Mac")
+        RouterFailure("This router has no password yet — set one on its dashboard, on the Mac") {
+        /** A hosted router's password is never set from a dashboard: only its deployment sets it. */
+        const val HOSTED = "This router has no password yet — a hosted router's password is set by its deployment"
+    }
 
     class Status(val code: Int, val body: String) :
         RouterFailure("Router returned $code" + if (body.isEmpty()) "" else ": $body")
