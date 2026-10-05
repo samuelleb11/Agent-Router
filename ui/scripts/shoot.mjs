@@ -29,7 +29,8 @@
 //   was set.
 // - Reduced motion, so a transition is never caught halfway.
 // - The PNGs go to --out, which must be outside the repository: an untracked file in the tree
-//   changes the build's id, and a screenshot is not a source.
+//   changes the build's id, and a screenshot is not a source. Without --out, a fresh directory
+//   under TMPDIR, named in the output.
 // - Chrome's profile is a fresh directory under the system's temporary directory (TMPDIR), and
 //   its debugging port is the one it picks, read back from the profile, so two runs never meet.
 // - Sideways scroll is measured, not judged by eye: the page is asked to scroll right, and how
@@ -63,7 +64,7 @@ const SETTLE_LIMIT_MS = 20_000;
 
 function usage(problem) {
   console.error(`shoot: ${problem}`);
-  console.error('usage: pnpm shots --routes /,/live --out DIR [--widths 360,390,1440] [--themes white,g100] [--fail-on-overflow] [--unread LISTS] [--base URL] [--full]');
+  console.error('usage: pnpm shots --routes /,/live [--out DIR] [--widths 360,390,1440] [--themes white,g100] [--fail-on-overflow] [--unread LISTS] [--base URL] [--full]');
   process.exit(2);
 }
 
@@ -102,8 +103,11 @@ function parseArgs(argv) {
     return n;
   });
   args.themes = list(args.themes).map((t) => THEMES[t] ?? usage(`--themes takes white and g100, and ${t} is neither`));
-  if (!args.out) usage('--out is required');
-  args.out = resolve(args.out);
+  // Without --out the shots go to a fresh directory under the system's temporary directory,
+  // outside the repository by construction. That lets a check that only asks "does it
+  // overflow?" run as a bare command (the screens' Northstar clauses do); the run names the
+  // directory, so the pictures can still be looked at.
+  args.out = resolve(args.out ?? mkdtempSync(join(tmpdir(), 'agent-router-shots-')));
   const inside = relative(repo, args.out);
   if (!inside.startsWith('..') && !inside.startsWith('/')) usage(`--out ${args.out} is inside the repository; write screenshots elsewhere`);
   return args;
