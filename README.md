@@ -10,7 +10,9 @@ A local proxy that sits between Claude Code and Anthropic, so you can
   permission prompt, send a message, switch the model.
 
 Everything is local: one Rust binary, one SQLite file, no cloud, no telemetry, and a
-socket that only ever listens on loopback until you tell it otherwise.
+socket that only ever listens on loopback until you tell it otherwise. The same binary
+can also run as a server you host yourself, behind HTTPS, for several machines at once:
+see [Running it as a server](#running-it-as-a-server).
 
 > **Status:** working, and used daily by its author. Proxy, capture, dashboard,
 > multi-account switching, live sessions, the VS Code extension and both phone apps
@@ -24,6 +26,7 @@ socket that only ever listens on loopback until you tell it otherwise.
 | Credential store | Keychain, via `/usr/bin/security` | `~/.claude/.credentials.json` | — |
 | Run at login | launchd agent | systemd user service | — |
 | VS Code extension | arm64, x64 | x64, arm64 (static musl) | — |
+| Hosted server | — | container image (glibc, distroless) | — |
 
 Windows is deliberately absent rather than half-written: it would need a per-user logon
 task, and an untested installer that edits the registry is worse than none.
@@ -171,13 +174,18 @@ failures, and a 58-second streaming response begun on the old instance completed
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `AGENT_ROUTER_PORT` | `8787` | Port to listen on |
-| `AGENT_ROUTER_DB` | `~/.agent-router/agent-router.db` | Store location |
+| `AGENT_ROUTER_DATA_DIR` | `~/.agent-router` | Where everything the router writes lives: the store, the secrets file, the archive shelf |
+| `AGENT_ROUTER_DB` | `<data dir>/agent-router.db` | Store location, if it should live elsewhere |
 | `AGENT_ROUTER_BODY_CAP` | `65536` | Bytes of each body kept; true size is always recorded |
 | `AGENT_ROUTER_UPSTREAM` | `https://api.anthropic.com` | Upstream API |
 | `AGENT_ROUTER_ACCESS_TOKEN` | *(unset)* | Use this token instead of the stored one |
 | `AGENT_ROUTER_LOG` | `agent_router=info` | `tracing` filter |
 | `AGENT_ROUTER_DUMP_HEADERS` | `1` | Requests to dump full headers for, at startup |
 | `AGENT_ROUTER_BIND` | *(unset)* | An IP to also listen on, overriding the stored setting for this run. See below |
+| `AGENT_ROUTER_SERVER_PASSWORD` | *(unset)* | A hosted router's password, pinned at every start. Server mode only |
+
+`agent-router serve` takes the same settings as flags (`--port`, `--bind`, `--data-dir`,
+`--db`), and flags win over the environment. `agent-router --help` lists them.
 
 ### Listening on your network
 
@@ -196,6 +204,41 @@ but it only lasts as long as that process.
 setting the switch does (`127.0.0.1` puts it back), and `--no-config` registers the
 login item without touching Claude Code's settings.
 
+## Running it as a server
+
+`agent-router serve --server` runs the router as a hosted server: in a container,
+behind an HTTPS ingress, for Claude Code on several machines, the phones and a browser.
+
+```
+agent-router serve --server --bind 0.0.0.0 --data-dir /data \
+    --public-url https://agent-router.example.com
+```
+
+**What changes in server mode:**
+- **One listener.** The router listens on `--bind` only. There is no handover, and no
+  network switch.
+- **Names.** It answers to the names it is given (`--public-url`, `--allow-host`) and to
+  IP addresses, and refuses every other name.
+- **The password.** Every caller presents the password, loopback included. It comes from
+  `AGENT_ROUTER_SERVER_PASSWORD` at every start, and the dashboard cannot change it.
+- **Accounts.** Accounts are `claude setup-token` values pasted into the dashboard. The
+  server never runs `claude`.
+- **Nothing of a developer's machine.** No `~/.claude`, no Keychain, no wrapper sockets.
+  The settings that act on a machine (Claude Code setup, start at login, the wrapper) are
+  not offered.
+- **No live view yet.** The live view, steering and prompt notifications need a small
+  agent on each machine that runs the sessions. That agent is the next step; until it
+  exists, a hosted router records and reports, and does not follow sessions.
+
+**Pointing Claude Code at it.** On each machine, set two variables under `env` in
+`~/.claude/settings.json`, or in a project's `.claude/settings.local.json`:
+`ANTHROPIC_BASE_URL` (the server's URL) and `ANTHROPIC_AUTH_TOKEN` (the password).
+
+**Deploying it.** The image is built from the `Dockerfile`. The Helm chart is in
+`charts/agent-router`. The pipeline that checks, builds, publishes and deploys both is
+`.gitlab-ci.yml`. The design, the decisions behind it and the first-install steps are in
+[docs/hosting-on-kubernetes.md](docs/hosting-on-kubernetes.md).
+
 ## Security
 
 Agent Router holds a live subscription credential and signs everything it forwards,
@@ -211,6 +254,12 @@ so reaching it is kept as hard as it can be:
 4. Only `/v1/` paths are proxied, and only for callers that already presented a
    credential of their own, so nothing can borrow the token by simply finding the port.
 5. Anything that is not on this machine must present the **router password**.
+6. A write whose `Origin` names another site is refused. That is a page elsewhere driving
+   your browser, which would otherwise pass every check above with your saved password.
+
+A hosted router changes layers 1, 3 and 5. It listens only where it was told. It answers
+to the names it was given as well as to IP addresses. It asks everyone for the password,
+loopback included, because in a container loopback is a port-forward, not you.
 
 Inbound `authorization` and `x-api-key` headers are discarded, never stored. Captured
 bodies may contain your source code — the database is local and gitignored.
@@ -453,6 +502,9 @@ per finding with its sources.
   tools / history / tool results apportions that exact total by character share,
   because there is no local tokenizer for current Claude models.
 * **No Windows build.** See [Platforms](#platforms).
+* **A hosted router has no live view yet.** Following and steering sessions needs an
+  agent on the machine that runs them, which is not built yet. See
+  [Running it as a server](#running-it-as-a-server).
 
 ## License
 

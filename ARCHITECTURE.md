@@ -411,6 +411,40 @@ and clears the wrapper setting.
 - The transcript watcher is strictly read-only; it never writes to Claude Code's files.
 - Captured bodies may contain source code. The database is local and gitignored.
 
+## Running as a hosted server
+
+`serve --server` is the same binary built for a different premise: it runs in a
+container, and every caller is on another machine. The full design, and the map of
+everything that assumed otherwise, is in
+[docs/hosting-on-kubernetes.md](docs/hosting-on-kubernetes.md).
+
+**Configuration.**
+- Configuration comes from flags (`config::ServeArgs`), so a binary too old to know one
+  refuses to start rather than ignoring it.
+- `config::data_dir()` is the one root for everything the router writes. Before, five
+  places each derived `~/.agent-router` on their own.
+
+**Trust (`guard`, `auth`).**
+- The Host check also admits the names the server was given.
+- Loopback is asked for the password.
+- The password is pinned from the deployment at every start (`Auth::pin`), the pattern
+  of Northstar's ADR 0022.
+
+**Routes and tasks.**
+- The routes that act on the router's own machine are answered by `hosted`, in the
+  shapes the installed phone apps decode, instead of being removed.
+- The background tasks that read the developer's machine are not started: the shim
+  watcher, the wrapper janitor and the prompt sweep.
+
+**Projects.** Attribution falls back to what the request says. Claude Code's environment
+block names the working directory and the branch (`analyze::environment_of`). That also
+covers sessions on other machines and SDK sessions with no transcript on this one.
+
+**What it cannot do alone** is everything under "Reaching a running session" below. The
+next step is a per-machine agent: the same binary on each developer machine, dialling out
+to the server. It runs `live`, `registry`, `activity` and `peer` where the sessions are,
+since those already take every local input as a parameter.
+
 ## Build order
 
 | Phase | Deliverable |

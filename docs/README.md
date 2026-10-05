@@ -15,6 +15,7 @@ the maintainer who has to act on them. What the code does and why is in
 | [Where the subscription quota goes, and what would stretch it](quota-token-economics.md) | 2026-09-14 | Ordinary turns are 87% of the 5-hour meter and a turn at 700K context costs 2.4 times one at 150K; caching is already at 99%, so the levers are compaction, effort below `max`, fewer turns, and no web search on Fable. |
 | [Prompt caching and Claude Code settings, as they affect the router](prompt-caching-and-claude-code-settings.md) | 2026-09-14 | What Claude Code puts on the wire, the caching rules that decide what a turn costs, and the settings that control compaction, effort, MCP scope and headless forks. |
 | [Session liveness](session-liveness.md) | 2026-09-29 | The transcript cannot tell generating, background work, a permission prompt or a closed process from idle; Claude Code's own session registry can, so the router reads it first and derives every session's state in one place. |
+| [Hosting Agent Router on Kubernetes](hosting-on-kubernetes.md) | 2026-10-05 | A pod can proxy, record, analyse and push on its own; the live view and steering need a component on each developer machine that dials out. Phase 1 is `serve --server`, an image, a chart and a pipeline in Northstar's shape. |
 
 The build and packaging chain is in the README, section "Building and packaging for
 Mac and Linux", and in ARCHITECTURE.md, "The editor extension".
