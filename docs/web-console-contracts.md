@@ -1375,12 +1375,12 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
   `ios/AgentRouter/Sources/Views/Format.swift:107-111`. *Phones:* `testRangesAndFormats`. *Today:*
   broken — the page drops "claude-" and the date and joins the version ("claude-opus-4-5-20251101"
   reads "opus 4.5", "claude-opus-5-20260115" reads "opus 5"), while the phone only drops "claude-"
-  ("opus-5-20260115").
+  ("opus-5-20260115"). *Decided:* the phones' spelling, on 2026-10-05 (decision K in the plan).
 - **OV-C185** A bucket is named the same on every client: "minute", "hour", "day", and one spelling
   for their multiples. *Why:* the phone's own comment says it uses "the dashboard's bucket names".
   *Regression:* no. *Source:* `assets/index.html:719`,
   `ios/AgentRouter/Sources/Views/Format.swift:95-105`. *Phones:* `testRangesAndFormats`. *Today:*
-  broken — the page says "15 min" where the phone says "15 minutes".
+  broken — the page says "15 min" where the phone says "15 minutes". *Decided:* the phones' spelling, on 2026-10-05 (decision K in the plan).
 - **OV-C186** A project is named by the last part of its path, "(unresolved)" when it has none, with
   the whole path available beside it; a session by the first eight characters of its id, the whole
   id available. *Why:* short enough for a row, exact one press away. *Regression:* no. *Source:*

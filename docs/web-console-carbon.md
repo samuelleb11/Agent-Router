@@ -637,6 +637,7 @@ Decided on 2026-10-05:
 | H | Sessions on a desk | **Two panes from 1,056 px**, the list beside the feed |
 | I | Folds and put-away | **Archive is a visible action** on every row and tab, with the Archive icon, and **the archived shelf is visible**, not folded |
 | J | Rollout | **Behind `/next/` until parity**, then `/` and `/live` switch |
+| K | Spelling | **The phones' spelling on every client**: full model ids (`opus-5-20260115`) and whole bucket names ("15 minutes"), which the iOS and Android tests already pin (OV-C184, OV-C185) |
 
 The hosting work landed on 2026-10-05, in `e621f67` to `27d41ba`: `serve --server`, `build.rs`,
 the image, the chart and the CI stages. The serving and CI slices build on it.
