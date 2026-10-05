@@ -755,10 +755,27 @@ impl std::fmt::Display for Conflict {
 impl std::error::Error for Conflict {}
 
 /// Where the router keeps the isolated profile directories it creates.
+#[cfg(not(test))]
 pub fn profiles_root() -> Result<PathBuf> {
     let dir = crate::config::data_dir()?.join("accounts");
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
+}
+
+/// Under test, a directory of the test process's own, as the secrets file's is: the real
+/// one holds the profiles the live router signs with, and a sign-in or a profile add a test
+/// makes would otherwise make its directory there.
+#[cfg(test)]
+pub fn profiles_root() -> Result<PathBuf> {
+    static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    let dir = DIR.get_or_init(|| {
+        let dir = std::env::temp_dir().join(format!("ar-profiles-{}", std::process::id()));
+        // An earlier test process may have had the same id, and left its directories here.
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    });
+    std::fs::create_dir_all(dir)?;
+    Ok(dir.clone())
 }
 
 /// Turn a user-supplied label into a safe single path segment.

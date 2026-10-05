@@ -121,8 +121,12 @@ struct RouterClient: Sendable {
         }
         guard let http = response as? HTTPURLResponse else { throw Failure.unreachable("not HTTP") }
         guard (200..<300).contains(http.statusCode) else { throw Self.failure(status: http.statusCode, body: data) }
-        do { return try JSONDecoder().decode(T.self, from: data) }
+        let reply: T
+        do { reply = try JSONDecoder().decode(T.self, from: data) }
         catch { throw Failure.decoding(String(describing: error).prefix(160).description) }
+        // A refusal all the same, and read as one: see `Verdict`.
+        if let verdict = reply as? any Verdict, !verdict.ok { throw Self.failure(status: http.statusCode, body: data) }
+        return reply
     }
 
     /// What an error status stands for, read the same way from a call's reply and from a
@@ -198,6 +202,15 @@ struct RouterClient: Sendable {
             continuation.onTermination = { _ in task.cancel() }
         }
     }
+}
+
+/// A reply that says whether the change was made: `ok`, beside the reason when it was not,
+/// as the live endpoints answer. `ok: false` is a refusal whatever status comes with it, so a
+/// call reads it as it reads an error status (`RouterClient.failure`): in the router's words,
+/// and never as done. Answering a question or a permission prompt once read the status
+/// alone, and a 200 saying `ok: false` said "Answered." and put away a prompt still waiting.
+protocol Verdict {
+    var ok: Bool { get }
 }
 
 /// Bytes into lines, every line — including the empty ones the framing depends on.

@@ -65,10 +65,9 @@ pub fn failed(why: impl std::fmt::Display) -> Response {
 /// content type — with the right status but a plain-text sentence that no client reads:
 /// the dashboard showed the status text instead, and the phones the raw body. Every handler
 /// that refuses in this module's shape takes its body through this, so that refusal carries
-/// its words where the others do — all but `POST /api/accounts`, whose body a hosted router
-/// reads before handing it on (`api::accounts_add`). The statuses are axum's, unchanged:
-/// 400 for a body that is not JSON, 422 for JSON of the wrong shape, 415 without a JSON
-/// content type, 413 for a body over the limit.
+/// its words where the others do. The statuses are axum's, unchanged: 400 for a body that is
+/// not JSON, 422 for JSON of the wrong shape, 415 without a JSON content type, 413 for a
+/// body over the limit.
 pub struct JsonBody<T>(pub T);
 
 impl<T, S> FromRequest<S> for JsonBody<T>

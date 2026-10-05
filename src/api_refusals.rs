@@ -257,6 +257,34 @@ async fn a_sign_in_with_no_name_or_while_another_runs_is_refused() {
     assert_eq!(words(refused, StatusCode::CONFLICT), "a sign-in is already in progress");
 }
 
+/// A sign-in whose `claude` cannot be started ends Failed, saying why, and the next start is
+/// taken. It once stood Starting for good, which reads as a sign-in still running, so every
+/// later start was refused as one until the router restarted.
+///
+/// Not a refusal but the router failing (500), and it acts: under test a sign-in runs a
+/// program no machine has (`login::CLAUDE`), in a profile directory of the test process's
+/// own (`accounts::profiles_root`), never ~/.agent-router. Unix only, as signing in is:
+/// elsewhere it stops before it starts, at the `$BROWSER` stand-in it cannot write.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_sign_in_that_cannot_start_ends_failed_and_the_next_start_is_taken() {
+    let lab = Lab::local("sign-in-cannot-start");
+    for attempt in ["the first start", "the next start"] {
+        let (status, body) = lab.post("/api/login/start", r#"{"label":"Cannot Start"}"#).await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{attempt} is not refused as one running: {body}");
+        assert_eq!(body["ok"], json!(false), "{body}");
+        let why = body["error"].as_str().unwrap_or_default().to_string();
+        assert!(why.contains("starting `claude setup-token`"), "{attempt} says why: {body}");
+
+        // What `GET /api/login/status` answers: ended, in the same words.
+        let flow = lab.state.login.lock().unwrap().to_json();
+        assert_eq!(flow["phase"], "failed", "{attempt}: {flow}");
+        assert_eq!(flow["error"], why.as_str(), "{attempt}: {flow}");
+        assert_eq!(flow["label"], "Cannot Start", "{attempt}: {flow}");
+    }
+    let _ = std::fs::remove_dir_all(crate::accounts::profiles_root().unwrap().join("cannot-start"));
+}
+
 /// A hosted router answers the same paths from `hosted`, and refused in this shape before
 /// the local ones did: 409 and `{ok: false, error}`. Pinned here so the two stay one shape
 /// for the clients that talk to both.
@@ -284,6 +312,37 @@ async fn a_hosted_router_refuses_what_would_act_on_its_machine_in_the_same_shape
     }
     let refused = lab.post("/api/auth", r#"{"password":"a different one"}"#).await;
     assert!(words(refused, StatusCode::CONFLICT).starts_with("the password is set by the deployment"));
+}
+
+/// A hosted router reads `POST /api/accounts`'s body itself, to refuse anything but a pasted
+/// token before the add sees it (`hosted::accounts_add`). A body it cannot read was refused
+/// there in axum's plain text, which no client reads. It is refused as every other is now:
+/// the status a router on a machine gives the same body, and its `{ok: false, error}`, word
+/// for word.
+#[tokio::test]
+async fn hosted_accounts_body_refusal_is_the_one_a_router_on_a_machine_gives() {
+    let hosted = Lab::hosted("accounts-body-hosted").await;
+    let local = Lab::local("accounts-body-local");
+    let json = Some("application/json");
+
+    // Not JSON at all: what any body read through `refusal::JsonBody` gets, on any path.
+    let there = hosted.send("/api/accounts", json, "hosted-body-work").await;
+    assert!(words(there.clone(), StatusCode::BAD_REQUEST).contains("JSON"), "{there:?}");
+    assert_eq!(local.send("/api/accounts", json, "hosted-body-work").await, there);
+    assert_eq!(local.send("/api/accounts/edit", json, "hosted-body-work").await, there);
+
+    // JSON of the wrong shape, and JSON not said to be.
+    let token = r#"{"label":"hosted-body-work","source":"token","token":"sk-ant-oat01-abc"}"#;
+    for (content_type, body, status, about) in [
+        (json, r#"{"label":"hosted-body-work"}"#, StatusCode::UNPROCESSABLE_ENTITY, "source"),
+        (None, token, StatusCode::UNSUPPORTED_MEDIA_TYPE, "Content-Type"),
+    ] {
+        let there = hosted.send("/api/accounts", content_type, body).await;
+        assert!(words(there.clone(), status).contains(about), "{body}: {there:?}");
+        assert_eq!(local.send("/api/accounts", content_type, body).await, there, "{body}");
+    }
+    assert_eq!(held(&hosted, "hosted-body-work"), None, "nothing was added");
+    assert_eq!(held(&local, "hosted-body-work"), None);
 }
 
 // ---------------------------------------------------------------------------

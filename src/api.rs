@@ -1499,11 +1499,11 @@ where
 /// built-in account — is refused with 409, naming that account, and nothing of it is
 /// written: not its row, not its token, not its profile directory.
 ///
-/// The body is read with axum's own `Json`, unlike the other writes: the hosted router's
-/// `POST /api/accounts` (`hosted::accounts_add`) calls this with one it has read already.
+/// A hosted router's `POST /api/accounts` (`hosted::accounts_add`) reads the body first and
+/// hands it on, so a body that cannot be read is refused in the same words on either.
 pub async fn accounts_add(
     State(state): State<Arc<AppState>>,
-    Json(req): Json<AddAccount>,
+    JsonBody(req): JsonBody<AddAccount>,
 ) -> Response {
     let source = match Source::parse(&req.source) {
         Ok(source) => source,

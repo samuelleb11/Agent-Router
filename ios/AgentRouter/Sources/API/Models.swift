@@ -683,8 +683,9 @@ extension LiveStatus {
     }
 }
 
-/// What the live endpoints answer with — success and failure share the shape.
-struct LiveReply: Decodable, Sendable {
+/// What the live endpoints answer with — success and failure share the shape, so a reply
+/// of `ok: false` is a refusal whatever status came with it (`Verdict`).
+struct LiveReply: Decodable, Sendable, Verdict {
     let ok: Bool
     let via: String?
     /// True when the message went by the peer socket and will show up as coming from
@@ -1114,12 +1115,15 @@ struct ConfigBody: Encodable, Sendable { let enable: Bool; let project: String? 
 struct ShimBody: Encodable, Sendable { let path: String; let action: String }
 struct PasswordBody: Encodable, Sendable { let password: String?; let clear: Bool? }
 
-/// `POST /api/accounts/probe`: whether a profile account can sign requests right now.
+/// `POST /api/accounts/probe`: whether a profile account can sign requests right now —
+/// what `claude auth status --json` says of its profile, as the router reads it and sends it
+/// on (src/accounts.rs, `AuthStatus`): `loggedIn`, in the CLI's own camel case. This read
+/// `logged_in` once, which the router never sends, so a profile not yet signed in was never
+/// said to be.
 struct ProbeReply: Decodable, Sendable {
     let loggedIn: Bool?
     let detail: String?
     let error: String?
-    enum CodingKeys: String, CodingKey { case detail, error, loggedIn = "logged_in" }
 }
 
 // MARK: - Push notifications

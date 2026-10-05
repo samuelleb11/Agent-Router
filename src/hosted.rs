@@ -22,6 +22,7 @@ use axum::{Json, Router};
 use serde_json::{json, Value};
 
 use crate::proxy::AppState;
+use crate::refusal::JsonBody;
 
 const NO_MACHINE: &str = "this router is hosted: it does not run on a developer's machine, so there is no \
     Claude Code, login item, editor extension or network switch here to manage — set those up on each machine";
@@ -78,12 +79,13 @@ pub fn refuse_profile() -> Response {
 }
 
 /// `POST /api/accounts`: a pasted `claude setup-token` value, and nothing else. The
-/// other sources are a Claude Code login on the router's own machine.
-async fn accounts_add(state: State<Arc<AppState>>, Json(req): Json<crate::api::AddAccount>) -> Response {
+/// other sources are a Claude Code login on the router's own machine. A body that cannot
+/// be read is refused as every other is (`refusal::JsonBody`).
+async fn accounts_add(state: State<Arc<AppState>>, JsonBody(req): JsonBody<crate::api::AddAccount>) -> Response {
     if req.source != "token" {
         return refuse_profile();
     }
-    crate::api::accounts_add(state, Json(req)).await.into_response()
+    crate::api::accounts_add(state, JsonBody(req)).await.into_response()
 }
 
 async fn no_machine() -> Response {

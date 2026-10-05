@@ -355,34 +355,20 @@ pub fn start(label: String, db: PathBuf, shared: Shared) -> Result<()> {
         };
     }
 
-    let pty = portable_pty::native_pty_system();
-    let pair = pty
-        .openpty(portable_pty::PtySize {
-            rows: 40,
-            cols: 120,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .context("opening a pty")?;
-
-    let mut cmd = portable_pty::CommandBuilder::new("claude");
-    cmd.arg("setup-token");
-    cmd.env("CLAUDE_CONFIG_DIR", &profile);
-    cmd.env("BROWSER", &shim);
-    cmd.env("CAPTURE_FILE", &capture);
-    cmd.env("TERM", "xterm-256color");
-    if let Ok(home) = std::env::var("HOME") {
-        cmd.env("HOME", home);
-    }
-    if let Ok(path) = std::env::var("PATH") {
-        cmd.env("PATH", path);
-    }
-
-    let mut child = pair.slave.spawn_command(cmd).context(
-        "starting `claude setup-token` — is the claude CLI on PATH?",
-    )?;
-    drop(pair.slave);
-    let mut reader = pair.master.try_clone_reader()?;
+    // From here the flow says Starting, and only its end may change that. A sign-in whose
+    // `claude` never started once stood Starting for good: it read as one still running, and
+    // `api::start_login` refused every later start until the router restarted. It ends
+    // Failed instead, saying why in the words the start itself answers with.
+    let (mut child, mut reader) = match run_setup_token(&profile, &shim, &capture) {
+        Ok(running) => running,
+        Err(e) => {
+            let mut f = shared.lock().unwrap();
+            f.phase = Some(Phase::Failed);
+            f.error = Some(e.to_string());
+            let _ = std::fs::remove_file(&shim);
+            return Err(e);
+        }
+    };
 
     std::thread::spawn(move || {
         let mut term = Terminal::new(capture.clone());
@@ -407,6 +393,54 @@ pub fn start(label: String, db: PathBuf, shared: Shared) -> Result<()> {
     });
 
     Ok(())
+}
+
+/// What a sign-in runs: Claude Code's CLI, looked for on the router's PATH.
+#[cfg(not(test))]
+const CLAUDE: &str = "claude";
+
+/// Under test, a program no PATH holds, so a sign-in a test starts fails to start, as one
+/// does on a machine without Claude Code. The real one would begin a sign-in to the test
+/// machine's own account, and wait there for someone to finish it.
+#[cfg(test)]
+const CLAUDE: &str = "claude-is-never-run-under-test";
+
+/// `claude setup-token`, started in a pty of its own with `profile` as its config
+/// directory: the program, and its terminal to read.
+fn run_setup_token(
+    profile: &std::path::Path,
+    shim: &std::path::Path,
+    capture: &std::path::Path,
+) -> Result<(Box<dyn portable_pty::Child + Send + Sync>, Box<dyn Read + Send>)> {
+    let pty = portable_pty::native_pty_system();
+    let pair = pty
+        .openpty(portable_pty::PtySize {
+            rows: 40,
+            cols: 120,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .context("opening a pty")?;
+
+    let mut cmd = portable_pty::CommandBuilder::new(CLAUDE);
+    cmd.arg("setup-token");
+    cmd.env("CLAUDE_CONFIG_DIR", profile);
+    cmd.env("BROWSER", shim);
+    cmd.env("CAPTURE_FILE", capture);
+    cmd.env("TERM", "xterm-256color");
+    if let Ok(home) = std::env::var("HOME") {
+        cmd.env("HOME", home);
+    }
+    if let Ok(path) = std::env::var("PATH") {
+        cmd.env("PATH", path);
+    }
+
+    let child = pair.slave.spawn_command(cmd).context(
+        "starting `claude setup-token` — is the claude CLI on PATH?",
+    )?;
+    drop(pair.slave);
+    let reader = pair.master.try_clone_reader()?;
+    Ok((child, reader))
 }
 
 /// How a sign-in ends once `setup-token` has exited: the account it added, or why there

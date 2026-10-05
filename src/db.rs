@@ -378,12 +378,36 @@ impl Db {
 
     /// Record the account Claude Code is already logged into. Called once at startup;
     /// it never steals `active` from an account the user has chosen.
+    ///
+    /// It is always Claude Code's own login. Adding an account under its name once wrote
+    /// over it — a new "Default" made it a token account, signing with the token that add
+    /// stored under its id — and adding no longer can (`accounts::Store::add`), but a store
+    /// an add had reached stayed that way: this put back only its name and who it is. Its
+    /// source and profile directory are put back as well, and a token stored under its id
+    /// is forgotten, its usage key kept. Nothing signs with that token once the account is
+    /// Claude Code's again, and nothing could remove it: the built-in account cannot be
+    /// removed, nor its token replaced. Every other account is left as it is.
     pub fn upsert_default_account(
         &self,
         id: &str,
         label: &str,
         status: &crate::accounts::AuthStatus,
     ) -> Result<()> {
+        let restored = self.conn.execute(
+            "UPDATE accounts SET source = 'keychain', profile_dir = NULL
+              WHERE id = ?1 AND (source != 'keychain' OR profile_dir IS NOT NULL)",
+            [id],
+        )?;
+        if restored > 0 {
+            tracing::warn!(account = id, "the built-in account had been turned into another kind by an add under its name; it is Claude Code's login again");
+        }
+        if crate::accounts::has_token(id) {
+            // Not a reason to stop: the router signs as it should without this.
+            match crate::accounts::forget_token(id) {
+                Ok(()) => tracing::warn!(account = id, "forgot the token an add under the built-in account's name stored; add it again under another name if it is still wanted"),
+                Err(e) => tracing::warn!(account = id, "could not forget the token an add under the built-in account's name stored: {e:#}"),
+            }
+        }
         self.conn.execute(
             "INSERT INTO accounts (id, label, source, email, org_name, subscription_type,
                                    active, created_at)
@@ -1068,5 +1092,116 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(u.prompt_tokens(), 132);
+    }
+
+    /// A store reached by an add under the built-in account's name, from before adds stopped
+    /// replacing accounts: a new "Default" made it a token account, its token stored under
+    /// the account's id, and a profile add made it a profile account. The next start makes it
+    /// Claude Code's login again, exactly as it was, and forgets the token that add stored,
+    /// keeping its usage key, which is its own. No other account changes.
+    ///
+    /// The built-in account's id is this test's own rather than "default": the secrets file,
+    /// which every test in the process shares (`accounts::secrets`), never holds a token
+    /// under "default" for another test to find.
+    #[test]
+    fn built_in_account_restored_at_startup_and_no_other_account_changes() {
+        use crate::accounts::{self, Account, AuthStatus, Source, Store};
+        use rusqlite::types::Value;
+
+        // None of these is a credential.
+        const STRAY: &str = "sk-ant-oat01-stray-QZ9JX8QZ9JX8QZ9JX8QZ9JX8QZ9JX8QZ9JX8QZ9JX8QZ9JX8QZ9JX8QZ9JX8QZ9JX8QZ9JX8QZ9JX8QZ9";
+        const WORK: &str = "sk-ant-oat01-work-JX8QZ9JX8QZ9JX8QZ9JX8QZ9JX8QZ9JX8QZ9JX8QZ9JX8QZ9JX8QZ9JX8QZ9JX8QZ9JX8QZ9JX8QZ9JX8";
+        const BUILT_IN_USAGE: &str = "sk-ant-sid01-built-in-QZ9JX8";
+        const WORK_USAGE: &str = "sk-ant-sid01-work-JX8QZ9";
+
+        let dir = std::env::temp_dir().join(format!("ar-built-in-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("agent-router.db");
+        let db = Db::open(&path).unwrap();
+        let store = Store::new(path.clone());
+        let id = "built-in-restored-default";
+        let me = AuthStatus {
+            logged_in: true,
+            email: Some("me@example.com".into()),
+            subscription_type: Some("max".into()),
+            ..Default::default()
+        };
+
+        // Every column of the accounts this filter picks, in id order.
+        let rows = |filter: &str| -> Vec<Vec<Value>> {
+            let mut stmt = db.conn.prepare(&format!("SELECT * FROM accounts WHERE {filter} ORDER BY id")).unwrap();
+            let n = stmt.column_count();
+            stmt.query_map([id], |r| (0..n).map(|i| r.get::<_, Value>(i)).collect())
+                .unwrap()
+                .map(Result::unwrap)
+                .collect()
+        };
+        // The token the router would sign with for a token account with this id, and the
+        // account's usage key.
+        let secrets = |of: &str| {
+            let as_token = Account { id: of.into(), label: String::new(), source: Source::Token, profile_dir: None, email: None };
+            (accounts::resolve(&as_token).ok().map(|r| r.token), accounts::usage_token(of))
+        };
+
+        // The first start, and an account of each other kind beside the built-in one, which
+        // is no longer the active one. Its usage key, as `quota::set_usage_token` records it.
+        db.upsert_default_account(id, "me@example.com", &me).unwrap();
+        store
+            .add("built-in-restored-work", "Work", Source::Token, None, &AuthStatus::default(), || {
+                accounts::store_token("built-in-restored-work", WORK)
+            })
+            .unwrap();
+        accounts::store_usage_token("built-in-restored-work", WORK_USAGE).unwrap();
+        let home = "/nowhere/accounts/built-in-restored-home";
+        store.add("built-in-restored-home", "Home", Source::Profile, Some(home), &AuthStatus::default(), || Ok(())).unwrap();
+        store.activate("built-in-restored-work").unwrap();
+        accounts::store_usage_token(id, BUILT_IN_USAGE).unwrap();
+        db.conn.execute("UPDATE accounts SET usage_key = 1 WHERE id = ?1", [id]).unwrap();
+
+        let built_in = rows("id = ?1");
+        let others = rows("id != ?1");
+        assert_eq!(others.len(), 2);
+        let theirs = [secrets("built-in-restored-work"), secrets("built-in-restored-home")];
+        assert_eq!(theirs[0], (Some(WORK.to_string()), Some(WORK_USAGE.to_string())));
+
+        let profile = "/nowhere/accounts/built-in-restored-default";
+        for (source, profile_dir) in [("token", None), ("profile", Some(profile))] {
+            // The add from before, as it wrote over an account whose id it took: the token
+            // stored first, then the row upserted over the one there.
+            if source == "token" {
+                accounts::store_token(id, STRAY).unwrap();
+            }
+            db.conn
+                .execute(
+                    "INSERT INTO accounts (id, label, source, profile_dir, email, org_name,
+                                           subscription_type, active, created_at)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,0,?8)
+                     ON CONFLICT(id) DO UPDATE SET
+                       label = ?2, source = ?3, profile_dir = ?4,
+                       email = COALESCE(?5, email), org_name = COALESCE(?6, org_name),
+                       subscription_type = COALESCE(?7, subscription_type)",
+                    params![id, "Default", source, profile_dir, None::<String>, None::<String>, None::<String>, now_ms()],
+                )
+                .unwrap();
+            assert_eq!(store.get(id).unwrap().unwrap().source.as_str(), source, "the add wrote over it");
+
+            // The next start.
+            db.upsert_default_account(id, "me@example.com", &me).unwrap();
+            assert_eq!(rows("id = ?1"), built_in, "{source}: Claude Code's login again, as it was");
+            assert_eq!(secrets(id), (None, Some(BUILT_IN_USAGE.to_string())), "{source}: no token of the add's, its own usage key");
+            assert_eq!(rows("id != ?1"), others, "{source}: no other account changed");
+            assert_eq!([secrets("built-in-restored-work"), secrets("built-in-restored-home")], theirs, "{source}");
+        }
+
+        // A start with nothing to put back changes nothing.
+        db.upsert_default_account(id, "me@example.com", &me).unwrap();
+        assert_eq!(rows("id = ?1"), built_in);
+        assert_eq!(secrets(id), (None, Some(BUILT_IN_USAGE.to_string())));
+        assert_eq!(rows("id != ?1"), others);
+        accounts::forget_usage_token(id).unwrap();
+        accounts::forget_token("built-in-restored-work").unwrap();
+        accounts::forget_usage_token("built-in-restored-work").unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
