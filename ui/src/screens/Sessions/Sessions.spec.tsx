@@ -9,7 +9,7 @@ import { CONCEPTS } from '~/lib/concepts';
 import type { SessionRow } from '~/model/session';
 import { press } from '~/test-utils';
 import { FakeEventSource } from './fakes';
-import { A, AT, B, C, SESSIONS, json, renderSessions, session, streamOf, stubRouter, working } from './kit';
+import { A, AT, B, C, SESSIONS, json, renderSessions, session, streamOf, stubRouter, working, type Asked } from './kit';
 
 beforeEach(() => FakeEventSource.reset());
 afterEach(() => {
@@ -451,6 +451,143 @@ describe('a hosted router', () => {
     expect(await screen.findByText('That session is not on a connected machine.')).toBeInTheDocument();
     expect(where()).toBe('/live');
     expect(screen.queryByText('That session is no longer listed.')).toBeNull();
+  });
+
+  const STUDIO = { id: '5f0c2a8e', label: 'studio' };
+  const LAPTOP = { id: '9b3e1d47', label: 'Laptop' };
+  const quiet = { activity: 'idle', tone: 'idle', state: 'idle', active: false, detail: 'Waiting for you' } as const;
+  /// A hosted router listing `rows`, whatever else it answers asked of `more` first.
+  const hosted = (rows: () => readonly SessionRow[], more: (req: Asked) => Response | undefined = () => undefined) =>
+    stubRouter((req) => {
+      if (req.method === 'GET' && req.path === '/api/auth') return json({ mode: 'server' });
+      if (req.method === 'GET' && req.path === '/api/live/sessions') return json(rows());
+      return more(req);
+    });
+  /// A machine's part of the list: a region named by its heading.
+  const part = (name: string) => listPane().getByRole('region', { name });
+  const machineHeadings = () => listPane().queryAllByRole('heading', { level: 2 }).map((h) => h.textContent);
+
+  it('SE-C219: sessions from two machines are headed per machine, each heading over its own projects, older fold and shelf, and no row names its machine', async () => {
+    const rows = [
+      session(A, { machine: STUDIO }),
+      session(B, { machine: LAPTOP, title: 'On the laptop' }),
+      session(C, { cwd: '/Users/sample/code/northstar', project: 'northstar', machine: STUDIO, ...quiet, last_activity_ms: AT - 13 * 3600e3 }),
+      session('shelf-1', { machine: LAPTOP, title: 'Put away', archived: true, ...quiet }),
+    ];
+    hosted(() => rows);
+    renderSessions();
+    await waitFor(() => rowOf(A));
+    expect(machineHeadings()).toEqual(['Laptop', 'studio']);
+    // The same project on each machine is a project under each heading, and each machine has its
+    // own fold and its own shelf.
+    expect([part('studio').contains(rowOf(A)), part('Laptop').contains(rowOf(B)), part('Laptop').contains(rowOf('shelf-1'))]).toEqual([true, true, true]);
+    expect(within(part('studio')).getByRole('button', { name: '1 older session' })).toBeInTheDocument();
+    expect(within(part('Laptop')).queryByRole('button', { name: /older session/ })).toBeNull();
+    expect(within(part('Laptop')).getByText('1 archived')).toBeInTheDocument();
+    expect(within(part('studio')).queryByText(/archived/)).toBeNull();
+    // The heading names the machine; no row says it again.
+    expect([rowButton(A), rowButton(B), rowButton('shelf-1')].map((b) => /\bon (studio|Laptop)\b/.test(b.textContent ?? ''))).toEqual([false, false, false]);
+  });
+
+  it('SE-C219: with one machine, nothing is named and no machine heading is drawn, the list as a local router’s', async () => {
+    hosted(() => SESSIONS().map((r) => ({ ...r, machine: STUDIO })));
+    renderSessions();
+    await waitFor(() => rowOf(C));
+    expect(machineHeadings()).toEqual([]);
+    expect(listPane().queryByText(/studio/)).toBeNull();
+    expect(group('agent-router')).toHaveTextContent('2 sessions');
+  });
+
+  it('SE-C220: a machine with nothing recent still heads its shelf, and rows that name no machine come last, under "Unnamed machine"', async () => {
+    const rows = [session(A, { machine: STUDIO }), session(B, { machine: LAPTOP, archived: true, ...quiet }), session(C, { cwd: '/Users/sample/code/northstar', project: 'northstar' })];
+    hosted(() => rows);
+    renderSessions();
+    await waitFor(() => rowOf(C));
+    expect(machineHeadings()).toEqual(['Laptop', 'studio', 'Unnamed machine']);
+    expect(within(part('Laptop')).getByText('1 archived')).toBeInTheDocument();
+    expect(part('Laptop').contains(rowOf(B))).toBe(true);
+    expect(part('Unnamed machine').contains(rowOf(C))).toBe(true);
+  });
+
+  it('SE-C219, SE-C31: each machine’s older fold opens on its own, and keeps its state across every refresh', async () => {
+    const old = { ...quiet, last_activity_ms: AT - 13 * 3600e3 };
+    const rows = [session(A, { machine: STUDIO }), session('s-old', { machine: STUDIO, ...old }), session(B, { machine: LAPTOP }), session('l-old', { machine: LAPTOP, ...old })];
+    hosted(() => rows);
+    const { client } = renderSessions();
+    const fold = (name: string) => within(part(name)).getByRole('button', { name: '1 older session' });
+    await waitFor(() => fold('studio'));
+    await press(fold('studio'));
+    expect([fold('studio'), fold('Laptop')].map((b) => b.getAttribute('aria-expanded'))).toEqual(['true', 'false']);
+    expect(part('studio').contains(rowOf('s-old'))).toBe(true);
+    expect(document.querySelector('[data-session="l-old"]')).toBeNull();
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ['live', 'sessions'] });
+    });
+    expect([fold('studio'), fold('Laptop')].map((b) => b.getAttribute('aria-expanded'))).toEqual(['true', 'false']);
+  });
+
+  it('SE-C221: the open session names its machine beside its project, as both phones do, and its tabs are its project’s sessions on that machine only', async () => {
+    const rows = [session(A, { machine: STUDIO, created_ms: AT - 7200e3 }), session(B, { machine: STUDIO, created_ms: AT - 3600e3 }), session(C, { machine: LAPTOP, created_ms: AT - 1800e3 })];
+    hosted(() => rows);
+    renderSessions(`/live?session=${A}`);
+    await waitFor(() => streamOf(A));
+    const head = () => document.querySelector('[data-session-head]') as HTMLElement;
+    await waitFor(() => expect(head().querySelector('[data-session-machine]')).toHaveTextContent('on studio'));
+    expect(within(head()).getByRole('heading', { level: 1 })).toHaveTextContent('agent-router');
+    const strip = within(screen.getByRole('navigation', { name: 'This project’s sessions' }));
+    expect(strip.getAllByRole('link').map((t) => t.getAttribute('href'))).toEqual([`/live?session=${A}`, `/live?session=${B}`]);
+  });
+
+  it('SE-C221: a session on a hosted router with one machine still names it, and a local router’s names none', async () => {
+    hosted(() => [session(A, { machine: STUDIO })]);
+    const first = renderSessions(`/live?session=${A}`);
+    await waitFor(() => expect(document.querySelector('[data-session-head] [data-session-machine]')).toHaveTextContent('on studio'));
+    first.unmount();
+    stubRouter();
+    renderSessions(`/live?session=${A}`);
+    await waitFor(() => expect(document.querySelector('[data-session-head] h1')).toHaveTextContent('agent-router'));
+    expect(document.querySelector('[data-session-head] [data-session-machine]')).toBeNull();
+  });
+
+  it('SE-C223: a session whose machine is offline says the router’s sentence in its header, keeps its rows and never reads as ended, and streams again once its machine is back', async () => {
+    const OFFLINE = 'the machine running this session (studio) is offline';
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let offline = false;
+    hosted(
+      () => [session(A, { machine: STUDIO })],
+      (req) => (offline && req.path.startsWith('/api/live/') && req.path !== '/api/live/sessions' ? json({ ok: false, error: OFFLINE }, 503) : undefined),
+    );
+    renderSessions(`/live?session=${A}`);
+    await waitFor(() => streamOf(A));
+    const pill = () => document.querySelector('[data-session-head] [role="status"]') as HTMLElement;
+    act(() => {
+      streamOf(A).open().row({ role: 'assistant', kind: 'text', text: 'Read before the machine went.' }).status(working());
+    });
+    await waitFor(() => expect(pill()).toHaveTextContent('Running Bash · 12s'));
+    // The machine goes: the browser gives the stream up, and the router says why.
+    offline = true;
+    const gone = streamOf(A);
+    act(() => {
+      gone.drop(2);
+    });
+    await waitFor(() => expect(pill()).toHaveTextContent(OFFLINE));
+    expect(pill()).toHaveAttribute('data-stale');
+    expect(screen.queryByRole('button', { name: 'Stop the turn' })).toBeNull();
+    expect(screen.getByText('Read before the machine went.')).toBeInTheDocument();
+    expect(document.querySelector('[data-session-head]')?.textContent).not.toMatch(/ended|reconnecting/);
+    // Asked for again ten seconds on, and the sentence stands while it is.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+    await waitFor(() => expect(streamOf(A)).not.toBe(gone));
+    expect(pill()).toHaveTextContent(OFFLINE);
+    // The machine is back: the first thing its stream says ends the sentence.
+    offline = false;
+    act(() => {
+      streamOf(A).open().row({ role: 'assistant', kind: 'text', text: 'Read before the machine went.' }).status(working());
+    });
+    await waitFor(() => expect(pill()).toHaveTextContent('Running Bash · 12s'));
+    expect(screen.getAllByText('Read before the machine went.')).toHaveLength(1);
   });
 });
 

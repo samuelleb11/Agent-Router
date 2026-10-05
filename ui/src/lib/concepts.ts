@@ -17,6 +17,7 @@ import {
   MachineLearningModel,
   Meter,
   Return,
+  Screen,
   Search,
   Settings,
   Terminal,
@@ -113,6 +114,9 @@ export const CONCEPTS = {
   settings: look('settings', Settings, 'Settings', '--ar-tok'),
   /// Requests waiting for their transcript (OV-C6): not a failure, so never the error triangle.
   unattributed: look('not yet attributed', Hourglass, 'Hourglass', '--ar-tok'),
+  /// The machine a hosted router heard a session from (SE-C219, SE-C221): a computer, as both
+  /// phones draw it.
+  machine: look('machine', Screen, 'Screen', '--ar-tok'),
 } as const satisfies Record<string, ConceptLook>;
 
 export type Concept = keyof typeof CONCEPTS;

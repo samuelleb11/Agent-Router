@@ -211,6 +211,8 @@ export function isCurrent(r: SessionRow, now: number): boolean {
   return isLive(r) || r.state === 'working' || r.state === 'ask' || (q != null && q <= OLDER_MS);
 }
 
+/// The last segment of a path, split on "/" and "\" alike: a hosted router lists Windows machines'
+/// sessions, whose `cwd` is `C:\…` (SE-C222).
 const lastSegment = (p: string | null | undefined): string => (p ?? '').split(/[\\/]/).filter(Boolean).pop() ?? '';
 
 /// A session's project: the last segment of its `cwd`, else the router's `project` (SE-C23).
@@ -218,18 +220,11 @@ export function projectOf(r: Pick<SessionRow, 'cwd' | 'project'>): string {
   return lastSegment(r.cwd) || r.project || DASH;
 }
 
-/// Whether the rows come from more than one machine, which a hosted router's list can: each row
-/// then names its machine, and one path on two machines is two projects, not one.
-export function severalMachines(rows: readonly SessionRow[]): boolean {
-  return new Set(rows.map((r) => r.machine?.label).filter(Boolean)).size > 1;
-}
-
-const machineOf = (r: SessionRow, several: boolean): string | null => (several && r.machine?.label ? r.machine.label : null);
-
-/// The group a row belongs to: its project, and its machine when there are several.
-export function groupKey(r: SessionRow, several: boolean): string {
-  const machine = machineOf(r, several);
-  return machine ? `${projectOf(r)} · ${machine}` : projectOf(r);
+/// The machine a hosted router heard a session from, by its label, trimmed; null when the row names
+/// none, as a local router's never does, or names it with a blank label (SE-C220).
+export function machineOf(r: Pick<SessionRow, 'machine'>): string | null {
+  const label = r.machine?.label;
+  return typeof label === 'string' && label.trim() ? label.trim() : null;
 }
 
 export interface RowView {
@@ -256,11 +251,11 @@ export interface RowView {
 
 const ageOf = (q: number | null): string => (q == null ? DASH : span(q));
 
-/// One row of the list.
-export function rowView(r: SessionRow, now: number, several = false): RowView {
+/// One row of the list. It never names its machine: on a hosted router listing several, the
+/// machine's heading over the row does (SE-C219).
+export function rowView(r: SessionRow, now: number): RowView {
   const tone = toneOf(r);
   const id = String(r.session_id ?? '');
-  const machine = machineOf(r, several);
   const line = doing(r);
   return {
     id,
@@ -273,7 +268,7 @@ export function rowView(r: SessionRow, now: number, several = false): RowView {
     title: r.title || null,
     line: line || null,
     lineTone: tone === 'attention' || tone === 'warn' || tone === 'error' ? tone : null,
-    meta: [id8(id), r.git_branch, machine ? `on ${machine}` : null].filter(Boolean).join(' · '),
+    meta: [id8(id), r.git_branch].filter(Boolean).join(' · '),
     archived: !!r.archived,
     row: r,
   };
@@ -298,10 +293,10 @@ export interface ListView {
 
 const newestFirst = (a: SessionRow, b: SessionRow) => (b.last_activity_ms ?? 0) - (a.last_activity_ms ?? 0);
 
-function groupInto(rows: readonly SessionRow[], now: number, several: boolean): GroupView[] {
+function groupInto(rows: readonly SessionRow[], now: number): GroupView[] {
   const by = new Map<string, SessionRow[]>();
   for (const r of rows) {
-    const k = groupKey(r, several);
+    const k = projectOf(r);
     by.set(k, [...(by.get(k) ?? []), r]);
   }
   // Projects alphabetically, so a project keeps its place instead of jumping to the top whenever
@@ -319,16 +314,17 @@ function groupInto(rows: readonly SessionRow[], now: number, several: boolean): 
         label: tone ? TONE_WORDS[tone] : 'idle',
         count: items.length,
         age: ageOf(quiet.length ? Math.min(...quiet) : null),
-        rows: items.map((r) => rowView(r, now, several)),
+        rows: items.map((r) => rowView(r, now)),
       };
     });
 }
 
-/// The list: recent sessions by project; an "older" group of sessions quiet for more than twelve
-/// hours, which a live session never joins (SE-C29, SE-C30); and the archived shelf, flat and
-/// newest first, holding exactly what the router marks archived (SE-C32, SE-C33).
+/// The list as one machine's sessions make it: recent sessions by project; an "older" group of
+/// sessions quiet for more than twelve hours, which a live session never joins (SE-C29, SE-C30);
+/// and the archived shelf, flat and newest first, holding exactly what the router marks archived
+/// (SE-C32, SE-C33). A hosted router's list from several machines is this, a machine at a time
+/// (`byMachine`).
 export function listView(rows: readonly SessionRow[], now: number): ListView {
-  const several = severalMachines(rows);
   const shelved = rows.filter((r) => r.archived);
   const rest = rows.filter((r) => !r.archived);
   const isOlder = (r: SessionRow) => {
@@ -340,11 +336,46 @@ export function listView(rows: readonly SessionRow[], now: number): ListView {
     recent: groupInto(
       rest.filter((r) => !isOlder(r)),
       now,
-      several,
     ),
-    older: older.length ? { label: `${older.length} older session${older.length > 1 ? 's' : ''}`, count: older.length, groups: groupInto(older, now, several) } : null,
-    shelf: shelved.length ? { label: `${shelved.length} archived`, rows: [...shelved].sort(newestFirst).map((r) => rowView(r, now, several)) } : null,
+    older: older.length ? { label: `${older.length} older session${older.length > 1 ? 's' : ''}`, count: older.length, groups: groupInto(older, now) } : null,
+    shelf: shelved.length ? { label: `${shelved.length} archived`, rows: [...shelved].sort(newestFirst).map((r) => rowView(r, now)) } : null,
   };
+}
+
+/// The heading over the rows that name no machine, beside machines that are named: the phones'
+/// words (SE-C220).
+export const UNNAMED_MACHINE = 'Unnamed machine';
+
+/// One machine's part of the list: its sessions, arranged exactly as a whole list is.
+export interface MachineView extends ListView {
+  /// Which part it is, for a key and for its own fold: `machine:<label>`, `unnamed`, or empty for
+  /// the one part of a list that names no machine.
+  readonly key: string;
+  /// The machine's label; null for the rows that name none.
+  readonly machine: string | null;
+  /// The heading drawn over the part: the machine's label, or "Unnamed machine" for the rows that
+  /// name none beside machines that are named. Null when the list is not headed per machine at all.
+  readonly heading: string | null;
+}
+
+/// Machines by label, alphabetically with case aside, so a machine keeps its place as its sessions
+/// move; two labels that differ only in case stay two machines, the capitalised one first, as the
+/// iPhone orders them (SE-C220).
+const machineOrder = (a: string, b: string): number => a.localeCompare(b, undefined, { sensitivity: 'accent' }) || (a < b ? -1 : a > b ? 1 : 0);
+
+/// The list a machine at a time, as both phones' `SessionGroups.byMachine` arrange it. A hosted
+/// router that lists sessions from more than one machine heads each machine, alphabetically, with
+/// that machine's own projects, older fold and shelf beneath it, so one project on two machines is
+/// two projects; rows that name no machine, beside machines that do, come last under a heading of
+/// their own (SE-C219, SE-C220). With one machine or none — a local router names none — it is one
+/// part with no heading, the whole list exactly as `listView` arranges it.
+export function byMachine(rows: readonly SessionRow[], now: number): MachineView[] {
+  const labels = [...new Set(rows.map(machineOf).filter((m): m is string => m !== null))];
+  if (labels.length <= 1) return [{ key: '', machine: null, heading: null, ...listView(rows, now) }];
+  const parts: MachineView[] = labels.sort(machineOrder).map((m) => ({ key: `machine:${m}`, machine: m, heading: m, ...listView(rows.filter((r) => machineOf(r) === m), now) }));
+  const unnamed = rows.filter((r) => machineOf(r) === null);
+  if (unnamed.length) parts.push({ key: 'unnamed', machine: null, heading: UNNAMED_MACHINE, ...listView(unnamed, now) });
+  return parts;
 }
 
 /// The header's pip and words. `stale` is the neutral, italic pip of a stream that does not vouch
@@ -422,17 +453,18 @@ export interface TabView {
 
 const createdAt = (r: SessionRow): number => r.created_ms || r.last_activity_ms || 0;
 
-/// The strip over an open session: its project's sessions — the open one, always, and every
-/// sibling that is current and not archived (SE-C44, SE-C45, SE-C48) — oldest first by creation,
-/// so a tab keeps its place (SE-C46), and no strip at all for fewer than two (SE-C47). The open
-/// tab says what its stream says while the stream vouches for anything (`vouched`), and its list
-/// row otherwise; every other tab is its list row (SE-C51).
+/// The strip over an open session: its project's sessions on its machine — the open one, always,
+/// and every sibling that is current and not archived (SE-C44, SE-C45, SE-C48) — oldest first by
+/// creation, so a tab keeps its place (SE-C46), and no strip at all for fewer than two (SE-C47).
+/// The same project on another machine is another project, as both phones' tabs have it (SE-C221).
+/// The open tab says what its stream says while the stream vouches for anything (`vouched`), and
+/// its list row otherwise; every other tab is its list row (SE-C51).
 export function tabsFor(open: SessionRow, rows: readonly SessionRow[], vouched: Status | null, now: number): TabView[] {
   const listed = rows.some((x) => x.session_id === open.session_id) ? rows : [open, ...rows];
-  const several = severalMachines(listed);
-  const key = groupKey(open, several);
+  const project = projectOf(open);
+  const machine = machineOf(open);
   const siblings = listed
-    .filter((x) => groupKey(x, several) === key)
+    .filter((x) => projectOf(x) === project && machineOf(x) === machine)
     .filter((x) => x.session_id === open.session_id || (isCurrent(x, now) && !x.archived))
     .sort((a, b) => createdAt(a) - createdAt(b));
   if (siblings.length < 2) return [];
@@ -451,8 +483,9 @@ export function tabsFor(open: SessionRow, rows: readonly SessionRow[], vouched: 
 export const SILENCE_MS = 10_000;
 
 /// Where the open session's stream stands. `connecting` until its first status, `live` while a
-/// status stands, `reconnecting` after an error or a silence, and `refused` once the router has
-/// said it will not stream this session, which is never retried (SE-C59, SE-C60).
+/// status stands, `reconnecting` after an error or a silence — or while a hosted router answers
+/// this session with an error status, which is retried (SE-C223, SE-C224) — and `refused` once the
+/// router has said it will not stream this session, which is never retried (SE-C59, SE-C60).
 export type Phase = 'connecting' | 'live' | 'reconnecting' | 'refused';
 
 /// One feed row as the stream delivers it (src/live.rs).
@@ -488,6 +521,12 @@ export interface Feed {
   readonly phase: Phase;
   readonly status: Status | null;
   readonly refusal: string | null;
+  /// Why a hosted router answers this session with an error status for now, in its words: its 503
+  /// "the machine running this session (<label>) is offline", which comes back later and never
+  /// means the session ended (SE-C223); its 404 when no machine holds the session, or its 502 when
+  /// the relay failed (SE-C224). Said in the header while the stream is asked for again, and gone
+  /// with the first thing a connection delivers.
+  readonly unavailable: string | null;
   readonly entries: readonly FeedEntry[];
   /// What the person has already said in this session, newest last: ArrowUp's history (SE-C155).
   readonly sent: readonly string[];
@@ -497,14 +536,15 @@ export interface Feed {
 
 /// A session opened: its first connection, with nothing on screen yet (SE-C194).
 export function openFeed(now: number): Feed {
-  return { connection: 1, heard: now, fresh: false, phase: 'connecting', status: null, refusal: null, entries: [], sent: [], cue: null };
+  return { connection: 1, heard: now, fresh: false, phase: 'connecting', status: null, refusal: null, unavailable: null, entries: [], sent: [], cue: null };
 }
 
-/// The connection spoke: note when, and start a new copy of the feed if it is a fresh one. Null
-/// when it is not the connection being listened to.
+/// The connection spoke: note when, and start a new copy of the feed if it is a fresh one. A
+/// session its hosted router answered with an error status streams again, so nothing stands in
+/// the way of it any more (SE-C223). Null when it is not the connection being listened to.
 function speaks(feed: Feed, connection: number, now: number): Feed | null {
   if (connection !== feed.connection || feed.phase === 'refused') return null;
-  return feed.fresh ? { ...feed, heard: now, fresh: false, entries: [], sent: [] } : { ...feed, heard: now };
+  return feed.fresh ? { ...feed, heard: now, fresh: false, unavailable: null, entries: [], sent: [] } : { ...feed, heard: now, unavailable: null };
 }
 
 const HISTORY = 200;
@@ -563,6 +603,17 @@ export function feedRefused(feed: Feed, connection: number, reason: string): Fee
   return { ...feed, phase: 'refused', status: null, refusal: reason || 'The router will not stream this session.' };
 }
 
+/// A hosted router answered this session's stream with an error status, in these words: its 503
+/// for a machine that is offline, its 404 for a session no machine holds, its 502 for a relay that
+/// failed. Not the session ending, and not the caller refused: the header says the words in place
+/// of "reconnecting…", the rows read so far stay, and the stream is asked for again as after a
+/// drop (SE-C223, SE-C224). The same words again change nothing.
+export function feedUnavailable(feed: Feed, connection: number, words: string): Feed {
+  if (connection !== feed.connection || feed.phase === 'refused' || !words) return feed;
+  if (feed.phase === 'reconnecting' && feed.status === null && feed.unavailable === words) return feed;
+  return { ...feed, fresh: true, phase: 'reconnecting', status: null, unavailable: words };
+}
+
 /// The watchdog, run every second while a session is open. Every row and every status starts the
 /// ten seconds again, and each connection gets ten seconds of its own from when it opens (SE-C67).
 /// A clock set back never reads as a silence that has not begun: silence is measured from no later
@@ -600,14 +651,15 @@ export const vouched = (feed: Feed | null): Status | null => (feed?.phase === 'l
 
 /// The header of an open session: "connecting…" until the first status (SE-C61), the status while
 /// it stands (SE-C62), "reconnecting…" once the connection errs or falls silent (SE-C64, SE-C66),
-/// the router's words once it refuses (SE-C59). Stop only while it vouches for a stoppable status
-/// (SE-C157).
+/// or, while a hosted router answers the session with an error status, its words — "the machine
+/// running this session (mini) is offline" (SE-C223, SE-C224) — and the router's words once it
+/// refuses (SE-C59). Stop only while it vouches for a stoppable status (SE-C157).
 export function feedHeader(feed: Feed): Pip {
   switch (feed.phase) {
     case 'connecting':
       return { tone: 'stale', text: 'connecting…', stop: false };
     case 'reconnecting':
-      return { tone: 'stale', text: 'reconnecting…', stop: false };
+      return { tone: 'stale', text: feed.unavailable ?? 'reconnecting…', stop: false };
     case 'refused':
       return { tone: 'stale', text: feed.refusal ?? 'The router will not stream this session.', stop: false };
     case 'live': {

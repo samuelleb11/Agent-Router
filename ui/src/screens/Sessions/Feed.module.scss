@@ -276,9 +276,17 @@ $ar-rail: 0.125rem;
   margin: $spacing-04 0 $spacing-02;
 }
 
+/// A list's words are the prose's size: Carbon's list sets its own, smaller one.
 .list {
+  @include type-style('body-02');
   margin: $spacing-03 0;
   padding-inline-start: $spacing-05;
+}
+
+/// A numbered list's numbers hang in its own padding, where Carbon puts them (1.5rem before each
+/// item), and its words line up with a bulleted list's (SE-C99).
+.list.ordered {
+  padding-inline-start: $spacing-07;
 }
 
 .quote {

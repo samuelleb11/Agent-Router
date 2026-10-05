@@ -13,12 +13,28 @@
 //   for by name (SE-C58);
 // - the router's own `error` event, and a caller it refuses, are said and never retried (SE-C59,
 //   SE-C60); the page took both for a dropped link and retried them every ten seconds for good;
+// - a hosted router answering the session with an error status — its machine offline, held by no
+//   machine, or a relay that failed — is said in its words and retried, never read as a session
+//   that ended (SE-C223, SE-C224);
 // - React StrictMode mounts, unmounts and mounts again: the stream opens a tick after the mount
 //   that keeps it, so the double mount opens one stream, not two.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { streamRefusal, streamUrl } from '~/data/live';
-import { feedAside, feedEcho, feedError, feedHeader, feedMessage, feedRefused, feedStatus, feedTick, openFeed, type Feed, type Pip } from '~/model/session';
+import { streamRefusal, streamUrl, type StreamRefusal } from '~/data/live';
+import {
+  feedAside,
+  feedEcho,
+  feedError,
+  feedHeader,
+  feedMessage,
+  feedRefused,
+  feedStatus,
+  feedTick,
+  feedUnavailable,
+  openFeed,
+  type Feed,
+  type Pip,
+} from '~/model/session';
 
 /// Every event the router sends on a session's stream (src/live.rs, `stream`): an unnamed one is a
 /// feed row (`message`), `status` is what the session is doing, and `error` is either the router
@@ -37,8 +53,10 @@ export interface StreamOptions {
   /// The clock the silence is measured on; this machine's, which is all a silence can be told by.
   readonly now?: () => number;
   /// Asked once the browser has given a stream up: the router's words when it refuses the caller
-  /// (a 401), else null, and the watchdog reconnects (SE-C60, SE-C65).
-  readonly refusal?: (session: string, signal: AbortSignal) => Promise<string | null>;
+  /// (a 401), which ends the retrying (SE-C60), or when it answers the session with an error
+  /// status, which is said while the watchdog reconnects (SE-C223, SE-C224); null when it says
+  /// neither, and the watchdog reconnects (SE-C65).
+  readonly refusal?: (session: string, signal: AbortSignal) => Promise<StreamRefusal | null>;
 }
 
 export interface SessionStream {
@@ -120,16 +138,18 @@ export function useSessionStream(session: string | null, options: StreamOptions 
           return;
         }
         // CONNECTING: the browser is retrying by itself. CLOSED: it gave up, and the watchdog
-        // reconnects in its own time — unless the router refuses the caller, which is asked.
+        // reconnects in its own time — unless the router refuses the caller, which is asked, and
+        // which ends it. A session the router answers with an error status is said, and the
+        // watchdog goes on reconnecting: a machine that is offline comes back.
         update(session, (f) => feedError(f, connection));
         if (es.readyState !== CLOSED) return;
         const asked = new AbortController();
         probe = asked;
         asking(session, asked.signal).then(
-          (words) => {
-            if (words === null || asked.signal.aborted || !current()) return;
+          (said) => {
+            if (said === null || asked.signal.aborted || !current()) return;
             es.close();
-            update(session, (f) => feedRefused(f, connection, words));
+            update(session, (f) => (said.kind === 'refused' ? feedRefused(f, connection, said.words) : feedUnavailable(f, connection, said.words)));
           },
           () => {},
         );

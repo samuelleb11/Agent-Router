@@ -448,7 +448,12 @@ and after that a call is `stat`s and the appended bytes, 1.6–4.7 ms on release
 
 The router decides what a session is doing; how it looks is the clients' — the web page,
 the iPhone and Android apps. They drifted apart once already, so this is the one policy all
-three follow. The web page's behaviour is the reference.
+three follow. The web page's behaviour is the reference, with three exceptions where the
+phones were right and the web console that replaced the page (2026-10-05) follows them:
+numbered Markdown lists are numbered, 1., 2., 3. and again from 1 after a blank line; a
+hosted router's sessions are headed per machine, each with its own projects, older fold and
+shelf; and model names and bucket sizes are spelled the phones' way. The cases all three
+must agree on are pinned in `fixtures/live/`.
 
 - **Row line** under every session: the router's `detail` plus the time elapsed since
   `since_ms`, measured against `as_of_ms` — never the device's clock — for every activity,

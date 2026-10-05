@@ -15,7 +15,7 @@ import { liveKeys, postLive, readHosted, readSessions, readShim, type Outcome } 
 import { refusalText } from '~/lib/errors';
 import { POLL_MS, since } from '~/lib/freshness';
 import type { FindHit, FindScope, SearchHit } from '~/model/search';
-import { OFF_MACHINE, header, hitTarget, listView, notice, wrapperWarning, type Notice, type SessionRow } from '~/model/session';
+import { OFF_MACHINE, byMachine, header, hitTarget, notice, wrapperWarning, type Notice, type SessionRow } from '~/model/session';
 import { Find } from './Find';
 import { KeepContext } from './keep';
 import { List, type RowActions } from './List';
@@ -64,7 +64,8 @@ export default function Sessions() {
   const shim = useQuery({ queryKey: liveKeys.shim, queryFn: ({ signal }) => readShim(signal), enabled: hostedRead.data === false, refetchInterval: 30_000, retry: false, staleTime: 0 });
 
   const rows = useMemo(() => list.value ?? [], [list.value]);
-  const shown = useMemo(() => listView(rows, Date.now()), [rows]);
+  // A machine at a time when a hosted router lists more than one, else the one list (SE-C219).
+  const shown = useMemo(() => byMachine(rows, Date.now()), [rows]);
   // The last row each session was listed with: an open session keeps its tab and its facts when a
   // later read no longer lists it (SE-C45).
   const known = useRef(new Map<string, SessionRow>());
@@ -253,7 +254,7 @@ export default function Sessions() {
                 <p className={styles.muted}>Reading the sessions…</p>
               )
             ) : (
-              <List view={shown} hosted={hosted} wrapperWarning={wrapperWarning(shim.data, hosted)} actions={actions} />
+              <List machines={shown} hosted={hosted} wrapperWarning={wrapperWarning(shim.data, hosted)} actions={actions} level={listPrimary ? 2 : 3} />
             )}
           </div>
         </section>

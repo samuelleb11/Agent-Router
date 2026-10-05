@@ -4,8 +4,10 @@
 // here to get wrong, because nothing here is ever HTML.
 //
 // The rules are the web's (decision F in docs/web-console-carbon.md), as
-// docs/web-console-contracts.md writes them down in SE-C90 to SE-C104. Where the page broke its own
-// rule, the rule is kept:
+// docs/web-console-contracts.md writes them down in SE-C90 to SE-C104, but for lists, which follow
+// the phones, as decided on 2026-10-05: bullets and numbers are never one list, and a numbered list
+// is drawn numbered, counting from 1 whatever numbers its source wrote (SE-C99). Where the page broke
+// its own rule, the rule is kept:
 // - inline code is verbatim, so `**x**` between backticks is not bold and a link there is not a
 //   link (SE-C95), because inline code is cut out before emphasis and links are read;
 // - a `* ` list marker is never read as emphasis (SE-C97), because a line's block is decided
@@ -28,8 +30,9 @@ export type Block =
   /// `#` renders at the third heading level, `##` the fourth, `###` the fifth and anything deeper
   /// the sixth, so a heading inside a message sits under the screen's own (SE-C98).
   | { readonly type: 'heading'; readonly level: 3 | 4 | 5 | 6; readonly children: readonly Inline[] }
-  /// Bullets and numbers alike, one flat list: nothing nests, and a number is not kept (SE-C99).
-  | { readonly type: 'list'; readonly items: readonly (readonly Inline[])[] }
+  /// One flat list of one kind, nothing nesting: bullets, or, `ordered`, numbers, which are drawn
+  /// counting 1., 2., 3. from the list's first item, never the source's own numbers (SE-C99).
+  | { readonly type: 'list'; readonly ordered: boolean; readonly items: readonly (readonly Inline[])[] }
   | { readonly type: 'quote'; readonly children: readonly Inline[] }
   | { readonly type: 'table'; readonly head: readonly (readonly Inline[])[]; readonly rows: readonly (readonly (readonly Inline[])[])[] }
   /// Verbatim: nothing inside a fence is read as Markdown (SE-C93).
@@ -82,10 +85,10 @@ const cells = (line: string): Inline[][] =>
 /// blank lines add nothing (SE-C103).
 function prose(src: string, out: Block[]): void {
   if (!src) return;
-  let list: Inline[][] | null = null;
+  let list: { ordered: boolean; items: Inline[][] } | null = null;
   let table: { head: Inline[][]; rows: Inline[][][] } | null = null;
   const flushList = () => {
-    if (list) out.push({ type: 'list', items: list });
+    if (list) out.push({ type: 'list', ordered: list.ordered, items: list.items });
     list = null;
   };
   const flushTable = () => {
@@ -109,9 +112,15 @@ function prose(src: string, out: Block[]): void {
       }
       flushTable();
     }
-    const item = BULLET.exec(line) ?? NUMBERED.exec(line);
+    // A bullet is read first, as the phones read it, so "- 1. x" is a bullet whose text is "1. x".
+    const bullet = BULLET.exec(line);
+    const item = bullet ?? NUMBERED.exec(line);
     if (item) {
-      (list ??= []).push(inline(item[1] ?? ''));
+      // Where the kind changes, the list ends and another starts: "- one", "2. two", "* three" is a
+      // bulleted list, a numbered list of one and another bulleted list (SE-C99).
+      const ordered = !bullet;
+      if (list && list.ordered !== ordered) flushList();
+      (list ??= { ordered, items: [] }).items.push(inline(item[1] ?? ''));
       continue;
     }
     flushList();

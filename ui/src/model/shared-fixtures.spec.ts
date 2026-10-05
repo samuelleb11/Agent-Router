@@ -1,8 +1,10 @@
 // @vitest-environment node
 // New for agent-router: the fixtures the web console and both phones share, fixtures/live/, checked
 // against the web's own model. The web is the reference for both phones (docs/session-liveness.md,
-// "Client presentation policy"; decision F in docs/web-console-carbon.md), and each phone reads the
-// same two files — markdown-blocks.json and session-groups.json — through an adapter of its own:
+// "Client presentation policy"; decision F in docs/web-console-carbon.md), but where the three
+// clients were decided in the phones' favour — numbered lists, and a hosted router's sessions headed
+// per machine, both on 2026-10-05 — the web's model follows the phones. Each phone reads the same
+// two files — markdown-blocks.json and session-groups.json — through an adapter of its own:
 // ios/AgentRouter/Tests/SharedFixtureTests.swift and
 // android/app/src/test/java/ca/whnet/agentrouter/SharedFixtureTest.kt.
 //
@@ -10,13 +12,13 @@
 // name, input and `pending`, so the web cannot drift from its own fixtures. After adding or editing
 // a case, from ui/:
 //   UPDATE_SHARED_FIXTURES=1 pnpm exec vitest run src/model/shared-fixtures.spec.ts
-// A `pending` case is one where a phone would lose information by matching the web: every suite
-// skips it, by name, until it is decided.
+// A `pending` case is one the clients disagree on, where a phone would lose information by matching
+// the web: every suite skips it, by name, until it is decided.
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { md, type Block, type Inline } from './markdown';
-import { listView, type GroupView, type SessionRow } from './session';
+import { byMachine, type GroupView, type ListView, type SessionRow } from './session';
 
 const DIR = join(__dirname, '..', '..', '..', 'fixtures', 'live');
 const MARKDOWN = join(DIR, 'markdown-blocks.json');
@@ -49,11 +51,21 @@ interface Group {
   sessions: string[];
 }
 
-interface Groups {
+/// One list as one machine's sessions make it: recent projects, the older fold and the shelf.
+interface Part {
   recent: Group[];
   older: Group[];
   archived: string[];
 }
+
+/// One machine's part of a list headed per machine: its label, null for the rows that name none.
+interface MachinePart extends Part {
+  machine: string | null;
+}
+
+/// A list with no machine heading is one part; a hosted router's list from several machines is a
+/// part per machine, in the order they are headed.
+type Groups = Part | { machines: MachinePart[] };
 
 interface Case<I, E> {
   name: string;
@@ -120,8 +132,8 @@ function runs(xs: readonly Inline[]): Run[] {
   return out;
 }
 
-/// The model's blocks in the canonical shape. The web draws every list bulleted, its numbers
-/// dropped (SE-C99), and drops a fence's language tag (SE-C93).
+/// The model's blocks in the canonical shape. A numbered list is ordered, counting from 1 whatever
+/// its source's numbers (SE-C99), and a fence's language tag is dropped (SE-C93).
 function blocks(src: string): Canonical[] {
   return md(src).map((b: Block): Canonical => {
     switch (b.type) {
@@ -130,7 +142,7 @@ function blocks(src: string): Canonical[] {
       case 'heading':
         return { type: 'heading', level: b.level, runs: runs(b.children) };
       case 'list':
-        return { type: 'list', ordered: false, items: b.items.map(runs) };
+        return { type: 'list', ordered: b.ordered, items: b.items.map(runs) };
       case 'quote':
         return { type: 'quote', runs: runs(b.children) };
       case 'code':
@@ -141,15 +153,19 @@ function blocks(src: string): Canonical[] {
   });
 }
 
-/// The list as the web groups it: recent projects, the older fold and the archived shelf.
+/// The list as the web groups it: recent projects, the older fold and the archived shelf, a machine
+/// at a time when a hosted router lists sessions from more than one (SE-C219, SE-C220).
 function groups(rows: readonly SessionRow[], now: number): Groups {
-  const view = listView(rows, now);
   const group = (g: GroupView): Group => ({ project: g.key, tone: g.tone, halo: g.halo, sessions: g.rows.map((r) => r.id) });
-  return {
+  const part = (view: ListView): Part => ({
     recent: view.recent.map(group),
     older: view.older?.groups.map(group) ?? [],
     archived: view.shelf?.rows.map((r) => r.id) ?? [],
-  };
+  });
+  const machines = byMachine(rows, now);
+  const [only] = machines;
+  if (machines.length === 1 && only && only.heading === null) return part(only);
+  return { machines: machines.map((m) => ({ machine: m.machine, ...part(m) })) };
 }
 
 // ---------- writing the files ----------
@@ -190,10 +206,19 @@ function writeMarkdown(f: Fixture<MarkdownCase>): void {
   writeFileSync(MARKDOWN, file(f.about, cases));
 }
 
+/// One part, its keys at `indent` and its groups a line each.
+const partOf = (p: Part, indent: string): string =>
+  `"recent": ${list(p.recent, indent)},\n${indent}"older": ${list(p.older, indent)},\n${indent}"archived": ${one(p.archived)}`;
+
 function writeGroups(f: Fixture<GroupsCase>): void {
   const cases = f.cases.map((c) => {
     const g = groups(c.sessions, c.now);
-    const expected = `{\n        "recent": ${list(g.recent, '        ')},\n        "older": ${list(g.older, '        ')},\n        "archived": ${one(g.archived)}\n      }`;
+    const expected =
+      'machines' in g
+        ? `{\n        "machines": [\n${g.machines
+            .map((m) => `          {\n            "machine": ${one(m.machine)},\n            ${partOf(m, '            ')}\n          }`)
+            .join(',\n')}\n        ]\n      }`
+        : `{\n        ${partOf(g, '        ')}\n      }`;
     return caseOf([['name', one(c.name)], ['now', one(c.now)], ['sessions', list(c.sessions, '      ')], pendingOf(c), ['expected', expected]]);
   });
   writeFileSync(GROUPS, file(f.about, cases));

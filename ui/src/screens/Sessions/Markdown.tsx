@@ -2,7 +2,7 @@
 // live view built HTML and escaped it (assets/live.html, `md`); here nothing is ever HTML, so
 // nothing a transcript contains can become markup or an attribute (SE-C90). Northstar's
 // Markdown.tsx is skipped as the plan says, and its rule kept: a React tree, never HTML.
-import { CodeSnippet, Link, ListItem, UnorderedList } from '@carbon/react';
+import { CodeSnippet, Link, ListItem, OrderedList, UnorderedList } from '@carbon/react';
 import type { Block, Inline } from '~/model/markdown';
 import styles from './Feed.module.scss';
 
@@ -71,17 +71,20 @@ function BlockView({ block }: { block: Block }) {
         </H>
       );
     }
-    case 'list':
-      // One flat list, bullets and numbers alike (SE-C99).
-      return (
-        <UnorderedList className={styles.list}>
-          {block.items.map((item, i) => (
-            <ListItem key={i}>
-              <Inlines items={item} />
-            </ListItem>
-          ))}
-        </UnorderedList>
+    case 'list': {
+      // One flat list of one kind (SE-C99). A numbered one is a real ordered list, which counts
+      // 1., 2., 3. from its first item whatever numbers its source wrote, as the phones draw it.
+      const items = block.items.map((item, i) => (
+        <ListItem key={i}>
+          <Inlines items={item} />
+        </ListItem>
+      ));
+      return block.ordered ? (
+        <OrderedList className={`${styles.list} ${styles.ordered}`}>{items}</OrderedList>
+      ) : (
+        <UnorderedList className={styles.list}>{items}</UnorderedList>
       );
+    }
     case 'quote':
       return (
         <blockquote className={styles.quote}>

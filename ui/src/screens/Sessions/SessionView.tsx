@@ -9,9 +9,11 @@ import { ArrowLeft, Search } from '@carbon/icons-react';
 import { useStreamReport } from '~/app/live';
 import { StatusPill } from '~/components/StatusDot';
 import { liveKeys, postLive, readPrompt, type Outcome } from '~/data/live';
+import { CONCEPTS } from '~/lib/concepts';
 import { id8 } from '~/model/format';
 import type { SearchHit } from '~/model/search';
 import {
+  machineOf,
   notice,
   permissionCard,
   projectOf,
@@ -37,6 +39,9 @@ import styles from './Sessions.module.scss';
 
 /// The prompt is asked for every two seconds while the feed is on screen (SE-C120).
 export const PROMPT_MS = 2000;
+
+/// A machine, as the header's tag draws it.
+const MACHINE = CONCEPTS.machine.icon;
 
 /// Within this of the bottom, the reader is following the newest row (SE-C87).
 const FOLLOW_PX = 140;
@@ -214,13 +219,25 @@ export function SessionView({ id, row, rows, covered, arrival, primary, onBack, 
   const said = vouched(feed);
   const announced = said ? said.detail || spoken(said) : header.text;
   const Heading = primary ? 'h1' : 'h2';
+  // The machine the session runs on, beside its project, whenever a hosted router names one, as
+  // both phones' session screens show it (SE-C221).
+  const machine = row ? machineOf(row) : null;
 
   if (covered) return null;
   return (
     <div className={styles.session} data-session-view={id}>
       <header className={styles.paneHead} data-session-head="">
         <Button kind="ghost" size="md" className={styles.back} hasIconOnly renderIcon={ArrowLeft} iconDescription="Back to the list" tooltipPosition="bottom" onClick={onBack} />
-        <Heading className={styles.heading}>{row ? projectOf(row) : id8(id)}</Heading>
+        <div className={styles.title}>
+          <Heading className={styles.heading}>{row ? projectOf(row) : id8(id)}</Heading>
+          {machine && (
+            <span className={styles.machineTag} data-session-machine="">
+              <MACHINE aria-hidden="true" className={styles.machineIcon} />
+              <span className={styles.said}>on </span>
+              <span className={styles.machineName}>{machine}</span>
+            </span>
+          )}
+        </div>
         <StatusPill className={styles.pill} tone={header.tone === 'stale' ? null : header.tone} text={header.text} stale={header.tone === 'stale'} />
         <span className={styles.announce} aria-live="polite">
           {announced}

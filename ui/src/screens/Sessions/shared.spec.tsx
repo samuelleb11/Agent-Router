@@ -5,10 +5,10 @@
 // a style or a row would pass the model's check and fail this one.
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { render } from '@testing-library/react';
+import { render, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { md } from '~/model/markdown';
-import { listView, type SessionRow } from '~/model/session';
+import { byMachine, UNNAMED_MACHINE, type SessionRow } from '~/model/session';
 import { press } from '~/test-utils';
 import { List, type RowActions } from './List';
 import { Markdown } from './Markdown';
@@ -36,11 +36,15 @@ interface Group {
   halo: boolean;
   sessions: string[];
 }
-interface Groups {
+interface Part {
   recent: Group[];
   older: Group[];
   archived: string[];
 }
+interface MachinePart extends Part {
+  machine: string | null;
+}
+type Groups = Part | { machines: MachinePart[] };
 interface Case {
   name: string;
   pending?: string;
@@ -109,10 +113,11 @@ function drawn(container: Element): Canonical[] {
 
 const actions: RowActions = { open: () => {}, archive: () => {}, busy: new Set(), notices: new Map(), dismiss: () => {}, openId: null };
 
-/// The groups the screen drew: each heading's project, tone and halo, and its rows in order.
-function groupsOf(container: Element): Group[] {
-  return [...container.querySelectorAll('.cds--contained-list')]
-    .filter((list) => !list.closest('section'))
+/// The groups a part drew, recent then older: each heading's project, tone and halo, and its rows
+/// in order. The shelf is not a group.
+function groupsOf(part: Element): Group[] {
+  return [...part.querySelectorAll('.cds--contained-list')]
+    .filter((list) => !list.closest('[data-shelf]'))
     .map((list) => {
       const dot = list.querySelector('.cds--contained-list__label [role="img"]');
       return {
@@ -136,15 +141,28 @@ describe('the screen against the shared fixtures', () => {
       unmount();
     }
     for (const c of groups) {
-      const view = listView(c.sessions, c.now);
-      const { container, unmount, getByRole } = render(<List view={view} hosted={false} wrapperWarning={null} actions={actions} />);
-      // The older fold is drawn closed; opened, its groups are drawn as the recent ones are.
-      if (view.older) await press(getByRole('button', { name: view.older.label }));
-      const all = groupsOf(container);
-      const recent = all.slice(0, view.recent.length);
-      const older = all.slice(view.recent.length);
-      const archived = [...container.querySelectorAll('section [data-session]')].map((li) => li.getAttribute('data-session') ?? '');
-      expect({ recent, older, archived }, c.name).toEqual(c.expected);
+      const machines = byMachine(c.sessions, c.now);
+      const { container, unmount } = render(<List machines={machines} hosted={false} wrapperWarning={null} actions={actions} />);
+      // A list headed per machine draws a section for each, under its heading; one that is not
+      // draws its one part straight into the list.
+      const headed = [...container.querySelectorAll<HTMLElement>('section[data-machine]')];
+      const places = headed.length ? headed : [container.firstElementChild as HTMLElement];
+      expect(places.length, c.name).toBe(machines.length);
+      const parts: MachinePart[] = [];
+      for (const [i, place] of places.entries()) {
+        const view = machines[i]!;
+        // The older fold is drawn closed; opened, its groups are drawn as the recent ones are.
+        if (view.older) await press(within(place).getByRole('button', { name: view.older.label }));
+        const all = groupsOf(place);
+        const archived = [...place.querySelectorAll('[data-shelf] [data-session]')].map((li) => li.getAttribute('data-session') ?? '');
+        const heading = place.querySelector(':scope > h2, :scope > h3')?.textContent ?? null;
+        const machine = place.getAttribute('data-machine') || null;
+        // The heading says the machine's label, or "Unnamed machine" over the rows that name none.
+        if (headed.length) expect(heading, c.name).toBe(machine ?? UNNAMED_MACHINE);
+        parts.push({ machine, recent: all.slice(0, view.recent.length), older: all.slice(view.recent.length), archived });
+      }
+      const drew: Groups = headed.length ? { machines: parts } : { recent: parts[0]!.recent, older: parts[0]!.older, archived: parts[0]!.archived };
+      expect(drew, c.name).toEqual(c.expected);
       unmount();
     }
   });

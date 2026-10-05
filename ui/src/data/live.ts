@@ -98,19 +98,33 @@ export const readFind = (params: Readonly<Record<string, string>>, signal?: Abor
 /// Where a session's stream is (SE-C55): its real id, URL-encoded.
 export const streamUrl = (session: string): string => `/api/live/stream?session=${enc(session)}`;
 
-/// Whether the router refuses the caller, asked once the browser has given a stream up (SE-C60,
-/// SE-C65). `EventSource` reports no status, so the question goes to the same session's prompt,
-/// a finite read behind the same guard: the guard refuses a caller without the password on every
-/// route alike, with a 401 and its own words. The stream's own address cannot be asked through
+/// What the router says of a stream the browser has given up on, in its words: `refused`, it
+/// refuses the caller, which no retry changes (SE-C60); `unavailable`, it answers this session
+/// with an error status, as a hosted router does while the session's machine is offline (503),
+/// when no machine holds the session (404) or when the relay failed (502), which is said and
+/// retried (SE-C223, SE-C224).
+export interface StreamRefusal {
+  readonly kind: 'refused' | 'unavailable';
+  readonly words: string;
+}
+
+/// Why the router will not stream a session, asked once the browser has given its stream up
+/// (SE-C60, SE-C65). `EventSource` reports no status, so the question goes to the same session's
+/// prompt, a finite read behind the same guard and routed as the stream is: the guard refuses a
+/// caller without the password on every route alike, with a 401 and its own words, and a hosted
+/// router relays every per-session route to the machine holding the session, and answers each
+/// with the same 503, 404 or 502 when it cannot. The stream's own address cannot be asked through
 /// the fetch layer, whose timeout ends when the headers arrive, so a stream that is there after
-/// all would be read for ever. Null when the router does not refuse the caller.
-export async function streamRefusal(session: string, signal?: AbortSignal): Promise<string | null> {
+/// all would be read for ever. Null when the prompt answers, or no answer came: the watchdog then
+/// reconnects in its own time.
+export async function streamRefusal(session: string, signal?: AbortSignal): Promise<StreamRefusal | null> {
   try {
     await readPrompt(session, signal);
     return null;
   } catch (err) {
-    if (err instanceof Refused && (err.status === 401 || err.status === 403)) return err.message || 'The router refused this stream: a password is needed.';
-    return null;
+    if (!(err instanceof Refused) || err.status < 400) return null;
+    if (err.status === 401 || err.status === 403) return { kind: 'refused', words: err.message || 'The router refused this stream: a password is needed.' };
+    return { kind: 'unavailable', words: err.message };
   }
 }
 

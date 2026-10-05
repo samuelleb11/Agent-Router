@@ -49,6 +49,9 @@
 @use '@carbon/react/scss/components/pagination';
 @use '@carbon/react/scss/components/structured-list';
 @use '@carbon/react/scss/components/contained-list';
+// UnorderedList and OrderedList, in a transcript's Markdown: the reset above takes every list's
+// markers away, and this partial draws a bullet's dash and a numbered list's 1., 2., 3. (SE-C99).
+@use '@carbon/react/scss/components/list';
 @use '@carbon/react/scss/components/breadcrumb';
 @use '@carbon/react/scss/components/tabs';
 @use '@carbon/react/scss/components/accordion';

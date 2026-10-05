@@ -5,8 +5,10 @@
 // run with its contract's id and its words. Whatever a spec can assert, a spec does: jsdom lays
 // nothing out, and these are what it cannot see.
 //
-// The shot is of the list. Each check then opens the fixture harness's showcase session
-// (harness/sessions.ts), whose feed holds every kind of row, and looks at it.
+// The shot is of the list. The first check looks at the list as it was shot; each after it opens
+// the fixture harness's showcase session (harness/sessions.ts), whose feed holds every kind of row,
+// and looks at it. Shot as `/live?router=hosted`, the harness stands for a hosted router whose
+// sessions come from several machines, so the list is headed per machine.
 
 /// The session whose stream replays every kind of row (harness/sessions.ts, SHOWCASE).
 const SHOWCASE = '7f3a9c2e-5b1d-4e8a-9c3f-0a1b2c3d4e5f';
@@ -68,7 +70,44 @@ const check = (id, says, at, body) => ({
   })()`,
 });
 
+/// A check of the list as it was shot, before any check opens a session.
+const listCheck = (id, says, at, body) => ({
+  id,
+  says,
+  at,
+  expression: `(async () => {
+    ${PRELUDE}
+    ${body}
+  })()`,
+});
+
 const CHECKS = [
+  listCheck(
+    'SE-C225',
+    'a machine’s heading spans the list, its label cut short with an ellipsis rather than widening it, and nothing scrolls sideways; a list with one machine or none has no machine heading',
+    'both',
+    `
+    const hosted = window.__harness?.router === 'hosted';
+    // Shot with a session open at a phone's width, the list is behind it: back to the list first.
+    if (!shown(document.querySelector('[data-pane="list"]'))) {
+      const named = (b) => b.getAttribute('aria-label') === 'Back to the list' || (b.getAttribute('aria-labelledby') ?? '').split(' ').some((id) => document.getElementById(id)?.textContent?.trim() === 'Back to the list');
+      [...document.querySelectorAll('[data-session-head] button')].find(named)?.click();
+      if (!(await until(() => shown(document.querySelector('[data-pane="list"]'))))) return { ok: false, detail: 'the list is not on screen, and Back did not bring it' };
+      await frame();
+    }
+    const list = document.querySelector('[data-pane="list"]');
+    const heads = [...list.querySelectorAll('section[data-machine] > h2, section[data-machine] > h3')];
+    const by = sideways();
+    if (!hosted) return { ok: heads.length === 0 && by <= 0, detail: heads.length + ' machine headings on a local router; sideways by ' + by + ' px' };
+    const pane = list.getBoundingClientRect();
+    const outside = heads.filter((h) => { const r = h.getBoundingClientRect(); return !shown(h) || r.left < pane.left - 0.5 || r.right > pane.right + 0.5; }).map(name);
+    const labels = heads.map((h) => h.querySelector(':scope > span') ?? h);
+    const cut = labels.filter((l) => l.scrollWidth > l.clientWidth + 1);
+    const ellipsised = cut.every((l) => { const cs = getComputedStyle(l); return cs.textOverflow === 'ellipsis' && cs.whiteSpace === 'nowrap' && cs.overflowX === 'hidden'; });
+    const ok = heads.length >= 2 && outside.length === 0 && cut.length >= 1 && ellipsised && by <= 0;
+    return { ok, detail: heads.length + ' machine headings (' + heads.map((h) => h.textContent.trim().slice(0, 20)).join(', ') + '); ' + cut.length + ' cut short' + (ellipsised ? '' : ', not with an ellipsis') + (outside.length ? '; not within the list: ' + outside.join('; ') : '') + '; sideways by ' + by + ' px' };
+  `,
+  ),
   check(
     'SE-C89',
     'nothing in the feed widens it: transcripts, output, paths and links wrap, and only a command line, a fence or a table scrolls, inside its own box',
@@ -203,6 +242,23 @@ const CHECKS = [
     const scrolls = cmd.scrollWidth > cmd.clientWidth || innerWidth >= 1056;
     const ok = c.whiteSpace === 'pre' && scrolls && o.whiteSpace === 'pre-wrap' && o.overflowWrap === 'anywhere';
     return { ok, detail: 'command: ' + c.whiteSpace + ', ' + cmd.scrollWidth + ' in ' + cmd.clientWidth + ' px; output: ' + o.whiteSpace + ', ' + o.overflowWrap };
+  `,
+  ),
+  check(
+    'SE-C99',
+    'a numbered list is drawn numbered by the list itself, from 1, its numbers inside the column, and a bulleted list with its dash',
+    'both',
+    `
+    const ol = view().querySelector('[data-entry] ol');
+    const ul = view().querySelector('[data-entry] ul');
+    if (!ol || !ul) return { ok: false, detail: 'no numbered and bulleted list side by side in the showcase feed' };
+    const item = ol.querySelector(':scope > li');
+    const number = getComputedStyle(item, '::before').content;
+    const dash = getComputedStyle(ul.querySelector(':scope > li'), '::before').content;
+    const room = item.getBoundingClientRect().left - ol.getBoundingClientRect().left;
+    const counted = /counter\\(item\\)/.test(number) && /\\bitem\\b/.test(getComputedStyle(ol).counterReset) && !ol.hasAttribute('start');
+    const ok = counted && room >= 20 && /^"\\S+"$/.test(dash);
+    return { ok, detail: 'a numbered item is marked ' + number + ', with ' + Math.round(room) + ' px of the list for it; a bullet is marked ' + dash };
   `,
   ),
   check(

@@ -1,13 +1,13 @@
 {
   "about": [
-    "Transcript Markdown as the web console reads it (md() in ui/src/model/markdown.ts), the reference for both phones: docs/session-liveness.md, 'Client presentation policy'; decision F in docs/web-console-carbon.md; SE-C90 to SE-C104 in docs/web-console-contracts.md.",
+    "Transcript Markdown as the web console reads it (md() in ui/src/model/markdown.ts), the reference for both phones: docs/session-liveness.md, 'Client presentation policy'; decision F in docs/web-console-carbon.md; SE-C90 to SE-C104 in docs/web-console-contracts.md. Lists follow the phones, as decided on 2026-10-05 (SE-C99): the web's model draws them as the phones always have.",
     "Read by ui/src/model/shared-fixtures.spec.ts, ios/AgentRouter/Tests/SharedFixtureTests.swift and android/app/src/test/java/ca/whnet/agentrouter/SharedFixtureTest.kt. Each maps its own client's blocks to the shape below and compares them with `expected`.",
     "`expected` is generated from the web's model, never written by hand: edit a case's name, input or pending, then in ui/ run `UPDATE_SHARED_FIXTURES=1 pnpm exec vitest run src/model/shared-fixtures.spec.ts`.",
     "`pending` marks a case the clients disagree on where a phone would lose information by matching the web. Every suite skips it, by name, until it is decided; `expected` still records what the web does.",
     "A block is one of:",
     "{type: paragraph, runs}: one line of prose, its whitespace at the start kept.",
     "{type: heading, level, runs}: level is the level the web draws, # as 3, ## as 4, ### as 5, and deeper as 6.",
-    "{type: list, ordered, items}: one run list per item; ordered is whether the items are drawn numbered.",
+    "{type: list, ordered, items}: one run list per item; ordered is whether the items are drawn numbered, which counts 1., 2., 3. from the list's first item, never the source's own numbers. A list is of one kind: where bullets give way to numbers, or numbers to bullets, another list starts.",
     "{type: quote, runs}",
     "{type: code, lang, text}: text is verbatim; lang is the fence's language tag, null when the client drops it, as every client does today.",
     "{type: table, head, rows}: head is a list of cells, rows a list of rows of cells, and a cell is a list of runs.",
@@ -110,20 +110,28 @@
       ]
     },
     {
-      "name": "a numbered item keeps its text but not its number, and a blank line starts another list (SE-C99)",
+      "name": "a numbered list is drawn numbered, counting from 1 whatever its source's numbers, and a blank line starts another, which counts from 1 again (SE-C99)",
       "input": "1. first\n2) second\n10. tenth\n\n3. after a blank",
-      "pending": "decision F — the web draws two bulleted lists and drops the numbers; both phones draw two numbered lists, counting 1., 2., 3. and then 1. again, never the source's own numbers",
       "expected": [
-        {"type": "list", "ordered": false, "items": [[{"text": "first"}], [{"text": "second"}], [{"text": "tenth"}]]},
-        {"type": "list", "ordered": false, "items": [[{"text": "after a blank"}]]}
+        {"type": "list", "ordered": true, "items": [[{"text": "first"}], [{"text": "second"}], [{"text": "tenth"}]]},
+        {"type": "list", "ordered": true, "items": [[{"text": "after a blank"}]]}
       ]
     },
     {
-      "name": "bullets and numbers mixed make one list (SE-C99)",
+      "name": "where bullets give way to numbers, or numbers to bullets, another list starts (SE-C99)",
       "input": "- one\n2. two\n* three",
-      "pending": "decision F — the web draws one bulleted list of three items; both phones split it into a bulleted list, a numbered list of one (1. two) and another bulleted list",
       "expected": [
-        {"type": "list", "ordered": false, "items": [[{"text": "one"}], [{"text": "two"}], [{"text": "three"}]]}
+        {"type": "list", "ordered": false, "items": [[{"text": "one"}]]},
+        {"type": "list", "ordered": true, "items": [[{"text": "two"}]]},
+        {"type": "list", "ordered": false, "items": [[{"text": "three"}]]}
+      ]
+    },
+    {
+      "name": "a bullet is read before a number, so a bullet's words may start with one, and a number's with a dash (SE-C99)",
+      "input": "- 1. not a number\n1. - not a bullet",
+      "expected": [
+        {"type": "list", "ordered": false, "items": [[{"text": "1. not a number"}]]},
+        {"type": "list", "ordered": true, "items": [[{"text": "- not a bullet"}]]}
       ]
     },
     {

@@ -86,7 +86,9 @@ plus `DashboardTests` and `ProjectionTests`; on Android seven in `LiveTest.kt` a
 dot's ranking, ten seconds of silence, which form an answer goes to) and the Markdown blocks
 are therefore three-client contracts. The rewrite keeps them exactly or changes all three
 clients. One reader found the web `md()` and the phones' `Markdown.blocks` already disagree on
-numbered lists, joined paragraphs and quotes, unterminated fences and heading levels.
+numbered lists, joined paragraphs and quotes, unterminated fences and heading levels. Lists, and
+a hosted router's list headed per machine, were decided in the phones' favour on 2026-10-05
+(decision F).
 
 ### The checks
 
@@ -405,7 +407,10 @@ From Carbon 1.116's source and Northstar's history, before writing a line:
 
 - **List.** One `ContainedList` per project, headed by its dot, count and age. Rows are real
   buttons with a visible Archive (or Restore) action, and the folds keep their open state
-  across refreshes.
+  across refreshes. A hosted router's sessions from more than one machine are headed per
+  machine, as the phones head them: under each machine's label, its own projects, older fold
+  and shelf. With one machine, or none named, there is no heading (decided 2026-10-05,
+  SE-C219).
 - **Tabs.** A tab strip over the feed, each tab carrying its status dot (see Decision I for
   its close glyph).
 - **Feed.**
@@ -498,7 +503,9 @@ hosting work's server-mode notice on the live view is the first.
 landed (`e621f67` to `27d41ba`). The console reads what the server can do, from `/api/auth`'s
 `mode`, rather than assuming a Mac. In server mode it hides the login item, the wrapper, the
 network bind and the Keychain-backed account sources, as the old pages now do (`8b277fc`).
-Served on a public name, the frame policy and the CSP matter more.
+Served on a public name, the frame policy and the CSP matter more. Its live sessions come from
+an agent on each machine (`60cf5f8`): the Sessions list is headed per machine, as the phones
+head it, and an open session names its machine (SE-C219 to SE-C225).
 
 ## Tracked in Northstar
 
@@ -644,7 +651,7 @@ Decided on 2026-10-05:
 | — | The `esc()` injection | **Fixed** in today's live view, commit `29c5eb3`. A jsdom run of the page's own `md()` showed a Markdown link gaining an `onmouseover` before the fix, and none after. `check-live-ui.js` still passes. It goes live with the next release; it was not deployed on its own. |
 | D | Frame policy | **Only VS Code's own schemes may frame the console** (`frame-ancestors vscode-webview: vscode-file:`), and `X-Frame-Options` is dropped. Checked in VS Code before it ships. |
 | E | Settings | **Pages under `/settings`**, in Northstar's layout |
-| F | Markdown | **Keep the web's semantics**, the phones' reference, pinned by shared fixtures (AGEN-0005). Converging the three clients is a separate decision. |
+| F | Markdown | **Keep the web's semantics**, the phones' reference, pinned by shared fixtures (AGEN-0005), **except lists, which follow the phones**: bullets and numbers are never one list, and a numbered list is drawn numbered, counting from 1 whatever its source's numbers (SE-C99). Lists were decided on 2026-10-05, replacing "converging the three clients is a separate decision". The same day, a hosted router's session list was decided the phones' way too: headed per machine (SE-C219). |
 | G | Defects | **Fixed where the port meets them**; server-side fixes as separate small commits (AGEN-0014, AGEN-0015) |
 | H | Sessions on a desk | **Two panes from 1,056 px**, the list beside the feed |
 | I | Folds and put-away | **Archive is a visible action** on every row and tab, with the Archive icon, and **the archived shelf is visible**, not folded |

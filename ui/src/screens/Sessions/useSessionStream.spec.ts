@@ -191,7 +191,7 @@ describe('useSessionStream', () => {
     const asked: string[] = [];
     const refusal = async (session: string) => {
       asked.push(session);
-      return 'agent-router: this router needs its password';
+      return { kind: 'refused' as const, words: 'agent-router: this router needs its password' };
     };
     const { result } = mount('aaa-1', { refusal });
     const es = FakeEventSource.last();
@@ -205,6 +205,68 @@ describe('useSessionStream', () => {
     expect(result.current.header).toEqual({ tone: 'stale', text: 'agent-router: this router needs its password', stop: false });
     wait(60_000);
     expect(FakeEventSource.made).toHaveLength(1);
+  });
+
+  it('SE-C223: a session whose machine is offline says the router’s sentence in place of "reconnecting…", keeps its rows, is asked for again every ten seconds, and reads again once its machine is back', async () => {
+    const OFFLINE = 'the machine running this session (mini) is offline';
+    let back = false;
+    const refusal = async () => (back ? null : { kind: 'unavailable' as const, words: OFFLINE });
+    const { result } = mount('aaa-1', { refusal });
+    const first = FakeEventSource.last().open();
+    act(() => {
+      first.row(row('read before it went')).status(status('tool'));
+    });
+    // The machine goes: the browser gives the stream up, and the router says why.
+    act(() => {
+      first.drop(FakeEventSource.CLOSED);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(result.current.header).toEqual({ tone: 'stale', text: OFFLINE, stop: false });
+    expect(result.current.feed?.phase).toBe('reconnecting');
+    // Never a session that ended: no status stands, nothing reads closed, and the rows stay.
+    expect(result.current.feed?.status).toBeNull();
+    expect(said(result.current.feed)).toEqual(['read before it went']);
+    // Asked for again, each connection ten seconds after the last, the sentence standing between.
+    wait(10_000);
+    expect(FakeEventSource.made).toHaveLength(2);
+    act(() => {
+      FakeEventSource.last().drop(FakeEventSource.CLOSED);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(result.current.header?.text).toBe(OFFLINE);
+    wait(10_000);
+    expect(FakeEventSource.made).toHaveLength(3);
+    // The machine is back: the first thing its stream delivers ends the sentence, and the replay
+    // replaces the rows rather than repeating them.
+    back = true;
+    act(() => {
+      FakeEventSource.last().open().row(row('read before it went')).status(status('generating'));
+    });
+    expect(result.current.header?.text).toBe('Thinking · 12s');
+    expect(result.current.feed?.unavailable).toBeNull();
+    expect(said(result.current.feed)).toEqual(['read before it went']);
+  });
+
+  it('SE-C224: a hosted router’s other answers for a session — no machine holds it (404), the relay failed (502) — are said in its words and retried the same way', async () => {
+    for (const words of ['No such session.', 'mini did not answer in time']) {
+      FakeEventSource.reset();
+      const { result, unmount } = mount('aaa-1', { refusal: async () => ({ kind: 'unavailable' as const, words }) });
+      act(() => {
+        FakeEventSource.last().drop(FakeEventSource.CLOSED);
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(result.current.header, words).toEqual({ tone: 'stale', text: words, stop: false });
+      // Not the caller refused, and not the router's own `error` event: the watchdog goes on.
+      wait(10_000);
+      expect(FakeEventSource.made, words).toHaveLength(2);
+      unmount();
+    }
   });
 
   it('SE-C65: a stream the browser gave up on, from a router that does not refuse the caller, is reconnected by the watchdog', async () => {

@@ -1,7 +1,8 @@
 // @vitest-environment node
 // New for agent-router: the Markdown parser's contracts beyond what the old check pinned, among
 // them the ones the live view broke (docs/web-console-contracts.md, "Markdown"). The web's
-// semantics are the rule (decision F); the phones are brought to them by AGEN-0005.
+// semantics are the rule (decision F), but for lists, which follow the phones (decided 2026-10-05);
+// fixtures/live/markdown-blocks.json holds all three clients to them (AGEN-0005).
 import { describe, expect, it } from 'vitest';
 import { md, textOf, type Inline } from './markdown';
 
@@ -47,7 +48,7 @@ describe('md', () => {
   });
 
   it('SE-C97: a "* " list marker is never read as emphasis, where the page lost the marker', () => {
-    expect(md('* item *with* stars')).toEqual([{ type: 'list', items: [[t('item '), i(t('with')), t(' stars')]] }]);
+    expect(md('* item *with* stars')).toEqual([{ type: 'list', ordered: false, items: [[t('item '), i(t('with')), t(' stars')]] }]);
   });
 
   it("SE-C98: headings sit under the screen's own, and seven # or no space is prose", () => {
@@ -57,13 +58,24 @@ describe('md', () => {
     expect(md('####### seven\n#nospace')).toEqual([p(t('####### seven')), p(t('#nospace'))]);
   });
 
-  it('SE-C99: bullets and numbers make one flat list, ended by a blank or any other line, the numbers not kept', () => {
-    expect(md('- one\n2. two\n   * three\n3) four\n\n- five\nprose\n- six')).toEqual([
-      { type: 'list', items: [[t('one')], [t('two')], [t('three')], [t('four')]] },
-      { type: 'list', items: [[t('five')]] },
+  it('SE-C99: a list is one kind, bullets or numbers, flat, and ended by a blank or any other line; a numbered one is ordered and keeps no number of its own', () => {
+    const bullets = (...items: string[]) => ({ type: 'list', ordered: false, items: items.map((s) => [t(s)]) });
+    const numbers = (...items: string[]) => ({ type: 'list', ordered: true, items: items.map((s) => [t(s)]) });
+    // Where the kind changes, another list starts: the phones' split, where the page drew one list.
+    expect(md('- one\n2. two\n   * three\n3) four\n10. ten\n\n- five\nprose\n- six')).toEqual([
+      bullets('one'),
+      numbers('two'),
+      bullets('three'),
+      numbers('four', 'ten'),
+      bullets('five'),
       p(t('prose')),
-      { type: 'list', items: [[t('six')]] },
+      bullets('six'),
     ]);
+    // A blank line starts another numbered list, which counts from its own first item again: the
+    // source's numbers are not kept, so nothing can draw "3." where the reader sees a first item.
+    expect(md('1. first\n2) second\n10. tenth\n\n3. after a blank')).toEqual([numbers('first', 'second', 'tenth'), numbers('after a blank')]);
+    // A bullet is read first: "- 1. x" is a bullet whose words are "1. x".
+    expect(md('- 1. x')).toEqual([bullets('1. x')]);
   });
 
   it('SE-C100: each quoted line is a quote of its own, the space after ">" optional', () => {

@@ -561,7 +561,8 @@ final class LiveTests: XCTestCase {
 
     /// The web view's blocks, `#` at the level it draws (SE-C98), each line a paragraph of its
     /// own (SE-C103). fixtures/live/markdown-blocks.json holds the rest (SharedFixtureTests); a
-    /// numbered list stays numbered here, pending decision F.
+    /// numbered list is a list of its own and stays numbered, on every client since 2026-10-05
+    /// (SE-C99).
     func testMarkdownBlocksMatchTheWebView() {
         let src = "# Title\nSome **bold** text\n\n- one\n- two\n\n1. first\n2) second\n\n> quoted\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n```\ncode\n```\n| not | a table |"
         let b = Markdown.blocks(src)

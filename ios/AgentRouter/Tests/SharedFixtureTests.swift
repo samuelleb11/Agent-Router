@@ -4,9 +4,11 @@ import XCTest
 /// The fixtures the web view and both phones share, fixtures/live/markdown-blocks.json and
 /// fixtures/live/session-groups.json, read from the repository and held against this app's own
 /// Markdown blocks and session list. Their `expected` is generated from the web's model, the
-/// reference for both phones (docs/session-liveness.md, "Client presentation policy"); each file's
-/// `about` says what the shape means. A case marked `pending` is one where matching the web would
-/// lose something here, and it is skipped, by name, until it is decided.
+/// reference for both phones (docs/session-liveness.md, "Client presentation policy"), which
+/// follows the phones where the three clients were decided in their favour on 2026-10-05:
+/// numbered lists, and a hosted router's list headed per machine. Each file's `about` says what
+/// the shape means. A case marked `pending` is one where matching the web would lose something
+/// here, and it is skipped, by name, until it is decided.
 final class SharedFixtureTests: XCTestCase {
     func testMarkdownBlocksMatchTheSharedFixtures() throws {
         let fixture = try load(Fixture<MarkdownCase>.self, "markdown-blocks.json")
@@ -21,11 +23,9 @@ final class SharedFixtureTests: XCTestCase {
         XCTAssertFalse(fixture.cases.isEmpty)
         for c in fixture.cases where c.pending == nil {
             // What the list screen draws: one part under no machine's heading, for a local router
-            // and for a hosted router's single machine.
+            // and for a hosted router's single machine, or a part per machine under its heading.
             let parts = SessionGroups.byMachine(c.sessions, now: Date(timeIntervalSince1970: TimeInterval(c.now) / 1000))
-            XCTAssertEqual(parts.map(\.name), [nil], c.name)
-            guard parts.count == 1, let groups = parts.first?.groups else { continue }
-            XCTAssertEqual(Shape.groups(groups), c.expected, c.name)
+            XCTAssertEqual(Shape.groups(parts), c.expected, c.name)
         }
     }
 
@@ -124,10 +124,31 @@ private enum Shape {
         var sessions: [String]
     }
 
-    struct Groups: Decodable, Equatable {
+    /// One list as one machine's sessions make it; `machine` is the label of the machine it is
+    /// headed by, nil for a list with no machine heading and for the rows that name no machine.
+    struct Part: Decodable, Equatable {
+        var machine: String?
         var recent: [Group]
         var older: [Group]
         var archived: [String]
+    }
+
+    /// `expected`: `{recent, older, archived}` for a list with no machine heading, or `{machines}`
+    /// for a hosted router's list from several machines, a part per machine in the order headed.
+    enum Groups: Decodable, Equatable {
+        case one(Part)
+        case machines([Part])
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: Keys.self)
+            if let machines = try c.decodeIfPresent([Part].self, forKey: .machines) {
+                self = .machines(machines)
+            } else {
+                self = .one(try Part(from: decoder))
+            }
+        }
+
+        private enum Keys: String, CodingKey { case machines }
     }
 
     /// A line's runs, as the screen draws them: adjacent runs in the same styles are one.
@@ -158,11 +179,19 @@ private enum Shape {
         }
     }
 
-    static func groups(_ g: SessionGroups) -> Groups {
+    /// The list as `byMachine` parts it: one part with no heading, or a part per machine, each
+    /// labelled with its machine's name. The rows that name no machine are the part this app heads
+    /// `SessionGroups.unnamedMachine`, and the fixtures label null.
+    static func groups(_ parts: [SessionGroups.Machine]) -> Groups {
+        if parts.count == 1, let only = parts.first, only.name == nil { return .one(part(only.groups, machine: nil)) }
+        return .machines(parts.map { part($0.groups, machine: $0.id == "unnamed" ? nil : $0.name) })
+    }
+
+    private static func part(_ g: SessionGroups, machine: String?) -> Part {
         let project = { (p: SessionGroups.Project) in
             Group(project: p.name, tone: p.tone.map(name), halo: p.look.halo, sessions: p.sessions.map(\.sessionId))
         }
-        return Groups(recent: g.recent.map(project), older: g.older.map(project), archived: g.archived.map(\.sessionId))
+        return Part(machine: machine, recent: g.recent.map(project), older: g.older.map(project), archived: g.archived.map(\.sessionId))
     }
 
     private static func name(_ tone: SessionTone) -> String {

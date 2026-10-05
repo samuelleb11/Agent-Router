@@ -6,9 +6,10 @@
 // is about drawing that has no screen yet, its comment names the slice that pins the drawing:
 // AGEN-0012, the Sessions screen. They run in Node, with no DOM at all.
 //
-// One check exists only in the working copy of scripts/check-live-ui.js, uncommitted when this was
-// written: "sessions from two machines say which, and one project on each stays apart". It is
-// ported too. The hosted router's wording is the committed page's (SE-C187).
+// One check came with the hosting work (60cf5f8): "sessions from two machines say which, and one
+// project on each stays apart". It is ported to what was decided since, on 2026-10-05: each machine
+// heads its own part of the list, as on the phones (SE-C219). The hosted router's wording is the
+// committed page's (SE-C187).
 import { existsSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import wire from './fixtures/wire.sse?raw';
@@ -25,6 +26,7 @@ import {
   answerTarget,
   asideNotice,
   asksWrapper,
+  byMachine,
   closeFind,
   composeAnswers,
   emptyList,
@@ -213,7 +215,7 @@ describe('the live view, as scripts/check-live-ui.js checked it', () => {
     expect(md('<img src=x onerror=alert(1)>\n**b** `c`\n- one\n\n| a | b |\n|---|---|\n| 1 | 2 |')).toEqual([
       { type: 'paragraph', children: [t('<img src=x onerror=alert(1)>')] },
       { type: 'paragraph', children: [{ type: 'bold', children: [t('b')] }, t(' '), { type: 'code', text: 'c' }] },
-      { type: 'list', items: [[t('one')]] },
+      { type: 'list', ordered: false, items: [[t('one')]] },
       { type: 'table', head: [[t('a')], [t('b')]], rows: [[[t('1')], [t('2')]]] },
     ]);
   });
@@ -244,20 +246,21 @@ describe('the live view, as scripts/check-live-ui.js checked it', () => {
   });
 
   // ported from scripts/check-live-ui.js: sessions from two machines say which, and one project on each stays apart
-  it('sessions from two machines say which, and one project on each stays apart', () => {
-    // Only in the working copy of scripts/check-live-ui.js and assets/live.html, uncommitted: a
-    // hosted router lists several machines' sessions (docs/hosting-machine-agent.md). Both recent,
-    // so neither folds into the older section.
+  it('SE-C219: sessions from two machines say which, and one project on each stays apart', () => {
+    // A hosted router lists several machines' sessions (docs/hosting-machine-agent.md). The page
+    // keyed each project by its machine in one list ("project-a · mac") and named the machine on
+    // each card; decided on 2026-10-05 in the phones' favour, each machine heads a part of the list
+    // of its own instead. Both recent, so neither folds into the older section.
     const [a, b] = base().map((r) => ({ ...r, last_activity_ms: NOW }));
     if (!a || !b) throw new Error('the fixture lost its rows');
     const mac = { id: 'm-1', label: 'mac' };
     const win = { id: 'm-2', label: 'win-box' };
-    let view = listView([{ ...a, machine: mac }, { ...b, machine: win }], NOW);
-    const groups = view.recent.map((g) => g.key);
-    expect(groups, 'one project on two machines is two groups').toEqual(expect.arrayContaining(['project-a · mac', 'project-a · win-box']));
-    expect(rowOf(view, 'aaa-1').meta, 'a card names its machine').toContain(' · on mac');
-    view = listView([{ ...a, machine: mac }, { ...b, machine: mac }], NOW);
-    expect(rowsOf(view).some((r) => r.meta.includes(' · on ')), 'one machine needs no naming').toBe(false);
+    let parts = byMachine([{ ...a, machine: mac }, { ...b, machine: win }], NOW);
+    expect(parts.map((p) => p.heading), 'each machine heads its part').toEqual(['mac', 'win-box']);
+    expect(parts.map((p) => p.recent.map((g) => g.key)), 'one project on two machines is two groups').toEqual([['project-a'], ['project-a']]);
+    expect(parts.flatMap(rowsOf).some((r) => r.meta.includes(' · on ')), 'the heading names the machine, and no card does').toBe(false);
+    parts = byMachine([{ ...a, machine: mac }, { ...b, machine: mac }], NOW);
+    expect(parts.map((p) => p.heading), 'one machine needs no naming').toEqual([null]);
   });
 
   // ported from scripts/check-live-ui.js: archived sessions leave the tabs, but come back when live

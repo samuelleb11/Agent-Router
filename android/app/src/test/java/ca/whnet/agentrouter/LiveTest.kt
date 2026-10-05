@@ -196,7 +196,7 @@ class LiveTest {
     /**
      * The web view's blocks, `#` at the level it draws (SE-C98), each line a paragraph of its own
      * (SE-C103). fixtures/live/markdown-blocks.json holds the rest (SharedFixtureTest); a numbered
-     * list stays numbered here, pending decision F.
+     * list is a list of its own and stays numbered, on every client since 2026-10-05 (SE-C99).
      */
     @Test
     fun `markdown blocks match the web view`() {

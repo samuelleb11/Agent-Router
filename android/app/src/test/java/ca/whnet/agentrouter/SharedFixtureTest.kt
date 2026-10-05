@@ -32,8 +32,10 @@ import org.junit.runners.Parameterized
  * fixtures/live/session-groups.json, read from the repository and held against this app's own
  * Markdown blocks and session list, one case at a time. Their `expected` is generated from the
  * web's model, the reference for both phones (docs/session-liveness.md, "Client presentation
- * policy"); each file's `about` says what the shape means. A case marked `pending` is one where
- * matching the web would lose something here: it is skipped, by name, until it is decided.
+ * policy"), which follows the phones where the three clients were decided in their favour on
+ * 2026-10-05: numbered lists, and a hosted router's list headed per machine. Each file's `about`
+ * says what the shape means. A case marked `pending` is one where matching the web would lose
+ * something here: it is skipped, by name, until it is decided.
  */
 @RunWith(Parameterized::class)
 class SharedFixtureTest(private val title: String, private val file: String, private val case: JsonObject) {
@@ -117,22 +119,30 @@ class SharedFixtureTest(private val title: String, private val file: String, pri
         },
     )
 
-    /** What the list screen draws: one part under no machine's heading, then its groups. */
+    /**
+     * What the list screen draws. One part under no machine's heading — a router on a Mac, or a
+     * hosted router with one machine — is its groups, `{recent, older, archived}`. A hosted
+     * router's list from several machines is `{machines}`: a part per machine, as headed, each
+     * with its label and its groups; the rows that name no machine come last, labelled null.
+     */
     private fun groups(c: JsonObject): JsonObject {
         val rows = c["sessions"]!!.jsonArray.map { routerJson.decodeFromJsonElement<LiveSession>(it) }
         val parts = SessionGroups.byMachine(rows, c["now"]!!.jsonPrimitive.long)
-        assertEquals("$title: one list, under no machine's heading", listOf<String?>(null), parts.map { it.label })
-        val g = parts.single().groups
         fun project(p: SessionGroups.Project) = buildJsonObject {
             put("project", p.name)
             put("tone", p.tone)
             put("halo", p.dot?.active ?: false)
             put("sessions", JsonArray(p.sessions.map { JsonPrimitive(it.sessionId) }))
         }
+        fun part(g: SessionGroups) = mapOf(
+            "recent" to JsonArray(g.recent.map(::project)),
+            "older" to JsonArray(g.older.map(::project)),
+            "archived" to JsonArray(g.archived.map { JsonPrimitive(it.sessionId) }),
+        )
+        val only = parts.singleOrNull()
+        if (only != null && only.label == null) return JsonObject(part(only.groups))
         return buildJsonObject {
-            put("recent", JsonArray(g.recent.map(::project)))
-            put("older", JsonArray(g.older.map(::project)))
-            put("archived", JsonArray(g.archived.map { JsonPrimitive(it.sessionId) }))
+            put("machines", JsonArray(parts.map { m -> JsonObject(mapOf("machine" to JsonPrimitive(m.label)) + part(m.groups)) }))
         }
     }
 }

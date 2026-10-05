@@ -118,6 +118,48 @@ $ar-tab-rule: 0.125rem;
   flex: none;
 }
 
+/// An open session's heading and, on a hosted router, the machine it runs on (SE-C221): one item of
+/// the header, in the place a heading takes, so a machine never pushes the header's actions onto a
+/// line of their own.
+.title {
+  flex: 1 1 8rem;
+  display: flex;
+  align-items: center;
+  gap: $spacing-03;
+  min-inline-size: 6rem;
+}
+
+.title > .heading {
+  flex: 0 1 auto;
+  min-inline-size: 3rem;
+}
+
+/// The machine beside the project. It gives way before the project does — a long label is cut short
+/// first — and keeps room for its icon and the start of its name (SE-C202, SE-C225).
+.machineTag {
+  @include type-style('label-01');
+  flex: 0 1000 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: $spacing-02;
+  min-inline-size: 2.5rem;
+  color: $text-secondary;
+}
+
+.machineIcon {
+  flex: none;
+  fill: currentColor;
+}
+
+/// A machine's label, in a heading or a tag: one line, cut with an ellipsis rather than widening
+/// the list or the header (SE-C225).
+.machineName {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .help {
   flex: none;
 }
@@ -171,6 +213,29 @@ $ar-tab-rule: 0.125rem;
 
 .warning {
   margin: $spacing-03 $spacing-05 0;
+}
+
+/// One machine's part of a hosted router's list, under its heading: its projects, its older fold
+/// and its shelf (SE-C219).
+.machine {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: $spacing-03;
+  min-inline-size: 0;
+}
+
+/// A machine's heading: a bar across the list, above the project headings it holds, its label on
+/// one line and cut short rather than widening the list (SE-C225).
+.machineHead {
+  @include type-style('heading-compact-02');
+  display: flex;
+  align-items: center;
+  gap: $spacing-03;
+  min-inline-size: 0;
+  margin: 0;
+  padding: $spacing-05 $spacing-05 $spacing-03;
+  border-block-end: 1px solid $border-strong-01;
+  color: $text-primary;
 }
 
 .group {

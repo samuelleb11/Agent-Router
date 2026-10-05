@@ -1,6 +1,7 @@
 // New for agent-router: the live view's session list (assets/live.html, `loadSessions`, `card`,
 // `groupInto`) on Carbon: one ContainedList per project, its rows real buttons, each with a visible
-// Archive, and the archived shelf in the open (decision I).
+// Archive, and the archived shelf in the open (decision I). A hosted router's sessions from more
+// than one machine are headed per machine, as the phones head them (SE-C219).
 import { Fragment, useId, useState } from 'react';
 import { Link as RouterLink } from 'react-router';
 import { Button, Callout, ContainedList, ContainedListItem } from '@carbon/react';
@@ -11,12 +12,14 @@ import { StatusDot } from '~/components/StatusDot';
 import { plural } from '~/model/format';
 import { settingsPath } from '~/lib/routes';
 import { useCoarse } from '~/lib/viewport';
-import { emptyList, type GroupView, type ListView, type Notice, type RowView } from '~/model/session';
+import { emptyList, type GroupView, type ListView, type MachineView, type Notice, type RowView } from '~/model/session';
 import { NoticeLine } from './Notice';
 import styles from './Sessions.module.scss';
 
 /// Put away, archived: one icon for one concept, from the registry every screen draws from (SH-C39).
 const PUT_AWAY = CONCEPTS.putAway.icon;
+/// A machine, as its heading draws it.
+const MACHINE = CONCEPTS.machine.icon;
 
 export interface RowActions {
   /// Open a session: the row itself does this, and its action never does (SE-C34).
@@ -125,25 +128,107 @@ function Group({ g, actions }: { g: GroupView; actions: RowActions }) {
   );
 }
 
-/// The list: recent sessions by project, the older fold, and the archived shelf. The fold's open
-/// state is the list's own, kept across every refresh, archive and return to the list (SE-C31): the
-/// list stays mounted while a session is open, and only its rows are redrawn.
+/// One machine's sessions, or the whole list when it is not headed per machine: recent sessions by
+/// project, the older fold, and the archived shelf (SE-C29, SE-C32).
+function Part({ view, older, onOlder, actions }: { view: ListView; older: boolean; onOlder: () => void; actions: RowActions }) {
+  const olderId = useId();
+  const shelfId = useId();
+  return (
+    <>
+      {view.recent.map((g) => (
+        <Group key={g.key} g={g} actions={actions} />
+      ))}
+      {view.older && (
+        <div className={styles.older}>
+          <Button
+            kind="ghost"
+            size="md"
+            className={styles.fold}
+            renderIcon={older ? ChevronDown : ChevronRight}
+            aria-expanded={older}
+            aria-controls={olderId}
+            onClick={onOlder}
+          >
+            {view.older.label}
+          </Button>
+          {older && (
+            <div id={olderId} className={styles.olderGroups}>
+              {view.older.groups.map((g) => (
+                <Group key={g.key} g={g} actions={actions} />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+      {view.shelf && (
+        // Visible, not folded: how many it holds, flat and newest first, each dimmed (SE-C32).
+        <section className={styles.shelf} aria-labelledby={shelfId} data-shelf="">
+          <ContainedList
+            kind="on-page"
+            size="lg"
+            label={
+              <span id={shelfId} className={styles.groupHead}>
+                <PUT_AWAY aria-hidden="true" />
+                <span className={styles.groupName}>{view.shelf.label}</span>
+              </span>
+            }
+          >
+            {view.shelf.rows.map((r) => (
+              <Row key={r.id} r={r} actions={actions} shelved />
+            ))}
+          </ContainedList>
+        </section>
+      )}
+    </>
+  );
+}
+
+/// A machine's part of a hosted router's list: its heading, and under it what its sessions alone
+/// make — its own projects, its own older fold and its own shelf (SE-C219). The heading is drawn
+/// whatever the part holds, so a machine with nothing recent still heads its fold or its shelf
+/// (SE-C220).
+function Machine({ part, level, older, onOlder, actions }: { part: MachineView; level: 2 | 3; older: boolean; onOlder: () => void; actions: RowActions }) {
+  const headingId = useId();
+  const Heading = level === 2 ? 'h2' : 'h3';
+  return (
+    <section className={styles.machine} aria-labelledby={headingId} data-machine={part.machine ?? ''}>
+      <Heading id={headingId} className={styles.machineHead}>
+        <MACHINE aria-hidden="true" className={styles.machineIcon} />
+        <span className={styles.machineName}>{part.heading}</span>
+      </Heading>
+      <Part view={part} older={older} onOlder={onOlder} actions={actions} />
+    </section>
+  );
+}
+
+/// The list: a machine at a time when a hosted router lists more than one, and otherwise the one
+/// list with no heading (SE-C219). Each older fold's open state is the list's own, one per machine,
+/// kept across every refresh, archive and return to the list (SE-C31): the list stays mounted while
+/// a session is open, and only its rows are redrawn.
 export function List({
-  view,
+  machines,
   hosted,
   wrapperWarning,
   actions,
+  level = 2,
 }: {
-  view: ListView;
+  machines: readonly MachineView[];
   hosted: boolean;
   wrapperWarning: string | null;
   actions: RowActions;
+  /// The level of a machine's heading: under the screen's own, which is the page's first heading
+  /// while the list is what the reader is looking at, and its second beside an open session.
+  level?: 2 | 3;
 }) {
-  const [older, setOlder] = useState(false);
-  const olderId = useId();
-  const shelfId = useId();
+  const [opened, setOpened] = useState<ReadonlySet<string>>(() => new Set());
   const warningId = useId();
-  const empty = !view.recent.length && !view.older && !view.shelf;
+  const toggle = (key: string) =>
+    setOpened((s) => {
+      const next = new Set(s);
+      if (!next.delete(key)) next.add(key);
+      return next;
+    });
+  const empty = machines.every((m) => !m.recent.length && !m.older && !m.shelf);
   return (
     <div className={styles.list}>
       {wrapperWarning && (
@@ -160,49 +245,12 @@ export function List({
         // Which empty it is: a quiet week, or a hosted router with no machine to list (SE-C38).
         <EmptyState title={hosted ? 'No sessions here yet' : 'No sessions'}>{emptyList(hosted)}</EmptyState>
       ) : null}
-      {view.recent.map((g) => (
-        <Group key={g.key} g={g} actions={actions} />
-      ))}
-      {view.older && (
-        <div className={styles.older}>
-          <Button
-            kind="ghost"
-            size="md"
-            className={styles.fold}
-            renderIcon={older ? ChevronDown : ChevronRight}
-            aria-expanded={older}
-            aria-controls={olderId}
-            onClick={() => setOlder(!older)}
-          >
-            {view.older.label}
-          </Button>
-          {older && (
-            <div id={olderId} className={styles.olderGroups}>
-              {view.older.groups.map((g) => (
-                <Group key={g.key} g={g} actions={actions} />
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-      {view.shelf && (
-        // Visible, not folded: how many it holds, flat and newest first, each dimmed (SE-C32).
-        <section className={styles.shelf} aria-labelledby={shelfId}>
-          <ContainedList
-            kind="on-page"
-            size="lg"
-            label={
-              <span id={shelfId} className={styles.groupHead}>
-                <PUT_AWAY aria-hidden="true" />
-                <span className={styles.groupName}>{view.shelf.label}</span>
-              </span>
-            }
-          >
-            {view.shelf.rows.map((r) => (
-              <Row key={r.id} r={r} actions={actions} shelved />
-            ))}
-          </ContainedList>
-        </section>
+      {machines.map((m) =>
+        m.heading === null ? (
+          <Part key={m.key} view={m} older={opened.has(m.key)} onOlder={() => toggle(m.key)} actions={actions} />
+        ) : (
+          <Machine key={m.key} part={m} level={level} older={opened.has(m.key)} onOlder={() => toggle(m.key)} actions={actions} />
+        ),
       )}
     </div>
   );

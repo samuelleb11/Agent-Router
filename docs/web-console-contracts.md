@@ -50,6 +50,9 @@ Counts at writing:
 | Serving | 44 | 7 | 4 |
 | **All** | **633** | **101** | **140** |
 
+Since then AGEN-0023 has added SE-C219 to SE-C225, for a hosted router's machines, so Sessions
+holds 225.
+
 ## Shell
 
 What holds on every screen of the console: the topbar and the navigation, freshness, the
@@ -1535,8 +1538,10 @@ refer to the files as committed at `7965562` (`assets/live.html` last changed in
 page is the reference for both phones ([session liveness](session-liveness.md), "Client presentation
 policy"), so a bullet that names phone tests is a three-client contract: it changes on all three
 clients or not at all. Where a phone disagrees today, the bullet says so, and for Markdown the web's
-semantics win (Decision F). Where today's page breaks a rule, the bullet's closing note says how;
-the rewrite keeps the rule, not the defect.
+semantics win (Decision F), but for lists, which follow the phones (SE-C99). A hosted router's list
+is headed per machine, as the phones head it (SE-C219). Both were decided on 2026-10-05. Where
+today's page breaks a rule, the bullet's closing note says how; the rewrite keeps the rule, not the
+defect.
 
 ### Session model
 
@@ -1714,11 +1719,14 @@ the rewrite keeps the rule, not the defect.
 ### List
 
 - **SE-C23** The list groups sessions by project, the project being the last segment of the
-  session's `cwd`, else the router's `project`. *Why:* the list is mostly "which of my projects is
-  moving". *Regression:* no. *Source:* `assets/live.html:139, 479, 675-683`. *Phones:* iOS
+  session's `cwd`, split on `/` and `\` alike (SE-C222), else the router's `project`. On a hosted
+  router that lists more than one machine, it groups them by machine first, and by project within
+  each machine (SE-C219). *Why:* the list is mostly "which of my projects is moving". *Regression:*
+  no. *Source:* `assets/live.html:139, 479, 675-683`. *Phones:* iOS
   `testSessionsGroupLikeTheWebView`; Android `sessions group like the web view`.
 - **SE-C24** Projects are in alphabetical order, so a project keeps its place instead of jumping to
-  the top whenever one of its sessions moves; within a project, sessions are newest first by
+  the top whenever one of its sessions moves; on a list headed per machine, each machine's projects
+  are in that order under its heading (SE-C219). Within a project, sessions are newest first by
   `last_activity_ms`. *Why:* a list that reshuffles every five seconds cannot be read, and within
   one project recency is what you are choosing between. The comment at 675-676, that the project
   touched last leads, is stale. *Regression:* yes — bbe0780. *Source:*
@@ -1745,7 +1753,8 @@ the rewrite keeps the rule, not the defect.
 - **SE-C29** A session quiet for more than twelve hours folds into an "older" group, grouped by
   project in the same way, but a live one never does: a session waiting on you writes nothing while
   it waits, so it would fold away at exactly the moment it most needs finding. Closed, idle and
-  failed sessions fold like any other. *Why:* the list is for what you are working on
+  failed sessions fold like any other. On a list headed per machine, each machine has an older group
+  of its own, under its heading (SE-C219). *Why:* the list is for what you are working on
   now. *Regression:* yes — check `a session busy or waiting on you is never folded into "older"` (a
   question that had waited twelve hours folded away on all three clients). *Source:*
   `assets/live.html:138, 702-710`, `scripts/check-live-ui.js:440-456`. *Phones:* iOS
@@ -1755,12 +1764,14 @@ the rewrite keeps the rule, not the defect.
   closed group must still say what it hides. *Regression:* no. *Source:* `assets/live.html:719`,
   `scripts/check-live-ui.js:452`.
 - **SE-C31** The older group keeps its open or closed state across every refresh, every archive and
-  every return to the list. *Why:* a section the reader opened must not snap shut under
-  them. *Regression:* yes — f46fcbc (the fold was built to keep its state). *Source:*
+  every return to the list. On a list headed per machine, each machine's older group opens and
+  closes on its own, and keeps its own state. *Why:* a section the reader opened must not snap shut
+  under them. *Regression:* yes — f46fcbc (the fold was built to keep its state). *Source:*
   `assets/live.html:647, 712-718`. *Today:* broken — the list is emptied before the old group's
   state is read, so it is never found, and the fold closes on every five-second refresh.
 - **SE-C32** The archived shelf is visible, not folded behind a disclosure: it says how many it
-  holds ("3 archived") and lists its sessions flat, newest first, each dimmed. *Why:* Decision I;
+  holds ("3 archived") and lists its sessions flat, newest first, each dimmed. On a list headed per
+  machine, each machine has a shelf of its own, under its heading (SE-C219). *Why:* Decision I;
   controls stay visible rather than behind disclosure. *Regression:* no. *Source:*
   `assets/live.html:146-152, 365, 725-744`. *Phones:* iOS `testSessionsGroupLikeTheWebView`; Android
   `sessions group like the web view` ("on the shelf however recently it moved, newest
@@ -1835,10 +1846,11 @@ the rewrite keeps the rule, not the defect.
 
 ### Tabs
 
-- **SE-C44** With a session open, a strip over the feed holds its project's sessions: the open one,
-  and every sibling that is current and not archived. Current means live, an older router's working
-  or ask, or active in the last twelve hours. *Why:* a strip of every session the project ever had
-  is a worse index than the list it came from. *Regression:* yes — 3918cc5. *Source:*
+- **SE-C44** With a session open, a strip over the feed holds its project's sessions on its machine
+  (SE-C221): the open one, and every sibling that is current and not archived. Current means live,
+  an older router's working or ask, or active in the last twelve hours. *Why:* a strip of every
+  session the project ever had is a worse index than the list it came from. *Regression:* yes —
+  3918cc5. *Source:*
   `assets/live.html:603-605, 995-1002`; check `stale sessions do not clutter the tabs`
   (`scripts/check-live-ui.js:352-359`). *Phones:* iOS
   `testWorkingAndWaitingSessionsAreNeverFoldedAway` (an ended session is not a tab; an older
@@ -2153,13 +2165,20 @@ the rewrite keeps the rule, not the defect.
   Android `markdown blocks match the web view` keep the source level (`heading(1, …)`) and are
   brought to the web.
 - **SE-C99** A list item is a line starting with `-` or `*` and a space, or with a number, `.` or
-  `)`, and a space. Consecutive items, bullets and numbers mixed, form one list, which a blank line
-  or any other line ends; indentation is ignored, so nothing nests; and a numbered item keeps its
-  text but not its number. *Why:* the web's semantics (Decision F); converging them, numbers
-  included, is a separate decision. *Regression:* no. *Source:*
-  `assets/live.html:333-334, 770-771, 785-786, 791`. *Phones:* iOS
-  `testMarkdownBlocksMatchTheWebView` and Android `markdown blocks match the web view` keep a
-  numbered list apart (`numbered([…])`) and are brought to the web.
+  `)`, and a space; a bullet is read first, so `- 1. x` is a bullet whose words are `1. x`.
+  Consecutive items of one kind form one list, and where bullets give way to numbers, or numbers to
+  bullets, another list starts, so `- one`, `2. two`, `* three` is a bulleted list, a numbered list
+  of one and another bulleted list. A blank line or any other line ends a list, and indentation is
+  ignored, so nothing nests. A numbered list is drawn as an ordered list, numbered 1., 2., 3. from
+  its first item, never with the source's own numbers, so a list after a blank line counts from 1
+  again. *Why:* decided on 2026-10-05 in the phones' favour (Decision F): the page drew every list
+  bulleted and dropped the numbers, and a numbered list says an order that bullets lose; the phones
+  kept a numbered list apart, and numbered it from 1. *Regression:* no. *Source:*
+  `assets/live.html:333-334, 770-771, 785-786, 791` (the page's one list);
+  `android/app/src/main/java/ca/whnet/agentrouter/data/Markdown.kt` and
+  `ios/AgentRouter/Sources/Model/Markdown.swift` (`flushList`); `fixtures/live/markdown-blocks.json`.
+  *Phones:* iOS `testMarkdownBlocksMatchTheWebView`, `testMarkdownBlocksMatchTheSharedFixtures`;
+  Android `markdown blocks match the web view`, `SharedFixtureTest`.
 - **SE-C100** A quote is a line starting with `>`, the space after it optional, and each such line
   is a quote block of its own. *Why:* the web's semantics (Decision F). *Regression:* no. *Source:*
   `assets/live.html:341-342, 773, 788`. *Phones:* iOS `testMarkdownBlocksMatchTheWebView`; Android
@@ -2640,6 +2659,88 @@ the rewrite keeps the rule, not the defect.
   not even asked for. *Why:* it wraps nothing and has no editor to warn about. *Regression:*
   no. *Source:* `assets/live.html:624-628`, `scripts/check-live-ui.js:1112`.
 
+A hosted router hears its sessions from an agent on each machine (commit `60cf5f8`). Every row of
+`/api/live/sessions` names its machine, `machine: {id, label}`, and the router relays each
+session's requests to the machine holding it. `GET /api/machines` lists the machines (label,
+platform, build, online, since); neither phone reads it, and nor does the console.
+
+- **SE-C219** On a hosted router whose rows name more than one machine, the list is headed per
+  machine: each machine's label heads a part of its own, and under it is what that machine's
+  sessions alone make — its own projects (SE-C23, SE-C24), its own older group (SE-C29 to SE-C31)
+  and its own shelf (SE-C32, SE-C33). One project on two machines is two projects, one under each
+  heading. A row never names its machine, since its heading does. With one machine, or no labels,
+  nothing is named and there is no machine heading: the list is exactly a local router's. *Why:*
+  decided on 2026-10-05 in the phones' favour. The page keyed each project by its machine
+  ("agent-router · Laptop") in one alphabetical list, with one older group and one shelf, and named
+  the machine on every card ("· on Laptop"); the phones head each machine, and a machine's older
+  sessions and shelf belong under it. *Regression:* no. *Source:* `src/machines.rs:365-410`
+  (`sessions`, which labels every row); `assets/live.html:658-687` at `60cf5f8`;
+  `android/app/src/main/java/ca/whnet/agentrouter/data/SessionGroups.kt:61-126` and
+  `ios/AgentRouter/Sources/Model/SessionGroups.swift:129-166` (`byMachine`);
+  `fixtures/live/session-groups.json`. *Phones:* iOS `testTwoMachinesEachGetTheirOwnHeading`,
+  `testOneMachineOrNoneListsExactlyAsBefore`; Android `two machines are grouped by machine, then as
+  before`, `one machine, or none, is the list exactly as it always was`.
+- **SE-C220** Machines are in the alphabetical order of their labels, case aside, so a machine keeps
+  its place while its sessions move. A label is read trimmed, and a blank one names no machine. Rows
+  that name no machine, beside machines that do, are kept: they come last, under a heading of their
+  own, "Unnamed machine". A machine with nothing recent still has its heading, over its older group
+  or its shelf. *Why:* the phones' rules, held on all three clients by the fixtures; a row the
+  router did not label must not vanish from the list. Three differences between the phones are kept
+  out of the fixtures. Two labels that differ only in case stay two machines: the console and the
+  iPhone put the capitalised one first, and Android keeps the order the router listed them in.
+  Android orders punctuation by character code, where the console and the iPhone follow the
+  locale, so `mac_mini` and `mac-mini` swap. The iPhone names a machine whose label is blank by the
+  start of its id, where Android and the console name none. *Regression:* no. *Source:* as
+  SE-C219. *Phones:* iOS `testTwoMachinesEachGetTheirOwnHeading` (the row that names no machine);
+  Android `rows that name no machine come last, and names differing only in case stay two
+  machines`, `a row without a machine still decodes, and names none` (a blank label).
+- **SE-C221** The open session names the machine it runs on: when a hosted router's row names one,
+  the header carries its label beside the project, with the machine icon, read as "on <label>",
+  however many machines the list holds, as both phones' session screens do. Its tabs are its
+  project's sessions on that machine only: the same project on another machine is another project
+  (SE-C44). *Why:* the decision follows the phones on naming the machine wherever a session is
+  shown, and which machine a session runs on is what the header cannot otherwise say. *Regression:*
+  no. *Source:* `android/app/src/main/java/ca/whnet/agentrouter/ui/SessionScreen.kt:133-142,
+  164-186` (its siblings, and the machine's tag);
+  `ios/AgentRouter/Sources/Views/SessionView.swift:33-48, 198-206`. *Phones:* no phone test pins the tag; both draw it.
+- **SE-C222** A project's name is the last segment of its directory, split on `/` and `\` alike,
+  wherever the console names one from a path: a project's heading, the open session's heading, the
+  rail, and the palette's sessions, projects and search hits. *Why:* a hosted router hears from
+  Windows machines, whose directories are `C:\…`; split on `/` alone, such a session or project is
+  named by its whole path. The page's `base` split on both from `60cf5f8`; the console's rail and
+  palette split on `/` alone until this rule. *Regression:* no. *Source:* `assets/live.html:480` at
+  `60cf5f8`; `ui/src/data/projects.ts`. *Phones:* both name a live session by its directory split
+  on both (`LiveSession.projectName`), and `session-groups.json` holds a Windows `cwd`; their
+  dashboards, usage lists and search hits split on `/` alone, a known difference.
+- **SE-C223** A per-session request that a hosted router answers 503, naming the machine — "the
+  machine running this session (<label>) is offline" — means that machine is offline: it comes
+  back later, and the session has not ended. While the stream is refused so, the header says the
+  router's sentence in place of "reconnecting…", the pip neutral and Stop gone; the rows already
+  read stay; nothing is drawn closed or ended; the stream is asked for again every ten seconds
+  (SE-C67); and the first thing a connection delivers ends the sentence. An action refused so says
+  the same sentence (SE-C183). `EventSource` reports no status, so the console learns the refusal
+  from the same session's prompt, which the router routes as it routes the stream (SE-C60). *Why:*
+  a laptop asleep or off the network is a machine offline, not a session over: read as a dropped
+  link the header said only "reconnecting…", and read as an end it would cost the reader a live
+  session. *Regression:* yes — both phones read the 503 as a bare status and said nothing, fixed in
+  `9c2f212`. *Source:* `src/machines.rs:58-80` (`Relay`), `src/machines.rs:412-433` (`holder`);
+  commit `9c2f212`. *Phones:* iOS `testASessionWhoseMachineIsOfflineReadsAsOfflineUntilItIsBack`;
+  Android `a session whose machine is offline reads as offline until it is back`.
+- **SE-C224** The hosted router's other answers for a session are said in its words and retried in
+  the same way: 404, "No such session.", when no connected machine holds the session, and 502 when
+  the relay to its machine failed ("mini did not answer in time"). Only a refusal of the caller
+  (401) ends the retrying (SE-C60), and only the router's own `error` event says that a session
+  will not stream (SE-C59). *Why:* none of them is the session ending, and a machine that
+  reconnects lists its sessions again. *Regression:* no. *Source:* `src/machines.rs:58-80`.
+  *Phones:* iOS `testAnErrorStatusOnALiveStreamIsSaidInTheRoutersWords`; Android
+  `an error status on a live stream is said in the router's words`.
+- **SE-C225** A machine's heading spans the list at every width, above the project headings it
+  holds, its label on one line and cut short with an ellipsis rather than widening the list, so
+  nothing scrolls sideways at 360 px. A list with one machine or none draws no machine heading.
+  The open session's machine gives way before its project does (SE-C202). *Why:* a label is
+  whatever the machine's agent was given, its host name by default, and can run long.
+  *Regression:* no. *Source:* `src/agent.rs:426` (`--label`, else the host name).
+
 ### Navigation
 
 - **SE-C189** The open session lives in the URL as `?session=<id>`, pushed when a session opens and
@@ -2681,8 +2782,9 @@ the rewrite keeps the rule, not the defect.
   restored before the rows return has nothing tall enough to scroll. *Regression:* no. *Source:*
   `assets/live.html:1136-1138, 1387-1404`.
 - **SE-C196** The heading says where the reader is: the screen's name on the list, the project's
-  name with a session open, and "Find" in Find. *Why:* on a phone it is the one line that says where
-  you are. *Regression:* no. *Source:* `assets/live.html:374, 1151, 1393, 1439, 1454, 1459`.
+  name with a session open, beside it the machine it runs on when a hosted router names one
+  (SE-C221), and "Find" in Find. *Why:* on a phone it is the one line that says where you are.
+  *Regression:* no. *Source:* `assets/live.html:374, 1151, 1393, 1439, 1454, 1459`.
 
 ### Layout and keyboard
 
@@ -2789,10 +2891,12 @@ the rewrite keeps the rule, not the defect.
 - **SE-C215** A capture of a real stream, handed to the test run, replays the same way, and a path
   that names no file fails rather than skipping. *Why:* it is a mistake to hear about, not a replay
   to skip in silence. *Regression:* no. *Source:* `scripts/check-live-ui.js:988-996`.
-- **SE-C216** The Markdown rules and the list's grouping rules are pinned by fixture files that the
-  web and both phones test against (`markdown-blocks.json`, `session-groups.json`). *Why:* the three
-  clients already disagree on numbered lists, joined paragraphs, quotes, unterminated fences and
-  heading levels, and one fixture is what keeps them from drifting again. *Regression:*
+- **SE-C216** The Markdown rules and the list's grouping rules, a hosted router's list headed per
+  machine included, are pinned by fixture files that the web and both phones test against
+  (`markdown-blocks.json`, `session-groups.json`). *Why:* the three clients disagreed on numbered
+  lists, joined paragraphs, quotes, unterminated fences and heading levels, and one fixture is what
+  keeps them from drifting again; lists and the per-machine heading were decided in the phones'
+  favour on 2026-10-05, and the rest in the web's. *Regression:*
   no. *Source:* `assets/live.html:675-744, 749-794`; plan, "The order of work". *Phones:* iOS
   `testMarkdownBlocksMatchTheWebView`, `testSessionsGroupLikeTheWebView`; Android
   `markdown blocks match the web view`, `sessions group like the web view`.

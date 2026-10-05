@@ -9,10 +9,21 @@
 //
 // Registered in harness/main.tsx. The reads Settings and the Overview already answer — /api/auth,
 // /api/setup/shim, /api/search — are theirs (harness/settings.ts, harness/overview.ts).
+//
+// `?router=hosted` stands for a hosted router instead: /api/auth says `server`, and the list is the
+// same sessions heard from several machines, a Windows one with a label long enough to be cut short
+// on a phone among them, and one row that names no machine, so the list is headed per machine
+// (SE-C219, SE-C220) and the open session names its own (SE-C221).
 import type { Asked } from './asked';
 import type { StreamEvent } from './fixtures';
+import { AUTH } from './settings';
 import type { ProjectTotals, Stats } from '~/data/live';
+import type { Auth } from '~/model/settings';
 import type { LiveOptions, Prompt, SessionRow, Status, StreamItem } from '~/model/session';
+
+/// Which router the harness stands for: a local one, on a Mac, or a hosted one hearing from the
+/// machines that run its agent. Asked for with `?router=`.
+export type HarnessRouter = 'local' | 'hosted';
 
 /// The router's clock, which every age on the list is measured on (SE-C43).
 const AT = Date.UTC(2026, 9, 5, 9, 0, 0);
@@ -141,6 +152,37 @@ export const SESSIONS: readonly SessionRow[] = [
     bytes: 2048,
   },
 ];
+
+/// The machines a hosted router hears from (src/machines.rs: `machine: {id, label}` on every row).
+const STUDIO = { id: '5f0c2a8e-3b1d-4c6f-9e7a-2d4b6c8e0f13', label: 'studio' };
+const LAPTOP = { id: '9b3e1d47-6a2c-4f8e-b1d3-7c5e9a0b2d46', label: 'Laptop' };
+const WINDOWS = { id: 'c41d07e2-8f3a-4b6d-a2e9-5d1c3b7f9e08', label: 'a-windows-build-box-whose-label-goes-on-long-enough-to-cut-short' };
+
+/// Where each session runs on the hosted router: the showcase and its project's siblings on one
+/// machine, so its tabs are those; another machine with a failed session, an ended one folded under
+/// "older" and the shelf; a Windows machine, its directory `C:\…`; and the older router's row,
+/// which names no machine.
+const ON: Readonly<Record<string, { readonly id: string; readonly label: string } | null>> = {
+  [SHOWCASE]: STUDIO,
+  'a1b2c3d4-0000-4000-8000-000000000002': STUDIO,
+  'a1b2c3d4-0000-4000-8000-000000000003': STUDIO,
+  'a1b2c3d4-0000-4000-8000-000000000004': LAPTOP,
+  'a1b2c3d4-0000-4000-8000-000000000005': LAPTOP,
+  'a1b2c3d4-0000-4000-8000-000000000006': WINDOWS,
+  'a1b2c3d4-0000-4000-8000-000000000007': LAPTOP,
+  'a1b2c3d4-0000-4000-8000-000000000008': null,
+};
+
+/// The same sessions as a hosted router lists them, each naming its machine.
+export const HOSTED_SESSIONS: readonly SessionRow[] = SESSIONS.map((r) => {
+  const machine = ON[r.session_id] ?? null;
+  if (!machine) return r;
+  const cwd = machine === WINDOWS && r.cwd ? `C:\\Users\\sample\\code\\${r.cwd.split('/').pop() ?? ''}` : r.cwd;
+  return { ...r, cwd, machine };
+});
+
+/// A hosted router's /api/auth: `server`, reached at its public address (src/auth.rs).
+export const HOSTED_AUTH: Auth = { ...AUTH, mode: 'server', from_loopback: false, public_url: 'https://router.example.com' };
 
 const t = (ago: number): string => new Date(AT - ago).toISOString();
 
@@ -282,12 +324,15 @@ const PROMPT: Prompt = {
 
 const json = (payload: unknown): Response => new Response(JSON.stringify(payload), { status: 200, headers: { 'Content-Type': 'application/json' } });
 
-/// The answer to one of the Sessions screen's GETs, or null for a read this file does not hold.
-export function sessionsRead(path: string, query: URLSearchParams): Response | null {
+/// The answer to one of the Sessions screen's GETs, or null for a read this file does not hold. A
+/// hosted router answers /api/auth too, which is otherwise Settings' (harness/settings.ts).
+export function sessionsRead(path: string, query: URLSearchParams, router: HarnessRouter = 'local'): Response | null {
   const only = (...allowed: string[]) => [...query.keys()].every((p) => allowed.includes(p));
+  const rows = router === 'hosted' ? HOSTED_SESSIONS : SESSIONS;
   const id = query.get('session') ?? '';
-  const listed = SESSIONS.some((s) => s.session_id === id);
-  if (path === '/api/live/sessions' && only()) return json(SESSIONS);
+  const listed = rows.some((s) => s.session_id === id);
+  if (router === 'hosted' && path === '/api/auth' && only()) return json(HOSTED_AUTH);
+  if (path === '/api/live/sessions' && only()) return json(rows);
   if (path === '/api/live/options' && only()) return json(OPTIONS);
   if (path === '/api/live/stats' && only('session') && listed) return json(STATS[id] ?? { model: 'claude-sonnet-4-5', total: 120_000, output: 4_000, cache_read: 90_000, turns: 3, cost: 0.42 });
   if (path === '/api/live/project' && only('cwd')) return json(query.get('cwd') === AR ? PROJECT : { sessions: 1, total: 120_000, turns: 3, cost: 0.42 });
@@ -295,14 +340,15 @@ export function sessionsRead(path: string, query: URLSearchParams): Response | n
   return null;
 }
 
-/// The harness's fetch with the Sessions screen's reads answered first: a GET this file holds is
-/// answered here, and kept in what the harness was asked; everything else goes on to `next`.
-export function withSessions(next: typeof fetch, asked: Asked): typeof fetch {
+/// The harness's fetch with the Sessions screen's reads answered first, as `router` would answer
+/// them: a GET this file holds is answered here, and kept in what the harness was asked; everything
+/// else goes on to `next`.
+export function withSessions(next: typeof fetch, asked: Asked, router: HarnessRouter = 'local'): typeof fetch {
   return async (input: RequestInfo | URL, init?: RequestInit) => {
     const href = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
     const url = new URL(href, globalThis.location?.href);
     const method = (init?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase();
-    const got = method === 'GET' ? sessionsRead(url.pathname, url.searchParams) : null;
+    const got = method === 'GET' ? sessionsRead(url.pathname, url.searchParams, router) : null;
     if (!got) return next(input, init);
     asked.answered.push(`${method} ${url.pathname}${url.search}`);
     return got;

@@ -165,6 +165,22 @@ describe('the feed', () => {
     expect(links.map((a) => [a.getAttribute('href'), a.getAttribute('target'), a.getAttribute('rel')])).toEqual([['https://example.com/a', '_blank', 'noopener noreferrer']]);
     expect(container).toHaveTextContent('[no](javascript:alert(1))');
   });
+
+  it('SE-C99: a numbered list is a real ordered list counting from 1, whatever numbers its source wrote, and bullets beside it are a list of their own', () => {
+    const { container } = draw(rows({ role: 'assistant', kind: 'text', text: '3. third\n7) seventh\n- a bullet\n\n10. after a blank' }));
+    const lists = [...container.querySelectorAll('[data-entry] ol, [data-entry] ul')];
+    expect(lists.map((l) => [l.tagName, [...l.querySelectorAll(':scope > li')].map((li) => li.textContent)])).toEqual([
+      ['OL', ['third', 'seventh']],
+      ['UL', ['a bullet']],
+      ['OL', ['after a blank']],
+    ]);
+    // Counted by the list itself from 1: no start, no value of the source's, nothing reversed.
+    for (const ol of container.querySelectorAll('ol')) {
+      expect([ol.getAttribute('start'), ol.hasAttribute('reversed'), [...ol.querySelectorAll('li[value]')].length]).toEqual([null, false, 0]);
+    }
+    // Its numbers hang in the list's own padding, so a phone's rail never cuts them off.
+    expect(block(FEED, '.list.ordered {')).toMatch(/padding-inline-start:\s*\$spacing-07/);
+  });
 });
 
 describe('the fold', () => {
