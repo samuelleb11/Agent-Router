@@ -19,6 +19,12 @@
 //! fake sessions would land there, and stay there as dead sockets once the lab kills the
 //! wrapper, until the router's janitor comes by. So such a build is refused before it is
 //! ever started (see [`wrapper_bin`]).
+//!
+//! Unix only: the fake child is a shell script, the channel a unix socket, the editor's
+//! close a signal. On Windows this file compiles to nothing; the pipe's own tests are in
+//! `src/windows.rs`.
+
+#![cfg(unix)]
 
 use std::io::{Read, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};

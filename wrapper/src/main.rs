@@ -46,19 +46,39 @@
 //! as the end (see `signals`).
 //!
 //! Install: move the real binary aside to `claude.real`, put this in its place.
+//!
+//! # On Windows
+//!
+//! The same relay, recorder and frames over other means (see `windows.rs`). The control
+//! socket is a named pipe, `\\.\pipe\agent-router-<user>-<session id>`, owner-only and
+//! closed to other machines. The records live in `%LOCALAPPDATA%\agent-router\sessions\`.
+//! In place of signals, a job object ends the CLI with this process, which the editor ends
+//! with `TerminateProcess`. Installed in place, the real binary is `claude.real.exe` beside
+//! a `claude.exe` that is this.
 
 use std::io::{ErrorKind, Read, Write};
+#[cfg(unix)]
 use std::net::Shutdown;
+#[cfg(unix)]
 use std::os::unix::net::{UnixListener, UnixStream};
+#[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
+#[cfg(windows)]
+use std::os::windows::io::AsRawHandle;
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::process::{ChildStdin, Command, Stdio};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+use windows::{move_records, serve_control};
+
 /// Where a wrapped session offers its control socket. Named by session id once known,
 /// so the router can address a session by the same id its transcript carries.
+#[cfg(unix)]
 const CONTROL_DIR: &str = "/tmp/agent-router-sessions";
 
 /// Test-only: publish into this directory instead of [`CONTROL_DIR`].
@@ -213,12 +233,73 @@ impl<W: Write> Shared<W> {
 }
 
 /// An absolute path to something runnable: what the editor hands a process wrapper.
+#[cfg(unix)]
 fn is_executable(p: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     p.is_absolute()
         && std::fs::metadata(p)
             .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
             .unwrap_or(false)
+}
+
+/// An absolute path to something runnable: what the editor hands a process wrapper. Windows
+/// has no mode bits; what it will run is told by the extension.
+#[cfg(windows)]
+fn is_executable(p: &Path) -> bool {
+    p.is_absolute()
+        && runs_as_a_program(p)
+        && std::fs::metadata(p).map(|m| m.is_file()).unwrap_or(false)
+}
+
+/// A name Windows runs as a program: `.exe` and `.com`, and the `.bat` and `.cmd` scripts
+/// an npm install puts on the path.
+#[cfg(any(windows, test))]
+fn runs_as_a_program(p: &Path) -> bool {
+    p.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| ["exe", "com", "bat", "cmd"].iter().any(|x| e.eq_ignore_ascii_case(x)))
+}
+
+/// What this binary is called when it stands in for the real one, should the system not
+/// say.
+#[cfg(unix)]
+const OWN_NAME: &str = "claude";
+#[cfg(windows)]
+const OWN_NAME: &str = "claude.exe";
+
+/// Where an in-place shim's real binary is parked: `claude` -> `claude.real`.
+#[cfg(unix)]
+fn real_beside(exe: PathBuf) -> PathBuf {
+    let mut p = exe.into_os_string();
+    p.push(REAL_SUFFIX);
+    PathBuf::from(p)
+}
+
+/// Where an in-place shim's real binary is parked: `claude.exe` -> `claude.real.exe`.
+#[cfg(windows)]
+fn real_beside(exe: PathBuf) -> PathBuf {
+    real_beside_keeping_extension(&exe)
+}
+
+/// `claude.exe` -> `claude.real.exe`: parked under a name that still ends in `.exe`, which is
+/// what Windows, and every policy on it, takes for a program. A name with no extension takes
+/// the suffix at the end, as on unix.
+#[cfg(any(windows, test))]
+fn real_beside_keeping_extension(exe: &Path) -> PathBuf {
+    match (exe.file_stem(), exe.extension()) {
+        (Some(stem), Some(ext)) => {
+            let mut name = stem.to_os_string();
+            name.push(REAL_SUFFIX);
+            name.push(".");
+            name.push(ext);
+            exe.with_file_name(name)
+        }
+        _ => {
+            let mut p = exe.as_os_str().to_owned();
+            p.push(REAL_SUFFIX);
+            PathBuf::from(p)
+        }
+    }
 }
 
 /// The directory this process publishes into, decided once.
@@ -228,11 +309,79 @@ fn control_dir() -> &'static Path {
 }
 
 /// [`CONTROL_DIR`], unless the test-only variable names an absolute directory.
+#[cfg(unix)]
 fn resolve_dir(test_dir: Option<std::ffi::OsString>) -> PathBuf {
     test_dir
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
         .unwrap_or_else(|| PathBuf::from(CONTROL_DIR))
+}
+
+/// The user's sessions directory (see [`sessions_dir_from`]), unless the test-only variable
+/// names an absolute directory. Empty when there is neither, and then nothing is published:
+/// see `main`.
+#[cfg(windows)]
+fn resolve_dir(test_dir: Option<std::ffi::OsString>) -> PathBuf {
+    test_dir
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| windows::sessions_dir().map(Path::to_path_buf))
+        .unwrap_or_default()
+}
+
+/// `%LOCALAPPDATA%\agent-router\sessions`, the directory every wrapper on Windows writes its
+/// records into and the router reads them from. Per user, because the profile it is in is:
+/// nobody else can read it. `%USERPROFILE%\AppData\Local` stands in for a missing
+/// `LOCALAPPDATA`, which is where that variable points. Neither one absolute: none.
+#[cfg(any(windows, test))]
+fn sessions_dir_from(
+    local_app_data: Option<std::ffi::OsString>,
+    user_profile: Option<std::ffi::OsString>,
+) -> Option<PathBuf> {
+    let base = local_app_data
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| {
+            user_profile
+                .map(PathBuf::from)
+                .filter(|p| p.is_absolute())
+                .map(|p| p.join("AppData").join("Local"))
+        })?;
+    Some(base.join("agent-router").join("sessions"))
+}
+
+/// `\\.\pipe\agent-router-<user>-<session id>`: where a session's control channel answers on
+/// Windows, a pipe name being what a socket path is on unix. `user` is already cut down by
+/// [`pipe_name_part`]. A lab run publishes under `…-<user>-lab-<tag>-<session id>` instead,
+/// `tag` naming its directory, so that it never answers under a name the router would take
+/// for a real session, as on unix its directory keeps it out of the router's.
+#[cfg(any(windows, test))]
+fn pipe_name(user: &str, lab: Option<&str>, session_id: &str) -> String {
+    match lab {
+        None => format!(r"\\.\pipe\agent-router-{user}-{session_id}"),
+        Some(tag) => format!(r"\\.\pipe\agent-router-{user}-lab-{tag}-{session_id}"),
+    }
+}
+
+/// The pipe's security descriptor, as SDDL. The DACL allows this user's SID everything and
+/// nobody else anything, with inherited entries blocked. An elevated process adds a high
+/// mandatory label with no-write-up, so that the same user's ordinary processes cannot type
+/// into an elevated CLI either, as on unix a socket made by root is out of the user's reach.
+#[cfg(any(windows, test))]
+fn owner_only_sddl(sid: &str, elevated: bool) -> String {
+    let label = if elevated { "S:(ML;;NW;;;HI)" } else { "" };
+    format!("D:P(A;;GA;;;{sid}){label}")
+}
+
+/// A piece of a pipe name: at most 64 characters, each one an ASCII letter or digit, `_` or
+/// `-`, and every other character an `_`. Applied to the Windows user name as
+/// `GetUserNameW` gives it (UTF-16, decoded lossily).
+#[cfg(any(windows, test))]
+fn pipe_name_part(raw: &str) -> String {
+    raw.chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+        .take(64)
+        .collect()
 }
 
 fn main() {
@@ -246,10 +395,8 @@ fn main() {
             p
         }
         _ => {
-            let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("claude"));
-            let mut p = exe.into_os_string();
-            p.push(REAL_SUFFIX);
-            PathBuf::from(p)
+            let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from(OWN_NAME));
+            real_beside(exe)
         }
     };
     if std::env::var_os("AGENT_ROUTER_WRAPPER_DEBUG").is_some() {
@@ -262,6 +409,13 @@ fn main() {
         eprintln!("claude-wrapper: {} not found; is the shim half-installed?", real.display());
         std::process::exit(127);
     }
+
+    // The editor's ends of stdin and stdout are this process's alone. Windows hands every
+    // inheritable handle to a child, and these came to us inheritable: the CLI, and every
+    // command it starts, would hold the editor's pipes open after this process is gone. And
+    // console events are left to the CLI from before it starts (see `windows::prepare`).
+    #[cfg(windows)]
+    windows::prepare();
 
     let mut child = match Command::new(&real)
         .args(&args)
@@ -278,7 +432,12 @@ fn main() {
     };
     // From here the editor's SIGTERM goes on to the CLI instead of ending this process
     // before its cleanup.
+    #[cfg(unix)]
     signals::forward_to(child.id());
+    // Windows has no SIGTERM to pass on: the editor ends this process outright. So the CLI is
+    // tied to it instead, and ends when it does.
+    #[cfg(windows)]
+    windows::tie_to(&child, &real);
 
     let dir = control_dir();
     let child_stdout = child.stdout.take().expect("piped");
@@ -305,10 +464,16 @@ fn main() {
             let mut src = child_stdout;
             let mut buf = [0u8; 64 * 1024];
             let mut scan: Vec<u8> = Vec::new();
-            let mut found = false;
+            // Nowhere to publish (Windows, with no profile directory to be had): nothing to
+            // look for, so no records and no control channel — a plain relay.
+            let mut found = !dir.is_absolute();
             let mut recorder = Some(Recorder::new(dir, Arc::clone(&current)));
             loop {
                 let n = match src.read(&mut buf) {
+                    // On Windows a zero-byte write reads as nothing too: only the CLI's end
+                    // gone is the end of its output.
+                    #[cfg(windows)]
+                    Ok(0) if !windows::ended(src.as_raw_handle()) => continue,
                     Ok(0) | Err(_) => break,
                     Ok(n) => n,
                 };
@@ -358,6 +523,7 @@ fn main() {
     };
 
     let status = child.wait();
+    #[cfg(unix)]
     signals::child_reaped();
     let drained_by = Instant::now() + DRAIN_GRACE;
     while !relay.is_finished() && Instant::now() < drained_by {
@@ -373,7 +539,8 @@ fn main() {
         remove_records(dir, &id);
     }
     // The child's end is this process's: its exit code, or the signal it died of when
-    // that was one passed on to it (see `signals`).
+    // that was one passed on to it (see `signals`). On Windows there is only the code.
+    #[cfg(unix)]
     if let Some(sig) = status.as_ref().ok().and_then(|s| s.signal()) {
         signals::die_of_if_passed_on(sig);
     }
@@ -399,6 +566,9 @@ fn pump_stdin(sink: &Shared<ChildStdin>) {
     let mut input = std::io::stdin();
     loop {
         let n = match input.read(&mut buf) {
+            // On Windows, as in the relay: a zero-byte write by the editor is not its EOF.
+            #[cfg(windows)]
+            Ok(0) if !windows::ended(input.as_raw_handle()) => continue,
             Ok(0) => break,
             Ok(n) => n,
             // A signal is not the end of the stream, and ending here closes the child's
@@ -523,9 +693,9 @@ fn hook_session(line: &[u8]) -> Option<String> {
     }
     let id = valid_id(field_bytes(line, br#""session_id":""#)?)?;
     let transcript = field_bytes(line, br#""transcript_path":""#)?;
-    transcript
-        .ends_with(format!("/{id}.jsonl").as_bytes())
-        .then_some(id)
+    // On Windows the path's separator is a backslash, which JSON writes as two.
+    let named = |sep: &str| transcript.ends_with(format!("{sep}{id}.jsonl").as_bytes());
+    (named("/") || (cfg!(windows) && named(r"\\"))).then_some(id)
 }
 
 /// The `can_use_tool` requests still waiting for an answer, oldest first.
@@ -824,6 +994,10 @@ fn write_atomic(path: &Path, body: &[u8]) -> std::io::Result<()> {
 /// no prompt may be open. A socket already under the new name is refused rather than
 /// replaced: it belongs to some other process, and taking its name would bring that
 /// session's messages here. Any other failure puts back what had moved.
+///
+/// Windows has its own, which takes the pipe name where this renames the socket (see
+/// `windows::move_records`).
+#[cfg(unix)]
 fn move_records(dir: &Path, old: &str, new: &str) -> std::io::Result<()> {
     if new == old || valid_id(new.as_bytes()).is_none() {
         return Err(std::io::Error::new(ErrorKind::InvalidInput, "not a session id to move to"));
@@ -916,6 +1090,9 @@ fn sniff_session_id(buf: &[u8]) -> Option<String> {
 ///
 /// Every failure here is swallowed. This is an addition to a session that works fine
 /// without it, and it must never be the reason one dies.
+///
+/// Windows serves a named pipe instead (see `windows::serve_control`).
+#[cfg(unix)]
 fn serve_control(dir: &Path, current: &Current, sink: &Sink, up: &Up) {
     if std::fs::create_dir_all(dir).is_err() {
         return;
@@ -929,6 +1106,7 @@ fn serve_control(dir: &Path, current: &Current, sink: &Sink, up: &Up) {
     }
 }
 
+#[cfg(unix)]
 fn serve_once(dir: &Path, current: &Current, sink: &Sink, up: &Up) {
     // Bound under the name lock, so a move cannot slip in between reading the name and
     // binding it.
@@ -978,12 +1156,26 @@ fn serve_once(dir: &Path, current: &Current, sink: &Sink, up: &Up) {
     }
 }
 
+/// A control connection, the unix socket's or the Windows pipe's: one frame read from it,
+/// the receipt written back, then the end.
+trait Conn: Read + Write {
+    /// No more either way, with the receipt written: the other end reads it, then the end.
+    fn hang_up(&mut self);
+}
+
+#[cfg(unix)]
+impl Conn for UnixStream {
+    fn hang_up(&mut self) {
+        let _ = self.shutdown(Shutdown::Both);
+    }
+}
+
 /// One control connection: a frame in, delivered whole or not at all, and `{"ok":…}` back.
-fn serve_connection(mut conn: UnixStream, sink: &Shared<ChildStdin>, up: &Shared<std::io::Stdout>) {
+fn serve_connection(mut conn: impl Conn, sink: &Shared<ChildStdin>, up: &Shared<std::io::Stdout>) {
     let frame = read_frame(&mut conn);
     let delivered = frame.as_deref().is_some_and(|frame| write_line(sink, frame));
     let _ = conn.write_all(if delivered { b"{\"ok\":true}\n" } else { b"{\"ok\":false}\n" });
-    let _ = conn.shutdown(Shutdown::Both);
+    conn.hang_up();
 
     // The host drew its own prompt when it saw the request and waits on its own UI; it
     // cannot learn we answered. A cancel echoing the same id is how a request is
@@ -1034,6 +1226,7 @@ fn read_frame(conn: &mut impl Read) -> Option<Vec<u8>> {
 /// Whether the socket file for the name in force is still there. Checked under the name
 /// lock, which a move holds throughout: "the old name is gone and the new one is not in
 /// place yet" is never observed, so a move is never taken for the file vanishing.
+#[cfg(unix)]
 fn socket_present(dir: &Path, current: &Current) -> bool {
     let slot = lock(current);
     slot.as_deref()
@@ -1081,6 +1274,9 @@ fn write_line(sink: &Shared<ChildStdin>, body: &[u8]) -> bool {
 /// std only, like the rest: a handler that does nothing but write the signal's number
 /// into a socket pair, and a thread that reads it and passes it on. If any of that cannot
 /// be set up the default stays in place, which is what there was before.
+///
+/// Windows has no signals to pass on; `windows::tie_to` is what stands in for this there.
+#[cfg(unix)]
 mod signals {
     use std::io::{ErrorKind, Read};
     use std::os::raw::c_int;
@@ -1255,6 +1451,10 @@ mod tests {
         assert_eq!(field(line, "\"nope\":\""), None);
     }
 
+    // The tests marked unix below are about the socket file, its directory and its moves;
+    // Windows moves a pipe name instead, and its tests are in src/windows.rs.
+
+    #[cfg(unix)]
     #[test]
     fn control_path_is_named_by_session() {
         let dir = Path::new(CONTROL_DIR);
@@ -1268,6 +1468,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_test_directory_is_honoured_only_when_absolute() {
         assert_eq!(resolve_dir(None), PathBuf::from(CONTROL_DIR));
@@ -1276,10 +1477,98 @@ mod tests {
         assert_eq!(resolve_dir(Some("/tmp/lab-1".into())), PathBuf::from("/tmp/lab-1"));
     }
 
+    // The names Windows uses, tested wherever the tests run: pure functions of their inputs.
+
+    #[test]
+    fn a_pipe_is_named_for_the_user_and_the_session() {
+        assert_eq!(pipe_name("alice", None, A), format!(r"\\.\pipe\agent-router-alice-{A}"));
+        assert_eq!(
+            pipe_name("alice", Some("cwlab-42-0"), A),
+            format!(r"\\.\pipe\agent-router-alice-lab-cwlab-42-0-{A}"),
+            "a lab run's names are its own"
+        );
+    }
+
+    #[test]
+    fn a_user_name_is_cut_down_to_what_a_pipe_name_holds() {
+        assert_eq!(pipe_name_part("alice"), "alice");
+        assert_eq!(pipe_name_part("Alice Martin"), "Alice_Martin");
+        assert_eq!(pipe_name_part("first.last@corp"), "first_last_corp");
+        assert_eq!(pipe_name_part(r"CORP\me"), "CORP_me");
+        assert_eq!(pipe_name_part("Jérôme-O_K"), "J_r_me-O_K", "one per character, not per byte");
+        assert_eq!(pipe_name_part("\u{fffd}x"), "_x", "what a lossy decode makes of a lone surrogate");
+        assert_eq!(pipe_name_part(""), "");
+        assert_eq!(pipe_name_part(&"x".repeat(100)), "x".repeat(64));
+    }
+
+    #[test]
+    fn the_pipe_is_this_users_alone_and_an_elevated_ones_only_elevated_processes_write() {
+        let sid = "S-1-5-21-1-2-3-1001";
+        assert_eq!(owner_only_sddl(sid, false), "D:P(A;;GA;;;S-1-5-21-1-2-3-1001)");
+        assert_eq!(
+            owner_only_sddl(sid, true),
+            "D:P(A;;GA;;;S-1-5-21-1-2-3-1001)S:(ML;;NW;;;HI)"
+        );
+    }
+
+    #[test]
+    fn the_windows_sessions_directory_is_under_local_app_data() {
+        // Absolute wherever the tests run, as the variables are on Windows.
+        let base = std::env::temp_dir();
+        let local = base.join("Local");
+        let profile = base.join("me");
+        let in_profile = profile.join("AppData").join("Local").join("agent-router").join("sessions");
+        assert_eq!(
+            sessions_dir_from(Some(local.clone().into()), Some(profile.clone().into())),
+            Some(local.join("agent-router").join("sessions"))
+        );
+        assert_eq!(
+            sessions_dir_from(None, Some(profile.clone().into())),
+            Some(in_profile.clone()),
+            "the profile's own, should LOCALAPPDATA be missing"
+        );
+        assert_eq!(
+            sessions_dir_from(Some("relative".into()), Some(profile.into())),
+            Some(in_profile),
+            "or relative"
+        );
+        assert_eq!(sessions_dir_from(Some("relative".into()), Some("".into())), None);
+        assert_eq!(sessions_dir_from(None, None), None);
+    }
+
+    #[test]
+    fn an_in_place_shim_on_windows_finds_the_real_binary_as_claude_real_exe() {
+        let dir = std::env::temp_dir();
+        assert_eq!(real_beside_keeping_extension(&dir.join("claude.exe")), dir.join("claude.real.exe"));
+        assert_eq!(real_beside_keeping_extension(&dir.join("CLAUDE.EXE")), dir.join("CLAUDE.real.EXE"));
+        assert_eq!(real_beside_keeping_extension(&dir.join("claude")), dir.join("claude.real"));
+    }
+
+    #[test]
+    fn on_windows_only_a_program_is_taken_for_the_real_binary() {
+        for runs in ["claude.exe", "CLAUDE.EXE", "x.com", "claude.cmd", "claude.BAT"] {
+            assert!(runs_as_a_program(Path::new(runs)), "{runs}");
+        }
+        for not in ["cli.js", "settings.json", "claude", "claude.exe.real", "--input-format"] {
+            assert!(!runs_as_a_program(Path::new(not)), "{not}");
+        }
+    }
+
+    #[test]
+    fn a_hook_names_a_session_from_a_backslashed_transcript_path_only_on_windows() {
+        // As JSON writes a Windows path: every backslash doubled.
+        let line = hook(A, false).replace(
+            &format!("/Users/me/.claude/projects/-work/{A}.jsonl"),
+            &format!(r"C:\\Users\\me\\.claude\\projects\\C--work\\{A}.jsonl"),
+        );
+        assert_eq!(hook_session(line.as_bytes()).is_some(), cfg!(windows));
+    }
+
     // Frames in the shapes CLI 2.1.284 writes them (key order as in the recordings).
 
     const A: &str = "aaaaaaaa-0000-4000-8000-000000000001";
     const B: &str = "bbbbbbbb-0000-4000-8000-000000000002";
+    #[cfg(unix)]
     const C: &str = "cccccccc-0000-4000-8000-000000000003";
     const P: &str = "eeeeeeee-0000-4000-8000-00000000000e";
 
@@ -1478,6 +1767,7 @@ mod tests {
         Some(body.lines().map(|l| field(l, "\"request_id\":\"").unwrap()).collect())
     }
 
+    #[cfg(unix)]
     fn current(r: &Recorder) -> Option<String> {
         lock(&r.current).clone()
     }
@@ -1533,6 +1823,7 @@ mod tests {
         assert_eq!(pending_ids(&s.file(A, "pending")).unwrap(), ["r-after"]);
     }
 
+    #[cfg(unix)]
     #[test]
     fn an_init_naming_another_session_moves_socket_and_records() {
         let s = Scratch::new();
@@ -1549,6 +1840,7 @@ mod tests {
 
     /// The fallback, for a CLI that does not name the new session in a `system/init` after
     /// a reset (every one seen so far does; see the test after this one).
+    #[cfg(unix)]
     #[test]
     fn without_an_init_a_reset_is_followed_to_the_session_the_next_main_thread_hook_names() {
         let s = Scratch::new();
@@ -1572,12 +1864,14 @@ mod tests {
     }
 
     /// The result the CLI writes for `/clear`, keys in its order: `type` comes late.
+    #[cfg(unix)]
     fn clear_result(session_id: &str) -> String {
         format!(
             r#"{{"is_error":false,"duration_api_ms":0,"num_turns":0,"stop_reason":null,"session_id":"{session_id}","total_cost_usd":0,"subtype":"success","result":"","local_command":"clear","type":"result","duration_ms":8,"uuid":"u-2"}}"#
         )
     }
 
+    #[cfg(unix)]
     #[test]
     fn after_clear_the_files_move_on_the_init_that_names_the_new_session() {
         // What CLI 2.1.278, .280 and .284 write for /clear with no hooks registered: the
@@ -1787,6 +2081,7 @@ mod tests {
         assert_eq!(conn.0.len(), 1, "what came after the limit was left unread");
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_move_that_fails_after_a_reset_is_tried_again_by_the_next_hook() {
         let s = Scratch::new();
@@ -1799,6 +2094,7 @@ mod tests {
         assert_eq!(current(&r).as_deref(), Some(B), "still armed, and now it goes through");
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_move_refuses_a_name_that_is_already_taken_and_keeps_the_old_one() {
         let s = Scratch::new();
