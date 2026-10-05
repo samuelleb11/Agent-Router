@@ -102,9 +102,9 @@ data class LiveSession(
 ) {
     val shortId: String get() = sessionId.take(8)
 
-    /** The last path component of the working directory, or the project slug. */
+    /** The last segment of the working directory, a Windows path's included, else the router's own name for the project (SE-C23). */
     val projectName: String
-        get() = cwd?.trimEnd('/')?.substringAfterLast('/')?.takeIf { it.isNotEmpty() } ?: project
+        get() = cwd?.split('/', '\\')?.lastOrNull { it.isNotEmpty() } ?: project.ifEmpty { "—" }
 
     val label: String get() = title ?: shortId
 

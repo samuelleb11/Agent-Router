@@ -11,31 +11,35 @@ struct SessionGroups: Equatable {
         var id: String { name }
         var live: Bool { sessions.contains(where: \.isLive) }
         var newest: Date { sessions.map(\.lastActivity).max() ?? .distantPast }
-        /// The header's dot: the most pressing thing any of its sessions is doing — waiting
-        /// on you, then an error, then a stall, then work, then idle — and the empty ring
-        /// only once every one of them has ended. One ranking on the web view and both
-        /// phones, so a project reads the same wherever it is looked at: a stalled or failed
-        /// session is not hidden behind the work beside it. The halo is whether anything in
-        /// it is live, as on the web view. From an older router, whose rows name no
-        /// activity, simply whether anything is live, as it always was.
+        /// The heading's tone: the most pressing thing any of its sessions is doing — waiting
+        /// on you, then an error, then a stall, then work, then idle — and the ended ring only
+        /// once every one of them has ended. One ranking on the web view and both phones, so a
+        /// project reads the same wherever it is looked at: a stalled or failed session is not
+        /// hidden behind the work beside it. Nil, the plain neutral dot, when nothing in it
+        /// says anything this build ranks: an activity it does not know outranks nothing and
+        /// has not ended (SE-C18). From an older router, whose rows name no activity, busy
+        /// while anything is live and idle otherwise, as it always was (SE-C19). The web's
+        /// `groupTone`, which fixtures/live/session-groups.json holds all three clients to.
+        var tone: SessionTone? {
+            guard sessions.contains(where: { $0.activity != nil }) else { return live ? .busy : .idle }
+            let tones = sessions.map(\.rankedTone)
+            for tone in [SessionTone.attention, .error, .warn, .busy, .idle] where tones.contains(tone) { return tone }
+            return !sessions.isEmpty && tones.allSatisfy({ $0 == .closed }) ? .closed : nil
+        }
+
+        /// The heading's dot. The halo is whether anything in it is live, as on the web view; the
+        /// plain neutral dot is drawn gray, as every neutral dot is in this palette.
         var look: StateLook {
-            guard sessions.contains(where: { $0.activity != nil }) else {
-                return live ? StateLook(color: StateColor.of(tone: .busy), hollow: false, halo: true, label: "working")
-                            : StateLook(color: StateColor.of(tone: .idle), hollow: false, halo: false, label: "idle")
+            let label: String
+            switch tone {
+            case .closed?: return StateLook(color: StateColor.of(tone: .closed), hollow: true, halo: false, label: "ended")
+            case .attention?: label = "waiting for you"
+            case .error?: label = "failed"
+            case .warn?: label = "stalled"
+            case .busy?: label = "working"
+            default: label = "idle"
             }
-            let tones = sessions.map { SessionTone.effective($0.tone, $0.activity) }
-            let ranked: [(SessionTone, String)] = [
-                (.attention, "waiting for you"), (.error, "failed"), (.warn, "stalled"), (.busy, "working"),
-            ]
-            for (tone, label) in ranked where tones.contains(tone) {
-                return StateLook(color: StateColor.of(tone: tone), hollow: false, halo: live, label: label)
-            }
-            if tones.allSatisfy({ $0 == .closed }) {
-                return StateLook(color: StateColor.of(tone: .closed), hollow: true, halo: false, label: "ended")
-            }
-            // Idle: some session is still open with its turn over — or says something this
-            // build does not know, which is neutral, and no reason to call the project ended.
-            return StateLook(color: StateColor.of(tone: .idle), hollow: false, halo: live, label: "idle")
+            return StateLook(color: StateColor.of(tone: tone ?? .idle), hollow: false, halo: live, label: label)
         }
     }
 
@@ -45,13 +49,20 @@ struct SessionGroups: Equatable {
     /// Put away by the reader, and not showing life since.
     let archived: [LiveSession]
 
-    static let window: TimeInterval = 12 * 3600
+    /// Quiet for longer than this folds a session under "older", and keeps it out of the tabs.
+    static let windowMs = 12 * 3600 * 1000
+
+    /// How long since a row last moved, in milliseconds: on the router's clock when the row
+    /// carries it, so a phone whose clock is off folds and keeps what the laptop does, and on
+    /// this phone's otherwise (SE-C43).
+    static func quietMs(_ r: LiveSession, now: Date) -> Int {
+        (r.asOfMs ?? Int((now.timeIntervalSince1970 * 1000).rounded())) - r.lastActivityMs
+    }
 
     /// A session belongs on screen if it has moved recently or is doing something now.
     /// Used for ordering the visible list, not for deciding what is on the shelf.
     static func isCurrent(_ r: LiveSession, now: Date) -> Bool {
-        r.isLive || r.state == "working" || r.state == "ask"
-            || now.timeIntervalSince(r.lastActivity) <= window
+        r.isLive || r.state == "working" || r.state == "ask" || quietMs(r, now: now) <= windowMs
     }
 
     static func build(_ rows: [LiveSession], now: Date = .now) -> SessionGroups {
@@ -65,7 +76,7 @@ struct SessionGroups: Equatable {
         // A session at work or waiting on you is never folded away, however long ago it
         // last wrote: a question can wait for hours, and a busy session can go minutes
         // without writing a line — the transcript is silent while the model thinks.
-        let isRecent = { (r: LiveSession) in r.isLive || now.timeIntervalSince(r.lastActivity) <= window }
+        let isRecent = { (r: LiveSession) in r.isLive || quietMs(r, now: now) <= windowMs }
         let recent = rest.filter(isRecent)
         let older = rest.filter { !isRecent($0) }
         return SessionGroups(recent: group(recent), older: group(older),
@@ -76,9 +87,42 @@ struct SessionGroups: Equatable {
     /// top whenever it moves.
     private static func group(_ rows: [LiveSession]) -> [Project] {
         let by = Dictionary(grouping: rows, by: \.projectName)
-        return by.keys.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }.map { name in
+        return by.keys.sorted(by: inWebOrder).map { name in
             Project(name: name, sessions: by[name]!.sorted { $0.lastActivityMs > $1.lastActivityMs })
         }
+    }
+
+    /// The web view's order for names, its `localeCompare`: case aside at first, so "alpha"
+    /// comes before "Beta", and only then lowercase before uppercase, so two projects whose
+    /// names differ only in case keep a fixed order, "docs" before "Docs" (SE-C24).
+    static func inWebOrder(_ a: String, _ b: String) -> Bool {
+        let order = a.localizedCompare(b)
+        return order == .orderedSame ? a < b : order == .orderedAscending
+    }
+}
+
+extension SessionTone {
+    /// The tone of an older router's `state`, from before rows named their activity.
+    static func of(state: String) -> SessionTone? {
+        switch state {
+        case "working", "tool": .busy
+        case "ask": .attention
+        case "stalled": .warn
+        case "failed": .error
+        case "idle": .idle
+        default: nil
+        }
+    }
+}
+
+extension LiveSession {
+    /// What this row brings to its project's heading: the router's tone when it is one this
+    /// build knows, else its activity's — none for an activity this build does not know — and
+    /// only with no activity at all, its legacy state's (SE-C2, SE-C3).
+    var rankedTone: SessionTone? {
+        if let tone, tone.isKnown { return tone }
+        if let activity { return activity.isKnown ? activity.tone : nil }
+        return SessionTone.of(state: state)
     }
 }
 

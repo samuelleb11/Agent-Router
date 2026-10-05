@@ -133,8 +133,9 @@ struct RichText: View {
                 case .paragraph(let s):
                     Text(Markdown.inline(s)).textSelection(.enabled)
                 case .heading(let level, let s):
+                    // The level the web draws, `#` the third and `##` the fourth (SE-C98).
                     Text(Markdown.inline(s))
-                        .font(level <= 2 ? .headline : .subheadline.weight(.semibold))
+                        .font(level <= 4 ? .headline : .subheadline.weight(.semibold))
                         .padding(.top, 2)
                 case .bullets(let items):
                     VStack(alignment: .leading, spacing: 3) {

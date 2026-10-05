@@ -559,16 +559,19 @@ final class LiveTests: XCTestCase {
         XCTAssertTrue(AskAnswers.compose(qs, ["Name?": .init()]).parts.isEmpty)
     }
 
+    /// The web view's blocks, `#` at the level it draws (SE-C98), each line a paragraph of its
+    /// own (SE-C103). fixtures/live/markdown-blocks.json holds the rest (SharedFixtureTests); a
+    /// numbered list stays numbered here, pending decision F.
     func testMarkdownBlocksMatchTheWebView() {
         let src = "# Title\nSome **bold** text\n\n- one\n- two\n\n1. first\n2) second\n\n> quoted\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n```\ncode\n```\n| not | a table |"
         let b = Markdown.blocks(src)
         XCTAssertEqual(b, [
-            .heading(1, "Title"), .paragraph("Some **bold** text"),
+            .heading(3, "Title"), .paragraph("Some **bold** text"),
             .bullets(["one", "two"]), .numbered(["first", "second"]),
             .quote("quoted"), .table([["a", "b"], ["1", "2"]]),
             .code("code"), .paragraph("| not | a table |"),
         ])
-        XCTAssertEqual(Markdown.blocks("plain\nlines"), [.paragraph("plain\nlines")])
+        XCTAssertEqual(Markdown.blocks("plain\nlines"), [.paragraph("plain"), .paragraph("lines")])
     }
 
     func testSwitchPayloadsDecode() throws {
@@ -582,11 +585,13 @@ final class LiveTests: XCTestCase {
         XCTAssertEqual(String(decoding: body, as: UTF8.self).contains(#""effort":"xhigh""#), true)
     }
 
+    /// A fence is code, its language tag dropped (SE-C93); an unterminated one is not code, and
+    /// its backticks stay prose, as on the web view (SE-C94).
     func testCodeFencesSplitOutOfProse() {
-        let segs = Markdown.split("Run this:\n```sh\nls -la\n```\nthen **stop**.")
-        XCTAssertEqual(segs, [.prose("Run this:"), .code("ls -la"), .prose("then **stop**.")])
-        XCTAssertEqual(Markdown.split("plain"), [.prose("plain")])
-        XCTAssertEqual(Markdown.split("```\nunterminated"), [.code("unterminated")])
+        let blocks = Markdown.blocks("Run this:\n```sh\nls -la\n```\nthen **stop**.")
+        XCTAssertEqual(blocks, [.paragraph("Run this:"), .code("ls -la"), .paragraph("then **stop**.")])
+        XCTAssertEqual(Markdown.blocks("plain"), [.paragraph("plain")])
+        XCTAssertEqual(Markdown.blocks("```\nunterminated"), [.paragraph("```"), .paragraph("unterminated")])
         XCTAssertEqual(String(Markdown.inline("a **b** c").characters), "a b c", "inline markdown is styling, not text")
     }
 }

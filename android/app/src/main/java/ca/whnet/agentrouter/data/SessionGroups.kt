@@ -19,33 +19,42 @@ data class SessionGroups(
         val newest: Long get() = sessions.maxOfOrNull { it.lastActivityMs } ?: 0
 
         /**
-         * The heading's dot, ranked alike on the web view, the iPhone and here: the most
+         * The heading's tone, ranked alike on the web view, the iPhone and here: the most
          * pressing of the project's sessions — waiting on you, then failed, then gone quiet,
          * then at work, then idle — so a project never reads green while something in it is
-         * blocked on you or broken. The empty ring only once every session in it has ended:
-         * one idle session still running is a filled dot. The halo while anything is live.
-         *
-         * An older router says nothing about what its sessions are doing, so there the dot
-         * is what it always was: plain busy while something is live, and none otherwise.
+         * blocked on you or broken. `closed`, the empty ring, only once every session in it has
+         * ended: one idle session still running is a filled dot. Null, the plain neutral dot,
+         * when nothing in it says anything this app ranks: an activity it does not know
+         * outranks nothing and has not ended (SE-C18). From an older router, which says
+         * nothing about what its sessions are doing, busy while something is live and idle
+         * otherwise (SE-C19). The web's `groupTone`, which fixtures/live/session-groups.json
+         * holds all three clients to.
+         */
+        val tone: String?
+            get() {
+                if (sessions.none { it.activity != null }) return if (live) "busy" else "idle"
+                val tones = sessions.map { it.rankedTone }
+                RANK.firstOrNull { it in tones }?.let { return it }
+                return if (sessions.isNotEmpty() && tones.all { it == "closed" }) "closed" else null
+            }
+
+        /**
+         * The heading's dot, in its [tone], with the halo while anything is live; the plain
+         * neutral dot is gray, as every neutral dot is here. An older router's project with
+         * nothing live has no dot at all, as it never had (SE-C19).
          */
         val dot: DotLook?
             get() {
-                if (sessions.none { it.activity != null }) {
-                    return if (live) DotLook(StateColor.GREEN, active = true) else null
+                if (sessions.none { it.activity != null } && !live) return null
+                return when (val t = tone) {
+                    "closed" -> DotLook(StateColor.GRAY, hollow = true)
+                    else -> DotLook(t?.let { StateColor.ofTone(it) } ?: StateColor.GRAY, active = live)
                 }
-                val running = sessions.filterNot { it.isClosed }
-                if (running.isEmpty()) return DotLook(StateColor.GRAY, hollow = true)
-                val said = running.map { it.color }.toSet()
-                return DotLook(RANKED.firstOrNull { it in said } ?: StateColor.GRAY, active = live)
             }
 
         private companion object {
-            /**
-             * A heading's colours, most pressing first: waiting on you, failed, stalled, at
-             * work. Anything else still running — idle, or an activity this app does not
-             * know — is the neutral gray after them.
-             */
-            val RANKED = listOf(StateColor.ORANGE, StateColor.RED, StateColor.YELLOW, StateColor.GREEN)
+            /** A heading's tones, most pressing first. */
+            val RANK = listOf("attention", "error", "warn", "busy", "idle")
         }
     }
 
@@ -70,7 +79,14 @@ data class SessionGroups(
          * always was.
          */
         fun isRecent(r: LiveSession, now: Long): Boolean =
-            r.active || now - r.lastActivityMs <= WINDOW_MS
+            r.active || quietMs(r, now) <= WINDOW_MS
+
+        /**
+         * How long since a row last moved: on the router's clock when the row carries it, so a
+         * phone whose clock is off folds and keeps what the laptop does, and on this phone's
+         * otherwise (SE-C43).
+         */
+        fun quietMs(r: LiveSession, now: Long): Long = (r.asOfMs ?: now) - r.lastActivityMs
 
         fun build(rows: List<LiveSession>, now: Long = System.currentTimeMillis()): SessionGroups {
             // `archived` arrives from the router already meaning "put away, and quiet ever
@@ -112,16 +128,76 @@ data class SessionGroups(
         /**
          * Projects alphabetically, so a project keeps its place instead of jumping to the
          * top whenever it moves. Sessions within one newest-first — there, recency is what
-         * you are choosing between.
+         * you are choosing between. Sorted as a list, as the machines are: through a sorted
+         * map, two names that differ only in case were one key, and one project's sessions
+         * were dropped.
          */
         private fun group(rows: List<LiveSession>): List<Project> =
             rows.groupBy { it.projectName }
-                .toSortedMap(String.CASE_INSENSITIVE_ORDER)
+                .toList()
+                .sortedWith(compareBy(WEB_ORDER) { it.first })
                 .map { (name, sessions) ->
                     Project(name, sessions.sortedByDescending { it.lastActivityMs })
                 }
+
+        /**
+         * The web view's order for names, its `localeCompare`, which is ICU's collation, as far
+         * as project names need it: case aside at first, so "alpha" comes before "Beta";
+         * punctuation before digits before letters, in ICU's order of punctuation, `_` before
+         * `-` before `.`; a name before any longer name it starts; and only then lowercase
+         * before uppercase, so "docs" comes before "Docs" (SE-C24). A letter outside ASCII
+         * sorts after every ASCII one, where ICU would put an accented letter beside its own.
+         */
+        val WEB_ORDER: Comparator<String> = Comparator { a, b ->
+            for (i in 0 until minOf(a.length, b.length)) {
+                val d = weight(a[i]) - weight(b[i])
+                if (d != 0) return@Comparator d
+            }
+            if (a.length != b.length) return@Comparator a.length - b.length
+            for (i in a.indices) {
+                if (a[i] != b[i]) return@Comparator if (a[i].isLowerCase()) -1 else 1
+            }
+            0
+        }
+
+        /** ICU's order of the printable ASCII characters, case aside. */
+        private const val ICU_ASCII = " _-,;:!?.'\"()[]{}@*/\\&#%`^+<=>|~\$0123456789abcdefghijklmnopqrstuvwxyz"
+
+        private fun weight(c: Char): Int {
+            val lower = c.lowercaseChar()
+            val i = ICU_ASCII.indexOf(lower)
+            return when {
+                i >= 0 -> i
+                c.code < 0x80 -> -1
+                else -> 0x10000 + lower.code
+            }
+        }
     }
 }
+
+/**
+ * What a row brings to its project's heading: the router's tone when it is one of the six,
+ * else its activity's — none for an activity this app does not know — and only with no
+ * activity at all, its legacy state's (SE-C2, SE-C3).
+ */
+val LiveSession.rankedTone: String?
+    get() = when {
+        tone in TONES -> tone
+        activity != null -> ACTIVITY_TONE[activity]
+        else -> STATE_TONE[state]
+    }
+
+private val TONES = setOf("busy", "attention", "warn", "error", "idle", "closed")
+
+private val ACTIVITY_TONE = mapOf(
+    Activity.GENERATING to "busy", Activity.TOOL to "busy", Activity.BACKGROUND to "busy",
+    Activity.WAITING to "attention", Activity.STALLED to "warn", Activity.FAILED to "error",
+    Activity.IDLE to "idle", Activity.CLOSED to "closed",
+)
+
+private val STATE_TONE = mapOf(
+    "working" to "busy", "tool" to "busy", "ask" to "attention", "stalled" to "warn", "failed" to "error", "idle" to "idle",
+)
 
 /** What a session's state means, as a colour role the theme resolves. */
 enum class StateColor { GREEN, ORANGE, YELLOW, RED, PURPLE, GRAY;

@@ -1,0 +1,456 @@
+{
+  "about": [
+    "Transcript Markdown as the web console reads it (md() in ui/src/model/markdown.ts), the reference for both phones: docs/session-liveness.md, 'Client presentation policy'; decision F in docs/web-console-carbon.md; SE-C90 to SE-C104 in docs/web-console-contracts.md.",
+    "Read by ui/src/model/shared-fixtures.spec.ts, ios/AgentRouter/Tests/SharedFixtureTests.swift and android/app/src/test/java/ca/whnet/agentrouter/SharedFixtureTest.kt. Each maps its own client's blocks to the shape below and compares them with `expected`.",
+    "`expected` is generated from the web's model, never written by hand: edit a case's name, input or pending, then in ui/ run `UPDATE_SHARED_FIXTURES=1 pnpm exec vitest run src/model/shared-fixtures.spec.ts`.",
+    "`pending` marks a case the clients disagree on where a phone would lose information by matching the web. Every suite skips it, by name, until it is decided; `expected` still records what the web does.",
+    "A block is one of:",
+    "{type: paragraph, runs}: one line of prose, its whitespace at the start kept.",
+    "{type: heading, level, runs}: level is the level the web draws, # as 3, ## as 4, ### as 5, and deeper as 6.",
+    "{type: list, ordered, items}: one run list per item; ordered is whether the items are drawn numbered.",
+    "{type: quote, runs}",
+    "{type: code, lang, text}: text is verbatim; lang is the fence's language tag, null when the client drops it, as every client does today.",
+    "{type: table, head, rows}: head is a list of cells, rows a list of rows of cells, and a cell is a list of runs.",
+    "Runs are the inline formatting of a line, an item or a cell, flattened: {text}, with bold, italic and code present and true when they apply, and href when the text is a link. Adjacent runs with the same styles are merged, and empty runs are left out."
+  ],
+  "cases": [
+    {
+      "name": "a line of prose is a paragraph, and its inline runs keep their styles",
+      "input": "Some **bold**, *italic* and `code`, with a [link](https://example.com/docs).",
+      "expected": [
+        {"type": "paragraph", "runs": [{"text": "Some "}, {"text": "bold", "bold": true}, {"text": ", "}, {"text": "italic", "italic": true}, {"text": " and "}, {"text": "code", "code": true}, {"text": ", with a "}, {"text": "link", "href": "https://example.com/docs"}, {"text": "."}]}
+      ]
+    },
+    {
+      "name": "each line is a paragraph of its own: consecutive lines are not joined, and blank lines add nothing (SE-C103)",
+      "input": "plain\nlines\n\n\nthird",
+      "expected": [
+        {"type": "paragraph", "runs": [{"text": "plain"}]},
+        {"type": "paragraph", "runs": [{"text": "lines"}]},
+        {"type": "paragraph", "runs": [{"text": "third"}]}
+      ]
+    },
+    {
+      "name": "a paragraph keeps the whitespace that starts its line",
+      "input": "  indented line\n\tand a tab",
+      "expected": [
+        {"type": "paragraph", "runs": [{"text": "  indented line"}]},
+        {"type": "paragraph", "runs": [{"text": "\tand a tab"}]}
+      ]
+    },
+    {
+      "name": "# is the third heading level, ## the fourth, ### the fifth and anything deeper the sixth (SE-C98)",
+      "input": "# a\n## b\n### c\n#### d\n##### e\n###### f",
+      "expected": [
+        {"type": "heading", "level": 3, "runs": [{"text": "a"}]},
+        {"type": "heading", "level": 4, "runs": [{"text": "b"}]},
+        {"type": "heading", "level": 5, "runs": [{"text": "c"}]},
+        {"type": "heading", "level": 6, "runs": [{"text": "d"}]},
+        {"type": "heading", "level": 6, "runs": [{"text": "e"}]},
+        {"type": "heading", "level": 6, "runs": [{"text": "f"}]}
+      ]
+    },
+    {
+      "name": "seven #, a # with no space after it, a lone # and a # that does not start its line are prose (SE-C98)",
+      "input": "####### seven\n#nospace\n#\n  # indented",
+      "expected": [
+        {"type": "paragraph", "runs": [{"text": "####### seven"}]},
+        {"type": "paragraph", "runs": [{"text": "#nospace"}]},
+        {"type": "paragraph", "runs": [{"text": "#"}]},
+        {"type": "paragraph", "runs": [{"text": "  # indented"}]}
+      ]
+    },
+    {
+      "name": "a heading keeps its inline formatting, and any space or tab may follow its #",
+      "input": "## Step **two**: run `make`\n#\tTabbed title",
+      "expected": [
+        {"type": "heading", "level": 4, "runs": [{"text": "Step "}, {"text": "two", "bold": true}, {"text": ": run "}, {"text": "make", "code": true}]},
+        {"type": "heading", "level": 3, "runs": [{"text": "Tabbed title"}]}
+      ]
+    },
+    {
+      "name": "- and * make one flat list, indented or not: nothing nests (SE-C99)",
+      "input": "- one\n* two\n  - three\n    * four",
+      "expected": [
+        {"type": "list", "ordered": false, "items": [[{"text": "one"}], [{"text": "two"}], [{"text": "three"}], [{"text": "four"}]]}
+      ]
+    },
+    {
+      "name": "a blank line or any other line ends a list (SE-C99)",
+      "input": "- a\n\n- b\nprose\n- c\n## heading\n- d",
+      "expected": [
+        {"type": "list", "ordered": false, "items": [[{"text": "a"}]]},
+        {"type": "list", "ordered": false, "items": [[{"text": "b"}]]},
+        {"type": "paragraph", "runs": [{"text": "prose"}]},
+        {"type": "list", "ordered": false, "items": [[{"text": "c"}]]},
+        {"type": "heading", "level": 4, "runs": [{"text": "heading"}]},
+        {"type": "list", "ordered": false, "items": [[{"text": "d"}]]}
+      ]
+    },
+    {
+      "name": "the whitespace after a list marker is not part of the item, and a lone - is prose",
+      "input": "-   wide gap\n-\ttab\n*\u00a0no-break space\n-",
+      "expected": [
+        {"type": "list", "ordered": false, "items": [[{"text": "wide gap"}], [{"text": "tab"}], [{"text": "no-break space"}]]},
+        {"type": "paragraph", "runs": [{"text": "-"}]}
+      ]
+    },
+    {
+      "name": "a * list marker is never read as emphasis (SE-C97)",
+      "input": "* item *with* stars",
+      "expected": [
+        {"type": "list", "ordered": false, "items": [[{"text": "item "}, {"text": "with", "italic": true}, {"text": " stars"}]]}
+      ]
+    },
+    {
+      "name": "a list item may look like a heading or a quote and stays an item",
+      "input": "- # not a heading\n- > not a quote",
+      "expected": [
+        {"type": "list", "ordered": false, "items": [[{"text": "# not a heading"}], [{"text": "> not a quote"}]]}
+      ]
+    },
+    {
+      "name": "a numbered item keeps its text but not its number, and a blank line starts another list (SE-C99)",
+      "input": "1. first\n2) second\n10. tenth\n\n3. after a blank",
+      "pending": "decision F — the web draws two bulleted lists and drops the numbers; both phones draw two numbered lists, counting 1., 2., 3. and then 1. again, never the source's own numbers",
+      "expected": [
+        {"type": "list", "ordered": false, "items": [[{"text": "first"}], [{"text": "second"}], [{"text": "tenth"}]]},
+        {"type": "list", "ordered": false, "items": [[{"text": "after a blank"}]]}
+      ]
+    },
+    {
+      "name": "bullets and numbers mixed make one list (SE-C99)",
+      "input": "- one\n2. two\n* three",
+      "pending": "decision F — the web draws one bulleted list of three items; both phones split it into a bulleted list, a numbered list of one (1. two) and another bulleted list",
+      "expected": [
+        {"type": "list", "ordered": false, "items": [[{"text": "one"}], [{"text": "two"}], [{"text": "three"}]]}
+      ]
+    },
+    {
+      "name": "each quoted line is a quote of its own, the space after > optional (SE-C100)",
+      "input": "> one\n>two\n> **three**",
+      "expected": [
+        {"type": "quote", "runs": [{"text": "one"}]},
+        {"type": "quote", "runs": [{"text": "two"}]},
+        {"type": "quote", "runs": [{"text": "three", "bold": true}]}
+      ]
+    },
+    {
+      "name": "a quote keeps the spaces after the first, and a lone > is an empty quote",
+      "input": ">   indented quote\n>",
+      "expected": [
+        {"type": "quote", "runs": [{"text": "  indented quote"}]},
+        {"type": "quote", "runs": []}
+      ]
+    },
+    {
+      "name": "a > that does not start its line is prose (SE-C100)",
+      "input": "  > not a quote",
+      "expected": [
+        {"type": "paragraph", "runs": [{"text": "  > not a quote"}]}
+      ]
+    },
+    {
+      "name": "a table is a row of pipes and a separator row; its cells are trimmed and keep their formatting (SE-C101)",
+      "input": "| a | **b** |\n|:--|--:|\n| 1 | `2` |\nafter",
+      "expected": [
+        {"type": "table", "head": [[{"text": "a"}], [{"text": "b", "bold": true}]], "rows": [[[{"text": "1"}], [{"text": "2", "code": true}]]]},
+        {"type": "paragraph", "runs": [{"text": "after"}]}
+      ]
+    },
+    {
+      "name": "without its separator row a line of pipes is prose (SE-C101)",
+      "input": "| not | a table |",
+      "expected": [
+        {"type": "paragraph", "runs": [{"text": "| not | a table |"}]}
+      ]
+    },
+    {
+      "name": "a table ends at the first line that is not one of its rows",
+      "input": "| h |\n|---|\n| 1 |\n| 2 |\n\n| 3 |",
+      "expected": [
+        {"type": "table", "head": [[{"text": "h"}]], "rows": [[[{"text": "1"}]], [[{"text": "2"}]]]},
+        {"type": "paragraph", "runs": [{"text": "| 3 |"}]}
+      ]
+    },
+    {
+      "name": "a separator row inside a table ends the table, and is prose",
+      "input": "| h |\n|---|\n| 1 |\n|---|\n| 2 |",
+      "expected": [
+        {"type": "table", "head": [[{"text": "h"}]], "rows": [[[{"text": "1"}]]]},
+        {"type": "paragraph", "runs": [{"text": "|---|"}]},
+        {"type": "paragraph", "runs": [{"text": "| 2 |"}]}
+      ]
+    },
+    {
+      "name": "a table may be indented, and its rows may differ in length from its head",
+      "input": "  | a | b | c |\n  |---|---|\n  | 1 |\n  | 1 | 2 | 3 | 4 |",
+      "expected": [
+        {"type": "table", "head": [[{"text": "a"}], [{"text": "b"}], [{"text": "c"}]], "rows": [[[{"text": "1"}]], [[{"text": "1"}], [{"text": "2"}], [{"text": "3"}], [{"text": "4"}]]]}
+      ]
+    },
+    {
+      "name": "a pipe splits a cell even inside backticks, and an empty cell has no runs",
+      "input": "| `a|b` | |\n|---|---|",
+      "expected": [
+        {"type": "table", "head": [[{"text": "`a"}], [{"text": "b`"}], []], "rows": []}
+      ]
+    },
+    {
+      "name": "a table right after a list is drawn after it",
+      "input": "- a\n| x | y |\n|---|---|\n| 1 | 2 |",
+      "expected": [
+        {"type": "list", "ordered": false, "items": [[{"text": "a"}]]},
+        {"type": "table", "head": [[{"text": "x"}], [{"text": "y"}]], "rows": [[[{"text": "1"}], [{"text": "2"}]]]}
+      ]
+    },
+    {
+      "name": "a fence is verbatim code, its language tag dropped (SE-C93)",
+      "input": "```ts\nconst a = **b** `c`;\n```",
+      "expected": [
+        {"type": "code", "lang": null, "text": "const a = **b** `c`;"}
+      ]
+    },
+    {
+      "name": "a fence keeps its blank lines, and only the newline before its closing fence is dropped (SE-C93)",
+      "input": "```\nline one\n\nline three\n\n```",
+      "expected": [
+        {"type": "code", "lang": null, "text": "line one\n\nline three\n"}
+      ]
+    },
+    {
+      "name": "nothing inside a fence is read as Markdown (SE-C93)",
+      "input": "```\n# not a heading\n- not a list\n| a | b |\n|---|---|\n> not a quote\n```",
+      "expected": [
+        {"type": "code", "lang": null, "text": "# not a heading\n- not a list\n| a | b |\n|---|---|\n> not a quote"}
+      ]
+    },
+    {
+      "name": "an unterminated fence is not code: its backticks and what follows stay prose (SE-C94)",
+      "input": "```\nunterminated **bold**",
+      "expected": [
+        {"type": "paragraph", "runs": [{"text": "```"}]},
+        {"type": "paragraph", "runs": [{"text": "unterminated "}, {"text": "bold", "bold": true}]}
+      ]
+    },
+    {
+      "name": "a fence opened and closed on one line keeps its text as code (SE-C104)",
+      "input": "```x```",
+      "expected": [
+        {"type": "code", "lang": null, "text": "x"}
+      ]
+    },
+    {
+      "name": "a c++ tag leaves no ++ behind (SE-C104)",
+      "input": "```c++\nint main();\n```",
+      "expected": [
+        {"type": "code", "lang": null, "text": "int main();"}
+      ]
+    },
+    {
+      "name": "a first line of two words is code, not a language tag",
+      "input": "```js title.js\nlet a;\n```",
+      "expected": [
+        {"type": "code", "lang": null, "text": "js title.js\nlet a;"}
+      ]
+    },
+    {
+      "name": "a fence may open and close in the middle of a line, and the prose around it stays prose",
+      "input": "Run ```ls -la``` then stop",
+      "expected": [
+        {"type": "paragraph", "runs": [{"text": "Run"}]},
+        {"type": "code", "lang": null, "text": "ls -la"},
+        {"type": "paragraph", "runs": [{"text": " then stop"}]}
+      ]
+    },
+    {
+      "name": "text after a closing fence on its line is prose, never dropped (SE-C104)",
+      "input": "```\nx\n```after",
+      "expected": [
+        {"type": "code", "lang": null, "text": "x"},
+        {"type": "paragraph", "runs": [{"text": "after"}]}
+      ]
+    },
+    {
+      "name": "a closing fence need not start its line",
+      "input": "```\ncode```\nafter",
+      "expected": [
+        {"type": "code", "lang": null, "text": "code"},
+        {"type": "paragraph", "runs": [{"text": "after"}]}
+      ]
+    },
+    {
+      "name": "four backticks open a three-backtick fence, and the fourth is code",
+      "input": "````\ncode\n````",
+      "expected": [
+        {"type": "code", "lang": null, "text": "`\ncode"},
+        {"type": "paragraph", "runs": [{"text": "`"}]}
+      ]
+    },
+    {
+      "name": "a list or a table does not run across a fence",
+      "input": "- a\n```\ncode\n```\n- b",
+      "expected": [
+        {"type": "list", "ordered": false, "items": [[{"text": "a"}]]},
+        {"type": "code", "lang": null, "text": "code"},
+        {"type": "list", "ordered": false, "items": [[{"text": "b"}]]}
+      ]
+    },
+    {
+      "name": "only an http or https address makes a link (SE-C91)",
+      "input": "[docs](https://example.com/a?b=1&c=2) [plain](http://plain.example) [js](javascript:alert(1)) [rel](/relative) [mail](mailto:a@b.example)",
+      "expected": [
+        {"type": "paragraph", "runs": [{"text": "docs", "href": "https://example.com/a?b=1&c=2"}, {"text": " "}, {"text": "plain", "href": "http://plain.example"}, {"text": " [js](javascript:alert(1)) [rel](/relative) [mail](mailto:a@b.example)"}]}
+      ]
+    },
+    {
+      "name": "a bare URL, or one in angle brackets, is text (SE-C92)",
+      "input": "see https://example.com/page, or <https://example.com/x>",
+      "expected": [
+        {"type": "paragraph", "runs": [{"text": "see https://example.com/page, or <https://example.com/x>"}]}
+      ]
+    },
+    {
+      "name": "a link needs its address in parentheses right after its text, with no space in it",
+      "input": "[text] (https://x.example) [a](https://x.example/a b) [t](https://x.example \"title\")",
+      "expected": [
+        {"type": "paragraph", "runs": [{"text": "[text] (https://x.example) [a](https://x.example/a b) [t](https://x.example \"title\")"}]}
+      ]
+    },
+    {
+      "name": "an image is a ! and a link",
+      "input": "![diagram](https://x.example/d.png)",
+      "expected": [
+        {"type": "paragraph", "runs": [{"text": "!"}, {"text": "diagram", "href": "https://x.example/d.png"}]}
+      ]
+    },
+    {
+      "name": "inline code is verbatim: no emphasis and no link inside it (SE-C95)",
+      "input": "`**x**` and `[a](https://b.example)`",
+      "expected": [
+        {"type": "paragraph", "runs": [{"text": "**x**", "code": true}, {"text": " and "}, {"text": "[a](https://b.example)", "code": true}]}
+      ]
+    },
+    {
+      "name": "emphasis can hold inline code, and a link's text can hold emphasis (SE-C95)",
+      "input": "**see `x`** [**it**](https://c.example) [*no*](https://d.example)",
+      "expected": [
+        {"type": "paragraph", "runs": [{"text": "see ", "bold": true}, {"text": "x", "bold": true, "code": true}, {"text": " "}, {"text": "it", "bold": true, "href": "https://c.example"}, {"text": " "}, {"text": "*no*", "href": "https://d.example"}]}
+      ]
+    },
+    {
+      "name": "a link's text may be inline code, and its address is read as typed",
+      "input": "[`cmd`](https://x.example/`raw`)",
+      "expected": [
+        {"type": "paragraph", "runs": [{"text": "cmd", "code": true, "href": "https://x.example/`raw`"}]}
+      ]
+    },
+    {
+      "name": "bold and italic, an italic only after the start, a space or a ( (SE-C96)",
+      "input": "**bold** and *it* and (*par*) and ***both***",
+      "expected": [
+        {"type": "paragraph", "runs": [{"text": "bold", "bold": true}, {"text": " and "}, {"text": "it", "italic": true}, {"text": " and ("}, {"text": "par", "italic": true}, {"text": ") and "}, {"text": "both", "bold": true, "italic": true}]}
+      ]
+    },
+    {
+      "name": "globs, arithmetic, snake_case and underscores are not emphasis, nor is ~~ (SE-C96)",
+      "input": "d*no*e\n*.rs\n2 ** 8\na lone *\nsnake_case_name\n__dunder__\n_under_\n~~strike~~",
+      "expected": [
+        {"type": "paragraph", "runs": [{"text": "d*no*e"}]},
+        {"type": "paragraph", "runs": [{"text": "*.rs"}]},
+        {"type": "paragraph", "runs": [{"text": "2 ** 8"}]},
+        {"type": "paragraph", "runs": [{"text": "a lone *"}]},
+        {"type": "paragraph", "runs": [{"text": "snake_case_name"}]},
+        {"type": "paragraph", "runs": [{"text": "__dunder__"}]},
+        {"type": "paragraph", "runs": [{"text": "_under_"}]},
+        {"type": "paragraph", "runs": [{"text": "~~strike~~"}]}
+      ]
+    },
+    {
+      "name": "an italic runs from an asterisk after a space to the next asterisk, so two globs on one line read as italic between them",
+      "input": "rm *.o and *.tmp",
+      "expected": [
+        {"type": "paragraph", "runs": [{"text": "rm "}, {"text": ".o and ", "italic": true}, {"text": ".tmp"}]}
+      ]
+    },
+    {
+      "name": "bold cannot hold an asterisk, so italic inside bold leaves the bold markers as typed",
+      "input": "**bold *italic* inside**",
+      "expected": [
+        {"type": "paragraph", "runs": [{"text": "**bold "}, {"text": "italic", "italic": true}, {"text": " inside**"}]}
+      ]
+    },
+    {
+      "name": "an unclosed backtick or asterisk stays as typed",
+      "input": "this `is not closed and *neither is this",
+      "expected": [
+        {"type": "paragraph", "runs": [{"text": "this `is not closed and *neither is this"}]}
+      ]
+    },
+    {
+      "name": "inline code runs from one backtick to the next",
+      "input": "``double`` and `a`b`",
+      "expected": [
+        {"type": "paragraph", "runs": [{"text": "`"}, {"text": "double and ", "code": true}, {"text": "a"}, {"text": "b", "code": true}]}
+      ]
+    },
+    {
+      "name": "a horizontal rule is prose",
+      "input": "---\n***\n___",
+      "expected": [
+        {"type": "paragraph", "runs": [{"text": "---"}]},
+        {"type": "paragraph", "runs": [{"text": "***"}]},
+        {"type": "paragraph", "runs": [{"text": "___"}]}
+      ]
+    },
+    {
+      "name": "nothing in a transcript becomes markup: tags, entities, quotes and backslashes are text (SE-C90)",
+      "input": "<b>bold?</b> &amp; &lt;tag&gt; \\*not italic\\* C:\\path\\file 'single' \"double\"",
+      "expected": [
+        {"type": "paragraph", "runs": [{"text": "<b>bold?</b> &amp; &lt;tag&gt; \\*not italic\\* C:\\path\\file 'single' \"double\""}]}
+      ]
+    },
+    {
+      "name": "a link's address and text are text, quotes and all (SE-C90)",
+      "input": "[x\" onmouseover=\"alert(1)](https://a.example/\"onmouseover=\"y)",
+      "expected": [
+        {"type": "paragraph", "runs": [{"text": "x\" onmouseover=\"alert(1)", "href": "https://a.example/\"onmouseover=\"y"}]}
+      ]
+    },
+    {
+      "name": "accents, emoji and wide characters survive, emphasis and all",
+      "input": "**héllo 👋🏽** *naïve* `日本語` 中文",
+      "expected": [
+        {"type": "paragraph", "runs": [{"text": "héllo 👋🏽", "bold": true}, {"text": " "}, {"text": "naïve", "italic": true}, {"text": " "}, {"text": "日本語", "code": true}, {"text": " 中文"}]}
+      ]
+    },
+    {
+      "name": "a carriage return before a newline is not text",
+      "input": "first line\r\nsecond line\r\n- item\r\n> quote\r\n",
+      "expected": [
+        {"type": "paragraph", "runs": [{"text": "first line"}]},
+        {"type": "paragraph", "runs": [{"text": "second line"}]},
+        {"type": "list", "ordered": false, "items": [[{"text": "item"}]]},
+        {"type": "quote", "runs": [{"text": "quote"}]}
+      ]
+    },
+    {
+      "name": "a message of blank lines has no blocks",
+      "input": "\n  \n\t\n",
+      "expected": []
+    },
+    {
+      "name": "an assistant's answer, every block at once",
+      "input": "## Plan\nI'll fix the fold in **two** steps:\n\n- read `SessionGroups.swift`\n- measure the window on the *router's* clock\n\n| step | file |\n|---|---|\n| 1 | `SessionGroups.swift` |\n\n```swift\nlet quiet = asOf - last\n```\n> See [SE-C43](https://example.com/contracts#se-c43).\nDone.",
+      "expected": [
+        {"type": "heading", "level": 4, "runs": [{"text": "Plan"}]},
+        {"type": "paragraph", "runs": [{"text": "I'll fix the fold in "}, {"text": "two", "bold": true}, {"text": " steps:"}]},
+        {"type": "list", "ordered": false, "items": [[{"text": "read "}, {"text": "SessionGroups.swift", "code": true}], [{"text": "measure the window on the "}, {"text": "router's", "italic": true}, {"text": " clock"}]]},
+        {"type": "table", "head": [[{"text": "step"}], [{"text": "file"}]], "rows": [[[{"text": "1"}], [{"text": "SessionGroups.swift", "code": true}]]]},
+        {"type": "code", "lang": null, "text": "let quiet = asOf - last"},
+        {"type": "quote", "runs": [{"text": "See "}, {"text": "SE-C43", "href": "https://example.com/contracts#se-c43"}, {"text": "."}]},
+        {"type": "paragraph", "runs": [{"text": "Done."}]}
+      ]
+    }
+  ]
+}

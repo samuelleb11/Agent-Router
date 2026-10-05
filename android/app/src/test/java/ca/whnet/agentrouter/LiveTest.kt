@@ -193,13 +193,18 @@ class LiveTest {
         assertTrue(AskAnswers.compose(qs, mapOf("Name?" to AskAnswers.Selection())).parts.isEmpty())
     }
 
+    /**
+     * The web view's blocks, `#` at the level it draws (SE-C98), each line a paragraph of its own
+     * (SE-C103). fixtures/live/markdown-blocks.json holds the rest (SharedFixtureTest); a numbered
+     * list stays numbered here, pending decision F.
+     */
     @Test
     fun `markdown blocks match the web view`() {
         val src = "# Title\nSome **bold** text\n\n- one\n- two\n\n1. first\n2) second\n\n> quoted\n\n" +
             "| a | b |\n|---|---|\n| 1 | 2 |\n\n```\ncode\n```\n| not | a table |"
         assertEquals(
             listOf(
-                Block.Heading(1, "Title"),
+                Block.Heading(3, "Title"),
                 Block.Paragraph("Some **bold** text"),
                 Block.Bullets(listOf("one", "two")),
                 Block.Numbered(listOf("first", "second")),
@@ -210,7 +215,7 @@ class LiveTest {
             ),
             Markdown.blocks(src),
         )
-        assertEquals(listOf(Block.Paragraph("plain\nlines")), Markdown.blocks("plain\nlines"))
+        assertEquals(listOf(Block.Paragraph("plain"), Block.Paragraph("lines")), Markdown.blocks("plain\nlines"))
     }
 }
 
@@ -826,10 +831,8 @@ class InlineTest {
             listOf(R("see "), R("the docs", url = "https://x.test/d"), R(" now")),
             runs("see [the docs](https://x.test/d) now"),
         )
-        assertEquals(
-            listOf(R("at "), R("https://x.test/a", url = "https://x.test/a"), R(", then")),
-            runs("at https://x.test/a, then"),
-        )
+        // A bare address is text, as on the web view (SE-C92).
+        assertEquals(listOf(R("at https://x.test/a, then")), runs("at https://x.test/a, then"))
     }
 
     @Test

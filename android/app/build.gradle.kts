@@ -57,6 +57,15 @@ kotlin {
     }
 }
 
+// SharedFixtureTest reads the fixtures the web console and both phones share, at the
+// repository's root. They are an input of every unit test run, so a changed fixture runs the
+// tests again instead of reusing a cached result that knew nothing of it.
+tasks.withType<Test>().configureEach {
+    inputs.dir(rootProject.file("../fixtures/live"))
+        .withPropertyName("sharedFixtures")
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+}
+
 dependencies {
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.ui)

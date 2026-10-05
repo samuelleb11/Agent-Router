@@ -328,10 +328,11 @@ struct LiveSession: Decodable, Sendable, Identifiable, Hashable {
 
     var id: String { sessionId }
     var shortId: String { String(sessionId.prefix(8)) }
-    /// The last path component of the working directory, or the project slug.
+    /// The last segment of the working directory, a Windows path's included, else the
+    /// router's own name for the project (SE-C23).
     var projectName: String {
-        if let cwd, let last = cwd.split(separator: "/").last, !last.isEmpty { return String(last) }
-        return project
+        if let cwd, let last = cwd.split(whereSeparator: { $0 == "/" || $0 == "\\" }).last { return String(last) }
+        return project.isEmpty ? "—" : project
     }
     /// What to call the machine the session runs on: its label, or the start of its id when
     /// the label is blank. Nil from a local router, which names no machine.

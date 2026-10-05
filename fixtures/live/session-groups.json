@@ -1,0 +1,324 @@
+{
+  "about": [
+    "The session list as the web console groups it (listView in ui/src/model/session.ts), the reference for both phones: docs/session-liveness.md, 'Client presentation policy'; SE-C17 to SE-C19, SE-C23, SE-C24, SE-C29, SE-C32, SE-C33 and SE-C43 in docs/web-console-contracts.md.",
+    "Read by ui/src/model/shared-fixtures.spec.ts, ios/AgentRouter/Tests/SharedFixtureTests.swift and android/app/src/test/java/ca/whnet/agentrouter/SharedFixtureTest.kt. Each groups `sessions` as its own client does, maps the result to the shape below and compares it with `expected`.",
+    "`expected` is generated from the web's model, never written by hand: edit a case's name, now, sessions or pending, then in ui/ run `UPDATE_SHARED_FIXTURES=1 pnpm exec vitest run src/model/shared-fixtures.spec.ts`.",
+    "`pending` marks a case the clients disagree on where a phone would lose information by matching the web. Every suite skips it, by name, until it is decided; `expected` still records what the web does.",
+    "`now` is the device's clock, in epoch milliseconds. `sessions` are rows as GET /api/live/sessions returns them; their `as_of_ms` is the router's clock, here seven minutes behind the device's unless a case says otherwise.",
+    "expected.recent: the projects in the order they are listed, each {project, tone, halo, sessions}. project is the heading's name; sessions are the ids in the order listed; tone is the heading dot's tone as the client ranks it, one of busy, attention, warn, error, idle and closed (the hollow ring), or null for the plain neutral dot; halo is whether that dot wears the halo of a live session. How a tone is drawn is each client's own: the phones draw a neutral dot gray, and Android draws no dot at all for an idle project from an older router (SE-C19).",
+    "expected.older: the projects folded under 'older', in the same shape. expected.archived: the shelf's session ids, in order."
+  ],
+  "cases": [
+    {
+      "name": "projects are in alphabetical order, case aside, and sessions newest first within each (SE-C24)",
+      "now": 1791201600000,
+      "sessions": [
+        {"session_id": "zeta-idle", "cwd": "/Users/sam/code/zeta", "project": "-Users-sam-code-zeta", "git_branch": "main", "title": "Session zeta-idle", "created_ms": 1791193980000, "last_activity_ms": 1791197580000, "active": false, "state": "idle", "archived": false, "wrapped": true, "bytes": 48213, "activity": "idle", "open": true, "detail": "Waiting for you", "since_ms": 1791197580000, "tone": "idle", "source": "registry", "as_of_ms": 1791201180000},
+        {"session_id": "alpha-old", "cwd": "/Users/sam/code/Alpha", "project": "-Users-sam-code-Alpha", "git_branch": "main", "title": "Session alpha-old", "created_ms": 1791186780000, "last_activity_ms": 1791190380000, "active": false, "state": "idle", "archived": false, "wrapped": true, "bytes": 48213, "activity": "idle", "open": true, "detail": "Waiting for you", "since_ms": 1791190380000, "tone": "idle", "source": "registry", "as_of_ms": 1791201180000},
+        {"session_id": "beta-gen", "cwd": "/Users/sam/code/beta", "project": "-Users-sam-code-beta", "git_branch": "main", "title": "Session beta-gen", "created_ms": 1791197570000, "last_activity_ms": 1791201170000, "active": true, "state": "working", "archived": false, "wrapped": true, "bytes": 48213, "activity": "generating", "open": true, "detail": "Thinking", "since_ms": 1791201170000, "tone": "busy", "source": "registry", "as_of_ms": 1791201180000},
+        {"session_id": "alpha-new", "cwd": "/Users/sam/code/Alpha", "project": "-Users-sam-code-Alpha", "git_branch": "main", "title": "Session alpha-new", "created_ms": 1791197575000, "last_activity_ms": 1791201175000, "active": true, "state": "working", "archived": false, "wrapped": true, "bytes": 48213, "activity": "tool", "open": true, "detail": "Running Bash", "since_ms": 1791201175000, "tone": "busy", "source": "registry", "as_of_ms": 1791201180000},
+        {"session_id": "alpha-mid", "cwd": "/Users/sam/code/Alpha", "project": "-Users-sam-code-Alpha", "git_branch": "main", "title": "Session alpha-mid", "created_ms": 1791190380000, "last_activity_ms": 1791193980000, "active": true, "state": "ask", "archived": false, "wrapped": true, "bytes": 48213, "activity": "waiting", "open": true, "detail": "Bash wants to run", "since_ms": 1791193980000, "waiting_on": {"kind": "permission", "tool": "Bash", "summary": "git status"}, "tone": "attention", "source": "registry", "as_of_ms": 1791201180000},
+        {"session_id": "zeta-done", "cwd": "/Users/sam/code/zeta", "project": "-Users-sam-code-zeta", "git_branch": "main", "title": "Session zeta-done", "created_ms": 1791195780000, "last_activity_ms": 1791199380000, "active": false, "state": "idle", "archived": false, "wrapped": false, "bytes": 48213, "activity": "closed", "open": false, "detail": "Session ended", "ended_ms": 1791199381000, "ended_how": "exit", "mid_turn": false, "tone": "closed", "source": "registry", "as_of_ms": 1791201180000}
+      ],
+      "expected": {
+        "recent": [
+          {"project": "Alpha", "tone": "attention", "halo": true, "sessions": ["alpha-new", "alpha-mid", "alpha-old"]},
+          {"project": "beta", "tone": "busy", "halo": true, "sessions": ["beta-gen"]},
+          {"project": "zeta", "tone": "idle", "halo": false, "sessions": ["zeta-done", "zeta-idle"]}
+        ],
+        "older": [],
+        "archived": []
+      }
+    },
+    {
+      "name": "a session quiet for more than twelve hours folds into older, grouped by project, and a live one never does (SE-C29)",
+      "now": 1791201600000,
+      "sessions": [
+        {"session_id": "ar-wait", "cwd": "/Users/sam/code/agent-router", "project": "-Users-sam-code-agent-router", "git_branch": "main", "title": "Session ar-wait", "created_ms": 1791089580000, "last_activity_ms": 1791093180000, "active": true, "state": "ask", "archived": false, "wrapped": true, "bytes": 48213, "activity": "waiting", "open": true, "detail": "Bash wants to run", "since_ms": 1791093180000, "waiting_on": {"kind": "permission", "tool": "Bash", "summary": "git status"}, "tone": "attention", "source": "registry", "as_of_ms": 1791201180000},
+        {"session_id": "ar-bg", "cwd": "/Users/sam/code/agent-router", "project": "-Users-sam-code-agent-router", "git_branch": "main", "title": "Session ar-bg", "created_ms": 1791125580000, "last_activity_ms": 1791129180000, "active": true, "state": "working", "archived": false, "wrapped": true, "bytes": 48213, "activity": "background", "open": true, "detail": "2 background agents running", "since_ms": 1791129180000, "background": {"agents": 2, "workflows": 0, "shells": 0}, "tone": "busy", "source": "registry", "as_of_ms": 1791201180000},
+        {"session_id": "ar-stall", "cwd": "/Users/sam/code/agent-router", "project": "-Users-sam-code-agent-router", "git_branch": "main", "title": "Session ar-stall", "created_ms": 1791143580000, "last_activity_ms": 1791147180000, "active": true, "state": "stalled", "archived": false, "wrapped": true, "bytes": 48213, "activity": "stalled", "open": true, "detail": "No progress for 10m", "since_ms": 1791147180000, "tone": "warn", "source": "registry", "as_of_ms": 1791201180000},
+        {"session_id": "ar-idle", "cwd": "/Users/sam/code/agent-router", "project": "-Users-sam-code-agent-router", "git_branch": "main", "title": "Session ar-idle", "created_ms": 1791150780000, "last_activity_ms": 1791154380000, "active": false, "state": "idle", "archived": false, "wrapped": true, "bytes": 48213, "activity": "idle", "open": true, "detail": "Waiting for you", "since_ms": 1791154380000, "tone": "idle", "source": "registry", "as_of_ms": 1791201180000},
+        {"session_id": "ar-done", "cwd": "/Users/sam/code/agent-router", "project": "-Users-sam-code-agent-router", "git_branch": "main", "title": "Session ar-done", "created_ms": 1791125580000, "last_activity_ms": 1791129180000, "active": false, "state": "idle", "archived": false, "wrapped": false, "bytes": 48213, "activity": "closed", "open": false, "detail": "Session ended", "ended_ms": 1791129181000, "ended_how": "exit", "mid_turn": false, "tone": "closed", "source": "registry", "as_of_ms": 1791201180000},
+        {"session_id": "ns-fail", "cwd": "/Users/sam/code/northstar", "project": "-Users-sam-code-northstar", "git_branch": "main", "title": "Session ns-fail", "created_ms": 1791147180000, "last_activity_ms": 1791150780000, "active": false, "state": "failed", "archived": false, "wrapped": true, "bytes": 48213, "activity": "failed", "open": true, "detail": "API error: 529 Overloaded", "since_ms": 1791150780000, "tone": "error", "source": "registry", "as_of_ms": 1791201180000},
+        {"session_id": "ns-idle", "cwd": "/Users/sam/code/northstar", "project": "-Users-sam-code-northstar", "git_branch": "main", "title": "Session ns-idle", "created_ms": 1791190380000, "last_activity_ms": 1791193980000, "active": false, "state": "idle", "archived": false, "wrapped": true, "bytes": 48213, "activity": "idle", "open": true, "detail": "Waiting for you", "since_ms": 1791193980000, "tone": "idle", "source": "registry", "as_of_ms": 1791201180000}
+      ],
+      "expected": {
+        "recent": [
+          {"project": "agent-router", "tone": "attention", "halo": true, "sessions": ["ar-stall", "ar-bg", "ar-wait"]},
+          {"project": "northstar", "tone": "idle", "halo": false, "sessions": ["ns-idle"]}
+        ],
+        "older": [
+          {"project": "agent-router", "tone": "idle", "halo": false, "sessions": ["ar-idle", "ar-done"]},
+          {"project": "northstar", "tone": "error", "halo": false, "sessions": ["ns-fail"]}
+        ],
+        "archived": []
+      }
+    },
+    {
+      "name": "twelve hours quiet is still recent, and a moment more is older (SE-C29)",
+      "now": 1791201600000,
+      "sessions": [
+        {"session_id": "edge-in", "cwd": "/Users/sam/code/edge", "project": "-Users-sam-code-edge", "git_branch": "main", "title": "Session edge-in", "created_ms": 1791154380000, "last_activity_ms": 1791157980000, "active": false, "state": "idle", "archived": false, "wrapped": true, "bytes": 48213, "activity": "idle", "open": true, "detail": "Waiting for you", "since_ms": 1791157980000, "tone": "idle", "source": "registry", "as_of_ms": 1791201180000},
+        {"session_id": "edge-out", "cwd": "/Users/sam/code/edge", "project": "-Users-sam-code-edge", "git_branch": "main", "title": "Session edge-out", "created_ms": 1791154379999, "last_activity_ms": 1791157979999, "active": false, "state": "idle", "archived": false, "wrapped": true, "bytes": 48213, "activity": "idle", "open": true, "detail": "Waiting for you", "since_ms": 1791157979999, "tone": "idle", "source": "registry", "as_of_ms": 1791201180000}
+      ],
+      "expected": {
+        "recent": [
+          {"project": "edge", "tone": "idle", "halo": false, "sessions": ["edge-in"]}
+        ],
+        "older": [
+          {"project": "edge", "tone": "idle", "halo": false, "sessions": ["edge-out"]}
+        ],
+        "archived": []
+      }
+    },
+    {
+      "name": "the twelve hours are measured on the router's clock, here eight days behind this device's (SE-C43)",
+      "now": 1791201600000,
+      "sessions": [
+        {"session_id": "slow-new", "cwd": "/Users/sam/code/slow", "project": "-Users-sam-code-slow", "git_branch": "main", "title": "Session slow-new", "created_ms": 1790506500000, "last_activity_ms": 1790510100000, "active": false, "state": "idle", "archived": false, "wrapped": true, "bytes": 48213, "activity": "idle", "open": true, "detail": "Waiting for you", "since_ms": 1790510100000, "tone": "idle", "source": "registry", "as_of_ms": 1790510400000},
+        {"session_id": "slow-old", "cwd": "/Users/sam/code/slow", "project": "-Users-sam-code-slow", "git_branch": "main", "title": "Session slow-old", "created_ms": 1790460000000, "last_activity_ms": 1790463600000, "active": false, "state": "idle", "archived": false, "wrapped": false, "bytes": 48213, "activity": "closed", "open": false, "detail": "Session ended", "ended_ms": 1790463601000, "ended_how": "exit", "mid_turn": false, "tone": "closed", "source": "registry", "as_of_ms": 1790510400000}
+      ],
+      "expected": {
+        "recent": [
+          {"project": "slow", "tone": "idle", "halo": false, "sessions": ["slow-new"]}
+        ],
+        "older": [
+          {"project": "slow", "tone": "closed", "halo": false, "sessions": ["slow-old"]}
+        ],
+        "archived": []
+      }
+    },
+    {
+      "name": "the twelve hours are measured on the router's clock, here a day ahead of this device's (SE-C43)",
+      "now": 1791201600000,
+      "sessions": [
+        {"session_id": "fast-new", "cwd": "/Users/sam/code/fast", "project": "-Users-sam-code-fast", "git_branch": "main", "title": "Session fast-new", "created_ms": 1791280800000, "last_activity_ms": 1791284400000, "active": false, "state": "idle", "archived": false, "wrapped": true, "bytes": 48213, "activity": "idle", "open": true, "detail": "Waiting for you", "since_ms": 1791284400000, "tone": "idle", "source": "registry", "as_of_ms": 1791288000000},
+        {"session_id": "fast-old", "cwd": "/Users/sam/code/fast", "project": "-Users-sam-code-fast", "git_branch": "main", "title": "Session fast-old", "created_ms": 1791237600000, "last_activity_ms": 1791241200000, "active": false, "state": "idle", "archived": false, "wrapped": true, "bytes": 48213, "activity": "idle", "open": true, "detail": "Waiting for you", "since_ms": 1791241200000, "tone": "idle", "source": "registry", "as_of_ms": 1791288000000}
+      ],
+      "expected": {
+        "recent": [
+          {"project": "fast", "tone": "idle", "halo": false, "sessions": ["fast-new"]}
+        ],
+        "older": [
+          {"project": "fast", "tone": "idle", "halo": false, "sessions": ["fast-old"]}
+        ],
+        "archived": []
+      }
+    },
+    {
+      "name": "the shelf holds exactly what the router marks archived, flat and newest first, however recently it moved (SE-C32, SE-C33)",
+      "now": 1791201600000,
+      "sessions": [
+        {"session_id": "arc-old", "cwd": "/Users/sam/code/beta", "project": "-Users-sam-code-beta", "git_branch": "main", "title": "Session arc-old", "created_ms": 1791089580000, "last_activity_ms": 1791093180000, "active": false, "state": "idle", "archived": true, "wrapped": false, "bytes": 48213, "activity": "closed", "open": false, "detail": "Session ended", "ended_ms": 1791093181000, "ended_how": "exit", "mid_turn": false, "tone": "closed", "source": "registry", "as_of_ms": 1791201180000},
+        {"session_id": "here", "cwd": "/Users/sam/code/alpha", "project": "-Users-sam-code-alpha", "git_branch": "main", "title": "Session here", "created_ms": 1791197570000, "last_activity_ms": 1791201170000, "active": true, "state": "working", "archived": false, "wrapped": true, "bytes": 48213, "activity": "generating", "open": true, "detail": "Thinking", "since_ms": 1791201170000, "tone": "busy", "source": "registry", "as_of_ms": 1791201180000},
+        {"session_id": "arc-new", "cwd": "/Users/sam/code/alpha", "project": "-Users-sam-code-alpha", "git_branch": "main", "title": "Session arc-new", "created_ms": 1791197520000, "last_activity_ms": 1791201120000, "active": false, "state": "idle", "archived": true, "wrapped": true, "bytes": 48213, "activity": "idle", "open": true, "detail": "Waiting for you", "since_ms": 1791201120000, "tone": "idle", "source": "registry", "as_of_ms": 1791201180000},
+        {"session_id": "arc-mid", "cwd": "/Users/sam/code/gamma", "project": "-Users-sam-code-gamma", "git_branch": "main", "title": "Session arc-mid", "created_ms": 1791186780000, "last_activity_ms": 1791190380000, "active": false, "state": "idle", "archived": true, "wrapped": true, "bytes": 48213, "activity": "idle", "open": true, "detail": "Waiting for you", "since_ms": 1791190380000, "tone": "idle", "source": "registry", "as_of_ms": 1791201180000}
+      ],
+      "expected": {
+        "recent": [
+          {"project": "alpha", "tone": "busy", "halo": true, "sessions": ["here"]}
+        ],
+        "older": [],
+        "archived": ["arc-new", "arc-mid", "arc-old"]
+      }
+    },
+    {
+      "name": "a project's dot is its most pressing session: waiting over failed over stalled over working over idle, and the hollow ring only once every session has ended (SE-C18)",
+      "now": 1791201600000,
+      "sessions": [
+        {"session_id": "a-wait", "cwd": "/Users/sam/code/a-waits", "project": "-Users-sam-code-a-waits", "git_branch": "main", "title": "Session a-wait", "created_ms": 1791197520000, "last_activity_ms": 1791201120000, "active": true, "state": "ask", "archived": false, "wrapped": true, "bytes": 48213, "activity": "waiting", "open": true, "detail": "Bash wants to run", "since_ms": 1791201120000, "waiting_on": {"kind": "permission", "tool": "Bash", "summary": "git status"}, "tone": "attention", "source": "registry", "as_of_ms": 1791201180000},
+        {"session_id": "a-fail", "cwd": "/Users/sam/code/a-waits", "project": "-Users-sam-code-a-waits", "git_branch": "main", "title": "Session a-fail", "created_ms": 1791197460000, "last_activity_ms": 1791201060000, "active": false, "state": "failed", "archived": false, "wrapped": true, "bytes": 48213, "activity": "failed", "open": true, "detail": "API error: 529 Overloaded", "since_ms": 1791201060000, "tone": "error", "source": "registry", "as_of_ms": 1791201180000},
+        {"session_id": "a-stall", "cwd": "/Users/sam/code/a-waits", "project": "-Users-sam-code-a-waits", "git_branch": "main", "title": "Session a-stall", "created_ms": 1791197400000, "last_activity_ms": 1791201000000, "active": true, "state": "stalled", "archived": false, "wrapped": true, "bytes": 48213, "activity": "stalled", "open": true, "detail": "No progress for 10m", "since_ms": 1791201000000, "tone": "warn", "source": "registry", "as_of_ms": 1791201180000},
+        {"session_id": "a-gen", "cwd": "/Users/sam/code/a-waits", "project": "-Users-sam-code-a-waits", "git_branch": "main", "title": "Session a-gen", "created_ms": 1791197340000, "last_activity_ms": 1791200940000, "active": true, "state": "working", "archived": false, "wrapped": true, "bytes": 48213, "activity": "generating", "open": true, "detail": "Thinking", "since_ms": 1791200940000, "tone": "busy", "source": "registry", "as_of_ms": 1791201180000},
+        {"session_id": "b-fail", "cwd": "/Users/sam/code/b-fails", "project": "-Users-sam-code-b-fails", "git_branch": "main", "title": "Session b-fail", "created_ms": 1791197520000, "last_activity_ms": 1791201120000, "active": false, "state": "failed", "archived": false, "wrapped": true, "bytes": 48213, "activity": "failed", "open": true, "detail": "API error: 529 Overloaded", "since_ms": 1791201120000, "tone": "error", "source": "registry", "as_of_ms": 1791201180000},
+        {"session_id": "b-stall", "cwd": "/Users/sam/code/b-fails", "project": "-Users-sam-code-b-fails", "git_branch": "main", "title": "Session b-stall", "created_ms": 1791197460000, "last_activity_ms": 1791201060000, "active": true, "state": "stalled", "archived": false, "wrapped": true, "bytes": 48213, "activity": "stalled", "open": true, "detail": "No progress for 10m", "since_ms": 1791201060000, "tone": "warn", "source": "registry", "as_of_ms": 1791201180000},
+        {"session_id": "b-tool", "cwd": "/Users/sam/code/b-fails", "project": "-Users-sam-code-b-fails", "git_branch": "main", "title": "Session b-tool", "created_ms": 1791197400000, "last_activity_ms": 1791201000000, "active": true, "state": "working", "archived": false, "wrapped": true, "bytes": 48213, "activity": "tool", "open": true, "detail": "Running Bash", "since_ms": 1791201000000, "tone": "busy", "source": "registry", "as_of_ms": 1791201180000},
+        {"session_id": "c-stall", "cwd": "/Users/sam/code/c-stalls", "project": "-Users-sam-code-c-stalls", "git_branch": "main", "title": "Session c-stall", "created_ms": 1791197520000, "last_activity_ms": 1791201120000, "active": true, "state": "stalled", "archived": false, "wrapped": true, "bytes": 48213, "activity": "stalled", "open": true, "detail": "No progress for 10m", "since_ms": 1791201120000, "tone": "warn", "source": "registry", "as_of_ms": 1791201180000},
+        {"session_id": "c-gen", "cwd": "/Users/sam/code/c-stalls", "project": "-Users-sam-code-c-stalls", "git_branch": "main", "title": "Session c-gen", "created_ms": 1791197460000, "last_activity_ms": 1791201060000, "active": true, "state": "working", "archived": false, "wrapped": true, "bytes": 48213, "activity": "generating", "open": true, "detail": "Thinking", "since_ms": 1791201060000, "tone": "busy", "source": "registry", "as_of_ms": 1791201180000},
+        {"session_id": "c-idle", "cwd": "/Users/sam/code/c-stalls", "project": "-Users-sam-code-c-stalls", "git_branch": "main", "title": "Session c-idle", "created_ms": 1791197400000, "last_activity_ms": 1791201000000, "active": false, "state": "idle", "archived": false, "wrapped": true, "bytes": 48213, "activity": "idle", "open": true, "detail": "Waiting for you", "since_ms": 1791201000000, "tone": "idle", "source": "registry", "as_of_ms": 1791201180000},
+        {"session_id": "d-bg", "cwd": "/Users/sam/code/d-works", "project": "-Users-sam-code-d-works", "git_branch": "main", "title": "Session d-bg", "created_ms": 1791197520000, "last_activity_ms": 1791201120000, "active": true, "state": "working", "archived": false, "wrapped": true, "bytes": 48213, "activity": "background", "open": true, "detail": "2 background agents running", "since_ms": 1791201120000, "background": {"agents": 2, "workflows": 0, "shells": 0}, "tone": "busy", "source": "registry", "as_of_ms": 1791201180000},
+        {"session_id": "d-idle", "cwd": "/Users/sam/code/d-works", "project": "-Users-sam-code-d-works", "git_branch": "main", "title": "Session d-idle", "created_ms": 1791197460000, "last_activity_ms": 1791201060000, "active": false, "state": "idle", "archived": false, "wrapped": true, "bytes": 48213, "activity": "idle", "open": true, "detail": "Waiting for you", "since_ms": 1791201060000, "tone": "idle", "source": "registry", "as_of_ms": 1791201180000},
+        {"session_id": "e-idle", "cwd": "/Users/sam/code/e-idles", "project": "-Users-sam-code-e-idles", "git_branch": "main", "title": "Session e-idle", "created_ms": 1791197520000, "last_activity_ms": 1791201120000, "active": false, "state": "idle", "archived": false, "wrapped": true, "bytes": 48213, "activity": "idle", "open": true, "detail": "Waiting for you", "since_ms": 1791201120000, "tone": "idle", "source": "registry", "as_of_ms": 1791201180000},
+        {"session_id": "e-done", "cwd": "/Users/sam/code/e-idles", "project": "-Users-sam-code-e-idles", "git_branch": "main", "title": "Session e-done", "created_ms": 1791197460000, "last_activity_ms": 1791201060000, "active": false, "state": "idle", "archived": false, "wrapped": false, "bytes": 48213, "activity": "closed", "open": false, "detail": "Session ended", "ended_ms": 1791201061000, "ended_how": "exit", "mid_turn": false, "tone": "closed", "source": "registry", "as_of_ms": 1791201180000},
+        {"session_id": "f-done", "cwd": "/Users/sam/code/f-ended", "project": "-Users-sam-code-f-ended", "git_branch": "main", "title": "Session f-done", "created_ms": 1791197520000, "last_activity_ms": 1791201120000, "active": false, "state": "idle", "archived": false, "wrapped": false, "bytes": 48213, "activity": "closed", "open": false, "detail": "Session ended", "ended_ms": 1791201121000, "ended_how": "exit", "mid_turn": false, "tone": "closed", "source": "registry", "as_of_ms": 1791201180000},
+        {"session_id": "f-gone", "cwd": "/Users/sam/code/f-ended", "project": "-Users-sam-code-f-ended", "git_branch": "main", "title": "Session f-gone", "created_ms": 1791197460000, "last_activity_ms": 1791201060000, "active": false, "state": "idle", "archived": false, "wrapped": false, "bytes": 48213, "activity": "closed", "open": false, "detail": "Session ended", "ended_ms": 1791201061000, "ended_how": "exit", "mid_turn": false, "tone": "closed", "source": "registry", "as_of_ms": 1791201180000},
+        {"session_id": "g-fail", "cwd": "/Users/sam/code/g-failed-quietly", "project": "-Users-sam-code-g-failed-quietly", "git_branch": "main", "title": "Session g-fail", "created_ms": 1791197520000, "last_activity_ms": 1791201120000, "active": false, "state": "failed", "archived": false, "wrapped": true, "bytes": 48213, "activity": "failed", "open": true, "detail": "API error: 529 Overloaded", "since_ms": 1791201120000, "tone": "error", "source": "registry", "as_of_ms": 1791201180000},
+        {"session_id": "g-done", "cwd": "/Users/sam/code/g-failed-quietly", "project": "-Users-sam-code-g-failed-quietly", "git_branch": "main", "title": "Session g-done", "created_ms": 1791197460000, "last_activity_ms": 1791201060000, "active": false, "state": "idle", "archived": false, "wrapped": false, "bytes": 48213, "activity": "closed", "open": false, "detail": "Session ended", "ended_ms": 1791201061000, "ended_how": "exit", "mid_turn": false, "tone": "closed", "source": "registry", "as_of_ms": 1791201180000}
+      ],
+      "expected": {
+        "recent": [
+          {"project": "a-waits", "tone": "attention", "halo": true, "sessions": ["a-wait", "a-fail", "a-stall", "a-gen"]},
+          {"project": "b-fails", "tone": "error", "halo": true, "sessions": ["b-fail", "b-stall", "b-tool"]},
+          {"project": "c-stalls", "tone": "warn", "halo": true, "sessions": ["c-stall", "c-gen", "c-idle"]},
+          {"project": "d-works", "tone": "busy", "halo": true, "sessions": ["d-bg", "d-idle"]},
+          {"project": "e-idles", "tone": "idle", "halo": false, "sessions": ["e-idle", "e-done"]},
+          {"project": "f-ended", "tone": "closed", "halo": false, "sessions": ["f-done", "f-gone"]},
+          {"project": "g-failed-quietly", "tone": "error", "halo": false, "sessions": ["g-fail", "g-done"]}
+        ],
+        "older": [],
+        "archived": []
+      }
+    },
+    {
+      "name": "an activity this screen does not know outranks nothing and has not ended, and a tone it does not know defers to the activity (SE-C2, SE-C3, SE-C18)",
+      "now": 1791201600000,
+      "sessions": [
+        {"session_id": "a-new", "cwd": "/Users/sam/code/a-unknown-beside-idle", "project": "-Users-sam-code-a-unknown-beside-idle", "git_branch": "main", "title": "Session a-new", "created_ms": 1791197520000, "last_activity_ms": 1791201120000, "active": true, "state": "working", "archived": false, "wrapped": true, "bytes": 48213, "activity": "compacting", "open": true, "detail": "Compacting", "since_ms": 1791201120000, "tone": "sparkle", "source": "registry", "as_of_ms": 1791201180000},
+        {"session_id": "a-idle", "cwd": "/Users/sam/code/a-unknown-beside-idle", "project": "-Users-sam-code-a-unknown-beside-idle", "git_branch": "main", "title": "Session a-idle", "created_ms": 1791197460000, "last_activity_ms": 1791201060000, "active": false, "state": "idle", "archived": false, "wrapped": true, "bytes": 48213, "activity": "idle", "open": true, "detail": "Waiting for you", "since_ms": 1791201060000, "tone": "idle", "source": "registry", "as_of_ms": 1791201180000},
+        {"session_id": "b-new", "cwd": "/Users/sam/code/b-unknown-beside-ended", "project": "-Users-sam-code-b-unknown-beside-ended", "git_branch": "main", "title": "Session b-new", "created_ms": 1791197520000, "last_activity_ms": 1791201120000, "active": false, "state": "idle", "archived": false, "wrapped": true, "bytes": 48213, "activity": "compacting", "open": true, "detail": "Compacting", "since_ms": 1791201120000, "tone": "sparkle", "source": "registry", "as_of_ms": 1791201180000},
+        {"session_id": "b-done", "cwd": "/Users/sam/code/b-unknown-beside-ended", "project": "-Users-sam-code-b-unknown-beside-ended", "git_branch": "main", "title": "Session b-done", "created_ms": 1791197460000, "last_activity_ms": 1791201060000, "active": false, "state": "idle", "archived": false, "wrapped": false, "bytes": 48213, "activity": "closed", "open": false, "detail": "Session ended", "ended_ms": 1791201061000, "ended_how": "exit", "mid_turn": false, "tone": "closed", "source": "registry", "as_of_ms": 1791201180000},
+        {"session_id": "c-new", "cwd": "/Users/sam/code/c-unknown-in-a-known-tone", "project": "-Users-sam-code-c-unknown-in-a-known-tone", "git_branch": "main", "title": "Session c-new", "created_ms": 1791197520000, "last_activity_ms": 1791201120000, "active": true, "state": "working", "archived": false, "wrapped": true, "bytes": 48213, "activity": "compacting", "open": true, "detail": "Compacting", "since_ms": 1791201120000, "tone": "busy", "source": "registry", "as_of_ms": 1791201180000},
+        {"session_id": "d-gen", "cwd": "/Users/sam/code/d-known-in-an-unknown-tone", "project": "-Users-sam-code-d-known-in-an-unknown-tone", "git_branch": "main", "title": "Session d-gen", "created_ms": 1791197520000, "last_activity_ms": 1791201120000, "active": true, "state": "working", "archived": false, "wrapped": true, "bytes": 48213, "activity": "generating", "open": true, "detail": "Thinking", "since_ms": 1791201120000, "tone": "sparkle", "source": "registry", "as_of_ms": 1791201180000}
+      ],
+      "expected": {
+        "recent": [
+          {"project": "a-unknown-beside-idle", "tone": "idle", "halo": true, "sessions": ["a-new", "a-idle"]},
+          {"project": "b-unknown-beside-ended", "tone": null, "halo": false, "sessions": ["b-new", "b-done"]},
+          {"project": "c-unknown-in-a-known-tone", "tone": "busy", "halo": true, "sessions": ["c-new"]},
+          {"project": "d-known-in-an-unknown-tone", "tone": "busy", "halo": true, "sessions": ["d-gen"]}
+        ],
+        "older": [],
+        "archived": []
+      }
+    },
+    {
+      "name": "a project is the last segment of the cwd, a Windows path's included, else the router's own name for it (SE-C23)",
+      "now": 1791201600000,
+      "sessions": [
+        {"session_id": "slash", "cwd": "/Users/sam/code/agent-router/", "project": "-Users-sam-code-agent-router", "git_branch": "main", "title": "Session slash", "created_ms": 1791197520000, "last_activity_ms": 1791201120000, "active": false, "state": "idle", "archived": false, "wrapped": true, "bytes": 48213, "activity": "idle", "open": true, "detail": "Waiting for you", "since_ms": 1791201120000, "tone": "idle", "source": "registry", "as_of_ms": 1791201180000},
+        {"session_id": "plain", "cwd": "/Users/sam/code/agent-router", "project": "-Users-sam-code-agent-router", "git_branch": "main", "title": "Session plain", "created_ms": 1791197460000, "last_activity_ms": 1791201060000, "active": false, "state": "idle", "archived": false, "wrapped": true, "bytes": 48213, "activity": "idle", "open": true, "detail": "Waiting for you", "since_ms": 1791201060000, "tone": "idle", "source": "registry", "as_of_ms": 1791201180000},
+        {"session_id": "windows", "cwd": "C:\\Users\\sam\\code\\win-app", "project": "C--Users-sam-code-win-app", "git_branch": "main", "title": "Session windows", "created_ms": 1791197400000, "last_activity_ms": 1791201000000, "active": false, "state": "idle", "archived": false, "wrapped": true, "bytes": 48213, "activity": "idle", "open": true, "detail": "Waiting for you", "since_ms": 1791201000000, "tone": "idle", "source": "registry", "as_of_ms": 1791201180000},
+        {"session_id": "no-cwd", "cwd": null, "project": "-Users-sam-code-scratch", "git_branch": "main", "title": "Session no-cwd", "created_ms": 1791197340000, "last_activity_ms": 1791200940000, "active": false, "state": "idle", "archived": false, "wrapped": true, "bytes": 48213, "activity": "idle", "open": true, "detail": "Waiting for you", "since_ms": 1791200940000, "tone": "idle", "source": "registry", "as_of_ms": 1791201180000}
+      ],
+      "expected": {
+        "recent": [
+          {"project": "-Users-sam-code-scratch", "tone": "idle", "halo": false, "sessions": ["no-cwd"]},
+          {"project": "agent-router", "tone": "idle", "halo": false, "sessions": ["slash", "plain"]},
+          {"project": "win-app", "tone": "idle", "halo": false, "sessions": ["windows"]}
+        ],
+        "older": [],
+        "archived": []
+      }
+    },
+    {
+      "name": "two projects whose names differ only in case stay two projects, lowercase first (SE-C24)",
+      "now": 1791201600000,
+      "sessions": [
+        {"session_id": "docs-lower", "cwd": "/Users/sam/code/docs", "project": "-Users-sam-code-docs", "git_branch": "main", "title": "Session docs-lower", "created_ms": 1791197520000, "last_activity_ms": 1791201120000, "active": false, "state": "idle", "archived": false, "wrapped": true, "bytes": 48213, "activity": "idle", "open": true, "detail": "Waiting for you", "since_ms": 1791201120000, "tone": "idle", "source": "registry", "as_of_ms": 1791201180000},
+        {"session_id": "docs-upper", "cwd": "/Users/sam/work/Docs", "project": "-Users-sam-work-Docs", "git_branch": "main", "title": "Session docs-upper", "created_ms": 1791197460000, "last_activity_ms": 1791201060000, "active": false, "state": "idle", "archived": false, "wrapped": true, "bytes": 48213, "activity": "idle", "open": true, "detail": "Waiting for you", "since_ms": 1791201060000, "tone": "idle", "source": "registry", "as_of_ms": 1791201180000},
+        {"session_id": "docs-lower-2", "cwd": "/Users/sam/code/docs", "project": "-Users-sam-code-docs", "git_branch": "main", "title": "Session docs-lower-2", "created_ms": 1791197400000, "last_activity_ms": 1791201000000, "active": false, "state": "idle", "archived": false, "wrapped": true, "bytes": 48213, "activity": "idle", "open": true, "detail": "Waiting for you", "since_ms": 1791201000000, "tone": "idle", "source": "registry", "as_of_ms": 1791201180000}
+      ],
+      "expected": {
+        "recent": [
+          {"project": "docs", "tone": "idle", "halo": false, "sessions": ["docs-lower", "docs-lower-2"]},
+          {"project": "Docs", "tone": "idle", "halo": false, "sessions": ["docs-upper"]}
+        ],
+        "older": [],
+        "archived": []
+      }
+    },
+    {
+      "name": "names sort as the web sorts them: punctuation before digits before letters, _ before - before . (SE-C24)",
+      "now": 1791201600000,
+      "sessions": [
+        {"session_id": "n-1", "cwd": "/Users/sam/code/appweb", "project": "-Users-sam-code-appweb", "git_branch": "main", "title": "Session n-1", "created_ms": 1791197520000, "last_activity_ms": 1791201120000, "active": false, "state": "idle", "archived": false, "wrapped": true, "bytes": 48213, "activity": "idle", "open": true, "detail": "Waiting for you", "since_ms": 1791201120000, "tone": "idle", "source": "registry", "as_of_ms": 1791201180000},
+        {"session_id": "n-2", "cwd": "/Users/sam/code/app.web", "project": "-Users-sam-code-app.web", "git_branch": "main", "title": "Session n-2", "created_ms": 1791197520000, "last_activity_ms": 1791201120000, "active": false, "state": "idle", "archived": false, "wrapped": true, "bytes": 48213, "activity": "idle", "open": true, "detail": "Waiting for you", "since_ms": 1791201120000, "tone": "idle", "source": "registry", "as_of_ms": 1791201180000},
+        {"session_id": "n-3", "cwd": "/Users/sam/code/app-web", "project": "-Users-sam-code-app-web", "git_branch": "main", "title": "Session n-3", "created_ms": 1791197520000, "last_activity_ms": 1791201120000, "active": false, "state": "idle", "archived": false, "wrapped": true, "bytes": 48213, "activity": "idle", "open": true, "detail": "Waiting for you", "since_ms": 1791201120000, "tone": "idle", "source": "registry", "as_of_ms": 1791201180000},
+        {"session_id": "n-4", "cwd": "/Users/sam/code/app_web", "project": "-Users-sam-code-app_web", "git_branch": "main", "title": "Session n-4", "created_ms": 1791197520000, "last_activity_ms": 1791201120000, "active": false, "state": "idle", "archived": false, "wrapped": true, "bytes": 48213, "activity": "idle", "open": true, "detail": "Waiting for you", "since_ms": 1791201120000, "tone": "idle", "source": "registry", "as_of_ms": 1791201180000},
+        {"session_id": "n-5", "cwd": "/Users/sam/code/app2", "project": "-Users-sam-code-app2", "git_branch": "main", "title": "Session n-5", "created_ms": 1791197520000, "last_activity_ms": 1791201120000, "active": false, "state": "idle", "archived": false, "wrapped": true, "bytes": 48213, "activity": "idle", "open": true, "detail": "Waiting for you", "since_ms": 1791201120000, "tone": "idle", "source": "registry", "as_of_ms": 1791201180000},
+        {"session_id": "n-6", "cwd": "/Users/sam/code/App", "project": "-Users-sam-code-App", "git_branch": "main", "title": "Session n-6", "created_ms": 1791197520000, "last_activity_ms": 1791201120000, "active": false, "state": "idle", "archived": false, "wrapped": true, "bytes": 48213, "activity": "idle", "open": true, "detail": "Waiting for you", "since_ms": 1791201120000, "tone": "idle", "source": "registry", "as_of_ms": 1791201180000},
+        {"session_id": "n-7", "cwd": "/Users/sam/code/APP-web", "project": "-Users-sam-code-APP-web", "git_branch": "main", "title": "Session n-7", "created_ms": 1791197520000, "last_activity_ms": 1791201120000, "active": false, "state": "idle", "archived": false, "wrapped": true, "bytes": 48213, "activity": "idle", "open": true, "detail": "Waiting for you", "since_ms": 1791201120000, "tone": "idle", "source": "registry", "as_of_ms": 1791201180000},
+        {"session_id": "n-8", "cwd": "/Users/sam/code/apps", "project": "-Users-sam-code-apps", "git_branch": "main", "title": "Session n-8", "created_ms": 1791197520000, "last_activity_ms": 1791201120000, "active": false, "state": "idle", "archived": false, "wrapped": true, "bytes": 48213, "activity": "idle", "open": true, "detail": "Waiting for you", "since_ms": 1791201120000, "tone": "idle", "source": "registry", "as_of_ms": 1791201180000}
+      ],
+      "expected": {
+        "recent": [
+          {"project": "App", "tone": "idle", "halo": false, "sessions": ["n-6"]},
+          {"project": "app_web", "tone": "idle", "halo": false, "sessions": ["n-4"]},
+          {"project": "app-web", "tone": "idle", "halo": false, "sessions": ["n-3"]},
+          {"project": "APP-web", "tone": "idle", "halo": false, "sessions": ["n-7"]},
+          {"project": "app.web", "tone": "idle", "halo": false, "sessions": ["n-2"]},
+          {"project": "app2", "tone": "idle", "halo": false, "sessions": ["n-5"]},
+          {"project": "apps", "tone": "idle", "halo": false, "sessions": ["n-8"]},
+          {"project": "appweb", "tone": "idle", "halo": false, "sessions": ["n-1"]}
+        ],
+        "older": [],
+        "archived": []
+      }
+    },
+    {
+      "name": "a list from an older router, which names no activity: a heading is busy while anything in it is active, else idle, and the fold goes by this device's clock (SE-C17, SE-C19)",
+      "now": 1791201600000,
+      "sessions": [
+        {"session_id": "old-work", "cwd": "/Users/sam/code/x", "project": "-Users-sam-code-x", "git_branch": null, "title": "Session old-work", "created_ms": 1791197940000, "last_activity_ms": 1791201540000, "active": true, "state": "working", "archived": false, "wrapped": false, "bytes": 9120},
+        {"session_id": "old-idle", "cwd": "/Users/sam/code/x", "project": "-Users-sam-code-x", "git_branch": null, "title": "Session old-idle", "created_ms": 1791190800000, "last_activity_ms": 1791194400000, "active": false, "state": "idle", "archived": false, "wrapped": false, "bytes": 9120},
+        {"session_id": "old-ask", "cwd": "/Users/sam/code/y", "project": "-Users-sam-code-y", "git_branch": null, "title": "Session old-ask", "created_ms": 1791126000000, "last_activity_ms": 1791129600000, "active": false, "state": "ask", "archived": false, "wrapped": false, "bytes": 9120},
+        {"session_id": "old-quiet", "cwd": "/Users/sam/code/y", "project": "-Users-sam-code-y", "git_branch": null, "title": "Session old-quiet", "created_ms": 1791187200000, "last_activity_ms": 1791190800000, "active": false, "state": "idle", "archived": false, "wrapped": false, "bytes": 9120},
+        {"session_id": "old-fail", "cwd": "/Users/sam/code/z", "project": "-Users-sam-code-z", "git_branch": null, "title": "Session old-fail", "created_ms": 1791194400000, "last_activity_ms": 1791198000000, "active": false, "state": "failed", "archived": false, "wrapped": false, "bytes": 9120}
+      ],
+      "expected": {
+        "recent": [
+          {"project": "x", "tone": "busy", "halo": true, "sessions": ["old-work", "old-idle"]},
+          {"project": "y", "tone": "idle", "halo": false, "sessions": ["old-quiet"]},
+          {"project": "z", "tone": "idle", "halo": false, "sessions": ["old-fail"]}
+        ],
+        "older": [
+          {"project": "y", "tone": "idle", "halo": false, "sessions": ["old-ask"]}
+        ],
+        "archived": []
+      }
+    },
+    {
+      "name": "a hosted router's rows from one machine list exactly as a local router's",
+      "now": 1791201600000,
+      "sessions": [
+        {"session_id": "one-ar", "cwd": "/Users/sam/code/agent-router", "project": "-Users-sam-code-agent-router", "git_branch": "main", "title": "Session one-ar", "created_ms": 1791197570000, "last_activity_ms": 1791201170000, "active": true, "state": "working", "archived": false, "wrapped": true, "bytes": 48213, "activity": "generating", "open": true, "detail": "Thinking", "since_ms": 1791201170000, "tone": "busy", "source": "registry", "as_of_ms": 1791201180000, "machine": {"id": "5f0c2a8e", "label": "studio"}},
+        {"session_id": "one-ns", "cwd": "/Users/sam/code/northstar", "project": "-Users-sam-code-northstar", "git_branch": "main", "title": "Session one-ns", "created_ms": 1791190380000, "last_activity_ms": 1791193980000, "active": false, "state": "idle", "archived": false, "wrapped": true, "bytes": 48213, "activity": "idle", "open": true, "detail": "Waiting for you", "since_ms": 1791193980000, "tone": "idle", "source": "registry", "as_of_ms": 1791201180000, "machine": {"id": "5f0c2a8e", "label": "studio"}},
+        {"session_id": "one-old", "cwd": "/Users/sam/code/northstar", "project": "-Users-sam-code-northstar", "git_branch": "main", "title": "Session one-old", "created_ms": 1791089580000, "last_activity_ms": 1791093180000, "active": false, "state": "idle", "archived": false, "wrapped": true, "bytes": 48213, "activity": "idle", "open": true, "detail": "Waiting for you", "since_ms": 1791093180000, "tone": "idle", "source": "registry", "as_of_ms": 1791201180000, "machine": {"id": "5f0c2a8e", "label": "studio"}},
+        {"session_id": "one-arc", "cwd": "/Users/sam/code/agent-router", "project": "-Users-sam-code-agent-router", "git_branch": "main", "title": "Session one-arc", "created_ms": 1791186780000, "last_activity_ms": 1791190380000, "active": false, "state": "idle", "archived": true, "wrapped": true, "bytes": 48213, "activity": "idle", "open": true, "detail": "Waiting for you", "since_ms": 1791190380000, "tone": "idle", "source": "registry", "as_of_ms": 1791201180000, "machine": {"id": "5f0c2a8e", "label": "studio"}}
+      ],
+      "expected": {
+        "recent": [
+          {"project": "agent-router", "tone": "busy", "halo": true, "sessions": ["one-ar"]},
+          {"project": "northstar", "tone": "idle", "halo": false, "sessions": ["one-ns"]}
+        ],
+        "older": [
+          {"project": "northstar", "tone": "idle", "halo": false, "sessions": ["one-old"]}
+        ],
+        "archived": ["one-arc"]
+      }
+    },
+    {
+      "name": "rows from several machines",
+      "now": 1791201600000,
+      "sessions": [
+        {"session_id": "s-ar", "cwd": "/Users/sam/code/agent-router", "project": "-Users-sam-code-agent-router", "git_branch": "main", "title": "Session s-ar", "created_ms": 1791197570000, "last_activity_ms": 1791201170000, "active": true, "state": "working", "archived": false, "wrapped": true, "bytes": 48213, "activity": "generating", "open": true, "detail": "Thinking", "since_ms": 1791201170000, "tone": "busy", "source": "registry", "as_of_ms": 1791201180000, "machine": {"id": "5f0c2a8e", "label": "studio"}},
+        {"session_id": "l-ar", "cwd": "/Users/sam/code/agent-router", "project": "-Users-sam-code-agent-router", "git_branch": "main", "title": "Session l-ar", "created_ms": 1791193980000, "last_activity_ms": 1791197580000, "active": false, "state": "idle", "archived": false, "wrapped": true, "bytes": 48213, "activity": "idle", "open": true, "detail": "Waiting for you", "since_ms": 1791197580000, "tone": "idle", "source": "registry", "as_of_ms": 1791201180000, "machine": {"id": "9b3e1d47", "label": "Laptop"}},
+        {"session_id": "s-ns", "cwd": "/Users/sam/code/northstar", "project": "-Users-sam-code-northstar", "git_branch": "main", "title": "Session s-ns", "created_ms": 1791190380000, "last_activity_ms": 1791193980000, "active": false, "state": "idle", "archived": false, "wrapped": true, "bytes": 48213, "activity": "idle", "open": true, "detail": "Waiting for you", "since_ms": 1791193980000, "tone": "idle", "source": "registry", "as_of_ms": 1791201180000, "machine": {"id": "5f0c2a8e", "label": "studio"}},
+        {"session_id": "s-old", "cwd": "/Users/sam/code/northstar", "project": "-Users-sam-code-northstar", "git_branch": "main", "title": "Session s-old", "created_ms": 1791089580000, "last_activity_ms": 1791093180000, "active": false, "state": "idle", "archived": false, "wrapped": true, "bytes": 48213, "activity": "idle", "open": true, "detail": "Waiting for you", "since_ms": 1791093180000, "tone": "idle", "source": "registry", "as_of_ms": 1791201180000, "machine": {"id": "5f0c2a8e", "label": "studio"}},
+        {"session_id": "l-arc", "cwd": "/Users/sam/code/agent-router", "project": "-Users-sam-code-agent-router", "git_branch": "main", "title": "Session l-arc", "created_ms": 1791186780000, "last_activity_ms": 1791190380000, "active": false, "state": "idle", "archived": true, "wrapped": true, "bytes": 48213, "activity": "idle", "open": true, "detail": "Waiting for you", "since_ms": 1791190380000, "tone": "idle", "source": "registry", "as_of_ms": 1791201180000, "machine": {"id": "9b3e1d47", "label": "Laptop"}}
+      ],
+      "pending": "presentation policy — the web keys each project by machine ('agent-router · Laptop') in one alphabetical list, with one older fold and one shelf; both phones head each machine and list that machine's own projects, older fold and shelf beneath it",
+      "expected": {
+        "recent": [
+          {"project": "agent-router · Laptop", "tone": "idle", "halo": false, "sessions": ["l-ar"]},
+          {"project": "agent-router · studio", "tone": "busy", "halo": true, "sessions": ["s-ar"]},
+          {"project": "northstar · studio", "tone": "idle", "halo": false, "sessions": ["s-ns"]}
+        ],
+        "older": [
+          {"project": "northstar · studio", "tone": "idle", "halo": false, "sessions": ["s-old"]}
+        ],
+        "archived": ["l-arc"]
+      }
+    },
+    {
+      "name": "an empty list has no projects, no older fold and no shelf",
+      "now": 1791201600000,
+      "sessions": [],
+      "expected": {
+        "recent": [],
+        "older": [],
+        "archived": []
+      }
+    }
+  ]
+}
