@@ -260,6 +260,14 @@ body {
   @include type.type-style('body-compact-01');
 }
 
+/// How far down the page the shell's fixed header reaches: Carbon's 48 px bar, under a notched
+/// phone's top safe area (zero everywhere else). The header is that tall, and everything that sits
+/// under it — the page, the rail and its overlay, a sticky bar, the palette's sheet — starts there,
+/// from this one value (SH-C2).
+:root {
+  --ar-shell-header: calc(#{$spacing-09} + env(safe-area-inset-top, 0px));
+}
+
 #root {
   min-height: 100dvh;
 }

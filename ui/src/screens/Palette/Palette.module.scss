@@ -4,9 +4,10 @@
 @use '@carbon/react/scss/type' as *;
 @use '@carbon/react/scss/breakpoint' as *;
 
-// Carbon's UI Shell header is 3rem tall and $spacing-09 is that 3rem: the sheet starts
-// where the header ends, so the palette never covers the header's own facts and actions.
-$ar-header-height: $spacing-09;
+// The sheet starts where the shell's header ends, so the palette never covers the header's own
+// facts and actions: Carbon's 3rem bar, taller under a phone's notch (--ar-shell-header,
+// styles.scss).
+$ar-header-height: var(--ar-shell-header);
 
 // The palette sits near the top of the viewport on a desk — where the eye already is
 // after ⌘K — rather than centred like a transactional modal. The offset is a spacing

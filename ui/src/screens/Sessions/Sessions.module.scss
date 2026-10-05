@@ -33,16 +33,6 @@ $ar-tab-rule: 0.125rem;
   }
 }
 
-/// The shell's content area is at least a viewport tall; here it is exactly the screen, so a
-/// keyboard that shrinks the visual viewport leaves no page to scroll under it. Its 3rem clear of
-/// the fixed header is padding here rather than Carbon's margin, which collapses through to the
-/// page's root and makes the page 3rem taller than the window: a page that scrolls.
-:global(#main-content):has(> [data-sessions-screen]) {
-  min-block-size: 0;
-  margin-block-start: 0;
-  padding-block-start: calc(#{$ar-shell-header} + env(safe-area-inset-top));
-}
-
 /// Below 1,056px one pane shows at a time: the list, or the open session and Find (SE-C201).
 .listPane,
 .mainPane {

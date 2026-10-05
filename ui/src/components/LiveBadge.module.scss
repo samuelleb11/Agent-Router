@@ -1,6 +1,7 @@
 // Copied from Northstar ui/src/components/LiveBadge.module.scss at e9c1589.
-// Changed: nothing.
+// Changed: stale's tone, the console's warning fill under Carbon's inverse text.
 @use '@carbon/react/scss/spacing' as *;
+@use '@carbon/react/scss/theme' as *;
 
 /// Carbon's header bar is a flex row of 48px actions, and a bare Tag dropped into it is
 /// stretched to the full 48px — a small tag is 18px, so it rendered as a tall green
@@ -14,4 +15,14 @@
   > * {
     margin: 0;
   }
+}
+
+/// Stale: the last refresh failed. A warning, so the console's warning fill (styles.scss, checked
+/// by scripts/check-palette.mjs), under Carbon's inverse text. The badge lives in the header, which
+/// is g100 on either page theme: g100's fill, #fbbf24, under g100's inverse text, #161616, reads at
+/// 10.7:1. The doubled class outweighs Carbon's own tag colours whatever order the stylesheets load
+/// in.
+.stale.stale {
+  background-color: var(--ar-warn-fill);
+  color: $text-inverse;
 }

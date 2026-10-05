@@ -134,7 +134,11 @@ describe('the safe areas', () => {
 
   it('SE-C199: the column clears the top safe area under the shell’s fixed header, the composer the bottom one, and the headers and composer the sides', () => {
     expect(block('\n.screen {')).toMatch(/block-size:[^;]*-\s*env\(safe-area-inset-top\)/);
-    expect(block(':global(#main-content):has(> [data-sessions-screen])')).toMatch(/padding-block-start:[^;]*env\(safe-area-inset-top\)/);
+    // The page clears the fixed header and its safe area in the shell, for every screen: the
+    // content is padded by the header's height, the notch included.
+    const shell = plain(readFileSync(join(__dirname, '../../app/Shell.module.scss'), 'utf8'));
+    expect(shell).toMatch(/&:global\(#main-content\)\s*\{[^}]*padding-block-start:\s*var\(--ar-shell-header\)/);
+    expect(plain(readFileSync(join(__dirname, '../../styles.scss'), 'utf8'))).toMatch(/--ar-shell-header:\s*calc\([^;]*env\(safe-area-inset-top/);
     const dock = block('\n.dock {');
     expect(dock).toMatch(/env\(safe-area-inset-bottom\)/);
     expect(dock).toMatch(/env\(safe-area-inset-left\)/);

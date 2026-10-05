@@ -1,5 +1,5 @@
 // Copied from Northstar ui/src/app/Shell.tsx at e9c1589.
-// Changed: agent-router's navigation (Overview, Sessions, the projects, Settings at the foot); the freshness badge reads the router's health; no sign-in and no log-out, because the router's LAN gate is HTTP Basic, which the browser asks for itself; no wide routes; the phone drawer closes on every arrival, a project link's included; the palette is open at a location as the drawer is, and opening either puts the other away; the first-boot password prompt is decided here, on every screen but Settings, in a chunk of its own.
+// Changed: agent-router's navigation (Overview, Sessions, the projects, Settings at the foot); the freshness badge reads the router's health and the open session's stream; no sign-in and no log-out, because the router's LAN gate is HTTP Basic, which the browser asks for itself; the address the console was reached at beside the name; no wide routes; the phone drawer closes on every arrival, a project link's included; the palette is open at a location as the drawer is, and opening either puts the other away; the first-boot password prompt is decided here, on every screen but Settings, in a chunk of its own.
 import { Suspense, lazy, useCallback, useEffect, useMemo, useState, type MouseEvent } from 'react';
 import { Link, Outlet, useHref, useLocation, useNavigate } from 'react-router';
 import {
@@ -62,6 +62,8 @@ export function Shell() {
   // The console's root as the browser addresses it: the header's name is a
   // real link, and an href is the browser's, not the router's.
   const home = useHref('/');
+  // The address the console was reached at, as the browser has it: the same for the page's life.
+  const host = globalThis.location.host;
 
   // On a phone there is no room beside the page for a rail, so the same navigation is a
   // drawer over it: opened from the header's menu button, closed by the overlay, by Escape,
@@ -144,17 +146,23 @@ export function Shell() {
               onClick={toggle}
             />
           )}
-          <HeaderName
-            prefix=""
-            href={home}
-            onClick={(e: MouseEvent) => {
-              if (!plain(e)) return;
-              e.preventDefault();
-              void navigate('/');
-            }}
-          >
-            Agent Router
-          </HeaderName>
+          <div className={styles.brand}>
+            <HeaderName
+              prefix=""
+              href={home}
+              onClick={(e: MouseEvent) => {
+                if (!plain(e)) return;
+                e.preventDefault();
+                void navigate('/');
+              }}
+            >
+              Agent Router
+            </HeaderName>
+            {/* Which router this tab is showing: the Mac's, one on the LAN, or a hosted one (SH-C9). */}
+            <span className={styles.host} data-host="">
+              {host}
+            </span>
+          </div>
           <HeaderGlobalBar>
             <LiveBadge mode={live.mode} label={live.label} />
             <HeaderGlobalAction aria-label="Search and commands (⌘K)" tooltipAlignment="end" onClick={openPalette}>

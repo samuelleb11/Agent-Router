@@ -836,10 +836,11 @@ describe('Palette: the modal, and the sheet in a hand (SH-C51)', () => {
     expect(drawer()).not.toHaveClass('cds--side-nav--expanded');
 
     // jsdom lays nothing out, so the sheet is read from its stylesheet: below md the overlay and
-    // the sheet both start where Carbon's 3rem topbar ends, and the sheet runs to the foot of the
-    // screen whatever it holds. Starting the overlay there too is what lets a tap reach the topbar.
+    // the sheet both start where the shell's topbar ends — Carbon's 3rem, under a notch's safe
+    // area — and the sheet runs to the foot of the screen whatever it holds. Starting the overlay
+    // there too is what lets a tap reach the topbar.
     const scss = readFileSync(join(__dirname, 'Palette.module.scss'), 'utf8').replace(/\/\/.*$/gm, '');
-    expect(scss).toMatch(/\$ar-header-height:\s*\$spacing-09;/);
+    expect(scss).toMatch(/\$ar-header-height:\s*var\(--ar-shell-header\);/);
     const overlay = block(block(scss, '\n.modal:global(.cds--modal) {'), "@include breakpoint-down('md')");
     expect(overlay).toMatch(/inset-block:\s*\$ar-header-height 0;/);
     expect(overlay).toMatch(/block-size:\s*auto;/);

@@ -1,17 +1,22 @@
 // New for agent-router: the contracts only a real browser can show — layout, sticking, overflow, target
 // sizes, motion — asserted on each shot by scripts/shoot.mjs, per route. Each check is an expression
 // evaluated in the shot's page once it has settled and been shot; it answers `{ ok, detail }`, and a
-// check that is not ok fails the run with its contract's id and its words.
+// check that is not ok fails the run with its contract's id and its words. A check may carry
+// `insets: { phone, desk }`, the safe areas to emulate while it runs at that mode (a notched phone's,
+// say); the shot's own are put back after it.
 //
 // Only what jsdom cannot answer belongs here: whatever a spec can assert, a spec does.
 
 import { SETTINGS_CHECKS } from './settings-checks.mjs';
 import { SESSIONS_CHECKS } from './sessions-checks.mjs';
+import { SHELL_CHECKS } from './shell-checks.mjs';
 
-/// The checks for a route at a width: `mode` is the shot's, phone or desk (scripts/shoot.mjs).
+/// The checks for a route at a width: `mode` is the shot's, phone or desk (scripts/shoot.mjs). The
+/// route's own first, then the shell's, which hold on every route and whatever the route's checks
+/// left open.
 export function checksFor(route, mode) {
   const path = route.split('?')[0] || '/';
-  return (CHECKS[path] ?? []).filter((c) => c.at === 'both' || c.at === mode);
+  return [...(CHECKS[path] ?? []), ...SHELL_CHECKS].filter((c) => c.at === 'both' || c.at === mode);
 }
 
 const OVERVIEW = [

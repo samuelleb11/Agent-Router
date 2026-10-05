@@ -6,6 +6,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button, InlineNotification } from '@carbon/react';
 import { ArrowLeft, Search } from '@carbon/icons-react';
+import { useStreamReport } from '~/app/live';
 import { StatusPill } from '~/components/StatusDot';
 import { liveKeys, postLive, readPrompt, type Outcome } from '~/data/live';
 import { id8 } from '~/model/format';
@@ -64,6 +65,8 @@ export function SessionView({ id, row, rows, covered, arrival, primary, onBack, 
   const stream = useSessionStream(id);
   const { feed, echo, aside } = stream;
   const header = stream.header ?? CONNECTING;
+  // The shell's freshness badge says "reconnecting" while this stream is being replaced (SH-C10).
+  useStreamReport(feed?.phase ?? null);
 
   // ---------- following the newest row (SE-C87, SE-C88) ----------
   const scroller = useRef<HTMLDivElement>(null);

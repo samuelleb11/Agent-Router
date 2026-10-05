@@ -155,7 +155,7 @@ for (const [chunk, chain] of main) {
     if (!main.has(screen) && !screens.has(screen)) screens.set(screen, [...chain, `import() ${screen}`]);
   }
 }
-// The route table is lazy (src/app/App.tsx), so a build with no dynamic import from the main
+// The route table is lazy (src/app/routeTable.tsx), so a build with no dynamic import from the main
 // bundle means these patterns no longer read what Rollup writes, and every answer below is empty.
 if (screens.size === 0) fail(['check-chunks: found no screen chunk the main bundle imports; the import patterns are stale.']);
 

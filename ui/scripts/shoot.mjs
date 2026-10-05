@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Copied from Northstar ui/scripts/shoot-workmap.mjs at e9c1589.
-// Changed: any routes at any widths, rather than the Work map at a desk and a phone; the themes are chosen; a page that scrolls sideways is measured, and fails the run when asked; the theme key is the router's; the Work map's presses, scrolls and measures are gone.
+// Changed: any routes at any widths, rather than the Work map at a desk and a phone; the themes are chosen; the safe areas are set, and a check may ask for a notched phone's; a page that scrolls sideways is measured, and fails the run when asked; the theme key is the router's; the Work map's presses, scrolls and measures are gone.
 //
 // Screenshots of console routes on fixtures, at each width in each theme, from headless Chrome
 // driven over the DevTools protocol.
@@ -10,7 +10,9 @@
 //     [--unread health,projects] [--base http://127.0.0.1:4392] [--full]
 //
 // A width under Carbon's md breakpoint (672px) is shot as a phone: touch, a coarse pointer, a
-// device scale of 2 and a phone's height; anything wider as a desk.
+// device scale of 2 and a phone's height; anything wider as a desk. Both are shot with no safe
+// areas; a check that is about them asks for a notched phone's while it runs (see `insets` in
+// scripts/shot-checks.mjs).
 //
 // With no --base it starts the fixture harness itself (vite.harness.config.ts, 127.0.0.1:4392)
 // and stops it after; with one it shoots a harness already running there. It never points at a
@@ -21,12 +23,16 @@
 //
 // - Over the DevTools protocol, never Chrome's --screenshot flag, which hangs on a page like this
 //   one with no file and no error.
-// - Device metrics, touch, colour scheme and the remembered theme are set EXPLICITLY before
-//   every shot, desk included, and each shot gets a browser context of its own. Emulation
-//   persists on a target, and a "desk" shot taken after a phone one is silently a phone shot;
-//   storage persists in a context, and the rail remembers whether it is collapsed. Each shot
-//   then reads back its width, its theme and its pointer, and the run fails if any is not what
-//   was set.
+// - Device metrics, touch, safe areas, colour scheme and the remembered theme are set
+//   EXPLICITLY before every shot, desk included, and each shot gets a browser context of its own.
+//   Emulation persists on a target, and a "desk" shot taken after a phone one is silently a phone
+//   shot; storage persists in a context, and the rail remembers whether it is collapsed. Each shot
+//   then reads back its width, its theme, its pointer and its safe areas, and the run fails if any
+//   is not what was set.
+// - A phone may have a notch. A desktop browser reports no safe areas, so a page whose header
+//   ignored them passed every shot while a notched phone hid the header's actions under the status
+//   bar. A check that carries `insets` for the shot's mode runs with those safe areas emulated, and
+//   the shot's own are put back after it.
 // - Reduced motion, so a transition is never caught halfway.
 // - The PNGs go to --out, which must be outside the repository: an untracked file in the tree
 //   changes the build's id, and a screenshot is not a source. Without --out, a fresh directory
@@ -114,10 +120,14 @@ function parseArgs(argv) {
   return args;
 }
 
+/// No safe areas: set as zero rather than left unset, because an unset inset is no value at all, and
+/// `env()` without a fallback then voids the whole declaration it sits in.
+const NONE = { top: 0, right: 0, bottom: 0, left: 0 };
+
 /// A phone under the md breakpoint, a desk above it.
 function view(width) {
-  if (width < NARROW_BELOW) return { mode: 'phone', width, height: width <= 360 ? 800 : 844, scale: 2, mobile: true };
-  return { mode: 'desk', width, height: width < 1056 ? 1024 : 900, scale: 1, mobile: false };
+  if (width < NARROW_BELOW) return { mode: 'phone', width, height: width <= 360 ? 800 : 844, scale: 2, mobile: true, insets: NONE };
+  return { mode: 'desk', width, height: width < 1056 ? 1024 : 900, scale: 1, mobile: false, insets: NONE };
 }
 
 /// A route as a file name: `/settings/accounts` is settings-accounts, `/` is root, and a query
@@ -215,6 +225,15 @@ const READ_BACK = `(() => ({
   html: document.documentElement.className,
   dark: matchMedia('(prefers-color-scheme: dark)').matches,
   coarse: matchMedia('(pointer: coarse)').matches,
+  insets: (() => {
+    const probe = document.createElement('div');
+    probe.style.cssText = 'position: fixed; visibility: hidden; padding: env(safe-area-inset-top, -1px) env(safe-area-inset-right, -1px) env(safe-area-inset-bottom, -1px) env(safe-area-inset-left, -1px)';
+    document.body.append(probe);
+    const cs = getComputedStyle(probe);
+    const insets = { top: parseFloat(cs.paddingTop), right: parseFloat(cs.paddingRight), bottom: parseFloat(cs.paddingBottom), left: parseFloat(cs.paddingLeft) };
+    probe.remove();
+    return insets;
+  })(),
   path: location.pathname + location.search,
   harness: window.__harness ? { unread: window.__harness.unread, answered: window.__harness.answered.length, unanswered: [...window.__harness.unanswered] } : null,
 }))()`;
@@ -267,6 +286,7 @@ async function shoot(cdp, args, base, route, width, theme) {
     await send('Runtime.enable');
     await send('Emulation.setDeviceMetricsOverride', { width: v.width, height: v.height, deviceScaleFactor: v.scale, mobile: v.mobile });
     await send('Emulation.setTouchEmulationEnabled', v.mobile ? { enabled: true, maxTouchPoints: 5 } : { enabled: false });
+    await send('Emulation.setSafeAreaInsetsOverride', { insets: v.insets });
     await send('Emulation.setEmulatedMedia', {
       features: [
         { name: 'prefers-color-scheme', value: theme.scheme },
@@ -311,13 +331,27 @@ async function shoot(cdp, args, base, route, width, theme) {
     // The route's browser-only contracts (scripts/shot-checks.mjs), after the shot, since a check may
     // scroll or open something; each failure is named by its contract's id.
     for (const check of checksFor(route, v.mode)) {
+      const insets = check.insets?.[v.mode];
+      // A new safe area reaches the page's styles on its next frames, not at once.
+      const framed = () => send('Runtime.evaluate', { expression: 'new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(true))))', awaitPromise: true });
+      if (insets) {
+        await send('Emulation.setSafeAreaInsetsOverride', { insets });
+        await framed();
+      }
       const r = (await send('Runtime.evaluate', { expression: check.expression, returnByValue: true, awaitPromise: true })).result.value;
-      if (!r?.ok) wrong.push(`${check.id}: ${check.says}${r?.detail ? ` — ${r.detail}` : ''}`);
+      if (insets) {
+        await send('Emulation.setSafeAreaInsetsOverride', { insets: v.insets });
+        await framed();
+      }
+      if (!r?.ok) wrong.push(`${check.id}: ${check.says}${insets ? ` (safe areas ${insets.top}/${insets.right}/${insets.bottom}/${insets.left} px)` : ''}${r?.detail ? ` — ${r.detail}` : ''}`);
     }
     if (page.width !== v.width) wrong.push(`width ${page.width}, not ${v.width}`);
     if (!page.html.split(/\s+/).includes(theme.html)) wrong.push(`<html class="${page.html}">, not ${theme.html}`);
     if (page.dark !== (theme.scheme === 'dark')) wrong.push(`prefers-color-scheme is not ${theme.scheme}`);
     if (page.coarse !== v.mobile) wrong.push(`pointer is ${page.coarse ? 'coarse' : 'fine'}`);
+    for (const side of ['top', 'right', 'bottom', 'left']) {
+      if (page.insets[side] !== v.insets[side]) wrong.push(`safe-area-inset-${side} is ${page.insets[side]}px, not ${v.insets[side]}px`);
+    }
     if (!page.harness) wrong.push('no fixture harness on the page: is --base a harness?');
     if (page.harness?.answered === 0) wrong.push('the page read nothing: it was shot before the console started');
     if (page.harness?.unanswered.length) wrong.push(`unanswered: ${page.harness.unanswered.join('; ')}`);

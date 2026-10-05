@@ -8,11 +8,12 @@
 @use '@carbon/react/scss/utilities/button-reset';
 @use '@carbon/react/scss/utilities/focus-outline' as *;
 
-/// The scope bar stays in view at the top while the page scrolls, under the shell's 48 px header
-/// (OV-C35): it qualifies every figure below it.
+/// The scope bar stays in view at the top while the page scrolls, under the shell's header (OV-C35):
+/// it qualifies every figure below it. The header is 48 px, and taller under a phone's notch
+/// (--ar-shell-header, styles.scss), so the bar sticks where the header ends.
 .scopeBar {
   position: sticky;
-  inset-block-start: $spacing-09;
+  inset-block-start: var(--ar-shell-header);
   z-index: 2;
   display: flex;
   flex-wrap: wrap;
