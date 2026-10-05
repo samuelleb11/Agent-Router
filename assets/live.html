@@ -472,7 +472,10 @@ const usd = n => n == null ? ''
 const num = n => n >= 1e9 ? (n / 1e9).toFixed(1) + 'B'
   : n >= 1e6 ? (n / 1e6).toFixed(1) + 'M'
   : n >= 1e3 ? Math.round(n / 1e3) + 'k' : String(n || 0);
-const esc = s => String(s ?? '').replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+// Quotes too: the output lands inside attributes (a Markdown link's href, a question
+// option's value), where an unescaped " ends the value and starts an attribute of the
+// transcript's choosing — an onmouseover on a page that can answer prompts.
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const base = p => (p || '').split('/').filter(Boolean).pop() || p || '—';
 
 // ---------- what a session is doing ----------
