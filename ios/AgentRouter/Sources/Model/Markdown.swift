@@ -1,14 +1,15 @@
 // Assistant prose, read exactly as the web console reads it: `md()` and `inline()` in
 // ui/src/model/markdown.ts, which is the reference for both phones (decision F in
-// docs/web-console-carbon.md; SE-C90 to SE-C104 in docs/web-console-contracts.md). The fixtures
-// the three clients share, fixtures/live/markdown-blocks.json, hold this to it
-// (SharedFixtureTests).
+// docs/web-console-carbon.md; SE-C90 to SE-C104 in docs/web-console-contracts.md), save that its
+// lists follow the phones' rule, which the web now shares. The fixtures the three clients share,
+// fixtures/live/markdown-blocks.json, hold all three to it (SharedFixtureTests).
 //
 // The web reads Markdown with regular expressions. This reads the same patterns character by
 // character, so the two cannot disagree about what a space is (JavaScript's `\s`), where a line
-// ends, or where a fence may open and close: anywhere, not only at the start of a line. One
-// difference is kept on purpose, pending decision F: a numbered list stays numbered here, where
-// the web draws every list bulleted and drops its numbers.
+// ends, or where a fence may open and close: anywhere, not only at the start of a line. Lists were
+// decided on 2026-10-05 (decision F, SE-C99) as the phones always drew them: a numbered list is
+// drawn numbered, and a run that mixes bullets and numbers splits into a list of each. The web
+// console has drawn them the same way since.
 
 import Foundation
 
@@ -20,7 +21,7 @@ enum Markdown {
         /// deeper the sixth, so a heading sits under the screen's own (SE-C98).
         case heading(Int, String)
         case bullets([String])
-        /// Drawn 1., 2., …: pending decision F, where the web draws the same items as bullets.
+        /// Drawn 1., 2., …, as the web draws it too (decision F, SE-C99).
         case numbered([String])
         case quote(String)
         /// Verbatim (SE-C93).
@@ -93,7 +94,8 @@ enum Markdown {
         var list: [(numbered: Bool, text: String)] = []
         var table: (head: [String], rows: [[String]])?
         func flushList() {
-            // Bullets and numbers, one list on the web, are a list each here (pending decision F).
+            // Bullets and numbers are never one list: a run that mixes them is a list of each, on
+            // the web as here (decision F, SE-C99).
             var i = 0
             while i < list.count {
                 var j = i

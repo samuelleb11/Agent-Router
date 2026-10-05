@@ -46,7 +46,7 @@ data class SearchHit(
     val key: String get() = "$sessionId-$blockId-$ordinal"
 
     val shortSession: String get() = sessionId.take(8)
-    val projectName: String get() = project?.substringAfterLast('/')?.ifEmpty { project } ?: "—"
+    val projectName: String get() = ProjectPath.name(project)
 
     /// The wire's vocabulary is not the reader's.
     val kindName: String
@@ -73,6 +73,6 @@ data class SearchSessionRow(
     @SerialName("last_at") val lastAt: Long = 0,
 ) {
     val shortId: String get() = sessionId.take(8)
-    val projectName: String get() = project?.substringAfterLast('/')?.ifEmpty { project } ?: "—"
+    val projectName: String get() = ProjectPath.name(project)
     val title: String get() = sessionLabel?.ifEmpty { null } ?: shortId
 }

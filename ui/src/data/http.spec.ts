@@ -85,6 +85,33 @@ describe('getJson', () => {
     expect((await failure(getJson('/api/x'))).words).toBe('agent-router: a password is required from another machine');
   });
 
+  it('takes a body that is not JSON as the router’s words only when it is the guard’s one agent-router: line; a page from an ingress in front of it, several lines or another proxy’s text say the status', async () => {
+    // What an nginx ingress answers while the router behind it is down.
+    const page = (status: number, reason: string) =>
+      new Response(`<html>\r\n<head><title>${status} ${reason}</title></head>\r\n<body>\r\n<center><h1>${status} ${reason}</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n`, {
+        status,
+        statusText: reason,
+        headers: { 'Content-Type': 'text/html' },
+      });
+    stubFetch({ '/api/x': () => page(502, 'Bad Gateway') });
+    const read = await failure(getJson('/api/x'));
+    expect((read.error as Refused).status).toBe(502);
+    expect(read.words).toBe('The router answered 502 Bad Gateway and gave no reason.');
+    stubFetch({ '/api/live/send': () => page(504, 'Gateway Time-out') });
+    expect((await failure(postJson('/api/live/send', { session: 's1', text: 'x' }))).words).toBe('The router answered 504 Gateway Time-out and gave no reason.');
+
+    // Several lines are not the guard's one, even when each looks like it.
+    stubFetch({ '/api/x': () => text('agent-router: one\nagent-router: two\n', 403) });
+    expect((await failure(getJson('/api/x'))).words).toMatch(/^The router answered 403\b.* and gave no reason\.$/);
+    // Another proxy's own sentence is not the router's either.
+    stubFetch({ '/api/x': () => text('upstream connect error or disconnect/reset before headers. reset reason: connection failure', 503) });
+    expect((await failure(getJson('/api/x'))).words).toMatch(/^The router answered 503\b.* and gave no reason\.$/);
+
+    // The guard's line itself, as each of its refusals writes it, still is.
+    stubFetch({ '/api/x': () => text('agent-router: Host header is not an address we serve\n', 403) });
+    expect((await failure(getJson('/api/x'))).words).toBe('agent-router: Host header is not an address we serve');
+  });
+
   it('tells an empty answer and no answer apart from a refusal', async () => {
     stubFetch({ '/api/x': () => emptyBody() });
     expect((await failure(getJson('/api/x'))).error).toBeInstanceOf(EmptyBody);

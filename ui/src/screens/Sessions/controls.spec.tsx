@@ -478,6 +478,55 @@ describe('the composer', () => {
     expect(said.querySelector('img, b')).toBeNull();
     expect(document.querySelector('[data-sessions-screen] img')).toBeNull();
   });
+
+  it('SE-C183: a hosted router’s 502 on an action says the router’s error, never "Send failed (502)"; only a refusal that said nothing reads as the sentence naming the action', async () => {
+    // What a hosted router answers when the relay to the session's machine failed (SE-C224).
+    const LATE = 'win-box did not answer in time';
+    const CLOSED = 'win-box: the connection to its agent closed';
+    let quiet = false;
+    stubRouter((req) => {
+      if (req.method !== 'POST') return undefined;
+      if (req.path === '/api/live/send') return quiet ? new Response(null, { status: 502 }) : json({ ok: false, error: LATE }, 502);
+      if (req.path === '/api/live/interrupt') return json({ ok: false, error: CLOSED }, 502);
+      return undefined;
+    });
+    renderSessions(`/live?session=${A}`);
+    await opened(A, working());
+    fireEvent.change(box(), { target: { value: 'next, the shots' } });
+    await press(screen.getByRole('button', { name: 'Send' }));
+    expect(await screen.findByText(LATE)).toBeInTheDocument();
+    expect(screen.queryByText('Send failed (502)')).toBeNull();
+    // Nothing typed is lost to it (SE-C153).
+    expect(box()).toHaveValue('next, the shots');
+    // Stop, refused the same way, says what the router said too (SE-C158).
+    await press(screen.getByRole('button', { name: 'Stop the turn' }));
+    expect(await screen.findByText(CLOSED)).toBeInTheDocument();
+    expect(screen.queryByText('Could not stop this session.')).toBeNull();
+    // A 502 that carried no words: the sentence naming the action, and its status.
+    quiet = true;
+    await press(screen.getByRole('button', { name: 'Send' }));
+    expect(await screen.findByText('Send failed (502)')).toBeInTheDocument();
+  });
+
+  it('SE-C183: a 502 whose body is a page from the ingress in front of the router is not the router’s words: Send says the sentence naming the action, and never any of the page or its markup', async () => {
+    // What an nginx ingress answers while the router behind it is down.
+    const PAGE = '<html>\r\n<head><title>502 Bad Gateway</title></head>\r\n<body>\r\n<center><h1>502 Bad Gateway</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n';
+    stubRouter((req) =>
+      req.method === 'POST' && req.path === '/api/live/send'
+        ? new Response(PAGE, { status: 502, statusText: 'Bad Gateway', headers: { 'Content-Type': 'text/html' } })
+        : undefined,
+    );
+    renderSessions(`/live?session=${A}`);
+    await opened();
+    fireEvent.change(box(), { target: { value: 'next, the shots' } });
+    await press(screen.getByRole('button', { name: 'Send' }));
+    expect(await screen.findByText('Send failed (502)')).toBeInTheDocument();
+    const shown = document.querySelector('[data-sessions-screen]')?.textContent ?? '';
+    expect(shown, 'the page reached the screen as text').not.toMatch(/<\/?(html|head|title|body|center|h1|hr)\b|nginx|Bad Gateway/i);
+    expect(document.querySelector('[data-sessions-screen] center'), 'the page reached the screen as markup').toBeNull();
+    // Nothing typed is lost to it (SE-C153).
+    expect(box()).toHaveValue('next, the shots');
+  });
 });
 
 describe('notices', () => {

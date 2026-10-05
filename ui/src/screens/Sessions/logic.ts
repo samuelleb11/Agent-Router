@@ -24,12 +24,11 @@ const NO_REPLY: Readonly<Record<Action, string>> = {
 };
 
 /// The words for a write that did not land, by the screen's rule (SE-C183): the router's own words
-/// — its `reason`, or a hosted router's 503 `error` — else a sentence naming the action. A local
-/// router's own 5xx reads as that sentence (SE-C158), and so does a refusal that said nothing. A
-/// request that reached nothing, or none in time, says so after the action (SE-C153, SE-C185).
+/// whenever it sent any — its `error` or its `reason`, at any status, as the phones say them — else,
+/// for a refusal that carried no words, a sentence naming the action. A request that reached
+/// nothing, or none in time, says so after the action (SE-C153, SE-C185).
 export function failed(action: Action, outcome: Exclude<Outcome<unknown>, { ok: true }>): string {
   if (outcome.status === null) return `${NO_REPLY[action]} — ${outcome.words}`;
-  if (outcome.status >= 500 && outcome.status !== 503) return refusal(action, outcome.status, {});
   return outcome.words || refusal(action, outcome.status, {});
 }
 

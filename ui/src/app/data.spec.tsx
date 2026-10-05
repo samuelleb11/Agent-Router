@@ -81,9 +81,20 @@ describe('one fetch layer', () => {
     expect(callers).toEqual(['data/http.ts']);
   });
 
-  it('SH-C23: a non-2xx, a 200 that carries a non-empty error, and any ok: false are each a refusal, read and written alike, and what is shown is the router’s own sentence', async () => {
+  it('SH-C23: a non-2xx, a 200 that carries a non-empty error, and any ok: false are each a refusal, read and written alike, and what is shown is the router’s own sentence, never a page from something in front of it', async () => {
     const cases: [string, () => Response, number, string][] = [
       ['a plain-text 403 from the guard', () => new Response('agent-router: Host header is not an address we serve', { status: 403 }), 403, 'agent-router: Host header is not an address we serve'],
+      [
+        'a 502 page from the ingress in front of the router',
+        () =>
+          new Response('<html>\r\n<head><title>502 Bad Gateway</title></head>\r\n<body>\r\n<center><h1>502 Bad Gateway</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n', {
+            status: 502,
+            statusText: 'Bad Gateway',
+            headers: { 'Content-Type': 'text/html' },
+          }),
+        502,
+        'The router answered 502 Bad Gateway and gave no reason.',
+      ],
       ['a 500 carrying error', () => json({ error: 'database is locked' }, 500), 500, 'database is locked'],
       ['a 200 carrying error', () => json({ error: 'the usage token was refused' }), 200, 'the usage token was refused'],
       ['a 200 with ok: false and a reason', () => json({ ok: false, reason: 'Cannot set permission mode to plan: the session is mid-turn' }), 200, 'Cannot set permission mode to plan: the session is mid-turn'],

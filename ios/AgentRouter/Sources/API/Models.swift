@@ -274,6 +274,29 @@ struct ActivateResponse: Decodable, Sendable {
     let active: String
 }
 
+// MARK: - Project names
+
+/// How a project is named from its directory, the one rule every list in the app follows: the
+/// directory's last segment, split on `/` and `\` alike, since a hosted router hears from Windows
+/// machines, whose directories are `C:\Users\…\code\agent-router`. A trailing separator ends no
+/// segment, and a path that mixes the two splits on both. The web console names a project the
+/// same way (`projectName` in ui/src/data/projects.ts, `projectOf` in ui/src/model/session.ts;
+/// SE-C222).
+enum ProjectPath {
+    /// The last segment of `path`, or nil when it has none: absent, empty, or separators alone.
+    static func segment(_ path: String?) -> String? {
+        path?.split(whereSeparator: { $0 == "/" || $0 == "\\" }).last.map(String.init)
+    }
+
+    /// A project's name in a list: its last segment; else the path as written, when it is only
+    /// separators; else "—" when there is no path, where the web says "(unresolved)".
+    static func name(_ path: String?) -> String {
+        if let last = segment(path) { return last }
+        if let path, !path.isEmpty { return path }
+        return "—"
+    }
+}
+
 // MARK: - Live sessions
 
 /// One row of `GET /api/live/sessions`: a transcript written in the last week, or the
@@ -331,7 +354,7 @@ struct LiveSession: Decodable, Sendable, Identifiable, Hashable {
     /// The last segment of the working directory, a Windows path's included, else the
     /// router's own name for the project (SE-C23).
     var projectName: String {
-        if let cwd, let last = cwd.split(whereSeparator: { $0 == "/" || $0 == "\\" }).last { return String(last) }
+        if let last = ProjectPath.segment(cwd) { return last }
         return project.isEmpty ? "—" : project
     }
     /// What to call the machine the session runs on: its label, or the start of its id when
@@ -933,7 +956,8 @@ struct ProjectRow: Decodable, Sendable, Identifiable, Hashable {
     let firstSeen: Int?
     let lastSeen: Int?
     var id: String { project }
-    var name: String { project.split(separator: "/").last.map(String.init) ?? project }
+    /// The project by name, a Windows machine's included (`ProjectPath`).
+    var name: String { ProjectPath.name(project) }
     enum CodingKeys: String, CodingKey {
         case project, sessions, requests, cost, errors, models
         case promptTokens = "prompt_tokens", outputTokens = "output_tokens", cacheReadTokens = "cache_read_tokens"
@@ -959,7 +983,7 @@ struct ProxySessionRow: Decodable, Sendable, Identifiable, Hashable {
     let subagents: Double
     let models: String?
     var shortId: String { String(id.prefix(8)) }
-    var projectName: String { project?.split(separator: "/").last.map(String.init) ?? "—" }
+    var projectName: String { ProjectPath.name(project) }
     /// `claude-cli/2.1.269 (external, claude-vscode, …)` → `vscode`; the CLI otherwise.
     var client: String {
         guard let e = entrypoint else { return "" }

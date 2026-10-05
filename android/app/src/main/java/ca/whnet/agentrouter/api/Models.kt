@@ -42,6 +42,26 @@ data class AuthStatus(
     val reachableOffHost: Boolean get() = remoteBind || isHosted || !fromLoopback
 }
 
+// ---------------------------------------------------------------- project names
+
+/**
+ * How a project is named from its directory, the one rule every list in the app follows: the
+ * directory's last segment, split on `/` and `\` alike, since a hosted router hears from Windows
+ * machines, whose directories are `C:\Users\…\code\agent-router`. A trailing separator ends no
+ * segment, and a path that mixes the two splits on both. The web console names a project the same
+ * way (`projectName` in ui/src/data/projects.ts, `projectOf` in ui/src/model/session.ts; SE-C222).
+ */
+object ProjectPath {
+    /** The last segment of [path], or null when it has none: absent, empty, or separators alone. */
+    fun segment(path: String?): String? = path?.split('/', '\\')?.lastOrNull { it.isNotEmpty() }
+
+    /**
+     * A project's name in a list: its last segment; else the path as written, when it is only
+     * separators; else "—" when there is no path, where the web says "(unresolved)".
+     */
+    fun name(path: String?): String = segment(path) ?: path?.ifEmpty { null } ?: "—"
+}
+
 // ---------------------------------------------------------------- live sessions
 
 /**
@@ -104,7 +124,7 @@ data class LiveSession(
 
     /** The last segment of the working directory, a Windows path's included, else the router's own name for the project (SE-C23). */
     val projectName: String
-        get() = cwd?.split('/', '\\')?.lastOrNull { it.isNotEmpty() } ?: project.ifEmpty { "—" }
+        get() = ProjectPath.segment(cwd) ?: project.ifEmpty { "—" }
 
     val label: String get() = title ?: shortId
 

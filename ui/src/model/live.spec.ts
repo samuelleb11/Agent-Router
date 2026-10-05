@@ -876,9 +876,12 @@ describe('the live view, as scripts/check-live-ui.js checked it', () => {
     // it too.
     expect(formOutcome(503, body), "a question's answer").toEqual({ spent: false, hint: HOSTED_ERROR, sendAsMessage: true });
     expect(sendNotice(503, body, { ask: true })?.text, 'that answer, sent as a message').toBe(HOSTED_ERROR);
-    // Only a 503's `error` is a refusal to repeat. A local router's own failures carry it only on a
-    // 500, and those still read as they always did.
-    expect(stopNotice(500, { error: 'database is locked' })?.text, "a local router's internal error").toBe('Could not stop this session.');
+    // The router's words are said at any status, as the phones say them: a hosted router's 502 when
+    // the relay to the machine failed, and a local router's own 500. Only a refusal that carried no
+    // words reads as the sentence naming the action.
+    expect(sendNotice(502, { ok: false, error: 'win-box did not answer in time' })?.text, "a hosted router's failed relay").toBe('win-box did not answer in time');
+    expect(stopNotice(500, { error: 'database is locked' })?.text, "a local router's internal error").toBe('database is locked');
+    expect(stopNotice(500, {})?.text, 'a refusal that said nothing').toBe('Could not stop this session.');
   });
 
   // ported from scripts/check-live-ui.js: a hosted router says why its list is empty, and warns of no wrapper

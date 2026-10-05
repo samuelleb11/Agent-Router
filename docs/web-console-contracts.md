@@ -221,11 +221,16 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
   `../northstar/docs/13-console-contracts.md:334-335`.
 - **SH-C23** One fetch layer serves every screen and treats as a refusal any non-2xx
   answer, any 200 whose body carries a non-empty `error`, and any `ok: false` (whose sentence
-  may be in `reason`); what is shown is the server's sentence. *Why:* about a dozen endpoints
-  answer refusals as HTTP 200, and the wrapper routes give their reason in `reason`; a layer
-  that throws only on non-2xx reports them as successes. *Regression:* no. *Source:*
+  may be in `reason`); what is shown is the server's sentence: a JSON body's `error`, `reason`
+  or `message`, or the one `agent-router: …` line the guard answers with. A refusal that
+  carries neither, a page from an ingress in front of the router among them, is said by its
+  status, never by its body. *Why:* about a dozen endpoints answer refusals as HTTP 200, and
+  the wrapper routes give their reason in `reason`; a layer that throws only on non-2xx reports
+  them as successes; and an ingress's HTML while the router is down is not the router's
+  sentence. *Regression:* no. *Source:*
   `docs/web-console-carbon.md:224-228`, `assets/index.html:815-820`,
-  `src/auth.rs:382-397`, `src/shim.rs:311-339`, `src/hosted.rs:64-68`. *Today:* broken —
+  `src/auth.rs:382-397`, `src/shim.rs:311-339`, `src/hosted.rs:64-68`, `src/guard.rs:187-241`,
+  `src/console.rs:283`. *Today:* broken —
   `post()` throws only on a non-2xx status.
 - **SH-C24** A refusal appears beside the control that caused it, in the server's words; a
   toast is used only for an action whose control is no longer on screen. *Why:* Northstar §5
@@ -2276,8 +2281,8 @@ defect.
   while the prompt stayed open and the session stayed blocked looked as though it had
   worked. *Regression:* yes — 2b421d4. *Source:* `assets/live.html:250, 918-923`.
 - **SE-C116** When the router cannot answer directly — an unwrapped session, a prompt already gone —
-  the form says why (the router's reason, a hosted router's 503 sentence, else "could not answer
-  directly") and sends the composed answers as an ordinary message, whose notice says it may not
+  the form says why (the router's words at any status, SE-C183, else "could not answer directly")
+  and sends the composed answers as an ordinary message, whose notice says it may not
   dismiss the prompt. *Why:* the text is still worth sending, and saying so beats losing what was
   typed. *Regression:* no. *Source:* `assets/live.html:925-928`,
   `scripts/check-live-ui.js:814-821, 1074-1083`.
@@ -2327,8 +2332,8 @@ defect.
   `an answer names its prompt only when it knows it`.
 - **SE-C125** While an answer is in flight every button on the card is disabled. On success the card
   goes, and a success notice says what was done — "Allowed.", the suggestion's label, "Declined." —
-  for five seconds. A refusal says the router's words, a hosted router's 503 sentence, else "Could
-  not answer that prompt.", and gives the buttons back. *Why:* one tap, one answer, and a refusal in
+  for five seconds. A refusal says the router's words at any status (SE-C183), else "Could not
+  answer that prompt.", and gives the buttons back. *Why:* one tap, one answer, and a refusal in
   the router's own words. *Regression:* no. *Source:* `assets/live.html:1330-1347`.
 - **SE-C126** A 409 means the prompt is no longer waiting — answered elsewhere, or withdrawn — so
   the card, which can only fail again, is replaced at once by whatever is waiting now, if anything
@@ -2420,9 +2425,9 @@ defect.
   seconds. *Why:* the choice takes effect on the next turn, and the CLI's own notice, or refusal, is
   what is shown. *Regression:* no. *Source:* `assets/live.html:1213-1214, 1251-1258`. *Phones:* iOS
   `testSwitchPayloadsDecode`.
-- **SE-C144** A refused switch says the router's reason — the CLI's own refusal, such as bypass for
-  a session not launched for it — or a hosted router's 503 sentence, else "Could not set the
-  <kind>.", and puts the switcher back. *Why:* two modes can be refused as they are asked for, and
+- **SE-C144** A refused switch says the router's words at any status (SE-C183) — the CLI's own
+  refusal, such as bypass for a session not launched for it — else "Could not set the <kind>.", and
+  puts the switcher back. *Why:* two modes can be refused as they are asked for, and
   only the CLI's sentence says why. *Regression:* no. *Source:* `assets/live.html:1259-1260`,
   `scripts/check-live-ui.js:1057-1066`.
 - **SE-C145** After a successful switch, the switcher's current value is the new one, and choosing
@@ -2461,10 +2466,9 @@ defect.
   until dismissed; an ordinary send says "Delivered as your message." for four seconds. *Why:*
   measured: a queued user turn does not satisfy a pending AskUserQuestion, so "delivered" there
   would be true and misleading. *Regression:* yes — 2b421d4. *Source:* `assets/live.html:1615-1622`.
-- **SE-C153** A send that fails keeps the typed text and says why: the router's reason, a hosted
-  router's 503 sentence, else "Send failed (<status>)"; no reply at all says "Send failed —
-  <error>". *Why:* nothing typed is lost to a refusal. *Regression:* no. *Source:*
-  `assets/live.html:1623-1628`.
+- **SE-C153** A send that fails keeps the typed text and says why: the router's words at any status
+  (SE-C183), else "Send failed (<status>)"; no reply at all says "Send failed — <error>". *Why:*
+  nothing typed is lost to a refusal. *Regression:* no. *Source:* `assets/live.html:1623-1628`.
 - **SE-C154** Sending a question's answers as a message never touches the composer's own
   draft. *Why:* the draft is the reader's, and unrelated to the form. *Regression:* no. *Source:*
   `assets/live.html:928, 1608`. *Today:* broken — every successful send clears the box, so a draft
@@ -2487,10 +2491,10 @@ defect.
   `assets/live.html:559-562, 572-582`. *Phones:* iOS `testStopIsOfferedOnlyForARunningTurn` (the
   iPhone also hides Stop for an unwrapped session, a known difference).
 - **SE-C158** Stop is a labelled button in the warn colour. While it is in flight it is disabled;
-  success says "Stopped." for four seconds; a refusal says the router's words (the turn is over,
-  only background work runs), a hosted router's 503 sentence, else "Could not stop this session.",
-  and a local router's own 500 still reads "Could not stop this session.". *Why:* Stop is the one
-  action that interrupts work. *Regression:* no. *Source:* `assets/live.html:301, 401, 1371-1385`,
+  success says "Stopped." for four seconds; a refusal says the router's words at any status (the
+  turn is over, only background work runs; SE-C183), else "Could not stop this session.". *Why:*
+  Stop is the one action that interrupts work. *Regression:* no. *Source:*
+  `assets/live.html:301, 401, 1371-1385`,
   `scripts/check-live-ui.js:1084-1089`. *Today:* broken — the button's face is a bare "■", its words
   only in a hover title.
 - **SE-C159** The side question ("btw") asks something of the session's context in a fork the
@@ -2504,8 +2508,8 @@ defect.
   cleared, and a notice says "asking on the side — this replays the session once, usually under a
   minute" until the answer comes. The answer lands as a "side answer" row, in Markdown, "(no
   answer)" when empty, with "answered in <time> · <cost>" for six seconds; a failure says the
-  router's reason, a hosted router's 503 sentence, else "The side question failed."; the button is
-  disabled meanwhile. *Why:* it takes the better part of a minute, and the reader must see that it
+  router's words at any status (SE-C183), else "The side question failed."; the button is disabled
+  meanwhile. *Why:* it takes the better part of a minute, and the reader must see that it
   is under way. *Regression:* no. *Source:* `assets/live.html:1643-1659`. *Phones:* iOS
   `testStreamItemsDecode` (the side answer's reply).
 
@@ -2620,11 +2624,16 @@ defect.
   `scripts/check-live-ui.js:284-290`.
 - **SE-C182** Opening a session or going back to the list clears the notice. *Why:* a notice belongs
   to the view it was raised in. *Regression:* no. *Source:* `assets/live.html:1155, 1394`.
-- **SE-C183** A refusal is said in the router's own words: its `reason`; else, from a hosted router,
-  the `error` of a 503; else a sentence naming the action that failed. Only a 503's `error` is
-  repeated, so a local router's 500 `{error}` still reads as the generic sentence. *Why:* whichever
-  action the reader tried, what the router said is what they are told, not a generic
-  failure. *Regression:* no. *Source:*
+- **SE-C183** A refusal is said in the router's own words whenever it sends any, at any status, as
+  both phones say them: a hosted router's 503 for a machine that is offline, its 502 when the relay
+  to the machine failed, a local router's own 500. The router's words are a JSON body's `error`,
+  `reason` or `message`, or the one `agent-router: …` line its guard answers with — never a page
+  from something in front of the router, such as an ingress's HTML while the router is down. A
+  sentence naming the action that failed is only for a refusal that carried no words. *Why:*
+  whichever action the reader tried, what the router said is what they are told, not a generic
+  failure, and what something in front of it said is not the router's; decided on 2026-10-05,
+  when a hosted router's 502 on Send read "Send failed (502)" where both phones showed the relay's
+  sentence. *Regression:* no. *Source:*
   `assets/live.html:422-425, 927, 1038, 1259, 1339, 1381, 1624, 1657`; check
   `a per-session action a hosted router refuses says what it said`
   (`scripts/check-live-ui.js:1050-1091`).
@@ -2710,8 +2719,10 @@ platform, build, online, since); neither phone reads it, and nor does the consol
   named by its whole path. The page's `base` split on both from `60cf5f8`; the console's rail and
   palette split on `/` alone until this rule. *Regression:* no. *Source:* `assets/live.html:480` at
   `60cf5f8`; `ui/src/data/projects.ts`. *Phones:* both name a live session by its directory split
-  on both (`LiveSession.projectName`), and `session-groups.json` holds a Windows `cwd`; their
-  dashboards, usage lists and search hits split on `/` alone, a known difference.
+  on both (`LiveSession.projectName`), and `session-groups.json` holds a Windows `cwd`; since
+  2026-10-05 their dashboards, usage lists and search hits do too, by one rule each
+  (`ProjectPath`), with the console's edge cases: iOS `WindowsProjectNameTests`, Android
+  `WindowsProjectNameTest`.
 - **SE-C223** A per-session request that a hosted router answers 503, naming the machine — "the
   machine running this session (<label>) is offline" — means that machine is offline: it comes
   back later, and the session has not ended. While the stream is refused so, the header says the

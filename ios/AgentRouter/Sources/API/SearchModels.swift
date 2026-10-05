@@ -39,7 +39,7 @@ struct SearchHit: Decodable, Sendable, Identifiable, Hashable {
     var id: String { "\(sessionId)-\(blockId)-\(ordinal)" }
 
     var shortSession: String { String(sessionId.prefix(8)) }
-    var projectName: String { project?.split(separator: "/").last.map(String.init) ?? "—" }
+    var projectName: String { ProjectPath.name(project) }
 
     /// What kind of thing matched, in words rather than in the wire's vocabulary.
     var kindName: String {
@@ -74,7 +74,7 @@ struct SearchSessionRow: Decodable, Sendable, Identifiable, Hashable {
 
     var id: String { sessionId }
     var shortId: String { String(sessionId.prefix(8)) }
-    var projectName: String { project?.split(separator: "/").last.map(String.init) ?? "—" }
+    var projectName: String { ProjectPath.name(project) }
 
     enum CodingKeys: String, CodingKey {
         case project, blocks, hits

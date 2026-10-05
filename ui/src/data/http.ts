@@ -89,15 +89,23 @@ function said(body: Record<string, unknown>): string {
   return '';
 }
 
+/// The one plain line the router's guard refuses with, and its other plain refusals
+/// (src/guard.rs, src/console.rs, src/proxy.rs): `agent-router: <why>`, a single line.
+const GUARD_LINE = /^agent-router: [^\r\n]+$/;
+
 /// The router's words from a refusal's body: what a JSON body says under one of those keys, or
-/// the plain `agent-router: …` line its guard answers with. A JSON body that says nothing under
-/// any of them gives no words, and its JSON is never shown as though it were the reason.
+/// the plain `agent-router: …` line its guard answers with. Nothing else that is not JSON is the
+/// router's — a page from an ingress in front of it while it is down, several lines, another
+/// proxy's text — so it gives no words, and the refusal is said by its status instead. A JSON
+/// body that says nothing under any of those keys gives none either, and its JSON is never shown
+/// as though it were the reason.
 function wordsOf(text: string): string {
   let body: unknown;
   try {
     body = JSON.parse(text);
   } catch {
-    return text.trim(); // not JSON: the guard's plain line
+    const line = text.trim();
+    return GUARD_LINE.test(line) ? line : '';
   }
   return isRecord(body) ? said(body) : '';
 }

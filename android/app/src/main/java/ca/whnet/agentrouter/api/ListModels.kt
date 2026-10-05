@@ -19,7 +19,8 @@ data class ProjectRow(
     val models: String? = null,
     @SerialName("last_seen") val lastSeen: Long? = null,
 ) {
-    val name: String get() = project.substringAfterLast('/').ifEmpty { project }
+    /** The project by name, a Windows machine's included ([ProjectPath]). */
+    val name: String get() = ProjectPath.name(project)
 }
 
 /** A session as the proxy saw it — distinct from [LiveSession], which is a transcript. */
@@ -41,7 +42,7 @@ data class ProxySessionRow(
     val models: String? = null,
 ) {
     val shortId: String get() = id.take(8)
-    val projectName: String get() = project?.substringAfterLast('/') ?: "—"
+    val projectName: String get() = ProjectPath.name(project)
 
     /** `claude-cli/2.1.269 (external, claude-vscode, …)` → `VS Code`; the CLI otherwise. */
     val client: String
@@ -82,6 +83,10 @@ data class RequestRow(
 ) {
     val isError: Boolean get() = (status ?: 0) >= 400 || error != null
     val isSubagent: Boolean get() = isSidechain == 1
+
+    /** The project it was sent from, by name, a Windows machine's included ([ProjectPath]). */
+    val projectName: String get() = ProjectPath.name(project)
+
     val toolList: List<String>
         get() = (tools ?: "").split(",").map { it.trim() }.filter { it.isNotEmpty() }
     val contextSplit: List<Pair<String, Double>>

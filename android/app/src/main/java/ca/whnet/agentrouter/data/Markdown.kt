@@ -1,14 +1,16 @@
 // Assistant prose, read exactly as the web console reads it: `md()` in
 // ui/src/model/markdown.ts, the reference for both phones (decision F in
-// docs/web-console-carbon.md; SE-C90 to SE-C104 in docs/web-console-contracts.md). The fixtures
-// the three clients share, fixtures/live/markdown-blocks.json, hold this to it
-// (SharedFixtureTest). A line's inline styling is [Inline]'s.
+// docs/web-console-carbon.md; SE-C90 to SE-C104 in docs/web-console-contracts.md), save that its
+// lists follow the phones' rule, which the web now shares. The fixtures the three clients share,
+// fixtures/live/markdown-blocks.json, hold all three to it (SharedFixtureTest). A line's inline
+// styling is [Inline]'s.
 //
 // The web reads Markdown with regular expressions. This reads the same patterns character by
 // character, so the two cannot disagree about what a space is (JavaScript's `\s`), where a line
-// ends, or where a fence may open and close: anywhere, not only at the start of a line. One
-// difference is kept on purpose, pending decision F: a numbered list stays numbered here, where
-// the web draws every list bulleted and drops its numbers.
+// ends, or where a fence may open and close: anywhere, not only at the start of a line. Lists were
+// decided on 2026-10-05 (decision F, SE-C99) as the phones always drew them: a numbered list is
+// drawn numbered, and a run that mixes bullets and numbers splits into a list of each. The web
+// console has drawn them the same way since.
 
 package ca.whnet.agentrouter.data
 
@@ -25,7 +27,7 @@ object Markdown {
         data class Heading(val level: Int, val text: String) : Block
         data class Bullets(val items: List<String>) : Block
 
-        /** Drawn 1., 2., …: pending decision F, where the web draws the same items as bullets. */
+        /** Drawn 1., 2., …, as the web draws it too (decision F, SE-C99). */
         data class Numbered(val items: List<String>) : Block
         data class Quote(val text: String) : Block
 
@@ -88,7 +90,8 @@ object Markdown {
         val rows = mutableListOf<List<String>>()
 
         fun flushList() {
-            // Bullets and numbers, one list on the web, are a list each here (pending decision F).
+            // Bullets and numbers are never one list: a run that mixes them is a list of each, on
+            // the web as here (decision F, SE-C99).
             var i = 0
             while (i < list.size) {
                 var j = i

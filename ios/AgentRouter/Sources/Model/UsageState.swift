@@ -27,7 +27,7 @@ struct UsageScope: Hashable, Sendable {
     var isEmpty: Bool { account == nil && project == nil && session == nil }
     var title: String {
         if let session { return "Session \(session.prefix(8))" }
-        if let project { return project.split(separator: "/").last.map(String.init) ?? project }
+        if let project { return ProjectPath.name(project) }
         if let account { return account }
         return "Usage"
     }

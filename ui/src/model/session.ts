@@ -746,25 +746,20 @@ export function notice(text: string | null | undefined, opts: { readonly ok?: bo
 
 const record = (body: unknown): Record<string, unknown> => (body && typeof body === 'object' && !Array.isArray(body) ? (body as Record<string, unknown>) : {});
 
-/// What a hosted router refused a per-session route with: a 503 and its `error`.
-export function unavailable(status: number, body: unknown): string {
-  const error = record(body)['error'];
-  return status === 503 && typeof error === 'string' ? error : '';
-}
-
 /// Whether an action worked: a 2xx that does not carry `ok: false` (SE-C184).
 export const succeeded = (status: number, body: unknown): boolean => status >= 200 && status < 300 && record(body)['ok'] !== false;
 
 export type Action = 'send' | 'stop' | 'aside' | 'archive' | 'answer' | 'form' | 'model' | 'effort' | 'mode';
 
-/// The sentence for a refused action: the router's `reason`; else, from a hosted router, a 503's
-/// `error`; else a sentence naming the action. Only a 503's `error` is repeated, so a local
-/// router's 500 `{error}` still reads as the generic sentence (SE-C183).
+/// The sentence for a refused action (SE-C183): the router's own words whenever it sent any — its
+/// `reason`, else its `error`, at any status, as the phones say them — else, for a refusal that
+/// carried no words, a sentence naming the action.
 export function refusal(action: Action, status: number, body: unknown): string {
-  const reason = record(body)['reason'];
-  if (typeof reason === 'string' && reason) return reason;
-  const hosted = unavailable(status, body);
-  if (hosted) return hosted;
+  const b = record(body);
+  for (const key of ['reason', 'error'] as const) {
+    const words = b[key];
+    if (typeof words === 'string' && words) return words;
+  }
   switch (action) {
     case 'send':
       return `Send failed (${status})`;
