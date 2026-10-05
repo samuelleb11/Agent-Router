@@ -28,8 +28,9 @@ rusqlite = { version = "0.37", features = ["bundled"] }
 flate2 = "1"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 async-stream = "0.3"
-keyring = { version = "3", features = ["apple-native"] }
 socket2 = { version = "0.5", features = ["all"] }
 portable-pty = "0.9"
 libc = "0.2"
 sha2 = "0.10"
+# APNs keys arrive without their public half, which `ring` insists on; this computes it.
+p256 = { version = "0.14", default-features = false, features = ["arithmetic"] }

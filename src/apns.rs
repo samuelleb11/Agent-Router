@@ -6,10 +6,10 @@
 //! from it is reused for fifty minutes, as Apple asks.
 //!
 //! One wrinkle worth knowing: Apple's `.p8` omits the public half of the key, and
-//! `ring` refuses a PKCS#8 document without it. When that happens the key is passed
-//! once through the system `openssl`, which fills the public half in.
+//! `ring` refuses a PKCS#8 document without it. When that happens the public point is
+//! computed from the private one, in-process (`p256`). It used to be the system
+//! `openssl` that filled it in, which a hosted router's image does not have.
 
-use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -217,35 +217,31 @@ pub fn mint_jwt(key: &Key, iat: i64) -> anyhow::Result<String> {
     Ok(format!("{input}.{}", b64url(sig.as_ref())))
 }
 
-/// Parse the key; if `ring` wants the public half Apple leaves out, let `openssl`
-/// supply it.
+/// Parse the key; if `ring` wants the public half Apple leaves out, compute it from the
+/// private half.
 fn key_pair(pem: &str, rng: &dyn ring::rand::SecureRandom) -> anyhow::Result<EcdsaKeyPair> {
+    use p256::elliptic_curve::sec1::ToSec1Point;
+
     let der = pem_to_der(pem).ok_or_else(|| anyhow::anyhow!("that is not a PEM private key"))?;
     if let Ok(pair) = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &der, rng) {
         return Ok(pair);
     }
-    let filled = normalize_with_openssl(pem)?;
-    let der = pem_to_der(&filled).ok_or_else(|| anyhow::anyhow!("openssl produced no key"))?;
-    EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &der, rng)
+    let unreadable = || anyhow::anyhow!("the key could not be read as a P-256 key");
+    let scalar = private_scalar(&der).ok_or_else(unreadable)?;
+    let secret = p256::SecretKey::from_slice(scalar).map_err(|_| unreadable())?;
+    let public = secret.public_key().to_sec1_point(false);
+    EcdsaKeyPair::from_private_key_and_public_key(&ECDSA_P256_SHA256_FIXED_SIGNING, scalar, public.as_bytes(), rng)
         .map_err(|e| anyhow::anyhow!("the key could not be read as a P-256 key: {e}"))
 }
 
-fn normalize_with_openssl(pem: &str) -> anyhow::Result<String> {
-    use std::io::Write;
-    let mut child = Command::new("/usr/bin/openssl")
-        .args(["pkey"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    child.stdin.take().expect("piped").write_all(pem.as_bytes())?;
-    let out = child.wait_with_output()?;
-    if !out.status.success() {
-        // The first line says what happened; the rest is LibreSSL's call stack.
-        let why = String::from_utf8_lossy(&out.stderr);
-        anyhow::bail!("openssl could not read the key: {}", why.lines().next().unwrap_or("").trim());
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+/// The private key inside a PKCS#8 P-256 document: the `ECPrivateKey` it wraps opens
+/// with `INTEGER 1` and then the key as a 32-byte `OCTET STRING` (RFC 5915 fixes the
+/// length), so it is the 32 bytes after DER `02 01 01 04 20`. Nothing earlier in the
+/// document — a version and two OIDs — can contain that sequence.
+fn private_scalar(der: &[u8]) -> Option<&[u8]> {
+    const OPENS: [u8; 5] = [0x02, 0x01, 0x01, 0x04, 0x20];
+    let at = der.windows(OPENS.len()).position(|w| w == OPENS)? + OPENS.len();
+    der.get(at..at + 32)
 }
 
 /// The base64 between the PEM armour, whatever the line breaks.
@@ -309,6 +305,39 @@ mod tests {
         let pair = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, doc.as_ref(), &rng).unwrap();
         let public = ring::signature::UnparsedPublicKey::new(&ring::signature::ECDSA_P256_SHA256_FIXED, pair.public_key().as_ref());
         public.verify(format!("{}.{}", parts[0], parts[1]).as_bytes(), &sig).expect("the token must verify");
+    }
+
+    /// Apple's shape: a PKCS#8 document whose `ECPrivateKey` carries the private key and
+    /// nothing else — no public half, which is what `ring` refuses on its own.
+    fn without_public_half(scalar: &[u8]) -> Vec<u8> {
+        let mut der = vec![
+            0x30, 0x41, 0x02, 0x01, 0x00, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01,
+            0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07, 0x04, 0x27, 0x30, 0x25, 0x02, 0x01,
+            0x01, 0x04, 0x20,
+        ];
+        der.extend_from_slice(scalar);
+        der
+    }
+
+    #[test]
+    fn a_key_without_its_public_half_still_signs() {
+        let rng = ring::rand::SystemRandom::new();
+        let doc = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &rng).unwrap();
+        let full = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, doc.as_ref(), &rng).unwrap();
+        let stripped = without_public_half(private_scalar(doc.as_ref()).unwrap());
+        assert!(
+            EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &stripped, &rng).is_err(),
+            "ring refuses it as it stands, which is the case this covers"
+        );
+        let filled = key_pair(&pem_of(&stripped), &rng).unwrap();
+        assert_eq!(filled.public_key().as_ref(), full.public_key().as_ref(), "the same key, made whole");
+
+        let key = Key { team_id: "ABCDE12345".into(), key_id: "ABC123DEF4".into(), p8: pem_of(&stripped) };
+        let jwt = mint_jwt(&key, 1_789_200_000).unwrap();
+        let (input, sig) = jwt.rsplit_once('.').unwrap();
+        let sig = crate::auth::base64_decode(&sig.replace('-', "+").replace('_', "/")).unwrap();
+        let public = ring::signature::UnparsedPublicKey::new(&ring::signature::ECDSA_P256_SHA256_FIXED, full.public_key().as_ref());
+        public.verify(input.as_bytes(), &sig).expect("the token must verify against the original key");
     }
 
     #[test]
