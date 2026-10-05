@@ -27,14 +27,14 @@ const row = (project: string | null, prompt_tokens: number): ProjectRow => ({
 
 /// The router's own order, most prompt tokens first, and a session whose directory was never
 /// resolved: the dashboard lists that one as "(unresolved)", and so does the rail.
-const PROJECTS = [row('/Users/sam/code/agent-router', 900_000), row('/Users/sam/code/northstar', 400_000), row(null, 2_000)];
+const PROJECTS = [row('/Users/sample/code/agent-router', 900_000), row('/Users/sample/code/northstar', 400_000), row(null, 2_000)];
 
 /// The rail's links in order, by name, and where each goes.
 const RAIL: [string, string][] = [
   ['Overview', '/'],
   ['Sessions', '/live'],
-  ['agent-router', '/?project=%2FUsers%2Fsam%2Fcode%2Fagent-router'],
-  ['northstar', '/?project=%2FUsers%2Fsam%2Fcode%2Fnorthstar'],
+  ['agent-router', '/?project=%2FUsers%2Fsample%2Fcode%2Fagent-router'],
+  ['northstar', '/?project=%2FUsers%2Fsample%2Fcode%2Fnorthstar'],
   ['(unresolved)', '/?project=(unresolved)'],
   ['Settings', '/settings'],
 ];
@@ -106,16 +106,17 @@ describe('Shell — the topbar', () => {
     await waitFor(() => expect(badge).toHaveAttribute('data-live-mode', 'unreachable'));
   });
 
-  it('opens the palette from the search action and from ⌘K, and it names the item that builds it', async () => {
+  it('opens the palette from the search action and from ⌘K, its search and commands field ready', async () => {
     show();
     fireEvent.click(screen.getByRole('button', { name: 'Search and commands (⌘K)' }));
     const palette = await screen.findByRole('dialog');
-    expect(palette).toHaveTextContent('AGEN-0007');
+    // The field arrives with the palette's own chunk, the first time it opens.
+    expect(await within(palette).findByRole('searchbox', { name: 'Search and commands' })).toBeInTheDocument();
     fireEvent.click(within(palette).getByRole('button', { name: /close/i }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
 
     fireEvent.keyDown(document, { key: 'k', metaKey: true });
-    expect(await screen.findByRole('dialog')).toHaveTextContent('AGEN-0007');
+    expect(await within(await screen.findByRole('dialog')).findByRole('searchbox', { name: 'Search and commands' })).toBeInTheDocument();
     fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
 
@@ -165,7 +166,7 @@ describe('Shell — the rail', () => {
     expect(within(rail()).getByRole('link', { name: 'agent-router' })).not.toHaveAttribute('aria-current');
     first.unmount();
 
-    show('/?project=%2FUsers%2Fsam%2Fcode%2Fagent-router');
+    show('/?project=%2FUsers%2Fsample%2Fcode%2Fagent-router');
     await projectsRead();
     expect(within(rail()).getByRole('link', { name: 'agent-router' })).toHaveAttribute('aria-current', 'page');
     expect(within(rail()).getByRole('link', { name: 'Overview' })).not.toHaveAttribute('aria-current');
@@ -241,7 +242,7 @@ describe('Shell — the drawer in a hand', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Open the menu' }));
     fireEvent.click(within(rail()).getByRole('link', { name: 'northstar' }));
-    expect(location()).toHaveTextContent('/?project=%2FUsers%2Fsam%2Fcode%2Fnorthstar');
+    expect(location()).toHaveTextContent('/?project=%2FUsers%2Fsample%2Fcode%2Fnorthstar');
     expect(sideNav()).not.toHaveClass('cds--side-nav--expanded');
 
     fireEvent.click(screen.getByRole('button', { name: 'Open the menu' }));

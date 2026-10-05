@@ -1,5 +1,5 @@
 // Copied from Northstar ui/src/screens/Palette/shortcut.ts at e9c1589.
-// Changed: nothing; the palette it opens is a placeholder until AGEN-0007.
+// Changed: nothing.
 import { useEffect, useRef } from 'react';
 
 /// ⌘K / Ctrl-K on the document opens the palette. Bound once; the latest `onOpen` is read

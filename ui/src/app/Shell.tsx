@@ -1,5 +1,5 @@
 // Copied from Northstar ui/src/app/Shell.tsx at e9c1589.
-// Changed: agent-router's navigation (Overview, Sessions, the projects, Settings at the foot); the freshness badge reads the router's health; no sign-in and no log-out, because the router's LAN gate is HTTP Basic, which the browser asks for itself; no wide routes; the phone drawer closes on every arrival, a project link's included; links carry the /next basename.
+// Changed: agent-router's navigation (Overview, Sessions, the projects, Settings at the foot); the freshness badge reads the router's health; no sign-in and no log-out, because the router's LAN gate is HTTP Basic, which the browser asks for itself; no wide routes; the phone drawer closes on every arrival, a project link's included; the palette is open at a location as the drawer is, and opening either puts the other away; links carry the /next basename.
 import { Suspense, useCallback, useEffect, useMemo, useState, type MouseEvent } from 'react';
 import { Link, Outlet, useHref, useLocation, useNavigate } from 'react-router';
 import {
@@ -71,8 +71,26 @@ export function Shell() {
   const narrow = useNarrow();
   const [drawerAt, setDrawerAt] = useState<string | null>(null);
   const drawer = narrow && drawerAt === location.key;
+
+  // ⌘K is primary navigation. The same palette opens from the header's search action, which
+  // is the whole of it on a phone. Like the drawer it is open AT a location, so arriving
+  // anywhere puts it away. The two never stand open together: on a phone both lie under the
+  // header, which stays in reach while either is open (SH-C51), so opening one puts the other
+  // away rather than leaving one hidden beneath the other.
+  const [paletteAt, setPaletteAt] = useState<string | null>(null);
+  const paletteOpen = paletteAt === location.key;
+  const openPalette = useCallback(() => {
+    setDrawerAt(null);
+    setPaletteAt(location.key);
+  }, [location.key]);
+  const closePalette = useCallback(() => setPaletteAt(null), []);
+  usePaletteShortcut(openPalette);
+
   const closeDrawer = useCallback(() => setDrawerAt(null), []);
-  const toggleDrawer = useCallback(() => setDrawerAt((at) => (at === location.key ? null : location.key)), [location.key]);
+  const toggleDrawer = useCallback(() => {
+    setPaletteAt(null);
+    setDrawerAt((at) => (at === location.key ? null : location.key));
+  }, [location.key]);
   // Escape from anywhere in the page, the menu button that opened it included.
   useEffect(() => {
     if (!drawer) return;
@@ -94,13 +112,6 @@ export function Shell() {
       return next;
     });
   }, []);
-
-  // ⌘K is primary navigation. The same palette opens from the header's search action, which
-  // is the whole of it on a phone.
-  const [paletteOpen, setPaletteOpen] = useState(false);
-  const openPalette = useCallback(() => setPaletteOpen(true), []);
-  const closePalette = useCallback(() => setPaletteOpen(false), []);
-  usePaletteShortcut(openPalette);
 
   // Where the reader is, for the rail's current mark. A project's link differs from the
   // Overview's only in its query, which a NavLink does not compare, so the marks are worked

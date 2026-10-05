@@ -1,20 +1,49 @@
-// New for agent-router, standing where Northstar's ui/src/screens/Palette/Palette.tsx at e9c1589
-// stands: the shell opens it from the header's search action and from ⌘K. AGEN-0007 brings the
-// palette itself, with hits from the router's search instead of Northstar's items.
-import { Modal } from '@carbon/react';
+// Copied from Northstar ui/src/screens/Palette/Palette.tsx at e9c1589.
+// Changed: the modal only; what it holds is ./Body, loaded the first time the palette opens so that every page's first load does not carry it (scripts/check-chunks.mjs), with a line saying so while it arrives. On a phone the sheet and its overlay both start under the topbar (Palette.module.scss), so the topbar's facts and actions stay in reach while it is open.
+import { Suspense, lazy } from 'react';
+import { ComposedModal } from '@carbon/react';
+import { INPUT_ID } from './ids';
 import styles from './Palette.module.scss';
 
-/// The ⌘K palette's place: it opens, says what it will be, and closes on Escape, the ×, or a
-/// click outside. Mounted only while open, so a closed palette leaves nothing in the page.
+const Body = lazy(() => import('./Body').then((m) => ({ default: m.Body })));
+
+/// The command palette: search the router's conversations, jump to a session or a project, and
+/// run commands behind `>`. Not a route: the shell mounts it, and ⌘K or the topbar's search action
+/// opens it (SH-C50).
+///
+/// A passive Carbon modal near the top of the viewport on a desk, where the eye already is, and a
+/// full-height sheet in a hand, under the topbar, never over it, so the topbar's own facts and
+/// actions stay reachable while the palette is open (SH-C51). The body is mounted only while
+/// open, so the typing, the step and the cursor start clean each time and nothing is read while
+/// nobody is looking; its code arrives the first time it opens.
 export function Palette({ open, onClose }: { open: boolean; onClose: () => void }) {
-  if (!open) return null;
   return (
-    <Modal open passiveModal size="sm" modalHeading="Search and commands" modalLabel="⌘K" onRequestClose={onClose}>
-      <p className={styles.body}>
-        The palette is AGEN-0007. It will search the router's conversation index, jump to a project or a session,
-        and run commands behind <kbd>&gt;</kbd>: switch account, set a session's model, effort or mode, archive, theme.
-      </p>
-      <p className={styles.body}>⌘K or Ctrl-K opens it from anywhere, a field included.</p>
-    </Modal>
+    <ComposedModal
+      open={open}
+      onClose={() => {
+        onClose();
+      }}
+      size="md"
+      className={styles.modal}
+      containerClassName={styles.container}
+      selectorPrimaryFocus={`#${INPUT_ID}`}
+      aria-label="Search and commands"
+    >
+      {open && (
+        <Suspense fallback={<Opening />}>
+          <Body onClose={onClose} />
+        </Suspense>
+      )}
+    </ComposedModal>
+  );
+}
+
+/// The palette's frame while its body arrives, the first time it opens: a moment on a router
+/// that serves from this machine, and said rather than left blank.
+function Opening() {
+  return (
+    <div className={styles.body} aria-busy="true">
+      <p className={styles.opening}>Opening…</p>
+    </div>
   );
 }
