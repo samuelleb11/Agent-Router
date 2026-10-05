@@ -86,5 +86,5 @@ export const hosted = (now: number): Auth => ({
 /// A local router's, as it has always been: no `mode` at all, which has to read as local.
 export const local = (now: number): Auth => ({
   configured: true, updated_at: now - 60e3, from_loopback: true, remote_bind: false,
-  listening_on: '127.0.0.1:8787', lan_url: 'http://10.30.0.183:8787', env_override: false,
+  listening_on: '127.0.0.1:8787', lan_url: 'http://192.0.2.10:8787', env_override: false,
 });

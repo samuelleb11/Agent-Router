@@ -1496,7 +1496,7 @@ mod tests {
             json!({"type":"assistant","uuid":"a2","timestamp":"2026-09-03T07:16:23.638Z",
                    "message":{"id":"msg_011Ceg6TmYWPa78EU7AGi4cT","role":"assistant","stop_reason":"end_turn",
                               "content":[{"type":"tool_use","id":"toolu_01XJGjGkU5FyLyBDL2KJT8wG","name":"SendMessage",
-                                          "input":{"to":"nami-56","message":"**Sweep done.**"}}]}}),
+                                          "input":{"to":"narwhal-56","message":"**Sweep done.**"}}]}}),
             json!({"type":"last-prompt","lastPrompt":"sweep the workspace and report","sessionId":"s"}),
             json!({"type":"ai-title","aiTitle":"Workspace sweep","sessionId":"s"}),
             // 2376: the call's result.
@@ -1955,9 +1955,9 @@ mod tests {
             json!({"type":"queue-operation","operation":"enqueue","timestamp":"2026-09-15T20:55:20.355Z",
                    "content":"<task-notification>\n<task-id>bl5ro1shd</task-id>\n<status>failed</status>\n</task-notification>"}),
             json!({"type":"queue-operation","operation":"enqueue","timestamp":"2026-09-15T20:55:36.018Z",
-                   "content":"<cross-session-message from=\"uds:/tmp/cc-socks/34905.sock\" from-name=\"mamoru-d0\">\nConfirmed independently: `whoami` returns `501` here too.</cross-session-message>"}),
+                   "content":"<cross-session-message from=\"uds:/tmp/cc-socks/34905.sock\" from-name=\"meadow-d0\">\nConfirmed independently: `whoami` returns `501` here too.</cross-session-message>"}),
             json!({"type":"queue-operation","operation":"enqueue","timestamp":"2026-09-15T20:58:58.012Z",
-                   "content":"<cross-session-message from=\"uds:/tmp/cc-socks/34905.sock\" from-name=\"mamoru-d0\">\none line (relay to nami-06)</cross-session-message>"}),
+                   "content":"<cross-session-message from=\"uds:/tmp/cc-socks/34905.sock\" from-name=\"meadow-d0\">\none line (relay to narwhal-06)</cross-session-message>"}),
             // The crash; a new process.
             json!({"type":"queue-operation","operation":"enqueue","timestamp":"2026-09-15T21:14:04.594Z","content":sweep}),
             json!({"type":"queue-operation","operation":"dequeue","timestamp":"2026-09-15T21:14:06.609Z"}),
@@ -1980,7 +1980,7 @@ mod tests {
         assert_eq!(s.queued, 0, "not '1 queued' through the next turns");
         // What the new process queues is counted as ever.
         f.line(&json!({"type":"queue-operation","operation":"enqueue","timestamp":"2026-09-15T21:25:40.777Z",
-                       "content":"<cross-session-message from=\"uds:/tmp/cc-socks/2050.sock\" from-name=\"mamoru-42\">\nYou inherit the lane.</cross-session-message>"}));
+                       "content":"<cross-session-message from=\"uds:/tmp/cc-socks/2050.sock\" from-name=\"meadow-42\">\nYou inherit the lane.</cross-session-message>"}));
         assert_eq!(f.summary().queued, 1);
         f.line(&json!({"type":"queue-operation","operation":"dequeue","timestamp":"2026-09-15T21:25:40.779Z"}));
         assert_eq!(f.summary().queued, 0);

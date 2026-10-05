@@ -27,10 +27,10 @@ function block(css: string, opener: string): string {
 /// The Projects list as the dashboard draws it.
 const PROJECTS: BarRow[] = [
   {
-    key: '/Users/sam/code/agent-router',
+    key: '/Users/sample/code/agent-router',
     name: 'agent-router',
     concept: 'project',
-    path: '/Users/sam/code/agent-router',
+    path: '/Users/sample/code/agent-router',
     meta: '12 sessions · 840 req · 1.10M out · 92% cached · $41.20 · 3 min ago',
     errors: '3 errors',
     value: 9_000_000,
@@ -39,10 +39,10 @@ const PROJECTS: BarRow[] = [
     subFigure: '33% subagents',
   },
   {
-    key: '/Users/sam/code/northstar',
+    key: '/Users/sample/code/northstar',
     name: 'northstar',
     concept: 'project',
-    path: '/Users/sam/code/northstar',
+    path: '/Users/sample/code/northstar',
     meta: '4 sessions · 120 req · 300k out · 88% cached · $9.80 · 2 h ago',
     value: 4_500_000,
     figure: '4.50M',
@@ -66,19 +66,19 @@ describe('BarList', () => {
     expect(screen.queryByRole('table')).toBeNull();
     expect(within(list()).getAllByRole('listitem')).toHaveLength(3);
     expect(row('agent-router')).toHaveAccessibleDescription(
-      '/Users/sam/code/agent-router 12 sessions · 840 req · 1.10M out · 92% cached · $41.20 · 3 min ago · 3 errors 9.00M 33% subagents',
+      '/Users/sample/code/agent-router 12 sessions · 840 req · 1.10M out · 92% cached · $41.20 · 3 min ago · 3 errors 9.00M 33% subagents',
     );
   });
 
   it('OV-C130, OV-C23: marks the scoped row pressed, leaves the others pressable, and hands every press to the caller', () => {
     const onSelect = vi.fn();
-    render(<BarList label="Projects" rows={PROJECTS} selected="/Users/sam/code/northstar" onSelect={onSelect} />);
+    render(<BarList label="Projects" rows={PROJECTS} selected="/Users/sample/code/northstar" onSelect={onSelect} />);
     expect(screen.getByRole('button', { name: 'northstar', pressed: true })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'agent-router', pressed: false })).toBeEnabled();
     expect(list()).toHaveAttribute('data-selection');
     fireEvent.click(row('agent-router'));
     fireEvent.click(row('northstar'));
-    expect(onSelect.mock.calls).toEqual([['/Users/sam/code/agent-router'], ['/Users/sam/code/northstar']]);
+    expect(onSelect.mock.calls).toEqual([['/Users/sample/code/agent-router'], ['/Users/sample/code/northstar']]);
     // Pressed, with the accent's edge; the others' bars step back while their words keep contrast.
     expect(block(scss, ".row[aria-pressed='true']")).toMatch(/box-shadow:\s*inset \$spacing-02 0 0 var\(--cds-border-interactive\);/);
     expect(block(scss, ".list[data-selection] .row[aria-pressed='false'] .bar")).toMatch(/opacity:/);
@@ -229,7 +229,7 @@ describe('BarList without a hover', () => {
     stubNarrow();
     const { container } = render(<BarList label="Projects" rows={PROJECTS} onSelect={() => {}} />);
     expect(row('agent-router')).toBeVisible();
-    for (const fact of ['agent-router', '/Users/sam/code/agent-router', '12 sessions · 840 req · 1.10M out · 92% cached · $41.20 · 3 min ago', '3 errors', '9.00M', '33% subagents']) {
+    for (const fact of ['agent-router', '/Users/sample/code/agent-router', '12 sessions · 840 req · 1.10M out · 92% cached · $41.20 · 3 min ago', '3 errors', '9.00M', '33% subagents']) {
       expect(row('agent-router')).toHaveTextContent(fact);
     }
     expect(container.querySelectorAll('[title]')).toHaveLength(0);

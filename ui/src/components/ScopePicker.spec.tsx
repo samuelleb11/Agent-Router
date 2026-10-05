@@ -25,13 +25,13 @@ function block(css: string, opener: string): string {
 
 const ALL: ScopeOption = { key: '*', name: 'All projects', meta: '1,204 req' };
 const project = (name: string, i: number): ScopeOption => ({
-  key: `/Users/sam/code/${name}`,
+  key: `/Users/sample/code/${name}`,
   name,
-  sub: `/Users/sam/code/${name}`,
+  sub: `/Users/sample/code/${name}`,
   path: true,
   meta: `${i}.0M · ${i * 10} req · $${i}.00`,
 });
-const NAMES = ['agent-router', 'northstar', 'cerealkiller', 'dragonfly', 'jade', 'mamoru', 'nami', 'grace', 'cosmos', 'taida'];
+const NAMES = ['agent-router', 'northstar', 'cartographer', 'driftwood', 'juniper', 'meadow', 'narwhal', 'granite', 'cobalt', 'tundra'];
 const MANY = [ALL, ...NAMES.map((n, i) => project(n, i + 1))];
 const FEW = [ALL, project('agent-router', 1), project('northstar', 2)];
 
@@ -66,7 +66,7 @@ describe('ScopePicker', () => {
     expect(crumb()).not.toHaveAttribute('data-set');
     expect(crumb().querySelector('svg')).toHaveStyle({ fill: 'var(--ar-project)' });
     unmount();
-    show(MANY, '/Users/sam/code/northstar');
+    show(MANY, '/Users/sample/code/northstar');
     expect(crumb()).toHaveAccessibleName('Project: northstar');
     expect(crumb()).toHaveAttribute('data-set');
     expect(block(scss, '.crumb[data-set]')).toMatch(/color:\s*var\(--cds-text-primary\);[\s\S]*font-weight:\s*600;/);
@@ -84,18 +84,18 @@ describe('ScopePicker', () => {
   });
 
   it('OV-C16: lists "All …" first, then a row each with its name, second line and figures, the current one selected', () => {
-    show(MANY, '/Users/sam/code/northstar');
+    show(MANY, '/Users/sample/code/northstar');
     open();
     const rows = within(listbox()).getAllByRole('option');
     expect(rows[0]).toHaveAccessibleName('All projects 1,204 req');
-    expect(rows[2]).toHaveAccessibleName('northstar /Users/sam/code/northstar 2.0M · 20 req · $2.00');
+    expect(rows[2]).toHaveAccessibleName('northstar /Users/sample/code/northstar 2.0M · 20 req · $2.00');
     expect(rows.filter((r) => r.getAttribute('aria-selected') === 'true')).toEqual([rows[2]]);
   });
 
   it('OV-C16: never shrinks a name, and lets a path give up its head rather than its tail', () => {
     show();
     open();
-    expect(option(/^agent-router/).querySelector('[data-path]')).toHaveTextContent('/Users/sam/code/agent-router');
+    expect(option(/^agent-router/).querySelector('[data-path]')).toHaveTextContent('/Users/sample/code/agent-router');
     expect(block(scss, '\n.name {')).toMatch(/white-space:\s*nowrap;/);
     expect(block(scss, '\n.sub {')).toMatch(/text-overflow:\s*ellipsis;/);
     expect(block(scss, '.sub[data-path]')).toMatch(/direction:\s*rtl;/);
@@ -106,7 +106,7 @@ describe('ScopePicker', () => {
     open();
     expect(filter()).toHaveAttribute('placeholder', 'Filter projects…');
     fireEvent.change(filter(), { target: { value: 'CODE/NA' } });
-    expect(within(listbox()).getAllByRole('option').map((o) => o.getAttribute('data-key'))).toEqual(['/Users/sam/code/nami']);
+    expect(within(listbox()).getAllByRole('option').map((o) => o.getAttribute('data-key'))).toEqual(['/Users/sample/code/narwhal']);
     fireEvent.change(filter(), { target: { value: 'zzz' } });
     expect(screen.queryByRole('listbox')).toBeNull();
     expect(screen.getByText('Nothing matches.')).toBeVisible();
@@ -124,7 +124,7 @@ describe('ScopePicker', () => {
     expect(filter()).toHaveFocus();
     many.unmount();
 
-    const current = show(FEW, '/Users/sam/code/northstar');
+    const current = show(FEW, '/Users/sample/code/northstar');
     open();
     expect(option(/^northstar/)).toHaveFocus();
     current.unmount();
@@ -140,13 +140,13 @@ describe('ScopePicker', () => {
     fireEvent.keyDown(filter(), { key: 'ArrowDown' });
     expect(option(/^All projects/)).toHaveFocus();
     fireEvent.keyDown(document.activeElement!, { key: 'ArrowUp' });
-    expect(option(/^taida/)).toHaveFocus();
+    expect(option(/^tundra/)).toHaveFocus();
     fireEvent.keyDown(document.activeElement!, { key: 'ArrowDown' });
     expect(option(/^All projects/)).toHaveFocus();
     fireEvent.keyDown(document.activeElement!, { key: 'End' });
-    expect(option(/^taida/)).toHaveFocus();
+    expect(option(/^tundra/)).toHaveFocus();
     // One tab stop: only the row the keyboard is on.
-    expect(within(listbox()).getAllByRole('option').filter((o) => o.tabIndex === 0)).toEqual([option(/^taida/)]);
+    expect(within(listbox()).getAllByRole('option').filter((o) => o.tabIndex === 0)).toEqual([option(/^tundra/)]);
   });
 
   it('OV-C19: closes on Escape from a row and from the filter, which Carbon’s Search would otherwise swallow, and gives the focus back', () => {
@@ -181,8 +181,8 @@ describe('ScopePicker', () => {
   it('chooses a row by a press, by Enter on it, or by Enter in the filter, and gives the focus back to the crumb', () => {
     const { onPick } = show();
     open();
-    fireEvent.click(option(/^jade/));
-    expect(onPick).toHaveBeenLastCalledWith('/Users/sam/code/jade');
+    fireEvent.click(option(/^juniper/));
+    expect(onPick).toHaveBeenLastCalledWith('/Users/sample/code/juniper');
     expect(screen.queryByRole('listbox')).toBeNull();
     expect(crumb()).toHaveFocus();
 
@@ -190,12 +190,12 @@ describe('ScopePicker', () => {
     fireEvent.keyDown(filter(), { key: 'ArrowDown' });
     fireEvent.keyDown(document.activeElement!, { key: 'ArrowDown' });
     fireEvent.keyDown(document.activeElement!, { key: 'Enter' });
-    expect(onPick).toHaveBeenLastCalledWith('/Users/sam/code/agent-router');
+    expect(onPick).toHaveBeenLastCalledWith('/Users/sample/code/agent-router');
 
     open();
-    fireEvent.change(filter(), { target: { value: 'grace' } });
+    fireEvent.change(filter(), { target: { value: 'granite' } });
     fireEvent.keyDown(filter(), { key: 'Enter' });
-    expect(onPick).toHaveBeenLastCalledWith('/Users/sam/code/grace');
+    expect(onPick).toHaveBeenLastCalledWith('/Users/sample/code/granite');
   });
 
   /// "Rebuilt only when the scope changes, so an open menu is not destroyed by the five-second poll."
@@ -224,7 +224,7 @@ describe('ScopePicker', () => {
     act(() => row.focus());
     rerender(
       <>
-        <ScopePicker level="project" crumb="northstar" set value="/Users/sam/code/northstar" options={FEW} onPick={vi.fn()} />
+        <ScopePicker level="project" crumb="northstar" set value="/Users/sample/code/northstar" options={FEW} onPick={vi.fn()} />
         <button type="button">a list row</button>
       </>,
     );
@@ -254,7 +254,7 @@ describe('ScopePicker without a hover', () => {
   it('SH-C30: gives each row’s whole path to the keyboard and to a screen reader', () => {
     show();
     open();
-    expect(option(/^cerealkiller/)).toHaveAccessibleName(/\/Users\/sam\/code\/cerealkiller/);
+    expect(option(/^cartographer/)).toHaveAccessibleName(/\/Users\/sample\/code\/cartographer/);
     expect(block(scss, '.option:focus-visible .sub')).toMatch(/white-space:\s*normal;/);
     // The only title is Carbon's own on the filter's clear button, and it repeats that button's name.
     for (const el of document.querySelectorAll('[title]')) expect(el).toHaveAccessibleName(el.getAttribute('title')!);

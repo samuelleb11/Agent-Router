@@ -179,7 +179,7 @@ describe('a refusal stands beside its control', () => {
     stubFetch({
       '/_router/health': () => json({ ok: true, pid: 1, version: '0.9.0', build: 'f00dfeed' }),
       '/api/projects': () => json([]),
-      '/api/live/sessions': () => json([{ session_id: SESSION, cwd: '/Users/sam/code/agent-router', project: 'agent-router', git_branch: 'dev', title: 'Rebuild the palette', last_activity_ms: Date.now(), archived: false, wrapped: true }]),
+      '/api/live/sessions': () => json([{ session_id: SESSION, cwd: '/Users/sample/code/agent-router', project: 'agent-router', git_branch: 'dev', title: 'Rebuild the palette', last_activity_ms: Date.now(), archived: false, wrapped: true }]),
       '/api/live/options': () => json({ models: [], efforts: [], modes: [] }),
       '/api/accounts': () => json([]),
       '/api/live/archive': () =>

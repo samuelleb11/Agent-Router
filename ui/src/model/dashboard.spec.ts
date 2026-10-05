@@ -244,8 +244,8 @@ describe('the dashboard, as scripts/check-dashboard-ui.js checked it', () => {
     // Every caller of a hosted router gives it, a kubectl port-forward to localhost included.
     expect(env('http://localhost:8787', { ...HOSTED, from_loopback: true }), 'through a port-forward').toEqual({ ANTHROPIC_BASE_URL: 'http://localhost:8787', ANTHROPIC_AUTH_TOKEN: TOKEN });
     // A local router read from another machine on the network.
-    expect(env('http://10.30.0.183:8787', { ...LOCAL, remote_bind: true, from_loopback: false }), 'a local router, off the machine').toEqual({
-      ANTHROPIC_BASE_URL: 'http://10.30.0.183:8787',
+    expect(env('http://192.0.2.10:8787', { ...LOCAL, remote_bind: true, from_loopback: false }), 'a local router, off the machine').toEqual({
+      ANTHROPIC_BASE_URL: 'http://192.0.2.10:8787',
       ANTHROPIC_AUTH_TOKEN: TOKEN,
     });
     // At the machine itself: the very line it always was, and the same before /api/auth answers.

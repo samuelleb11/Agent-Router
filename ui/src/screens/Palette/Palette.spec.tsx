@@ -27,7 +27,7 @@ const GONE = 'deadbeef-0000-4000-8000-000000000009';
 
 const live = (session_id: string, over: Partial<LiveSession> = {}): LiveSession => ({
   session_id,
-  cwd: '/Users/sam/code/agent-router',
+  cwd: '/Users/sample/code/agent-router',
   project: 'agent-router',
   git_branch: 'dev',
   title: null,
@@ -40,7 +40,7 @@ const live = (session_id: string, over: Partial<LiveSession> = {}): LiveSession 
 /// In the router's order, which is by start: the palette lists them newest activity first, and
 /// leaves the archived one out until it is asked for.
 const SESSIONS: LiveSession[] = [
-  live(S2, { cwd: '/Users/sam/code/northstar', project: 'northstar', title: 'Fix the quota meter', last_activity_ms: NOW - 90 * MIN, wrapped: false }),
+  live(S2, { cwd: '/Users/sample/code/northstar', project: 'northstar', title: 'Fix the quota meter', last_activity_ms: NOW - 90 * MIN, wrapped: false }),
   live(S1, { title: 'Rebuild the palette', last_activity_ms: NOW - 2 * MIN }),
   live(S3, { title: 'An old experiment', last_activity_ms: NOW - 3 * 24 * 60 * MIN, archived: true }),
 ];
@@ -60,7 +60,7 @@ const row = (project: string | null, prompt_tokens: number): ProjectRow => ({
   last_seen: NOW - 60 * MIN,
 });
 
-const PROJECTS = [row('/Users/sam/code/agent-router', 900_000), row('/Users/sam/code/northstar', 400_000), row(null, 2_000)];
+const PROJECTS = [row('/Users/sample/code/agent-router', 900_000), row('/Users/sample/code/northstar', 400_000), row(null, 2_000)];
 
 const ACCOUNTS: Account[] = [
   { id: 'default', label: 'Claude Code login', email: 'sam@example.com', active: 1 },
@@ -88,7 +88,7 @@ const hit = (over: Partial<SearchHit>): SearchHit => ({
   ordinal: 4,
   request_id: 10,
   at: NOW - 60 * MIN,
-  project: '/Users/sam/code/agent-router',
+  project: '/Users/sample/code/agent-router',
   session_label: null,
   snippet: 'port the ‹palette› next',
   rank: -9,
@@ -102,7 +102,7 @@ const PALETTE: SearchAnswer = {
   query: 'palette',
   expression: 'palette',
   sessions: [
-    { session_id: S1, project: '/Users/sam/code/agent-router', hits: 4, blocks: 3 },
+    { session_id: S1, project: '/Users/sample/code/agent-router', hits: 4, blocks: 3 },
     { session_id: S2, project: null, hits: 1, blocks: 1 },
   ],
   hits: [
@@ -471,7 +471,7 @@ describe('Palette: jumping to a session or a project', () => {
     const { user, onClose } = await mount();
     const projects = await screen.findByRole('group', { name: 'Projects' });
     await user.click(await within(projects).findByRole('option', { name: /^northstar/ }));
-    expect(where()).toBe('/?project=%2FUsers%2Fsam%2Fcode%2Fnorthstar');
+    expect(where()).toBe('/?project=%2FUsers%2Fsample%2Fcode%2Fnorthstar');
     expect(onClose).toHaveBeenCalled();
   });
 

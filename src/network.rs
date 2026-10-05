@@ -410,8 +410,8 @@ mod tests {
 
     #[test]
     fn a_chosen_address_is_what_we_tell_people_to_type() {
-        let ip: IpAddr = "10.30.0.186".parse().unwrap();
-        assert_eq!(lan_url(Some(ip), 8787).as_deref(), Some("http://10.30.0.186:8787"));
+        let ip: IpAddr = "192.0.2.10".parse().unwrap();
+        assert_eq!(lan_url(Some(ip), 8787).as_deref(), Some("http://192.0.2.10:8787"));
         // `0.0.0.0` is not an address anyone can type, so it is resolved to the one
         // this machine is actually reachable at — which a machine with no route has
         // none of, and then there is nothing useful to say.
