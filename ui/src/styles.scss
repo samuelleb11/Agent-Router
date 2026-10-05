@@ -1,0 +1,341 @@
+// Copied from Northstar ui/src/styles.scss at e9c1589.
+// Changed: agent-router's --ar-* colour tokens replace the --ns-* status colours, the theme classes are ar-light and ar-dark, and Carbon's region theme classes carry the matching --ar-* set.
+
+/// Carbon, imported by the component rather than wholesale.
+///
+/// `@use '@carbon/react'` emits CSS for all hundred-odd components — 969 kB, most of it for
+/// components this console does not render. Carbon's own guidance is to import what you
+/// use, and that is what this list is. **Adding a Carbon component means adding its style
+/// partial here**; forget it and the component renders unstyled, which is conspicuous
+/// rather than subtle.
+@use '@carbon/react/scss/config' with (
+  $use-flexbox-grid: false,
+  // See fonts.scss: Carbon emits every script's Plex faces across seventeen weights, for a
+  // console that renders Latin. We load the four the type scale uses instead.
+  $css--font-face: false
+);
+@use '@carbon/react/scss/reset';
+@use '@carbon/react/scss/theme' as theme;
+@use '@carbon/react/scss/themes' as themes;
+@use '@carbon/react/scss/spacing' as *;
+@use '@carbon/react/scss/type' as type;
+@use '@carbon/react/scss/motion' as *;
+@use '@carbon/react/scss/breakpoint' as *;
+@use '@carbon/react/scss/utilities';
+// The layout tokens (--cds-layout-size-height-*, --cds-layout-density-padding-*) every
+// sized component reads for its height and inline padding. The component partials only
+// CONSUME them; nothing below defines them, so without this a Button is text with a
+// background and no padding.
+@use '@carbon/react/scss/layout';
+
+// The shell.
+@use '@carbon/react/scss/components/ui-shell';
+@use '@carbon/react/scss/components/link';
+@use '@carbon/react/scss/components/skeleton-styles';
+@use '@carbon/react/scss/components/loading';
+@use '@carbon/react/scss/components/inline-loading';
+
+// Reading: dashboards, lists, evidence.
+@use '@carbon/react/scss/components/tile';
+@use '@carbon/react/scss/components/tag';
+@use '@carbon/react/scss/components/data-table';
+// The base partial above styles the table alone. The toolbar, its search, the batch-action
+// bar, sorting and expandable rows are FOUR separate partials that `data-table` does not
+// forward; without them TableToolbar/TableBatchActions render as unstyled text.
+@use '@carbon/react/scss/components/data-table/action';
+@use '@carbon/react/scss/components/data-table/sort';
+@use '@carbon/react/scss/components/data-table/expandable';
+@use '@carbon/react/scss/components/data-table/skeleton';
+@use '@carbon/react/scss/components/pagination';
+@use '@carbon/react/scss/components/structured-list';
+@use '@carbon/react/scss/components/contained-list';
+@use '@carbon/react/scss/components/breadcrumb';
+@use '@carbon/react/scss/components/tabs';
+@use '@carbon/react/scss/components/accordion';
+@use '@carbon/react/scss/components/treeview';
+@use '@carbon/react/scss/components/progress-bar';
+@use '@carbon/react/scss/components/tooltip';
+@use '@carbon/react/scss/components/popover';
+@use '@carbon/react/scss/components/toggletip';
+@use '@carbon/react/scss/components/code-snippet';
+@use '@carbon/react/scss/components/copy-button';
+@use '@carbon/react/scss/components/truncated-text';
+
+// Writing: the console is a first-class writer, not a viewer.
+@use '@carbon/react/scss/components/button';
+@use '@carbon/react/scss/components/text-input';
+@use '@carbon/react/scss/components/text-area';
+@use '@carbon/react/scss/components/checkbox';
+@use '@carbon/react/scss/components/radio-button';
+@use '@carbon/react/scss/components/select';
+@use '@carbon/react/scss/components/dropdown';
+@use '@carbon/react/scss/components/combo-box';
+@use '@carbon/react/scss/components/multiselect';
+@use '@carbon/react/scss/components/list-box';
+@use '@carbon/react/scss/components/search';
+@use '@carbon/react/scss/components/form';
+@use '@carbon/react/scss/components/modal';
+@use '@carbon/react/scss/components/overflow-menu';
+@use '@carbon/react/scss/components/menu';
+@use '@carbon/react/scss/components/notification';
+@use '@carbon/react/scss/components/toggle';
+@use '@carbon/react/scss/components/number-input';
+@use '@carbon/react/scss/components/date-picker';
+@use '@carbon/react/scss/components/content-switcher';
+
+@use './fonts';
+
+/// Agent-router's colours: the ONLY colours this console defines, each meaning exactly one
+/// thing. Carbon's theme owns the neutrals, the type, the spacing, the motion and every piece of
+/// interactive chrome (Carbon blue, not the dashboard's indigo); these are the colours that
+/// carry data. They began as the dashboard's tokens (assets/index.html, checked with the dataviz
+/// palette validator on its own panels) and the live view's session states (assets/live.html,
+/// whose hues the iPhone and Android apps share), and were re-checked on Carbon's own surfaces:
+/// white's $background and $layer-01, and g100's. `scripts/check-palette.mjs` holds them to it,
+/// on every pair of each set rather than only on neighbours, and under protanopia,
+/// deuteranopia AND tritanopia. Run it rather than adjusting a value by eye; it reads the
+/// literal hex below, so a token is always written as one.
+///
+/// Fills, never text, except the three status text tokens. Text wears Carbon's text tokens and a
+/// coloured mark beside it carries the identity; a session state's words included.
+///
+/// WHAT CHANGED FROM TODAY'S VALUES, and why. Nothing else moved.
+///
+/// The four collisions the plan names (docs/web-console-carbon.md, "Colour coding and tokens"):
+///
+/// - accent = tools. Moot: the chrome is Carbon's blue now and indigo stays the tools colour.
+///   No value changed. (Carbon's interactive blue sits ΔE 7.8 light / 7.3 dark from it: near,
+///   not equal, and one is chrome while the other is a data fill.)
+/// - project = muted text. `--proj` was #71717a light and #a1a1aa dark, the zinc of the
+///   dashboard's secondary text, chroma 0.014: a project's mark read as a quiet word rather
+///   than an identity. Now lime 700, #4d7c0f in both themes, chroma 0.14, ΔE 16.9 from
+///   Carbon's $text-secondary on white and 32.6 on g100. Lime is the last free arc of the
+///   wheel that clears 3:1 as an icon on all four surfaces, and it is not far enough from
+///   everything: on white it is ΔE 3.4 from the working green (--ar-st-busy). So a project is
+///   shown by its folder and its name, and a group of sessions by its state dot, never by a
+///   tinted folder beside that dot.
+/// - session = Opus. `--sess` was #7c3aed, Opus's own value, in the light theme, and #a78bfa
+///   beside Opus's #9b72f5 in the dark. Now sky 600, #0284c7 in both themes: ΔE 19.8 from Opus
+///   on white and 16.7 on g100. A session row carries the model's colour in its chip and the
+///   state's in its dot; neither is blue.
+/// - subagent = tool results. `--sub` was `var(--c4)`, the very value of the tool-results
+///   context segment, and both appear in one request's detail. Now fuchsia: 800, #86198f, on
+///   white, ΔE 19.0 from results; on g100 #cd46ff, fuchsia stepped toward purple to stay inside
+///   the dark band and clear results' pink, ΔE 17.2. A subagent is also a bar overlay with no
+///   icon, so its colour was chosen against every segment colour it can sit beside, and
+///   fuchsia is the least confusable there in both themes.
+///
+/// Where a check failed:
+///
+/// - --ar-model-other. Sonnet's orange and other's dark yellow were told apart only as
+///   neighbours: today's palette was validated on adjacent pairs, and in the activity
+///   chart's order the two never touch. A legend and a row of chips put any two side by side,
+///   and there they collapse: protanopia ΔE 4.0 on white, deuteranopia 0.7 on g100. "Other"
+///   is now the darkest of the four, told apart by lightness, which every deficiency keeps:
+///   yellow 800, #854d0e, on white (ΔE 11.7 worst), and today's g100 hue stepped down to L
+///   0.505, #895902 (ΔE 8.1 worst). The g100 step reaches only 2.52:1 on $layer-01, so a chart
+///   in this colour keeps its legend and its table view.
+/// - --ar-st-busy on g100. Working green (#9ece6a) and waiting orange (#ff9e64) are the same
+///   colour under deuteranopia, ΔE 1.3. Busy is now green 300, #86efac (ΔE 9.7). Wait keeps
+///   its value: moved to a deeper orange instead, it would sit ΔE 6.3 from Sonnet's orange in
+///   every session row, where today it is 15.4. The light theme's states are unchanged.
+/// - --ar-ok-fill and --ar-warn-fill on white. Today one value per status served as text and
+///   as fill. As fills, green ok and red bad are one colour under deuteranopia (ΔE 4.2), and so
+///   are amber warn and red bad (4.9, and 9.1 even with full colour vision). The fills are now
+///   emerald 700, #047857, and amber 600, #d97706 (worst pair ΔE 8.4); bad keeps #b91c1c. The
+///   text tokens keep today's values, which reach 4.5:1 on every surface.
+///
+/// Two pairs sit in the validator's 6–8 band, legal only with a second channel, and keep their
+/// values: g100's status fills (ok/warn 7.3, ok/bad 7.9), which always ship with their icon and
+/// their words, and white's busy/wait states (6.8), whose dot is never shown without its words.
+@mixin ar-light {
+  // The context window: what the model read, by kind.
+  --ar-ctx-tools: #4f46e5;
+  --ar-ctx-system: #0891b2;
+  --ar-ctx-history: #ca8a04;
+  --ar-ctx-results: #db2777;
+
+  // Token magnitude: one hue, more is darker; hue is reserved for identity. Ordered tok-2,
+  // tok, tok-3 from least to most.
+  --ar-tok: #64748b;
+  --ar-tok-2: #94a3b8;
+  --ar-tok-3: #334155;
+
+  // Identity.
+  --ar-project: #4d7c0f;
+  --ar-session: #0284c7;
+  --ar-subagent: #86198f;
+
+  // Model family; also the activity chart's series, in this order.
+  --ar-model-opus: #7c3aed;
+  --ar-model-sonnet: #ea580c;
+  --ar-model-haiku: #0d9488;
+  --ar-model-other: #854d0e;
+
+  // Status: words, then marks. The words reach 4.5:1 on $background and $layer-01; Carbon's
+  // own support tokens do not (Northstar measured 2.3:1 and 1.2:1 as text).
+  --ar-ok: #15803d;
+  --ar-warn: #b45309;
+  --ar-bad: #b91c1c;
+  --ar-ok-fill: #047857;
+  --ar-warn-fill: #d97706;
+  --ar-bad-fill: #b91c1c;
+
+  // What a session is doing: one per --st-* in the live view, whose working-green,
+  // waiting-orange and idle-grey hues the phones share. Dots only; the words beside them are
+  // Carbon's text tokens.
+  --ar-st-busy: #2c7a2c;
+  --ar-st-wait: #c2410c;
+  --ar-st-idle: #8e8e93;
+}
+
+@mixin ar-dark {
+  --ar-ctx-tools: #6b6fe8;
+  --ar-ctx-system: #13a3c4;
+  --ar-ctx-history: #b98600;
+  --ar-ctx-results: #e34f95;
+
+  // On a dark surface more is lighter.
+  --ar-tok: #94a3b8;
+  --ar-tok-2: #64748b;
+  --ar-tok-3: #cbd5e1;
+
+  --ar-project: #4d7c0f;
+  --ar-session: #0284c7;
+  --ar-subagent: #cd46ff;
+
+  --ar-model-opus: #9b72f5;
+  --ar-model-sonnet: #ea580c;
+  --ar-model-haiku: #0ea89a;
+  --ar-model-other: #895902;
+
+  --ar-ok: #4ade80;
+  --ar-warn: #fbbf24;
+  --ar-bad: #f87171;
+  --ar-ok-fill: #4ade80;
+  --ar-warn-fill: #fbbf24;
+  --ar-bad-fill: #f87171;
+
+  --ar-st-busy: #86efac;
+  --ar-st-wait: #ff9e64;
+  --ar-st-idle: #8e8e93;
+}
+
+/// The console's theme is Carbon's, switched by a class on <html> that `public/theme-boot.js`
+/// sets before first paint: white for light, g100 for dark.
+:root,
+.ar-light {
+  @include theme.theme(themes.$white);
+  @include ar-light;
+}
+
+.ar-dark {
+  @include theme.theme(themes.$g100);
+  @include ar-dark;
+}
+
+/// Carbon's `<Theme theme="…">` sets one of these classes on a wrapper so a region can carry
+/// a different theme from the page — the shell's header is g100 on either page theme, the
+/// way IBM's own consoles keep the header dark. The selective imports above emit no theme
+/// classes, so they are declared here for the two themes this console uses. They carry the
+/// matching --ar-* set too, so a mark drawn inside a region is drawn for that region's surface.
+.cds--white {
+  @include theme.theme(themes.$white);
+  @include ar-light;
+}
+
+.cds--g100 {
+  @include theme.theme(themes.$g100);
+  @include ar-dark;
+}
+
+html,
+body {
+  margin: 0;
+  background: theme.$background;
+  color: theme.$text-primary;
+}
+
+body {
+  @include type.type-style('body-compact-01');
+}
+
+#root {
+  min-height: 100dvh;
+}
+
+/// A Carbon list box menu is exactly as wide as the control that opens it (`inline-size:
+/// 100%` pinned to both edges with `inset-inline: 0`), so a filter sized for the words "Any
+/// state" truncates its own options to "att…", "un…", "ve…". The option text IS the fact
+/// being chosen; the trigger's width is an accident of the row it sits in. So the menu is
+/// sized by its content, never narrower than its trigger and never wider than is readable.
+.cds--list-box__menu {
+  inline-size: max-content;
+  min-inline-size: 100%;
+  max-inline-size: 24rem;
+  // Carbon pins start AND end; the end has to be released or the width cannot grow.
+  inset-inline-end: auto;
+}
+
+@include breakpoint-down('md') {
+  // On a phone the control is already the width of the screen, so there is nothing to
+  // widen — and a menu wider than the viewport would scroll the page sideways.
+  .cds--list-box__menu {
+    inline-size: 100%;
+    max-inline-size: 100%;
+  }
+}
+
+/// Carbon's batch-action bar lays its actions in one row and assumes a desk. On a phone the
+/// row is wider than the screen and, clipped or not, it widens the page into a horizontal
+/// scroll (a phone never scrolls sideways). Let the bar scroll inside itself instead; wrapping
+/// would bury the selection summary, and a phone can swipe a row.
+@include breakpoint-down('md') {
+  .cds--batch-actions {
+    overflow-x: auto;
+  }
+}
+
+/// Carbon's own controls under a fingertip: nothing tappable is smaller than one, and these
+/// are Carbon's internals rather than markup this console writes, so they are reached here or
+/// not at all.
+///
+/// A ComboBox draws its open chevron and its clear cross as 24px buttons whatever size the
+/// field is given — the field grows to 48px on a coarse pointer and the two buttons inside
+/// it do not. They are not decoration: the chevron is how the list opens and the cross is
+/// the only way to unset a chosen value.
+///
+/// The chart legend is a vendored stylesheet, and its swatches are 16px switches that filter
+/// the chart. A legend that cannot be tapped is a filter that a phone does not have, which
+/// is the reduced feature set the mobile rule forbids rather than a cosmetic miss.
+@media (pointer: coarse) {
+  .cds--list-box__menu-icon,
+  .cds--list-box__selection {
+    block-size: $spacing-09;
+    inline-size: $spacing-09;
+    inset-block-start: 50%;
+    transform: translateY(-50%);
+  }
+
+  // The clear cross sits to the left of the chevron, so it moves by one target's width.
+  .cds--list-box__selection {
+    inset-inline-end: $spacing-09;
+  }
+
+  .cds--cc--legend .legend-item {
+    min-block-size: $spacing-09;
+    display: flex;
+    align-items: center;
+  }
+}
+
+/// Motion: purposeful only, and never against someone who asked for none.
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

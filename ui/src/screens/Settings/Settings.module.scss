@@ -1,0 +1,80 @@
+// Copied from Northstar ui/src/screens/Settings/Settings.module.scss at e9c1589.
+// Changed: only the frame of the area (.settings, .head, .tabs); the rules of Northstar's own settings pages are left for AGEN-0011 to bring as it needs them.
+@use '@carbon/react/scss/spacing' as *;
+@use '@carbon/react/scss/type' as *;
+@use '@carbon/react/scss/breakpoint' as *;
+
+/// The page frame, the header and the sections come from the kit (`~/components/Page`,
+/// `~/components/PageHeader`, `~/components/StatGrid`). What is left here is the frame of
+/// the area: the field size in a hand, the header and the tabs. The pages' own rules arrive
+/// with them (AGEN-0011).
+
+/// The whole settings area, as the class the kit's `Page` carries.
+///
+/// iOS zooms into a field under 16px and never back out. On a touch pointer every field
+/// takes the 16px body style, and stays there.
+.settings {
+  @media (pointer: coarse) {
+    input,
+    select,
+    textarea {
+      @include type-style('body-02');
+    }
+  }
+}
+
+/// The page header and the sub-navigation read as one opening, so they sit closer together
+/// than two sections of the page do.
+.head {
+  display: grid;
+  gap: $spacing-05;
+  min-inline-size: 0;
+}
+
+/// Carbon's tab list scrolls its own overflow and shows its own buttons for it; all this
+/// does is stop the tabs forcing the page wider than a phone.
+///
+/// In a hand, scrolling is the wrong answer: the labels do not fit on one line at 390px,
+/// so the strip parked a label half-under each chevron — `Serve` with nothing after it, or
+/// `ositories` with nothing before it (design §5, §8: a control never truncates its own
+/// label). Below `md` the list wraps onto a second row instead, which is the same tabs, the
+/// same anchors and the same `role="tablist"` — only the line they sit on changes. Once
+/// it wraps there is no overflow left to scroll, so Carbon hides its own chevrons; they are
+/// taken out of the flow here too, because a chevron that scrolls nothing is still a target.
+///
+/// The container has to grow with the rows. Carbon caps `.cds--tabs` at one row's height
+/// (`max-block-size` is the `xl` layout size, 64px) with `overflow-x: hidden`, which makes
+/// the other axis scroll. So the wrapped second row sat below the cap, clipped to a 16px
+/// sliver behind a scroll nobody could see -- the last tabs unreachable in a hand while every
+/// test passed, because jsdom lays nothing out. Measured over CDP at 390px in Northstar; the
+/// cap is lifted here the way Carbon's own vertical tabs lift it.
+.tabs {
+  max-inline-size: 100%;
+
+  @include breakpoint-down('md') {
+    max-block-size: none;
+    overflow: visible;
+
+    :global(.cds--tab--list) {
+      flex-wrap: wrap;
+      overflow-x: visible;
+    }
+
+    :global(.cds--tab--overflow-nav-button) {
+      display: none;
+    }
+  }
+
+  // Wrapping is what shrank them. Carbon sizes a tab in a wrapped list at 32px, so the
+  // strip that is the ONLY navigation between the settings pages went from 48px on a
+  // desk to 32px in a hand — the target got smaller exactly where the pointer got bigger,
+  // which is the mobile rule inverted rather than merely unmet (docs/13 §7).
+  @media (pointer: coarse) {
+    :global(.cds--tabs__nav-item),
+    :global(.cds--tabs__nav-link) {
+      min-block-size: $spacing-09;
+      display: flex;
+      align-items: center;
+    }
+  }
+}

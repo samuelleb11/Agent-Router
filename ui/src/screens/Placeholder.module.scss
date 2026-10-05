@@ -1,0 +1,7 @@
+// New for agent-router, after Northstar ui/src/screens/Settings/Settings.module.scss's emptyTile.
+
+/// An empty state stands in a surface of its own rather than in a hole in the page. The tile
+/// gives it the surface; the padding is the empty state's own.
+.tile {
+  padding: 0;
+}

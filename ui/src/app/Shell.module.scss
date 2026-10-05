@@ -1,0 +1,115 @@
+// Copied from Northstar ui/src/app/Shell.module.scss at e9c1589.
+// Changed: a note for a project list that is empty or could not be read; the coarse-pointer rule's count of links is the router's; the header keeps clear of a phone's notch.
+@use '@carbon/react/scss/spacing' as *;
+@use '@carbon/react/scss/theme' as *;
+@use '@carbon/react/scss/type' as *;
+@use '@carbon/react/scss/breakpoint' as *;
+@use '@carbon/react/scss/themes' as themes;
+
+.section {
+  @include type-style('label-01');
+  color: $text-secondary;
+  padding: $spacing-05 $spacing-05 $spacing-02;
+  white-space: nowrap;
+  overflow: hidden;
+
+  &[aria-hidden='true'] {
+    visibility: hidden;
+  }
+}
+
+/// What the projects section says when it has no project to list: none yet, or none read. In
+/// the section's own type, under its heading, and gone with it when the rail collapses.
+.note {
+  @include type-style('helper-text-01');
+  color: $text-secondary;
+  padding: $spacing-02 $spacing-05 $spacing-03;
+
+  &[aria-hidden='true'] {
+    visibility: hidden;
+  }
+}
+
+/// The shell's chrome is dark on either page theme — the header and the rail together, the
+/// way IBM's own consoles frame a light page. Carbon's `<Theme>` would do this, but it
+/// renders a wrapper div, and Carbon indents the page off `.cds--side-nav ~ .cds--content`:
+/// a wrapper between them breaks that sibling rule and the page slides under the rail. So
+/// the rail carries the theme itself, on the element that is already there.
+.rail {
+  @include theme(themes.$g100);
+}
+
+.content {
+  // The rail is 3rem collapsed; Carbon's Content assumes the 16rem sidebar.
+  padding: 0;
+  min-height: calc(100dvh - 3rem);
+  background: $background;
+
+  // On a phone the drawer lies OVER the page rather than beside it, so the inline margin
+  // Carbon reserves for a rail (3rem, 16rem expanded) is a dead strip down the page's left
+  // and nothing else. The id is the Content's own; it outweighs Carbon's three-class rule.
+  // It is global because a CSS module renames every id it is not told is: written bare, it
+  // compiled to a scoped id nothing carries, and the strip stayed on every phone page.
+  @include breakpoint-down('md') {
+    &:global(#main-content) {
+      margin-inline-start: 0;
+    }
+  }
+}
+
+/// The settings group, pinned to the foot of the rail. Carbon's own items list is
+/// `flex: 1 1 0%`, so this one only has to refuse to grow.
+.footer {
+  flex: 0 0 auto;
+  padding-block: 0 $spacing-03;
+}
+
+/// Carbon's divider carries a block margin meant for a list between items; at the foot of
+/// the rail it only has to separate the group above from the group below.
+.footerRule {
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+/// The header is the width of the SCREEN, always.
+///
+/// It is `position: fixed`, so it should take its width from the viewport — but while the
+/// phone drawer is open it takes it from the document instead, and the header then grows
+/// with anything that overflows, pushing its own actions off the right edge and scrolling
+/// the page sideways. A phone never scrolls sideways.
+.header {
+  inline-size: 100vw;
+  max-inline-size: 100vw;
+  // Carbon's header is fixed and knows nothing of a phone's notch: with the page drawn under
+  // the status bar (viewport-fit=cover, which the Sessions screen needs for its composer),
+  // the header's actions would sit under the notch in landscape. Zero everywhere else.
+  padding-inline: env(safe-area-inset-left) env(safe-area-inset-right);
+
+  // The actions are the last thing that may give. Carbon's global bar sizes to its content,
+  // so a long freshness word — "unreachable", "connecting" — pushed it 4px past the header
+  // and clipped the rightmost button to 44px. The width of a word about the router's health
+  // is not a reason to make a control harder to press.
+  //
+  // So the bar is bounded by the header and the badge is what shrinks. A freshness word
+  // that loses its tail is recoverable: the badge carries the whole sentence as its
+  // accessible name. A control that loses its edge is not.
+  :global(.cds--header__global) {
+    max-inline-size: 100%;
+    min-inline-size: 0;
+  }
+
+  :global(.cds--header__global) > *:not(:global(.cds--header__action)) {
+    min-inline-size: 0;
+    overflow: hidden;
+  }
+}
+
+/// The rail is the whole of this console's navigation in a hand, and Carbon draws its links
+/// 32px tall at every pointer. Its links are the only way between the screens and to every
+/// project, each a third under the fingertip bar the rest of the console keeps.
+@media (pointer: coarse) {
+  .rail :global(.cds--side-nav__link),
+  .rail :global(.cds--side-nav__submenu) {
+    min-block-size: $spacing-09;
+  }
+}

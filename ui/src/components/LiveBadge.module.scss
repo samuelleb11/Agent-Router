@@ -1,0 +1,17 @@
+// Copied from Northstar ui/src/components/LiveBadge.module.scss at e9c1589.
+// Changed: nothing.
+@use '@carbon/react/scss/spacing' as *;
+
+/// Carbon's header bar is a flex row of 48px actions, and a bare Tag dropped into it is
+/// stretched to the full 48px — a small tag is 18px, so it rendered as a tall green
+/// lozenge. The wrapper takes the stretch; the tag keeps its own height inside it.
+.wrap {
+  display: flex;
+  align-items: center;
+  padding-inline: $spacing-03;
+
+  // The tag sets its own margins for a form row, which are wrong beside header actions.
+  > * {
+    margin: 0;
+  }
+}

@@ -1,0 +1,6 @@
+# Copied from Northstar ui/.prettierignore at e9c1589.
+# Changed: only the paths this console has.
+/dist
+/coverage
+pnpm-lock.yaml
+public/THIRD-PARTY-NOTICES.txt

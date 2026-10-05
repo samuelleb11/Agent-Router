@@ -1,0 +1,58 @@
+// Copied from Northstar ui/src/app/ErrorScreen.module.scss at e9c1589.
+// Changed: nothing.
+@use '@carbon/react/scss/spacing' as *;
+@use '@carbon/react/scss/theme' as *;
+@use '@carbon/react/scss/type' as *;
+@use '@carbon/react/scss/breakpoint' as *;
+
+.path,
+.trace {
+  @include type-style('code-01');
+}
+
+.lead {
+  @include type-style('body-01');
+  max-inline-size: 72ch;
+  margin: 0 0 $spacing-05;
+  color: $text-secondary;
+}
+
+.facts {
+  @include type-style('body-01');
+  max-inline-size: 72ch;
+  margin: 0;
+  padding-inline-start: $spacing-06;
+  color: $text-primary;
+
+  li + li {
+    margin-block-start: $spacing-03;
+  }
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: $spacing-05;
+  margin-block-start: $spacing-06;
+
+  @include breakpoint-down('md') {
+    // The primary way out takes the row in a hand.
+    > :first-child {
+      inline-size: 100%;
+    }
+  }
+}
+
+/// The trace is evidence, not decoration: it wraps rather than scrolls sideways, because a
+/// line a reader cannot see is a line they cannot paste into a bug report.
+.trace {
+  margin: 0;
+  padding: $spacing-05;
+  border-left: 2px solid $border-strong;
+  background: $layer;
+  color: $text-primary;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}

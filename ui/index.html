@@ -1,0 +1,19 @@
+<!doctype html>
+<!--
+  Copied from Northstar ui/index.html at e9c1589.
+  Changed: no inline script and no inline style, because the router serves this page under `script-src 'self'; style-src 'self'`. The pre-paint theme script is public/theme-boot.js, a classic script loaded before anything paints; the icon is the router's own /favicon.svg.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Agent Router</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <script src="/theme-boot.js"></script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

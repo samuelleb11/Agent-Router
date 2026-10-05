@@ -1,0 +1,9 @@
+// New for agent-router: the palette placeholder's prose.
+@use '@carbon/react/scss/spacing' as *;
+@use '@carbon/react/scss/type' as *;
+
+.body {
+  @include type-style('body-01');
+  margin: 0 0 $spacing-05;
+  color: var(--cds-text-primary);
+}

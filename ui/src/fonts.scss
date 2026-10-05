@@ -1,0 +1,52 @@
+// Copied from Northstar ui/src/fonts.scss at e9c1589.
+// Changed: the reason for self-hosting names the router, which serves this console itself.
+
+/// IBM Plex, self-hosted and minimal.
+///
+/// Carbon emits `@font-face` for every script it ships — Cyrillic, Greek, Pi, Thai, Arabic,
+/// Devanagari, Hebrew, across seventeen weights and their italics — which came to 1 MB of
+/// CSS for a console that renders Latin. `$css--font-face: false` in `styles.scss` turns
+/// that off; these are the four faces Carbon's type scale actually uses. 252 kB in total.
+///
+/// Served from `public/` rather than resolved through the bundler, because a bare specifier
+/// in `url()` does not resolve and a `~` prefix is a webpack convention Vite does not share.
+/// Self-hosted rather than fetched from a CDN, because the router serves this console over a
+/// LAN that may have no route to the internet, under a CSP whose `font-src` is 'self', and a
+/// typeface that arrives only when Google is reachable is a typeface that is sometimes absent.
+/// `scripts/notices.mjs` matches each file by its bytes to the installed IBM Plex package it
+/// was copied from, and writes the OFL beside them as `fonts/LICENSE.txt`.
+///
+/// `font-display: swap`: text is readable in a fallback immediately and reflows once, rather
+/// than the screen being blank while a font loads.
+
+@font-face {
+  font-family: 'IBM Plex Sans';
+  font-style: normal;
+  font-weight: 300;
+  font-display: swap;
+  src: local('IBM Plex Sans Light'), url('/fonts/IBMPlexSans-Light.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'IBM Plex Sans';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: local('IBM Plex Sans'), url('/fonts/IBMPlexSans-Regular.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'IBM Plex Sans';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: local('IBM Plex Sans SemiBold'), url('/fonts/IBMPlexSans-SemiBold.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: local('IBM Plex Mono'), url('/fonts/IBMPlexMono-Regular.woff2') format('woff2');
+}
