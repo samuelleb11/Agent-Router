@@ -22,6 +22,7 @@ import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.outlined.Computer
+import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
@@ -86,10 +87,7 @@ fun SessionScreen(app: AppState, router: Router, opened: LiveSession, onBack: ((
     // Survives rotation: a half-typed message is the last thing that should be lost.
     var composing by rememberSaveable(session.sessionId) { mutableStateOf("") }
     var menu by remember { mutableStateOf(false) }
-    var asking by remember { mutableStateOf(false) }
-    var asideText by remember { mutableStateOf("") }
-    var asideAnswer by remember { mutableStateOf<String?>(null) }
-    var asideRunning by remember { mutableStateOf(false) }
+    val aside = remember { AsideDialog() }
     var confirmBypass by remember { mutableStateOf(false) }
     val clipboard = LocalClipboardManager.current
 
@@ -279,15 +277,16 @@ fun SessionScreen(app: AppState, router: Router, opened: LiveSession, onBack: ((
                         }
                         DropdownMenuItem(
                             text = { Text("Ask on the side") },
-                            onClick = { menu = false; asking = true },
+                            onClick = { menu = false; aside.show() },
                         )
                         DropdownMenuItem(
                             text = { Text("Put away") },
                             onClick = {
                                 menu = false
                                 // In a pane there is nothing to go back to; the list beside
-                                // it simply stops showing the session as current.
-                                scope.launch { state.archive(session, true); onBack?.invoke() }
+                                // it simply stops showing the session as current. Refused,
+                                // it stays open, saying why: see PutAway.
+                                scope.launch { PutAway.fromSession(state, session, feed, onBack) }
                             },
                         )
                         DropdownMenuItem(
@@ -408,9 +407,9 @@ fun SessionScreen(app: AppState, router: Router, opened: LiveSession, onBack: ((
         )
     }
 
-    if (asking) {
+    if (aside.open) {
         AlertDialog(
-            onDismissRequest = { if (!asideRunning) { asking = false; asideAnswer = null } },
+            onDismissRequest = { aside.close() },
             title = { Text("Ask on the side") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -421,14 +420,14 @@ fun SessionScreen(app: AppState, router: Router, opened: LiveSession, onBack: ((
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     OutlinedTextField(
-                        value = asideText,
-                        onValueChange = { asideText = it },
-                        enabled = !asideRunning,
+                        value = aside.question,
+                        onValueChange = { aside.question = it },
+                        enabled = !aside.running,
                         label = { Text("Question") },
                         modifier = Modifier.fillMaxWidth(),
                         maxLines = 4,
                     )
-                    if (asideRunning) {
+                    if (aside.running) {
                         Row(
                             Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -439,26 +438,35 @@ fun SessionScreen(app: AppState, router: Router, opened: LiveSession, onBack: ((
                                 style = MaterialTheme.typography.bodySmall)
                         }
                     }
-                    asideAnswer?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+                    when (val came = aside.outcome) {
+                        is AsideDialog.Outcome.Answer ->
+                            Text(came.text, style = MaterialTheme.typography.bodyMedium)
+                        // Why nothing was answered, in the router's words: a failure, never
+                        // an answer, and here rather than in the snackbar behind this dialog.
+                        is AsideDialog.Outcome.Failure -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Icon(
+                                Icons.Outlined.ErrorOutline, "Not answered",
+                                tint = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.size(20.dp),
+                            )
+                            Text(
+                                came.text,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                        null -> Unit
+                    }
                 }
             },
             confirmButton = {
                 TextButton(
-                    enabled = asideText.isNotBlank() && !asideRunning,
-                    onClick = {
-                        asideRunning = true
-                        asideAnswer = null
-                        scope.launch {
-                            val reply = feed.aside(asideText)
-                            // A refusal is no answer: the notice says it, in the router's words.
-                            asideAnswer = reply?.answer ?: "No answer came back."
-                            asideRunning = false
-                        }
-                    },
+                    enabled = aside.question.isNotBlank() && !aside.running,
+                    onClick = { scope.launch { aside.ask(feed) } },
                 ) { Text("Ask") }
             },
             dismissButton = {
-                TextButton(enabled = !asideRunning, onClick = { asking = false; asideAnswer = null }) {
+                TextButton(enabled = !aside.running, onClick = { aside.close() }) {
                     Text("Close")
                 }
             },

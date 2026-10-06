@@ -35,6 +35,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
@@ -49,6 +51,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -81,6 +84,7 @@ fun SessionsScreen(
 ) {
     val state = app.state(router)
     val scope = rememberCoroutineScope()
+    val snackbar = remember { SnackbarHostState() }
     var refreshing by remember { mutableStateOf(false) }
     var selectedId by rememberSaveable(router.id) { mutableStateOf<String?>(null) }
 
@@ -105,6 +109,7 @@ fun SessionsScreen(
 
     val list: @Composable () -> Unit = {
         Scaffold(
+            snackbarHost = { SnackbarHost(snackbar) },
             topBar = {
                 TopAppBar(
                     title = { Text(router.name) },
@@ -125,7 +130,9 @@ fun SessionsScreen(
                 modifier = Modifier.fillMaxSize().padding(pad),
             ) {
                 SessionsList(machines, state, selectedId.takeIf { wide }, open) { s, archived ->
-                    scope.launch { state.archive(s, archived) }
+                    // Refused, the router's words, at the foot of the list wherever it is
+                    // scrolled to: see PutAway.
+                    scope.launch { PutAway.fromList(state, s, archived) { snackbar.showSnackbar(it) } }
                 }
             }
         }
@@ -385,11 +392,20 @@ private fun SwipeableSessionRow(
     onClick: () -> Unit,
     onArchive: () -> Unit,
 ) {
-    val dismiss = rememberSwipeToDismissBoxState(
-        confirmValueChange = {
-            if (it == SwipeToDismissBoxValue.EndToStart) { onArchive(); true } else false
-        },
-    )
+    val dismiss = rememberSwipeToDismissBoxState()
+    val archive by rememberUpdatedState(onArchive)
+    // Asked once, when the row has come to rest swiped away, and the row then goes back in
+    // place, as the iPhone's swipe action does: it leaves the list when the router has put
+    // the session away and the listing says so. Asked from `confirmValueChange`, as it was, a
+    // swipe put it away up to three times over (mid-drag, on release, and as the row came to
+    // rest), and a refusal would be said as often; and a row left swiped away, under its "Put
+    // away" and taking no more swipes, read a refusal as done.
+    LaunchedEffect(dismiss.settledValue) {
+        if (dismiss.settledValue == SwipeToDismissBoxValue.EndToStart) {
+            archive()
+            dismiss.reset()
+        }
+    }
     SwipeToDismissBox(
         state = dismiss,
         enableDismissFromStartToEnd = false,

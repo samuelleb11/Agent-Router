@@ -520,14 +520,16 @@ class LiveFeed(
 
     /**
      * Ask a forked copy something without disturbing the session. Can take a while. Null
-     * when nothing was answered, and the notice then says why, in the router's words.
+     * when nothing was answered, and [refused] is then told why, in the router's words: the
+     * notice says them, unless the caller shows them itself, as the side question's dialog
+     * does.
      */
-    suspend fun aside(text: String): AsideReply? {
+    suspend fun aside(text: String, refused: (String) -> Unit = { notice = Notice(it, false) }): AsideReply? {
         val c = client ?: return null
         return runCatching { c.post<AsideBody, AsideReply>("/api/live/aside", AsideBody(session.sessionId, text)) }
             // Read as a stop is: `ok: false` is a refusal whatever the status, never an answer.
-            .onSuccess { r -> if (!r.ok) notice = Notice(r.reason ?: "No answer came back.", false) }
-            .onFailure { notice = Notice(RouterState.describe(it), false) }
+            .onSuccess { r -> if (!r.ok) refused(r.reason ?: "No answer came back.") }
+            .onFailure { refused(RouterState.describe(it)) }
             .getOrNull()
             ?.takeIf { it.ok }
     }
