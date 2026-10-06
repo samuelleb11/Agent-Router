@@ -301,11 +301,11 @@ struct SessionView: View {
     }
 
     /// What this person already said in this session, newest first — the web view's
-    /// ArrowUp history, as a menu.
+    /// ArrowUp history, as a menu. Not a side question: the session never heard it.
     private func recent(_ feed: LiveFeed) -> [String] {
         var seen = Set<String>()
         return feed.rows.reversed().compactMap { r -> String? in
-            guard r.item.role == "user", r.item.kind == "text", !r.item.sidechain, !r.pending,
+            guard r.item.role == "user", r.item.kind == "text", !r.item.sidechain, !r.pending, !r.sideQuestion,
                   let t = r.item.text, !t.isEmpty, seen.insert(t).inserted else { return nil }
             return t
         }

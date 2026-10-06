@@ -41,8 +41,8 @@ struct FeedRowView: View {
             HStack {
                 Spacer(minLength: 40)
                 VStack(alignment: .trailing, spacing: 3) {
-                    if row.pending {
-                        Text("you · queued").font(.caption2).foregroundStyle(.secondary)
+                    if let label = row.label {
+                        Text(label).font(.caption2).foregroundStyle(.secondary)
                     }
                     Text(item.text ?? "")
                         .textSelection(.enabled)

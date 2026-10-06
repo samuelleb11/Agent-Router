@@ -13,6 +13,14 @@ final class LiveFeed {
         /// writes it to its transcript, which on a busy session can be minutes.
         var pending: Bool
         var answered: Bool
+        /// A side question asked from here. Never queued: it is answered in a fork the
+        /// session never sees, so no transcript will ever have it.
+        var sideQuestion = false
+
+        /// What is said over the person's own words when the stream did not deliver them, in
+        /// the web view's words: a message sent and not yet in the transcript (SE-C150), or a
+        /// side question, asked, answered or refused alike (SE-C160).
+        var label: String? { sideQuestion ? "you · side question" : pending ? "you · queued" : nil }
     }
 
     struct Notice: Equatable {
@@ -301,13 +309,15 @@ final class LiveFeed {
     }
 
     /// A side question: answered with the session's context in a fork the session never
-    /// sees. Both the question and the answer are shown here only.
+    /// sees. Both the question and the answer are shown here only, the question marked as a
+    /// side question and never as queued. A refusal leaves it as it was asked, with no answer
+    /// under it; the router's words are the notice.
     func aside(_ raw: String) async {
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, let client else { return }
         switching = true
         defer { switching = false }
-        rows.append(Row(id: UUID(), item: LiveItem(t: nil, role: "user", kind: "text", name: nil, text: text, ask: nil, durMs: nil, sidechain: false), pending: true, answered: false))
+        rows.append(Row(id: UUID(), item: LiveItem(t: nil, role: "user", kind: "text", name: nil, text: text, ask: nil, durMs: nil, sidechain: false), pending: false, answered: false, sideQuestion: true))
         notice = Notice(text: "Asking on the side — this replays the session once, usually under a minute.", ok: true)
         do {
             let r: AsideReply = try await client.post("/api/live/aside", AsideBody(session: session.sessionId, text: text))
