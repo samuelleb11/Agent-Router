@@ -530,15 +530,18 @@ pub fn encode(value: &str) -> String {
 pub mod api {
     use std::sync::Arc;
 
+    use axum::body::Body;
     use axum::extract::ws::WebSocketUpgrade;
-    use axum::extract::{Request, State};
+    use axum::extract::{FromRequest, Request, State};
     use axum::http::StatusCode;
     use axum::response::{IntoResponse, Response};
     use axum::Json;
+    use serde::Deserialize;
     use serde_json::{json, Value};
 
     use super::{Relay, HEAD_WAIT};
     use crate::proxy::AppState;
+    use crate::refusal::{JsonBody, LiveBody};
 
     /// Requests carry their session in the query (`?session=`) or the JSON body, as
     /// the local routes read it. 1 MiB is the most a wrapper frame carries, and a body
@@ -600,22 +603,33 @@ pub mod api {
         }
     }
 
+    /// What a relayed body must name, read the way the machine reads its whole body.
+    #[derive(Deserialize)]
+    struct Named {
+        session: String,
+    }
+
     /// A request that names its session in its JSON body: send, answer, stop, model,
     /// effort, mode, side question.
+    ///
+    /// The session is read by the rules the machine's handler reads the whole body by
+    /// (`refusal::LiveBody`), so a body that is not JSON, is not said to be, or names no
+    /// session as a string is refused here as the machine would refuse it, with axum's
+    /// status and words. Anything else goes to the machine as it came.
     pub async fn by_body(State(state): State<Arc<AppState>>, req: Request) -> Response {
         let (method, path, headers) = (req.method().clone(), path_of(&req), carried_headers(&req));
-        let body = match axum::body::to_bytes(req.into_body(), MAX_BODY).await {
+        let (parts, body) = req.into_parts();
+        let body = match axum::body::to_bytes(body, MAX_BODY).await {
             Ok(b) => b,
             Err(_) => {
                 return (StatusCode::PAYLOAD_TOO_LARGE, Json(json!({ "ok": false, "error": "that message is too long to send" })))
                     .into_response()
             }
         };
-        let session = serde_json::from_slice::<Value>(&body)
-            .ok()
-            .and_then(|v| v.get("session").and_then(Value::as_str).map(str::to_owned));
-        let Some(session) = session else {
-            return (StatusCode::BAD_REQUEST, Json(json!({ "ok": false, "error": "no session named" }))).into_response();
+        let named = Request::from_parts(parts, Body::from(body.clone()));
+        let session = match <LiveBody<Named> as FromRequest<()>>::from_request(named, &()).await {
+            Ok(JsonBody(Named { session })) => session,
+            Err(refused) => return refused,
         };
         let machine = match state.machines.holder(&session).await {
             Ok(m) => m,
@@ -649,8 +663,9 @@ pub mod api {
         Json(Value::Object(total)).into_response()
     }
 
-    /// `POST /api/live/archive`: the router's own shelf, for a session some machine lists.
-    pub async fn archive(State(state): State<Arc<AppState>>, Json(body): Json<crate::live::ArchiveBody>) -> Response {
+    /// `POST /api/live/archive`: the router's own shelf, for a session some machine lists. A
+    /// body it cannot read is refused as a router on a machine refuses it (`refusal::LiveBody`).
+    pub async fn archive(State(state): State<Arc<AppState>>, JsonBody(body): LiveBody<crate::live::ArchiveBody>) -> Response {
         if let Err(why) = state.machines.holder(&body.session).await {
             if matches!(why, Relay::Unknown) {
                 return why.into_response();

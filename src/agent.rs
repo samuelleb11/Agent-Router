@@ -804,7 +804,10 @@ async fn connect_and_serve(target: &Target, password: &str, hello: &Hello, route
     serve(socket, hello, router).await
 }
 
-async fn serve<S>(socket: tokio_tungstenite::WebSocketStream<S>, hello: &Hello, router: Router) -> Result<()>
+/// One connection to the router, for as long as it lasts: say who this is, then run each
+/// request it sends through `router`. Also how a test connects a machine of its own
+/// (`api_refusals`).
+pub(crate) async fn serve<S>(socket: tokio_tungstenite::WebSocketStream<S>, hello: &Hello, router: Router) -> Result<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {

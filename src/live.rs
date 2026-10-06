@@ -48,6 +48,7 @@ use serde_json::Value;
 
 use crate::activity::{Activity, Background, Evidence, Kind, WaitingOn, WrapperPrompt};
 use crate::fold::{clip, is_marker, ts_ms, Fold, FoldSummary};
+use crate::refusal::{JsonBody, LiveBody};
 use crate::registry::{ProcRecord, RegStatus, Snapshot};
 
 /// Sessions quiet longer than this are not offered — unless a live process holds them.
@@ -1217,7 +1218,7 @@ pub struct SendBody {
 ///
 /// Resolving which process owns a transcript needs the transcript's own cwd and start
 /// time, so those are read here rather than trusted from the client.
-pub async fn send(Json(body): Json<SendBody>) -> Response {
+pub async fn send(JsonBody(body): LiveBody<SendBody>) -> Response {
     let text = body.text.trim().to_string();
     if text.is_empty() {
         return bad(axum::http::StatusCode::BAD_REQUEST, "Nothing to send.");
@@ -1265,6 +1266,8 @@ pub async fn send(Json(body): Json<SendBody>) -> Response {
     }
 }
 
+/// A live endpoint's refusal: `{ok: false, reason}`. A body the endpoint cannot read is
+/// refused before the handler runs, with the same words under `error` too (`LiveBody`).
 fn bad(code: axum::http::StatusCode, reason: &str) -> Response {
     (code, Json(serde_json::json!({ "ok": false, "reason": reason }))).into_response()
 }
@@ -1494,7 +1497,7 @@ pub struct ArchiveBody {
 ///
 /// Stored as a plain list of ids rather than in the database, because it is the
 /// reader's shelf and should survive the database being deleted or rebuilt.
-pub async fn archive(Json(body): Json<ArchiveBody>) -> Response {
+pub async fn archive(JsonBody(body): LiveBody<ArchiveBody>) -> Response {
     if transcript_path(&body.session).is_none() {
         return bad(axum::http::StatusCode::NOT_FOUND, "No such session.");
     }
@@ -1746,7 +1749,7 @@ fn pick_prompt<'a>(
 }
 
 /// Answer the pending question — the editor's Submit, from anywhere.
-pub async fn answer(Json(body): Json<AnswerBody>) -> Response {
+pub async fn answer(JsonBody(body): LiveBody<AnswerBody>) -> Response {
     let session = body.session.clone();
     let done = tokio::task::spawn_blocking(move || {
         let reg = crate::registry::snapshot();
@@ -1884,7 +1887,7 @@ pub struct ModelBody {
 /// Change a running session's model — the editor's picker, from anywhere. The CLI
 /// confirms or refuses on its control channel; we wait briefly for that answer so a
 /// refused name is reported rather than silently ignored.
-pub async fn set_model(Json(body): Json<ModelBody>) -> Response {
+pub async fn set_model(JsonBody(body): LiveBody<ModelBody>) -> Response {
     let model = body.model.trim().to_string();
     if !valid_model(&model) {
         return bad(axum::http::StatusCode::BAD_REQUEST, "That is not a model name.");
@@ -1927,7 +1930,7 @@ pub struct EffortBody {
 }
 
 /// Set the effort level, as `/effort <level>` typed into the session.
-pub async fn set_effort(Json(body): Json<EffortBody>) -> Response {
+pub async fn set_effort(JsonBody(body): LiveBody<EffortBody>) -> Response {
     let level = body.effort.trim().to_ascii_lowercase();
     if !EFFORTS.contains(&level.as_str()) {
         return bad(axum::http::StatusCode::BAD_REQUEST, "Effort is one of low, medium, high, xhigh, max.");
@@ -1959,7 +1962,7 @@ pub struct ModeBody {
 /// `--dangerously-skip-permissions`, and `auto` can be gated. So the answer is waited
 /// for and the CLI's own sentence is passed back, rather than reporting a success the
 /// session did not agree to.
-pub async fn set_mode(Json(body): Json<ModeBody>) -> Response {
+pub async fn set_mode(JsonBody(body): LiveBody<ModeBody>) -> Response {
     let mode = body.mode.trim().to_string();
     if !MODES.iter().any(|(v, _)| *v == mode) {
         return bad(axum::http::StatusCode::BAD_REQUEST, "That is not a permission mode.");
@@ -2061,7 +2064,7 @@ fn stop_refusal(kind: Kind) -> Option<&'static str> {
 ///
 /// Only wrapped sessions can be stopped: an interrupt is a control frame on stdin, and
 /// the peer socket carries user messages, not control.
-pub async fn interrupt(Json(body): Json<InterruptBody>) -> Response {
+pub async fn interrupt(JsonBody(body): LiveBody<InterruptBody>) -> Response {
     let session = body.session.clone();
     let done = tokio::task::spawn_blocking(move || -> Result<(), (StatusCode, String)> {
         let kind = session_activity(&session, now_ms()).activity.kind;
@@ -2160,7 +2163,7 @@ fn shelve(session_id: &str) {
 /// The session is resumed *forked*: a new session id, the original untouched, no tools,
 /// a brief answer, and the fork shelved so it does not clutter the list. It costs one
 /// replay of the session's context, mostly cached.
-pub async fn aside(Json(body): Json<AsideBody>) -> Response {
+pub async fn aside(JsonBody(body): LiveBody<AsideBody>) -> Response {
     let text = body.text.trim().to_string();
     if text.is_empty() {
         return bad(axum::http::StatusCode::BAD_REQUEST, "Nothing to ask.");
