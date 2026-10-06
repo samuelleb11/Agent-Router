@@ -1336,8 +1336,9 @@ struct PromptSuggestion: Decodable, Sendable, Hashable, Identifiable {
 struct ModelBody: Encodable, Sendable { let session: String; let model: String }
 struct EffortBody: Encodable, Sendable { let session: String; let effort: String }
 struct ModeBody: Encodable, Sendable { let session: String; let mode: String }
-/// The answer to a model or effort change.
-struct SwitchReply: Decodable, Sendable {
+/// The answer to a model, mode or effort change. `ok: false` is a refusal whatever status
+/// came with it (`Verdict`), so the session refusing never reads as the change made.
+struct SwitchReply: Decodable, Sendable, Verdict {
     let ok: Bool
     let model: String?
     let effort: String?
@@ -1350,7 +1351,9 @@ struct SwitchReply: Decodable, Sendable {
 struct ShimAutoBody: Encodable, Sendable { let enabled: Bool }
 
 struct AsideBody: Encodable, Sendable { let session: String; let text: String }
-struct AsideReply: Decodable, Sendable {
+/// The answer to a side question. `ok: false` is a refusal whatever status came with it
+/// (`Verdict`), never an answer.
+struct AsideReply: Decodable, Sendable, Verdict {
     let ok: Bool
     let answer: String?
     let fork: String?

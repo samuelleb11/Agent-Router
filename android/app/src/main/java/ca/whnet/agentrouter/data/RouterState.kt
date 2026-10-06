@@ -29,11 +29,20 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlin.coroutines.coroutineContext
 
-class RouterState(router: Router, private val store: RouterStore) {
+class RouterState(
+    router: Router,
+    /**
+     * Where calls go: a client for the router, as [RouterStore] makes one, unless a test
+     * hands over one that calls a stand-in instead.
+     */
+    private val clientFor: (Router) -> RouterClient?,
+) {
+
+    constructor(router: Router, store: RouterStore) : this(router, store::client)
 
     var router: Router by mutableStateOf(router)
         private set
-    private var client: RouterClient? = store.client(router)
+    private var client: RouterClient? = clientFor(router)
 
     var health: Health? by mutableStateOf(null)
     var auth: AuthStatus? by mutableStateOf(null)
@@ -80,7 +89,7 @@ class RouterState(router: Router, private val store: RouterStore) {
 
     fun apply(router: Router) {
         this.router = router
-        client = store.client(router)
+        client = clientFor(router)
     }
 
     suspend fun refresh(includeAccounts: Boolean = false) {
@@ -157,9 +166,15 @@ class RouterState(router: Router, private val store: RouterStore) {
     suspend fun archive(session: LiveSession, archived: Boolean): String? {
         val c = client ?: return "bad address"
         return runCatching {
-            c.post<ArchiveBody, LiveReply>("/api/live/archive", ArchiveBody(session.sessionId, archived))
-            refreshSessions()
-            null
+            val reply: LiveReply = c.post("/api/live/archive", ArchiveBody(session.sessionId, archived))
+            if (reply.ok) {
+                refreshSessions()
+                null
+            } else {
+                // Read as the feed reads a stop: `ok: false` is a refusal whatever the status,
+                // in the router's words, and never done.
+                reply.reason ?: if (archived) "Could not put it away." else "Could not restore it."
+            }
         }.getOrElse { describe(it) }
     }
 

@@ -450,7 +450,8 @@ fun SessionScreen(app: AppState, router: Router, opened: LiveSession, onBack: ((
                         asideAnswer = null
                         scope.launch {
                             val reply = feed.aside(asideText)
-                            asideAnswer = reply?.answer ?: reply?.reason ?: "No answer came back."
+                            // A refusal is no answer: the notice says it, in the router's words.
+                            asideAnswer = reply?.answer ?: "No answer came back."
                             asideRunning = false
                         }
                     },

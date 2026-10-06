@@ -194,10 +194,11 @@ class StreamRefusalTest {
     }
 
     /**
-     * An answer the router refuses is said in its words, from a current router's error
-     * status and from an older one's 200 with `ok: false` alike. That 200 once became
-     * "Router returned 503", a status nothing had sent. No message is sent in its place here
-     * (there is nothing picked to send), so the refusal is what stays on screen.
+     * An answer the router refuses is said in its words, from an error status and from a 200
+     * with `ok: false` alike: no router has answered with that 200, but one must never read
+     * as success. It once became "Router returned 503", a status nothing had sent. No message
+     * is sent in its place here (there is nothing picked to send), so the refusal is what
+     * stays on screen.
      */
     @Test
     fun `the live feed never names a status the router did not send`() = runBlocking {

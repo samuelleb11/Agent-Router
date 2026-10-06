@@ -339,10 +339,10 @@ class LiveFeed(
     /**
      * Answer the waiting question, by name — the question of the form that was submitted,
      * whose texts are [asked], and no other. If the router says it is no longer waiting —
-     * a 409 once it was named, a 503 when none was and nothing waits, or from an older
-     * router a 200 with `ok: false` — its words are said, and the picked answers go in as an
-     * ordinary message rather than being lost. See [routeForQuestion] for when nothing is
-     * sent; the form then keeps what was picked.
+     * a 409 once it was named, a 503 when none was and nothing waits, or `ok: false` under
+     * any status — its words are said, and the picked answers go in as an ordinary message
+     * rather than being lost. See [routeForQuestion] for when nothing is sent; the form then
+     * keeps what was picked.
      */
     suspend fun answer(
         asked: List<String>,
@@ -381,8 +381,9 @@ class LiveFeed(
                 notice = Notice("Answered.", true)
                 return true
             }
-            // An older router's refusal, a 200 with `ok: false`: its words, and no status
-            // beside them. This once became "Router returned 503", which nothing had sent.
+            // Defensive: no router has answered this with `ok: false` in a 2xx, but one must
+            // never read as success. Its words, and no status beside them: this once became
+            // "Router returned 503", which nothing had sent.
             reply.reason ?: "That prompt is no longer waiting."
         } catch (e: Throwable) {
             if (e is CancellationException) throw e
@@ -397,8 +398,11 @@ class LiveFeed(
         val c = client ?: return
         stopping = true
         try {
-            c.post<SessionBody, LiveReply>("/api/live/interrupt", SessionBody(session.sessionId))
-            notice = Notice("Asked it to stop.", true)
+            val reply: LiveReply = c.post("/api/live/interrupt", SessionBody(session.sessionId))
+            // Read as the answers read it: `ok: false` is a refusal whatever the status, in
+            // the router's words, and never "Asked it to stop.".
+            notice = if (reply.ok) Notice("Asked it to stop.", true)
+            else Notice(reply.reason ?: "Could not stop it.", false)
         } catch (e: Throwable) {
             if (e is CancellationException) throw e
             notice = Notice(RouterState.describe(e), false)
@@ -514,12 +518,18 @@ class LiveFeed(
             .onFailure { notice = Notice(RouterState.describe(it), false) }
     }
 
-    /** Ask a forked copy something without disturbing the session. Can take a while. */
+    /**
+     * Ask a forked copy something without disturbing the session. Can take a while. Null
+     * when nothing was answered, and the notice then says why, in the router's words.
+     */
     suspend fun aside(text: String): AsideReply? {
         val c = client ?: return null
         return runCatching { c.post<AsideBody, AsideReply>("/api/live/aside", AsideBody(session.sessionId, text)) }
+            // Read as a stop is: `ok: false` is a refusal whatever the status, never an answer.
+            .onSuccess { r -> if (!r.ok) notice = Notice(r.reason ?: "No answer came back.", false) }
             .onFailure { notice = Notice(RouterState.describe(it), false) }
             .getOrNull()
+            ?.takeIf { it.ok }
     }
 
     suspend fun loadFacts() {
