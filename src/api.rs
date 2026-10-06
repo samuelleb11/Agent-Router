@@ -33,15 +33,31 @@ pub struct Filter {
     pub tz: Option<i64>,
 }
 
+/// Whether the session joined as `s` is in the project bound as parameter `?n`.
+/// `(unresolved)` is the label the dashboard gives sessions with no project; no real
+/// working directory is spelt that way, so it selects them rather than nothing.
+///
+/// The one project test: `SCOPE` is built from it, and so is every read that cannot take
+/// the whole of `SCOPE` because its other bounds are not a request's (tool results, search).
+/// Reads that wrote the test out again for themselves left out its `(unresolved)` branch,
+/// and in that scope the Sessions, tool Results and search lists came up empty while the
+/// summary counted the sessions they should have shown.
+macro_rules! in_project {
+    ($n:literal) => {
+        concat!("(?", $n, " IS NULL OR s.cwd = ?", $n, " OR (?", $n, " = '(unresolved)' AND s.cwd IS NULL))")
+    };
+}
+
 /// The scope predicate every read shares. Requests are joined to their session as
 /// `s` (LEFT, so a request whose transcript has not appeared yet still counts) and
 /// the parameters are always bound in this order: project, session, since, account.
-/// `(unresolved)` is the label the dashboard gives sessions with no project; no real
-/// working directory is spelt that way, so it selects them rather than nothing.
-const SCOPE: &str = "(?1 IS NULL OR s.cwd = ?1 OR (?1 = '(unresolved)' AND s.cwd IS NULL))
+const SCOPE: &str = concat!(
+    in_project!(1),
+    "
                      AND (?2 IS NULL OR r.session_id = ?2)
                      AND (?3 IS NULL OR r.started_at >= ?3)
-                     AND (?4 IS NULL OR r.account_id = ?4)";
+                     AND (?4 IS NULL OR r.account_id = ?4)"
+);
 
 fn scope_params(f: &Filter) -> [&dyn rusqlite::ToSql; 4] {
     [&f.project, &f.session, &f.since, &f.account]
@@ -589,28 +605,34 @@ fn sessions_inner(state: &AppState, f: &Filter) -> anyhow::Result<Value> {
 /// The 200 most recently seen sessions in scope, and no more: a list to pick from, never
 /// a ledger to add up. What falls outside it is still counted in the summary's totals,
 /// and the requests no session holds are counted there too (`unattributed`).
+///
+/// Scoped by `SCOPE` itself, so a project lists the sessions the summary counts for it,
+/// `(unresolved)` included. The one bound it never takes is the session: the list is how
+/// a session is picked, so that place in the scope is bound empty.
 fn sessions_of(conn: &Connection, f: &Filter) -> anyhow::Result<Value> {
-    let sql = "SELECT s.id, s.cwd AS project, s.git_branch, s.entrypoint,
-                      s.started_at, s.last_seen_at,
-                      count(*) AS requests,
-                      coalesce(sum(u.prompt_tokens),0) AS prompt_tokens,
-                    coalesce(sum(c.cost),0) AS cost,
-                      coalesce(sum(u.output_tokens),0) AS output_tokens,
-                      coalesce(sum(u.cache_read_tokens),0) AS cache_read_tokens,
-                      coalesce(sum(CASE WHEN coalesce(r.is_sidechain,0) = 1 THEN u.prompt_tokens ELSE 0 END),0) AS subagent_tokens,
-                      coalesce(sum(CASE WHEN r.status >= 400 OR r.error IS NOT NULL THEN 1 ELSE 0 END),0) AS errors,
-                      count(DISTINCT r.agent_id) AS subagents,
-                      group_concat(DISTINCT r.model) AS models,
-                      min(r.started_at) AS first_request_at,
-                      max(r.started_at) AS last_request_at
-               FROM requests r
-               LEFT JOIN usage u    ON u.request_id = r.id
-               LEFT JOIN request_cost c ON c.request_id = r.id
-               JOIN sessions s   ON s.id = r.session_id
-               WHERE (?1 IS NULL OR s.cwd = ?1) AND (?2 IS NULL OR r.started_at >= ?2)
-                 AND (?3 IS NULL OR r.account_id = ?3)
-               GROUP BY s.id ORDER BY s.last_seen_at DESC LIMIT 200";
-    rows(conn, sql, &[&f.project, &f.since, &f.account])
+    let sql = format!(
+        "SELECT s.id, s.cwd AS project, s.git_branch, s.entrypoint,
+                s.started_at, s.last_seen_at,
+                count(*) AS requests,
+                coalesce(sum(u.prompt_tokens),0) AS prompt_tokens,
+                coalesce(sum(c.cost),0) AS cost,
+                coalesce(sum(u.output_tokens),0) AS output_tokens,
+                coalesce(sum(u.cache_read_tokens),0) AS cache_read_tokens,
+                coalesce(sum(CASE WHEN coalesce(r.is_sidechain,0) = 1 THEN u.prompt_tokens ELSE 0 END),0) AS subagent_tokens,
+                coalesce(sum(CASE WHEN r.status >= 400 OR r.error IS NOT NULL THEN 1 ELSE 0 END),0) AS errors,
+                count(DISTINCT r.agent_id) AS subagents,
+                group_concat(DISTINCT r.model) AS models,
+                min(r.started_at) AS first_request_at,
+                max(r.started_at) AS last_request_at
+         FROM requests r
+         LEFT JOIN usage u    ON u.request_id = r.id
+         LEFT JOIN request_cost c ON c.request_id = r.id
+         JOIN sessions s   ON s.id = r.session_id
+         WHERE {SCOPE}
+         GROUP BY s.id ORDER BY s.last_seen_at DESC LIMIT 200"
+    );
+    let every_session: Option<String> = None;
+    rows(conn, &sql, &[&f.project, &every_session, &f.since, &f.account])
 }
 
 /// What to look for, and where. Separate from `Filter` because none of the page-wide
@@ -681,43 +703,49 @@ fn hits_for(
     f: &SearchQuery,
     limit: i64,
 ) -> anyhow::Result<Value> {
-    let sql = "SELECT b.id AS block_id, b.kind, b.chars,
-                      st.session_id, st.role, st.ordinal, st.request_id, st.at,
-                      s.cwd AS project, s.label AS session_label,
-                      snippet(blocks_fts, 0, '\u{2039}', '\u{203a}', ' \u{2026} ', 18) AS snippet,
-                      bm25(blocks_fts) AS rank
-               FROM bodies_db.blocks_fts
-               JOIN bodies_db.blocks b       ON b.id  = blocks_fts.rowid
-               JOIN bodies_db.block_sites st ON st.block_id = b.id
-               LEFT JOIN main.sessions s     ON s.id  = st.session_id
-               WHERE blocks_fts MATCH ?1
-                 AND (?2 IS NULL OR s.cwd = ?2)
-                 AND (?3 IS NULL OR st.session_id = ?3)
-                 AND (?4 IS NULL OR b.kind = ?4)
-                 AND (?5 IS NULL OR st.at >= ?5)
-               ORDER BY rank LIMIT ?6";
-    rows(conn, sql, &[&expr, &f.project, &f.session, &f.kind, &f.since, &limit])
+    let sql = format!(
+        "SELECT b.id AS block_id, b.kind, b.chars,
+                st.session_id, st.role, st.ordinal, st.request_id, st.at,
+                s.cwd AS project, s.label AS session_label,
+                snippet(blocks_fts, 0, '\u{2039}', '\u{203a}', ' \u{2026} ', 18) AS snippet,
+                bm25(blocks_fts) AS rank
+         FROM bodies_db.blocks_fts
+         JOIN bodies_db.blocks b       ON b.id  = blocks_fts.rowid
+         JOIN bodies_db.block_sites st ON st.block_id = b.id
+         LEFT JOIN main.sessions s     ON s.id  = st.session_id
+         WHERE blocks_fts MATCH ?1
+           AND {project}
+           AND (?3 IS NULL OR st.session_id = ?3)
+           AND (?4 IS NULL OR b.kind = ?4)
+           AND (?5 IS NULL OR st.at >= ?5)
+         ORDER BY rank LIMIT ?6",
+        project = in_project!(2),
+    );
+    rows(conn, &sql, &[&expr, &f.project, &f.session, &f.kind, &f.since, &limit])
 }
 
 /// The same matches rolled up per session — "which conversations talk about this".
 fn sessions_for(conn: &Connection, expr: &str, f: &SearchQuery) -> anyhow::Result<Value> {
-    let sql = "SELECT st.session_id, s.cwd AS project, s.label AS session_label,
-                      s.git_branch, s.started_at,
-                      count(DISTINCT b.id) AS blocks,
-                      count(*) AS hits,
-                      min(st.at) AS first_at, max(st.at) AS last_at
-               FROM bodies_db.blocks_fts
-               JOIN bodies_db.blocks b       ON b.id  = blocks_fts.rowid
-               JOIN bodies_db.block_sites st ON st.block_id = b.id
-               LEFT JOIN main.sessions s     ON s.id  = st.session_id
-               WHERE blocks_fts MATCH ?1
-                 AND (?2 IS NULL OR s.cwd = ?2)
-                 AND (?3 IS NULL OR st.session_id = ?3)
-                 AND (?4 IS NULL OR b.kind = ?4)
-                 AND (?5 IS NULL OR st.at >= ?5)
-               GROUP BY st.session_id
-               ORDER BY hits DESC, last_at DESC LIMIT 200";
-    rows(conn, sql, &[&expr, &f.project, &f.session, &f.kind, &f.since])
+    let sql = format!(
+        "SELECT st.session_id, s.cwd AS project, s.label AS session_label,
+                s.git_branch, s.started_at,
+                count(DISTINCT b.id) AS blocks,
+                count(*) AS hits,
+                min(st.at) AS first_at, max(st.at) AS last_at
+         FROM bodies_db.blocks_fts
+         JOIN bodies_db.blocks b       ON b.id  = blocks_fts.rowid
+         JOIN bodies_db.block_sites st ON st.block_id = b.id
+         LEFT JOIN main.sessions s     ON s.id  = st.session_id
+         WHERE blocks_fts MATCH ?1
+           AND {project}
+           AND (?3 IS NULL OR st.session_id = ?3)
+           AND (?4 IS NULL OR b.kind = ?4)
+           AND (?5 IS NULL OR st.at >= ?5)
+         GROUP BY st.session_id
+         ORDER BY hits DESC, last_at DESC LIMIT 200",
+        project = in_project!(2),
+    );
+    rows(conn, &sql, &[&expr, &f.project, &f.session, &f.kind, &f.since])
 }
 
 /// Every word as a literal term, all of them required. `"` is FTS5's own escape for a
@@ -770,33 +798,43 @@ pub async fn tools(State(state): State<Arc<AppState>>, Query(f): Query<Filter>) 
 
 fn tools_inner(state: &AppState, f: &Filter) -> anyhow::Result<Value> {
     let conn = open(state)?;
+    tools_of(&conn, f)
+}
+
+/// What was called, and what came back, from whichever connection it is handed, as with
+/// `summary_of`.
+fn tools_of(conn: &Connection, f: &Filter) -> anyhow::Result<Value> {
     // Results are keyed by tool_use_id and carry their own session and timestamp, so
-    // they scope directly rather than through the request that first carried them.
+    // they scope directly rather than through the request that first carried them: the
+    // project test every read shares, and their own bounds for the rest.
     let produced = rows(
-        &conn,
-        "SELECT tc.name, count(*) AS results, sum(tc.result_chars) AS chars,
-                sum(tc.est_tokens) AS est_tokens, max(tc.est_tokens) AS max_tokens,
-                -- An estimate of an estimate, and labelled as one in the UI: these are
-                -- guessed token counts for tool output, priced as if they were paid once
-                -- as fresh input. The real cost is worse, because anything in the context
-                -- is re-read on every later turn at the cache-read rate.
-                coalesce(sum(tc.est_tokens * (
-                    SELECT p.input FROM pricing p
-                    WHERE instr(lower(coalesce(r.model,'')), p.model) > 0
-                    ORDER BY length(p.model) DESC LIMIT 1)) / 1000000.0, 0) AS est_cost_once,
-                sum(tc.is_error) AS errors
-         FROM tool_calls tc
-         LEFT JOIN sessions s ON s.id = tc.session_id
-         LEFT JOIN requests r ON r.id = tc.first_request_id
-         WHERE (?1 IS NULL OR s.cwd = ?1)
-           AND (?2 IS NULL OR tc.session_id = ?2)
-           AND (?3 IS NULL OR tc.seen_at >= ?3)
-           AND (?4 IS NULL OR r.account_id = ?4)
-         GROUP BY tc.name ORDER BY est_tokens DESC",
-        &scope_params(&f),
+        conn,
+        &format!(
+            "SELECT tc.name, count(*) AS results, sum(tc.result_chars) AS chars,
+                    sum(tc.est_tokens) AS est_tokens, max(tc.est_tokens) AS max_tokens,
+                    -- An estimate of an estimate, and labelled as one in the UI: these are
+                    -- guessed token counts for tool output, priced as if they were paid once
+                    -- as fresh input. The real cost is worse, because anything in the context
+                    -- is re-read on every later turn at the cache-read rate.
+                    coalesce(sum(tc.est_tokens * (
+                        SELECT p.input FROM pricing p
+                        WHERE instr(lower(coalesce(r.model,'')), p.model) > 0
+                        ORDER BY length(p.model) DESC LIMIT 1)) / 1000000.0, 0) AS est_cost_once,
+                    sum(tc.is_error) AS errors
+             FROM tool_calls tc
+             LEFT JOIN sessions s ON s.id = tc.session_id
+             LEFT JOIN requests r ON r.id = tc.first_request_id
+             WHERE {project}
+               AND (?2 IS NULL OR tc.session_id = ?2)
+               AND (?3 IS NULL OR tc.seen_at >= ?3)
+               AND (?4 IS NULL OR r.account_id = ?4)
+             GROUP BY tc.name ORDER BY est_tokens DESC",
+            project = in_project!(1),
+        ),
+        &scope_params(f),
     )?;
     let called = rows(
-        &conn,
+        conn,
         &format!(
             "SELECT ti.name, count(*) AS calls,
                     count(DISTINCT ti.request_id) AS requests,
@@ -807,7 +845,7 @@ fn tools_inner(state: &AppState, f: &Filter) -> anyhow::Result<Value> {
              WHERE {SCOPE}
              GROUP BY ti.name ORDER BY calls DESC"
         ),
-        &scope_params(&f),
+        &scope_params(f),
     )?;
     Ok(json!({ "produced": produced, "called": called }))
 }
@@ -1799,6 +1837,183 @@ mod tests {
         let session = summary_of(&conn, &scope(None, Some("session-007"), None, None)).unwrap();
         assert_eq!(session["totals"]["requests"], 2);
         assert_eq!(session["unattributed"], 0);
+    }
+
+    /// In the `(unresolved)` scope, which the console's "(unresolved)" project row asks for
+    /// and so does the iPhone's "—" row, the summary counted the sessions with no recorded
+    /// directory and their requests while the Sessions and tool Results lists came up empty:
+    /// both wrote their own project test, without the branch that selects those sessions.
+    /// They take the one every read shares now, so each list holds what the summary counts,
+    /// there and in a real project alike.
+    #[test]
+    fn unresolved_scope_lists_the_sessions_and_tool_calls_the_summary_counts() {
+        use std::collections::BTreeMap;
+
+        const T0: i64 = 1_700_000_000_000;
+        const ALPHA: &str = "/Users/sample/code/alpha";
+        // A session's first request calls its tools and the next carries their results back:
+        // the calls are read from the requests, the tool Results list from the results.
+        const SESSIONS: [(&str, Option<&str>, &str, i64, &[&str]); 5] = [
+            ("alpha-1", Some(ALPHA), "work", T0, &["Read"]),
+            ("alpha-2", Some(ALPHA), "work", T0 + 100_000, &["Read", "Edit"]),
+            ("bare-1", None, "work", T0 + 200_000, &["Bash"]),
+            ("bare-2", None, "work", T0 + 300_000, &["Bash", "Read"]),
+            ("bare-3", None, "side", T0 + 400_000, &["Grep"]),
+        ];
+        fn request(conn: &Connection, id: &str, session: Option<&str>, account: &str, at: i64) -> i64 {
+            conn.execute(
+                "INSERT INTO requests (request_id, session_id, account_id, method, path, started_at)
+                 VALUES (?1, ?2, ?3, 'POST', '/v1/messages', ?4)",
+                params![id, session, account, at],
+            )
+            .unwrap();
+            conn.last_insert_rowid()
+        }
+
+        let store = store("unresolved-lists");
+        let tx = store.conn.unchecked_transaction().unwrap();
+        for (id, cwd, account, at, tools) in SESSIONS {
+            tx.execute(
+                "INSERT INTO sessions (id, cwd, started_at, last_seen_at) VALUES (?1, ?2, ?3, ?4)",
+                params![id, cwd, at, at + 2_000],
+            )
+            .unwrap();
+            let call = request(&tx, &format!("{id}-call"), Some(id), account, at);
+            let answer = request(&tx, &format!("{id}-answer"), Some(id), account, at + 1_000);
+            for (n, name) in tools.iter().enumerate() {
+                tx.execute(
+                    "INSERT INTO tool_invocations (request_id, ordinal, name) VALUES (?1, ?2, ?3)",
+                    params![call, n as i64, name],
+                )
+                .unwrap();
+                tx.execute(
+                    "INSERT INTO tool_calls (tool_use_id, session_id, first_request_id, name, seen_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![format!("{id}-use-{n}"), id, answer, name, at + 1_000],
+                )
+                .unwrap();
+            }
+        }
+        // And a request no session holds, which `(unresolved)` takes as it does everywhere:
+        // counted in the totals, and shown as the row the lists end with.
+        request(&tx, "orphan", None, "work", T0 + 500_000);
+        tx.commit().unwrap();
+
+        let conn = store.reads.get().unwrap();
+        // Parsed the way the handlers' `Query` parses what a client sends.
+        let scope = |query: &str| {
+            let uri: axum::http::Uri = format!("/api/sessions?{query}").parse().unwrap();
+            Query::<Filter>::try_from_uri(&uri).unwrap().0
+        };
+        let ids = |list: &Value| -> Vec<String> {
+            list.as_array().unwrap().iter().map(|s| s["id"].as_str().unwrap().to_owned()).collect()
+        };
+        let tally = |list: &Value, count: &str| -> BTreeMap<String, i64> {
+            let tools = list.as_array().unwrap().iter();
+            tools.map(|t| (t["name"].as_str().unwrap().to_owned(), t[count].as_i64().unwrap())).collect()
+        };
+
+        let after_bare_1 = format!("project=%28unresolved%29&since={}", T0 + 250_000);
+        let cases: [(&str, &[&str]); 6] = [
+            // The console's row, as its URLSearchParams spells it, and the iPhone's.
+            ("project=%28unresolved%29", &["bare-3", "bare-2", "bare-1"]),
+            ("project=(unresolved)", &["bare-3", "bare-2", "bare-1"]),
+            // Narrowed further as any project is: by account, and by range.
+            ("project=%28unresolved%29&account=side", &["bare-3"]),
+            (&after_bare_1, &["bare-3", "bare-2"]),
+            // A real project's scope is what it was: its own sessions, none without a directory.
+            ("project=%2FUsers%2Fsample%2Fcode%2Falpha", &["alpha-2", "alpha-1"]),
+            // And no project at all is every session.
+            ("", &["bare-3", "bare-2", "bare-1", "alpha-2", "alpha-1"]),
+        ];
+        for (query, listed) in cases {
+            let f = scope(query);
+            let summary = summary_of(&conn, &f).unwrap();
+            let sessions = sessions_of(&conn, &f).unwrap();
+            assert_eq!(ids(&sessions), listed, "{query}: the Sessions list");
+
+            // Every session the summary counts is in the list, and so is every request it
+            // counts but those no session holds, which it counts apart for the closing row.
+            let totals = &summary["totals"];
+            let sessions = sessions.as_array().unwrap();
+            assert_eq!(sessions.len() as i64, totals["sessions"].as_i64().unwrap(), "{query}");
+            let in_list: i64 = sessions.iter().map(|s| s["requests"].as_i64().unwrap()).sum();
+            let apart = summary["unattributed"].as_i64().unwrap();
+            assert_eq!(in_list + apart, totals["requests"].as_i64().unwrap(), "{query}");
+
+            // The tool lists count those sessions' calls, and the results that came back.
+            let mut theirs = BTreeMap::new();
+            for (.., tools) in SESSIONS.into_iter().filter(|s| listed.contains(&s.0)) {
+                for name in tools {
+                    *theirs.entry(name.to_string()).or_insert(0) += 1;
+                }
+            }
+            let tools = tools_of(&conn, &f).unwrap();
+            assert_eq!(tally(&tools["called"], "calls"), theirs, "{query}: the calls made");
+            assert_eq!(tally(&tools["produced"], "results"), theirs, "{query}: the tool Results list");
+        }
+
+        // The Sessions list is never narrowed by session, since it is how one is picked; the
+        // rest of the page is.
+        let picked = scope("project=%28unresolved%29&session=bare-2");
+        assert_eq!(ids(&sessions_of(&conn, &picked).unwrap()), ["bare-3", "bare-2", "bare-1"]);
+        assert_eq!(summary_of(&conn, &picked).unwrap()["totals"]["requests"], 2);
+        let tools = tools_of(&conn, &picked).unwrap();
+        let bare_2 = BTreeMap::from([("Bash".to_string(), 1), ("Read".to_string(), 1)]);
+        assert_eq!(tally(&tools["called"], "calls"), bare_2);
+        assert_eq!(tally(&tools["produced"], "results"), bare_2);
+    }
+
+    /// Search is asked with the page's project too (the console's search panel sends it), and
+    /// it wrote its own project test as well, so in the `(unresolved)` scope it found nothing
+    /// at all. It finds what was said in the sessions with no recorded directory now: the
+    /// hits the console labels "(unresolved)".
+    #[test]
+    fn unresolved_scope_search_finds_what_the_sessions_with_no_directory_said() {
+        let store = store("unresolved-search");
+        let side = crate::db::bodies_path(&store.dir.join("agent-router.db"));
+        store.conn.execute("ATTACH DATABASE ?1 AS bodies_db", [side.to_str().unwrap()]).unwrap();
+        // The same words, said in a project, in a session with no directory, and in one the
+        // store holds no row for, which `(unresolved)` takes as the summary takes a request
+        // of one.
+        store
+            .conn
+            .execute_batch(
+                "INSERT INTO sessions (id, cwd, started_at, last_seen_at)
+                   VALUES ('alpha-1', '/Users/sample/code/alpha', 1, 2), ('bare-1', NULL, 3, 4);
+                 INSERT INTO bodies_db.blocks (id, hash, kind, chars, text)
+                   VALUES (1, x'01', 'text', 27, 'the heron waits at the weir');
+                 INSERT INTO bodies_db.block_sites (block_id, session_id, ordinal, role, request_id, at)
+                   VALUES (1, 'alpha-1', 0, 'user', 1, 10), (1, 'bare-1', 0, 'user', 2, 20),
+                          (1, 'ghost-1', 0, 'user', 3, 30);",
+            )
+            .unwrap();
+
+        let conn = store.reads.get().unwrap();
+        // The sessions in each of the two lists a search answers with: the hits, and the
+        // hits rolled up per session.
+        let found = |scope: &str| -> [Vec<String>; 2] {
+            let uri: axum::http::Uri = format!("/api/search?q=heron{scope}").parse().unwrap();
+            let f = Query::<SearchQuery>::try_from_uri(&uri).unwrap().0;
+            let sessions = |list: Value| -> Vec<String> {
+                let mut ids: Vec<String> = list
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|h| h["session_id"].as_str().unwrap().to_owned())
+                    .collect();
+                ids.sort();
+                ids
+            };
+            [
+                sessions(hits_for(&conn, &f.q, &f, 60).unwrap()),
+                sessions(sessions_for(&conn, &f.q, &f).unwrap()),
+            ]
+        };
+        assert_eq!(found("&project=%28unresolved%29"), [["bare-1", "ghost-1"], ["bare-1", "ghost-1"]]);
+        assert_eq!(found("&project=%2FUsers%2Fsample%2Fcode%2Falpha"), [["alpha-1"], ["alpha-1"]]);
+        let everywhere = ["alpha-1", "bare-1", "ghost-1"];
+        assert_eq!(found(""), [everywhere, everywhere]);
     }
 
     /// GET /api/accounts used to check every credential on every call — `claude auth
