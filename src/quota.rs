@@ -11,7 +11,9 @@
 //!   Works for any credential, but only refreshes when traffic flows.
 //!
 //! So: try the endpoint, fall back to the store, and say in the payload which one the
-//! numbers came from rather than pretending they are equivalent.
+//! numbers came from rather than pretending they are equivalent. Only the endpoint's
+//! answer is cached. The store's is read again on every call, because the headers it
+//! comes from move with every request the account serves.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -21,7 +23,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use http_body_util::BodyExt;
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::Connection;
 use serde_json::{json, Value};
 
 use crate::db::now_ms;
@@ -34,10 +36,26 @@ const CACHE_MS: i64 = 45_000;
 pub struct Cached {
     account_id: String,
     fetched_at: i64,
-    value: Value,
+    /// What the endpoint answered: its reading, or why there was none. Never the store's
+    /// reading. That one used to be kept along with a failure, so through a 403's thirty
+    /// minutes of backoff the meters showed the request before it, however many had come
+    /// since.
+    upstream: Result<Value, String>,
     /// Do not call upstream again before this instant. Without it a persistent 403
     /// turns every poll into a request and earns a 429 within a minute.
     retry_after: i64,
+}
+
+/// What the cache answers without calling upstream: the endpoint's reading and its age
+/// while it is fresh, or the failure still being waited out. `None` calls upstream.
+fn held(cached: Option<&Cached>, account_id: &str, now: i64) -> Option<Result<(Value, i64), String>> {
+    let c = cached.filter(|c| c.account_id == account_id)?;
+    let age = now - c.fetched_at;
+    match &c.upstream {
+        Ok(value) if age < CACHE_MS => Some(Ok((value.clone(), age))),
+        Err(err) if now < c.retry_after => Some(Err(err.clone())),
+        _ => None,
+    }
 }
 
 /// Store a claude.ai session key for an account. Kept in the router rather than
@@ -177,17 +195,13 @@ pub async fn quota(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         Err(err) => return Json(json!({ "error": err.to_string() })),
     };
 
-    // Serve the cache when it is fresh, or when we are backing off from a failure.
-    {
-        let held = state.quota_cache.read().await;
-        if let Some(c) = held.as_ref() {
-            if c.account_id == account_id {
-                let age = now_ms() - c.fetched_at;
-                if age < CACHE_MS || now_ms() < c.retry_after {
-                    return Json(annotate(c.value.clone(), age));
-                }
-            }
-        }
+    // The endpoint's reading while it is fresh; while backing off from a failure, the
+    // store's newest reading, read again.
+    let held = held(state.quota_cache.read().await.as_ref(), &account_id, now_ms());
+    match held {
+        Some(Ok((value, age))) => return Json(annotate(value, age)),
+        Some(Err(err)) => return Json(fallback(&state, &account_id, &err)),
+        None => {}
     }
 
     match fetch_upstream(&state).await {
@@ -196,34 +210,42 @@ pub async fn quota(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             *state.quota_cache.write().await = Some(Cached {
                 account_id,
                 fetched_at: now_ms(),
-                value: value.clone(),
+                upstream: Ok(value.clone()),
                 retry_after: 0,
             });
             Json(annotate(value, 0))
         }
         Err(err) => {
-            let backoff = backoff_for(&err.to_string());
+            let err = err.to_string();
+            let backoff = backoff_for(&err);
             tracing::warn!(
                 error = %err,
                 backoff_s = backoff / 1000,
                 "quota endpoint unavailable; falling back to captured headers"
             );
-            let fallback = from_store(&state, &account_id)
-                .map(|v| value_for(&account_id, v, "response-headers"))
-                .unwrap_or_else(|| json!({
-                    "account_id": account_id,
-                    "source": "unavailable",
-                    "detail": err.to_string(),
-                }));
+            let value = fallback(&state, &account_id, &err);
             *state.quota_cache.write().await = Some(Cached {
                 account_id,
                 fetched_at: now_ms(),
-                value: fallback.clone(),
+                upstream: Err(err),
                 retry_after: now_ms() + backoff,
             });
-            Json(annotate(fallback, 0))
+            Json(value)
         }
     }
+}
+
+/// The store's newest reading for the account, or why there is none.
+fn fallback(state: &AppState, account_id: &str, err: &str) -> Value {
+    let stored = state.reads.get().ok().and_then(|conn| from_store(&conn, account_id));
+    let value = stored
+        .map(|v| value_for(account_id, v, "response-headers"))
+        .unwrap_or_else(|| json!({
+            "account_id": account_id,
+            "source": "unavailable",
+            "detail": err,
+        }));
+    annotate(value, 0)
 }
 
 /// A 403 will not start working on its own — this credential is simply not allowed
@@ -316,12 +338,7 @@ async fn fetch_upstream(state: &AppState) -> anyhow::Result<Value> {
 
 /// The most recent rate-limit headers this account actually received. Stored as a
 /// 0..1 fraction; the endpoint reports 0..100, so scale to match.
-fn from_store(state: &AppState, account_id: &str) -> Option<Value> {
-    let conn = Connection::open_with_flags(
-        &state.config.db_path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
-    )
-    .ok()?;
+fn from_store(conn: &Connection, account_id: &str) -> Option<Value> {
     let row = conn
         .query_row(
             "SELECT rl_5h_utilization, rl_7d_utilization, rl_5h_reset, rl_7d_reset,
@@ -355,4 +372,74 @@ fn from_store(state: &AppState, account_id: &str) -> Option<Value> {
         "severity":  severity,
         "seen_at":   seen_at,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::params;
+
+    const T0: i64 = 1_700_000_000_000;
+    const MIN: i64 = 60_000;
+
+    fn failed(account_id: &str, at: i64, err: &str) -> Cached {
+        Cached {
+            account_id: account_id.into(),
+            fetched_at: at,
+            upstream: Err(err.into()),
+            retry_after: at + backoff_for(err),
+        }
+    }
+
+    /// A 403 is waited out for thirty minutes, and through all of them the store is read
+    /// again rather than the reading taken beside the failure: `held` hands back the
+    /// failure, never a value. A fresh reading from the endpoint is served as it is.
+    #[test]
+    fn a_failure_is_waited_out_without_keeping_a_reading_and_a_fresh_one_is_served() {
+        let forbidden = failed("work", T0, "upstream returned 403 Forbidden");
+        for at in [T0 + MIN, T0 + 10 * MIN, T0 + 29 * MIN] {
+            assert_eq!(held(Some(&forbidden), "work", at), Some(Err("upstream returned 403 Forbidden".into())));
+        }
+        assert_eq!(held(Some(&forbidden), "work", T0 + 30 * MIN), None, "the endpoint is asked again");
+        assert_eq!(held(Some(&forbidden), "side", T0 + MIN), None, "another account's failure is not this one's");
+
+        let reading = json!({ "five_hour": { "utilization": 41.0 }, "source": "usage-api" });
+        let fresh = Cached { account_id: "work".into(), fetched_at: T0, upstream: Ok(reading.clone()), retry_after: 0 };
+        assert_eq!(held(Some(&fresh), "work", T0 + 10_000), Some(Ok((reading, 10_000))));
+        assert_eq!(held(Some(&fresh), "work", T0 + CACHE_MS), None);
+        assert_eq!(held(None, "work", T0), None);
+    }
+
+    /// The store's reading is the account's newest request that carried the headers,
+    /// scaled to the endpoint's 0..100.
+    #[test]
+    fn the_store_answers_with_the_accounts_newest_rate_limit_reading() {
+        let dir = std::env::temp_dir().join(format!("ar-quota-store-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("agent-router.db");
+        crate::db::Db::open(&path).unwrap();
+        let conn = Connection::open(&path).unwrap();
+        let request = "INSERT INTO requests (request_id, account_id, method, path, started_at,
+                                             rl_status, rl_5h_utilization, rl_7d_utilization, rl_5h_reset, rl_7d_reset)
+                       VALUES (?1, ?2, 'POST', '/v1/messages', ?3, ?4, ?5, ?6, ?7, ?8)";
+        let none: Option<&str> = None;
+        let reset = (T0 + 300 * MIN) / 1000;
+        conn.execute(request, params!["older", "work", T0, "allowed", 0.33, 0.5, reset, reset]).unwrap();
+        conn.execute(request, params!["newest", "work", T0 + 20 * MIN, "allowed_warning", 0.52, 0.51, reset, reset]).unwrap();
+        // Later, but without the headers, or for another account.
+        conn.execute(request, params!["bare", "work", T0 + 25 * MIN, none, None::<f64>, None::<f64>, None::<i64>, None::<i64>]).unwrap();
+        conn.execute(request, params!["side", "side", T0 + 30 * MIN, "allowed", 0.9, 0.9, reset, reset]).unwrap();
+
+        let got = from_store(&conn, "work").unwrap();
+        assert_eq!(got["five_hour"]["utilization"], json!(52.0));
+        assert_eq!(got["seven_day"]["utilization"], json!(51.0));
+        assert_eq!(got["five_hour"]["resets_at"], json!(format!("@{reset}")));
+        assert_eq!(got["severity"], json!("warning"));
+        assert_eq!(got["seen_at"], json!(T0 + 20 * MIN));
+        assert_eq!(from_store(&conn, "nobody"), None);
+
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
