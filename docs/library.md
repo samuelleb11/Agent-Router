@@ -365,8 +365,9 @@ These are not filed. Each is its own decision.
 - **Signed versions:** a key the router never holds, so a taken-over router cannot place a
   skill.
 - **Approvals on the phone:** a push notification when a version waits.
-- **The agent updating itself** through the same "sync now" channel. Today MA-C4 says to
-  re-run the installer.
+- ~~The agent updating itself~~: no longer later. It is filed on its own as **AGEN-0055**:
+  the agent compares its binary with the one its router hands out, swaps it in by rename,
+  and restarts as the new one. The router can also ask it to check, through the tunnel.
 - **Agents on different machines finding and messaging each other**, introduced to agents
   by the router's own skill.
 - **Project-scoped items**, placed into a repository's `.claude/`. These usually belong in
