@@ -891,14 +891,100 @@ pub mod agent_service {
     }
 }
 
-/// Linux has no agent login item yet: live features through a hosted router are built for
-/// macOS and Windows first.
-#[cfg(not(any(target_os = "macos", windows)))]
+/// On Linux the agent is a systemd user unit beside the router's own, under its own name,
+/// so installing one can never remove the other. Without a user systemd (WSL without it, a
+/// container) there is no login item, and the editor starts the agent when a window opens.
+#[cfg(target_os = "linux")]
+pub mod agent_service {
+    use super::*;
+
+    pub const UNIT: &str = "agent-router-agent.service";
+
+    fn unit_file() -> Result<PathBuf> {
+        Ok(home_dir()?.join(".config").join("systemd").join("user").join(UNIT))
+    }
+
+    /// The unit itself. `%` is systemd's specifier character, so a path is written with it
+    /// doubled.
+    pub(super) fn unit(exe: &Path, log: &Path) -> String {
+        let esc = |p: &Path| p.display().to_string().replace('%', "%%");
+        format!(
+            "[Unit]\n\
+             Description=Agent Router agent: this machine's sessions, for a hosted router\n\
+             Wants=network-online.target\n\
+             After=network-online.target\n\n\
+             [Service]\n\
+             # `--ensure`: when the editor has already started an agent this one exits\n\
+             # cleanly, and a clean exit is not restarted.\n\
+             ExecStart=\"{exe}\" agent --ensure\n\
+             Restart=on-failure\n\
+             RestartSec=5\n\
+             StandardOutput=append:{log}\n\
+             StandardError=append:{log}\n\
+             # Where the router is, and its password, are in agent.json beside the store,\n\
+             # not here.\n\n\
+             [Install]\n\
+             WantedBy=default.target\n",
+            exe = esc(exe),
+            log = esc(log),
+        )
+    }
+
+    pub fn install(exe: &Path) -> Result<PathBuf> {
+        let logs = data_dir()?.join("logs");
+        std::fs::create_dir_all(&logs)?;
+        let path = unit_file()?;
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        write_atomic(&path, unit(exe, &logs.join("agent.log")))?;
+        if super::service::run("systemctl", &["--user", "daemon-reload"]).is_err() {
+            let _ = std::fs::remove_file(&path);
+            return Err(anyhow!(
+                "systemd user services are not running here; start the agent with `agent-router agent`"
+            ));
+        }
+        super::service::run("systemctl", &["--user", "enable", "--now", UNIT])?;
+        Ok(path)
+    }
+
+    pub fn uninstall() -> Result<()> {
+        let _ = super::service::run("systemctl", &["--user", "disable", "--now", UNIT]);
+        if let Ok(p) = unit_file() {
+            let _ = std::fs::remove_file(p);
+        }
+        let _ = super::service::run("systemctl", &["--user", "daemon-reload"]);
+        Ok(())
+    }
+
+    pub fn is_registered() -> bool {
+        unit_file().map(|p| p.exists()).unwrap_or(false)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn the_unit_runs_the_agent_once_and_restarts_it_only_after_a_crash() {
+            let u = unit(Path::new("/home/a b/.agent-router/bin/agent-router"), Path::new("/home/a b/.agent-router/logs/agent.log"));
+            assert!(u.contains("ExecStart=\"/home/a b/.agent-router/bin/agent-router\" agent --ensure\n"), "{u}");
+            assert!(u.contains("Restart=on-failure\n"), "a clean exit, another agent already running, is not restarted");
+            assert!(u.contains("StandardOutput=append:/home/a b/.agent-router/logs/agent.log\n"), "the log the editor reads");
+            assert!(u.contains("WantedBy=default.target\n"));
+            assert!(!u.contains("password"), "nothing secret in a unit file");
+            assert!(unit(Path::new("/opt/100%/agent-router"), Path::new("/l")).contains("/opt/100%%/agent-router"));
+        }
+    }
+}
+
+/// Everywhere else the agent has no login item: it is started by hand or by the editor.
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 pub mod agent_service {
     use super::*;
 
     pub fn install(_exe: &Path) -> Result<PathBuf> {
-        Err(anyhow!("the agent's login item is built for macOS and Windows so far; start it with `agent-router agent`"))
+        Err(anyhow!("the agent's login item is built for macOS, Linux and Windows; start it with `agent-router agent`"))
     }
 
     pub fn uninstall() -> Result<()> {
@@ -982,7 +1068,7 @@ pub mod service {
             || super::profile_autostart::is_registered()
     }
 
-    fn run(cmd: &str, args: &[&str]) -> Result<()> {
+    pub(super) fn run(cmd: &str, args: &[&str]) -> Result<()> {
         let out = std::process::Command::new(cmd)
             .args(args)
             .output()

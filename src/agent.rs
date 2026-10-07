@@ -653,6 +653,10 @@ async fn install(args: &[String]) -> Result<()> {
             Ok(path) => {
                 println!("service   registered: {}", path.display());
                 println!("          the agent starts now, and at every login");
+                // A user's systemd stops with their last session unless it lingers, and a
+                // machine reached over SSH is often left with none.
+                #[cfg(target_os = "linux")]
+                println!("          to keep it running between logins: loginctl enable-linger");
             }
             Err(e) => println!("service   not registered ({e:#}); start it with `agent-router agent`"),
         }

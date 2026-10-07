@@ -17,6 +17,7 @@ tried on a Windows machine.
 | How an agent proves itself | The router password, which every machine already holds for Claude Code (`ANTHROPIC_AUTH_TOKEN`). No per-machine tokens. |
 | What keeps it running | A login item, from `agent-router agent install --server <url>` (launchd on macOS, a launcher in the Startup folder on Windows). The VS Code extension also starts it when a window opens. |
 | Platforms | macOS and Windows. Windows ships with both following and steering working, not one before the other. Linux later. |
+| Linux, for a dev host (2026-10-07) | The agent's login item is a systemd user unit, `agent-router-agent.service`, beside the router's own `agent-router.service`. It runs `agent --ensure`, logs where the editor reads, and restarts only after a crash. |
 
 ## The shape
 

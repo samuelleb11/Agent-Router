@@ -27,7 +27,7 @@ see [Running it as a server](#running-it-as-a-server).
 | Run at login | launchd agent | systemd user service | — |
 | VS Code extension | arm64, x64 | x64, arm64 (static musl) | x64, agent only |
 | Hosted server | — | container image (glibc, distroless) | — |
-| Machine agent, for a hosted router | yes, at login through launchd | by hand | yes, at login from the Startup folder |
+| Machine agent, for a hosted router | yes, at login through launchd | yes, at login through a systemd user unit | yes, at login from the Startup folder |
 
 On Windows only the machine agent runs: it serves a hosted router the sessions on that
 machine, to follow and to steer, and the router itself refuses to start there. The
@@ -532,9 +532,10 @@ per finding with its sources.
   because there is no local tokenizer for current Claude models.
 * **Windows is untried.** The agent and the wrapper build for Windows and pass their
   checks on a Mac, and have not run on Windows yet. See [Platforms](#platforms).
-* **On Linux the agent does not start at login.** `agent install` points Claude Code at
-  the server but registers no login item there; start the agent with
-  `agent-router agent`.
+* **The agent is untried on Linux.** It shares its code with macOS and starts at login
+  from a systemd user unit, but has not run on Linux yet. That unit stops at logout
+  unless the user lingers (`loginctl enable-linger`), which a machine reached over SSH
+  needs.
 
 ## License
 
