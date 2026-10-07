@@ -348,25 +348,6 @@
   }
 }
 
-.copy {
-  display: inline-flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: $spacing-03;
-  min-inline-size: 0;
-}
-
-.copyDone {
-  @include type-style('helper-text-01');
-  color: var(--cds-text-secondary);
-}
-
-.copyFailed {
-  @include type-style('helper-text-01');
-  color: var(--ar-warn);
-  overflow-wrap: anywhere;
-}
-
 // ------------------------------------------------------------------ switches and rows
 
 /// A switch, its explanation and its outcome, together.

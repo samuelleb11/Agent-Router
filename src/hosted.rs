@@ -10,7 +10,8 @@
 //! failure on the phone — and every action refuses with a sentence that says why.
 //!
 //! The live routes are not here: `machines` relays them to the agent on the machine
-//! holding each session.
+//! holding each session. What a hosted router has that a local one does not is here too:
+//! the agent's own endpoint, and the installer that sets an agent up (`downloads`).
 
 use std::sync::Arc;
 
@@ -62,6 +63,10 @@ pub fn routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
         .route("/api/live/archive", post(crate::machines::api::archive))
         .route("/api/machines", get(crate::machines::api::machines))
         .route(crate::tunnel::PATH, get(crate::machines::api::connect))
+        // The agent's installer, open without the password (see `downloads`).
+        .route("/agent/install.sh", get(crate::downloads::install_sh))
+        .route("/agent/install.ps1", get(crate::downloads::install_ps1))
+        .route("/agent/{platform}/{file}", get(crate::downloads::file))
 }
 
 /// The refusal for anything that would act on the router's own machine. A sentence the

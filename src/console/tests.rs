@@ -121,6 +121,7 @@ impl Lab {
             allow_hosts: if server { vec![HOSTED_NAME.to_string()] } else { Vec::new() },
             public_url: server.then(|| format!("https://{HOSTED_NAME}")),
             push_keys_dir: None,
+            agents_dir: server.then(|| dir.join("agents")),
             drain: Duration::from_secs(1),
         };
         let (capture, _) = tokio::sync::mpsc::channel(1);
@@ -750,6 +751,41 @@ async fn a_hosted_router_serves_the_console_to_its_names_and_its_password_only()
             assert_eq!((answer.status, answer.text()), (StatusCode::FORBIDDEN, says.clone()), "{host}{path}");
         }
     }
+}
+
+/// The agent's installer is open on a hosted router, and only its own addresses are: the two
+/// scripts, each carrying the router's public address, and each platform's files as the image
+/// holds them. Anything else under `/agent/` is asked for the password, and a local router
+/// serves none of it.
+#[tokio::test]
+async fn a_hosted_router_hands_out_its_agent_installer_without_the_password() {
+    let _on = network(true).await;
+    let lab = Lab::hosted("installer", fixture()).await;
+    let sh = lab.ask(get("/agent/install.sh").host(HOSTED_NAME)).await;
+    assert_eq!(sh.status, StatusCode::OK, "{}", sh.text());
+    assert_eq!(sh.header(header::CONTENT_TYPE), Some("text/plain; charset=utf-8"));
+    assert!(sh.text().contains(&format!("\nSERVER='https://{HOSTED_NAME}'\n")), "{}", sh.text());
+    let ps = lab.ask(get("/agent/install.ps1").host(HOSTED_NAME)).await;
+    assert_eq!(ps.status, StatusCode::OK, "{}", ps.text());
+    assert!(ps.text().contains(&format!("\n$Server = 'https://{HOSTED_NAME}'\n")), "{}", ps.text());
+
+    let none = lab.ask(get("/agent/darwin-arm64/agent-router").host(HOSTED_NAME)).await;
+    assert_eq!(none.status, StatusCode::NOT_FOUND, "{}", none.text());
+    assert!(none.text().contains("built without the agent's packages"), "{}", none.text());
+    let dir = lab.state.config.agents_dir.clone().unwrap().join("win32-x64");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("agent-router.exe"), b"MZ, the program").unwrap();
+    let exe = lab.ask(get("/agent/win32-x64/agent-router.exe").host(HOSTED_NAME)).await;
+    assert_eq!((exe.status, exe.body.as_slice()), (StatusCode::OK, &b"MZ, the program"[..]));
+    assert_eq!(exe.header(header::CONTENT_TYPE), Some("application/octet-stream"));
+
+    for path in ["/agent/", "/agent/win32-x64/claude-wrapper.exe", "/agent/waiting", "/api/machines"] {
+        lab.ask(get(path).host(HOSTED_NAME)).await.assert_challenged(path);
+    }
+    let local = Lab::local("installer-local", fixture());
+    local.set_password().await;
+    local.ask(get("/agent/install.sh").from_lan()).await.assert_challenged("local, from another machine");
+    local.ask(get("/agent/install.sh")).await.assert_proxy_404("local, on its own machine");
 }
 
 /// SV-C1: every console route sits behind the one guard, in the hosted route set and the local

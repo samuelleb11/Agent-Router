@@ -7,11 +7,12 @@ import { useMutation } from '@tanstack/react-query';
 import { CodeSnippet } from '@carbon/react';
 import { Link } from 'react-router';
 import { keys } from '~/app/query';
+import { CopyButton } from '~/components/CopyButton';
 import { Page } from '~/components/Page';
 import { setNetwork, useAuth, useReread } from '~/data/settings';
 import { settingsPath } from '~/lib/routes';
 import { Switch } from './ClaudeCode';
-import { Confirm, CopyButton, Explain, ReadFailed, Reading } from './parts';
+import { Confirm, Explain, ReadFailed, Reading } from './parts';
 import { networkWhere } from './rules';
 import styles from './Settings.module.scss';
 

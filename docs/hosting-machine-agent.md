@@ -17,6 +17,7 @@ tried on a Windows machine.
 | How an agent proves itself | The router password, which every machine already holds for Claude Code (`ANTHROPIC_AUTH_TOKEN`). No per-machine tokens. |
 | What keeps it running | A login item, from `agent-router agent install --server <url>` (launchd on macOS, a launcher in the Startup folder on Windows). The VS Code extension also starts it when a window opens. |
 | Platforms | macOS and Windows. Windows ships with both following and steering working, not one before the other. Linux later. |
+| How a machine gets the agent (2026-10-07) | From the hosted router itself: `install.sh` and `install.ps1`, which fetch the agent and the editor package from the router's own image. No release or store is needed. Windows ships on every route, though it has not run on Windows yet. |
 | Linux, for a dev host (2026-10-07) | The agent's login item is a systemd user unit, `agent-router-agent.service`, beside the router's own `agent-router.service`. It runs `agent --ensure`, logs where the editor reads, and restarts only after a crash. |
 
 ## The shape
@@ -53,6 +54,37 @@ query or JSON body plus the machine it runs on.
 - requests for them answer 503, naming the machine;
 - its banners stay on the phones until it comes back and says otherwise.
 
+## Connecting a machine
+
+A hosted router hands out its own agent, so a machine needs nothing but the router's
+address and password:
+
+```
+curl -fsSL https://<router>/agent/install.sh | sh     # macOS and Linux
+irm https://<router>/agent/install.ps1 | iex           # Windows, in PowerShell
+```
+
+The `/live` page shows both, with the router's address in them, until a machine connects.
+
+- **What the script does.** It downloads the agent for the machine's platform from the
+  router and runs `agent-router agent install --server <the router>`, which asks for the
+  password. Where VS Code's `code` command exists, it also installs the Agent Router
+  extension from the router. `sh -s -- <options>` passes options on to `agent install`.
+- **The extension takes the set-up over.** Its first window finds the server and the
+  password in `agent.json` and switches to remote mode instead of starting a router: the
+  password goes into secret storage, `agentRouter.server` is set, and Claude Code is
+  handed the wrapper, which is what lets the phone type into a session.
+- **Without VS Code** a machine's sessions can be followed but not typed into: `claude`
+  in a terminal is not wrapped.
+- **Open without the password.** The two scripts and the files they fetch are the only
+  addresses besides `/_router/health` that a hosted router answers without it
+  (`src/downloads.rs`). Nothing in them is secret, and a machine being connected has
+  nothing to present yet.
+- **The router's own build.** The image carries every platform's agent and editor package
+  from the pipeline that built it (`scripts/stage-agents.sh`, then the Dockerfile), in
+  `/usr/local/share/agent-router/agents` beside the router, so an agent always speaks its
+  router's protocol. `--agents-dir` names another directory.
+
 ## The agent
 
 ```
@@ -70,21 +102,27 @@ owner-only (0600), and on Windows sits in the user's profile.
 **The machine id.** A random UUID made on first run and kept in `agent.json`. It
 survives a rename. The label defaults to the host name.
 
-**`install` does four things:**
+**`install` does five things:**
 1. Checks the password against `GET <server>/api/auth`.
 2. Writes `agent.json`.
-3. Points Claude Code at the server: `env.ANTHROPIC_BASE_URL` and
+3. Retires the local router's login item, on a machine that ran the router itself. That
+   item starts `bin/agent-router`, the path the agent's binary is about to take, so at
+   the next login it would start an empty local router. It is taken out of launchd (or
+   systemd, with its shell-profile line) and its file kept in the data directory as
+   `*.retired`.
+4. Points Claude Code at the server: `env.ANTHROPIC_BASE_URL` and
    `env.ANTHROPIC_AUTH_TOKEN` in `~/.claude/settings.json`, or in one project's
    `.claude/settings.local.json`. The bookkeeping is the same as `install` uses today,
    extended to two keys: touch only our own keys, adopt an existing value, and leave a
    changed one alone.
-4. Registers the login item.
+5. Registers the login item.
 
-`uninstall` reverts all of it.
+`uninstall` reverts all of it but the retired login item, which stays retired: the
+local `agent-router install` registers it again.
 
 **Single instance.** `<data-dir>/agent.lock` holds the running agent's pid and build.
-`--ensure` exits if a same-or-newer build holds it. An older build is asked to stop,
-then replaced.
+`--ensure` exits if an agent of this same build holds it. Any other build is asked to
+stop, then replaced.
 
 **What it runs:**
 - **Request routes.** Only these answer tunneled requests: the `live` routes, and two
@@ -178,8 +216,8 @@ Everything above has to work on Windows, steering included. Six things are Unix-
 6. **Packaging.**
    - A `win32-x64` VS Code package carries `agent-router.exe` and `claude-wrapper.exe`,
      cross-built from a Mac or the Linux runner through zig (`build:windows` in CI). It
-     goes to a release's package registry, and not to the marketplaces until it has run
-     on Windows.
+     ships wherever the other packages do, and a hosted router hands it out
+     (`install.ps1`).
    - The login item is a script in the user's Startup folder, `Agent Router agent.vbs`,
      that starts `agent-router.exe agent --ensure` without a console window. Unlike a
      logon task it needs no administrator rights, and it touches no registry. It is

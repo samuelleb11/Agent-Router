@@ -413,11 +413,29 @@ export function header(view: { readonly feed: Feed | null; readonly list: { read
   return listHeader(view.list.rows, now);
 }
 
-/// A hosted router lists no live sessions yet: they need the Agent Router agent on the machine
-/// that runs them (SE-C187). The committed page's sentence; the working tree, uncommitted, is
-/// rewording it to name `agent-router agent install --server <this router's address>`.
-export const AGENTLESS = 'No sessions from a connected machine. A machine shows its sessions here once it '
-  + "runs the Agent Router agent: agent-router agent install --server <this router's address>.";
+/// A hosted router lists the sessions of the machines connected to it, and a machine connects by
+/// running the installer the router serves without a password, which installs the Agent Router
+/// agent and asks there for the router's password. With none connected, the list says so, above
+/// the commands that connect one (SE-C187).
+export const AGENTLESS = 'No machine has connected yet. Run this on a machine to connect it — it asks for this router’s password.';
+/// What else the installer does where VS Code is: it adds the Agent Router extension, which wraps
+/// Claude Code there, so the machine's sessions can be typed into and not only followed (SE-C187).
+export const WITH_VS_CODE = 'With VS Code’s code command on the machine, the script also adds the Agent Router extension, '
+  + 'so its sessions can be typed into from here and from the phone; without it, they can only be followed.';
+
+export interface InstallCommand {
+  /// The platforms it runs on, which label it.
+  readonly label: string;
+  readonly command: string;
+}
+
+/// The commands that connect a machine to the router at `origin`, one for each platform: a shell's
+/// on macOS and Linux, PowerShell's on Windows (SE-C187).
+export const installCommands = (origin: string): readonly InstallCommand[] => [
+  { label: 'macOS and Linux', command: `curl -fsSL ${origin}/agent/install.sh | sh` },
+  { label: 'Windows (PowerShell)', command: `irm ${origin}/agent/install.ps1 | iex` },
+];
+
 /// What a search hit says on a hosted router when its session is on no connected machine (60cf5f8).
 export const OFF_MACHINE = 'That session is not on a connected machine.';
 

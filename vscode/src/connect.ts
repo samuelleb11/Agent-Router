@@ -1,13 +1,15 @@
 // Remote mode, as the person drives it: connecting this machine to a hosted router,
-// setting it up for one, undoing that, and what a window does when it opens. The local
-// flows stay in extension.ts, untouched; every command there hands over to the matching
-// one here when `agentRouter.server` is set.
+// setting it up for one, undoing that, and what a window does when it opens, including
+// taking over a set-up the server's install script made before VS Code knew of it. The
+// local flows stay in extension.ts, untouched; every command there hands over to the
+// matching one here when `agentRouter.server` is set.
 //
 // The password is held in three places on a set-up machine, each because something
 // needs it: VS Code's secret storage (the status bar and the connect check), the agent's
 // own owner-only file (its connection to the server), and Claude Code's settings file
-// (ANTHROPIC_AUTH_TOKEN, written by `agent install`). It is never written to VS Code's
-// settings, an argument or the log.
+// (ANTHROPIC_AUTH_TOKEN, written by `agent install`). The install script writes the last
+// two, and the first is copied from the agent's file when a window takes the set-up over.
+// It is never written to VS Code's settings, an argument or the log.
 
 import * as vscode from 'vscode';
 import * as fs from 'fs';
@@ -55,6 +57,30 @@ type SetUp =
   | { kind: 'cancelled' }
   | { kind: 'failed'; sentence: string };
 
+type Wired = 'wired' | 'no-wrapper' | 'no-claude-code' | 'failed';
+
+/** Hand Claude Code the wrapper, for a set-up that configures Claude Code. */
+async function wireWrapper(log: vscode.OutputChannel): Promise<Wired> {
+  // The wrapper is what lets the agent type into a session. Only a path that exists
+  // is ever handed to Claude Code: a wrapper setting naming nothing stops every
+  // session from starting.
+  if (!fs.existsSync(router.wrapperPath())) {
+    log.appendLine(`no wrapper at ${router.wrapperPath()}; claudeCode.claudeProcessWrapper left alone`);
+    return 'no-wrapper';
+  }
+  if (!claude.claudeCodeInstalled()) {
+    log.appendLine('the Claude Code extension is not installed; claudeCode.claudeProcessWrapper left alone');
+    return 'no-claude-code';
+  }
+  try {
+    await claude.configureWrapper(log);
+    return 'wired';
+  } catch (e) {
+    log.appendLine(`could not set claudeCode.claudeProcessWrapper: ${(e as Error).message}`);
+    return 'failed';
+  }
+}
+
 /** The one-time set-up for a server: `agent install`, with the login item unless the
  *  person declines it, then the wrapper, then the agent itself. */
 async function setUpMachine(context: vscode.ExtensionContext, log: vscode.OutputChannel, server: string, password: string): Promise<SetUp> {
@@ -77,25 +103,11 @@ async function setUpMachine(context: vscode.ExtensionContext, log: vscode.Output
   }
   const r = await progress(`Setting this machine up for ${host}…`, () => agent.install(server, password, { service, config }, log));
   if (!r.ok) { return { kind: 'failed', sentence: r.sentence }; }
-  let note = '';
-  if (config) {
-    // The wrapper is what lets the agent type into a session. Only a path that exists
-    // is ever handed to Claude Code: a wrapper setting naming nothing stops every
-    // session from starting.
-    if (!fs.existsSync(router.wrapperPath())) {
-      log.appendLine(`no wrapper at ${router.wrapperPath()}; claudeCode.claudeProcessWrapper left alone`);
-      note = ' This build carries no wrapper, so sessions can be followed but not typed into.';
-    } else if (!claude.claudeCodeInstalled()) {
-      log.appendLine('the Claude Code extension is not installed; claudeCode.claudeProcessWrapper left alone');
-    } else {
-      try {
-        await claude.configureWrapper(log);
-      } catch (e) {
-        log.appendLine(`could not set claudeCode.claudeProcessWrapper: ${(e as Error).message}`);
-        note = ' The wrapper setting could not be written; see the log.';
-      }
-    }
-  }
+  const w = config ? await wireWrapper(log) : undefined;
+  const note =
+    w === 'no-wrapper' ? ' This build carries no wrapper, so sessions can be followed but not typed into.'
+    : w === 'failed' ? ' The wrapper setting could not be written; see the log.'
+    : '';
   await agent.recordSetUp(context, server);
   agent.start(log);
   return { kind: 'done', service, config, note };
@@ -285,6 +297,47 @@ export async function ensure(context: vscode.ExtensionContext, log: vscode.Outpu
   }
   agent.start(log);
   void vscode.window.showInformationMessage(`The agent was asked to start. It runs in the background, connected to ${host}.`);
+}
+
+/** What a window does first when it opens in local mode, on a machine the server's
+ *  install script set up: `agent install` has run, so the agent's own file holds the
+ *  server and its password, but VS Code was never told. That set-up is taken over as it
+ *  is, never redone: the password goes into secret storage, `agentRouter.server` is set,
+ *  and Claude Code is handed the wrapper. The server it switched to, or undefined when
+ *  there was nothing to take over. The window then goes on in remote mode, where startUp
+ *  finds the machine set up and starts the agent. */
+export async function adopt(context: vscode.ExtensionContext, log: vscode.OutputChannel): Promise<string | undefined> {
+  const a = remote.adoptable(agent.readSaved(), settings().get<unknown>('server'));
+  if (!a) { return undefined; }
+  const host = remote.hostOf(a.server);
+  // The secret and the record first: the setting is what switches every window to
+  // remote mode, and one that opens then must find the password saved and the machine
+  // set up, or it would offer a set-up that is already done.
+  await remote.savePassword(context.secrets, a.server, a.password);
+  await agent.recordSetUp(context, a.server);
+  // A window that opened at the same moment may have switched first: it says so, and
+  // this one only follows.
+  if (router.mode().kind !== 'local') { return undefined; }
+  await settings().update('server', a.server, vscode.ConfigurationTarget.Global);
+  log.appendLine(`connected to ${a.server}, taken over from ${agent.savedPath()}`);
+  try {
+    const b = router.bundled(context);
+    if (router.installBinariesIfChanged(b)) { log.appendLine(`installed ${b.version || 'the bundled build'} into ${router.binDir()}`); }
+  } catch (e) {
+    log.appendLine(`could not install the agent: ${(e as Error).message}`);
+  }
+  const w = settings().get<boolean>('configureClaudeCode', true) ? await wireWrapper(log) : 'off';
+  const why =
+    w === 'off' ? 'agentRouter.configureClaudeCode is off, so the wrapper was left alone'
+    : w === 'no-wrapper' ? 'this build carries no wrapper'
+    : w === 'no-claude-code' ? 'the Claude Code extension is not installed'
+    : w === 'failed' ? 'the wrapper setting could not be written; see the log'
+    : '';
+  const lead = `This machine's agent connects to ${host}, so Agent Router now works through that server`;
+  void vscode.window.showInformationMessage(why
+    ? `${lead}. New Claude Code sessions can be followed from the phone but not typed into: ${why}.`
+    : `${lead}: new Claude Code sessions can be followed and typed into from the phone.`);
+  return a.server;
 }
 
 /** What a window does when it opens in remote mode: install the bundled build if it

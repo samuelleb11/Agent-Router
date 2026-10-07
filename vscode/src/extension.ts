@@ -6,6 +6,9 @@
 // In remote mode (`agentRouter.server` set) no router runs here: a hosted one does the
 // work, and this machine runs the agent instead (see connect.ts and agent.ts). Every
 // command below first asks which mode it is in; the local branches are as they were.
+// A window that opens in local mode on a machine the server's install script set up
+// (the agent's file names a server, VS Code does not) switches to remote mode before
+// anything local starts.
 
 import * as vscode from 'vscode';
 import * as router from './router';
@@ -90,7 +93,11 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // Not awaited: activation must not wait on a daemon. The status bar says how it went.
   void (async () => {
-    const m = router.mode();
+    // A machine the server's install script set up is taken over before anything local
+    // starts. Writing the setting reaches the listener above too, which only syncs the
+    // palette and the status bar, so the agent is started once, by startUp below.
+    const adopted = router.mode().kind === 'local' ? await connect.adopt(context, log) : undefined;
+    const m: remote.Mode = adopted ? { kind: 'remote', server: adopted } : router.mode();
     if (m.kind === 'remote') {
       await connect.startUp(context, log, m.server);
       void status.refresh();

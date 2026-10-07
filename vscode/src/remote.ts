@@ -1,7 +1,8 @@
 // Remote mode, without the editor: whether `agentRouter.server` makes this a remote
 // machine, the server's address in one canonical form, the password this machine holds
-// for it, what the server answers, and the agent's command lines. Nothing here imports
-// `vscode`, so all of it runs under plain Node (see src/test).
+// for it, what the server answers, the agent's command lines, and what to take over from
+// a set-up the agent made without the editor. Nothing here imports `vscode`, so all of
+// it runs under plain Node (see src/test).
 //
 // Remote mode means a hosted router (`agent-router serve --server`, see
 // docs/hosting-on-kubernetes.md) does the proxying and keeps what it records, and this
@@ -63,6 +64,24 @@ export function decideMode(setting: unknown): Mode {
   const n = normaliseServerUrl(setting);
   if (!n.ok) { return { kind: 'invalid', value: clip(setting.trim(), 80), why: n.why }; }
   return n.url ? { kind: 'remote', server: n.url } : { kind: 'local' };
+}
+
+/** What to take over from the agent's own file (`agent.json`, which `agent install`
+ *  writes) on a machine the server's install script set up, where VS Code was never told
+ *  of the server. Only from local mode: a setting that names a server, or one that is not
+ *  usable, is the person's, and the file does not outvote it. Undefined for anything but
+ *  a usable address with a password beside it; after `agent uninstall` the file keeps
+ *  only the machine's id. The password is given back as the agent keeps it, since it is
+ *  the one the agent connects with. */
+export function adoptable(agentJson: string | undefined, setting: unknown): { server: string; password: string } | undefined {
+  if (decideMode(setting).kind !== 'local' || !agentJson) { return undefined; }
+  let v: unknown;
+  try { v = JSON.parse(agentJson); } catch { return undefined; }
+  if (typeof v !== 'object' || v === null) { return undefined; }
+  const { server, password } = v as { server?: unknown; password?: unknown };
+  if (typeof server !== 'string' || typeof password !== 'string' || !password.trim()) { return undefined; }
+  const n = normaliseServerUrl(server);
+  return n.ok && n.url ? { server: n.url, password } : undefined;
 }
 
 /** The host (and port, when it is not the default) to name a server by in messages. */

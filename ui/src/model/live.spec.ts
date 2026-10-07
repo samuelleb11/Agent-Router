@@ -8,8 +8,8 @@
 //
 // One check came with the hosting work (60cf5f8): "sessions from two machines say which, and one
 // project on each stays apart". It is ported to what was decided since, on 2026-10-05: each machine
-// heads its own part of the list, as on the phones (SE-C219). The hosted router's wording is the
-// committed page's (SE-C187).
+// heads its own part of the list, as on the phones (SE-C219). The hosted router's empty list says
+// how to connect a machine, as decided on 2026-10-07 (SE-C187).
 import { existsSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import wire from './fixtures/wire.sse?raw';
@@ -22,6 +22,7 @@ import { findPlaceholder, findScopes, findView } from './search';
 import {
   AGENTLESS,
   OFF_MACHINE,
+  WITH_VS_CODE,
   answerBody,
   answerTarget,
   asideNotice,
@@ -42,6 +43,7 @@ import {
   header,
   headingOf,
   hitTarget,
+  installCommands,
   listHeader,
   listView,
   notice,
@@ -896,6 +898,14 @@ describe('the live view, as scripts/check-live-ui.js checked it', () => {
     expect(isHosted({})).toBe(false);
     expect(emptyList(hosted), "a hosted router's empty list").toBe(AGENTLESS);
     expect(emptyList(hosted), 'a hosted router blamed the week').not.toMatch(/in the last week/);
+    // And how to connect a machine: the installer the router serves, for each platform, at the
+    // page's own origin, which asks there for the router's password.
+    expect(AGENTLESS, 'the hosted sentence').toMatch(/asks for this router’s password\.$/);
+    expect(installCommands('https://router.example'), 'the commands that connect a machine').toEqual([
+      { label: 'macOS and Linux', command: 'curl -fsSL https://router.example/agent/install.sh | sh' },
+      { label: 'Windows (PowerShell)', command: 'irm https://router.example/agent/install.ps1 | iex' },
+    ]);
+    expect(WITH_VS_CODE, 'what the installer adds where VS Code is').toMatch(/also adds the Agent Router extension/);
     expect(asksWrapper(hosted), 'a hosted router asked for a wrapper it has no use for').toBe(false);
     expect(wrapperWarning(SHIM, hosted), 'a hosted router warned of a wrapper it has no use for').toBeNull();
     // A search hit cannot be opened there either, and says why rather than "no longer listed".

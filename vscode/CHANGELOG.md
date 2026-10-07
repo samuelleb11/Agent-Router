@@ -6,6 +6,10 @@
   hosted router. The password is kept in VS Code's secret storage; the extension installs
   and starts the agent (`agent-router agent`) instead of a router, reads the quota from
   the server, and opens its pages in the browser. **Disconnect from the Server** undoes it.
+- A machine set up by the server's install script (`agent-router agent install`) is taken
+  over when a window opens, before any local router starts: the password is copied from
+  the agent's file into secret storage, `agentRouter.server` is set, and Claude Code is
+  handed the wrapper.
 - Windows: `.exe` programs, the agent started without a console window, and a
   `win32-x64` package.
 

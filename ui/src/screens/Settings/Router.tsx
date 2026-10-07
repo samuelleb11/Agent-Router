@@ -4,13 +4,14 @@
 import { useQuery } from '@tanstack/react-query';
 import { CodeSnippet } from '@carbon/react';
 import { keys } from '~/app/query';
+import { CopyButton } from '~/components/CopyButton';
 import { Page } from '~/components/Page';
 import { readHealth } from '~/data/router';
 import { useAuth } from '~/data/settings';
 import { refusalText } from '~/lib/errors';
 import { since } from '~/lib/freshness';
 import { connectSnippet, notes, routerFacts } from '~/model/settings';
-import { CopyButton, Explain, Fact, Facts, Words } from './parts';
+import { Explain, Fact, Facts, Words } from './parts';
 import styles from './Settings.module.scss';
 
 export default function RouterPage() {

@@ -737,6 +737,22 @@ pub mod service {
         plist_path().map(|p| p.exists()).unwrap_or(false)
     }
 
+    /// For a machine that runs the agent instead (`agent install`): the login item out of
+    /// launchd, which stops a router it started, and its plist kept aside. Says what it did;
+    /// nothing when there was no login item.
+    pub fn retire() -> Result<Vec<String>> {
+        let path = plist_path()?;
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        let _ = run("launchctl", &["bootout", &format!("gui/{}/{SERVICE_LABEL}", uid())]);
+        let kept = super::set_aside(&path, &data_dir()?)?;
+        Ok(vec![
+            "out of launchd, and a router it started has stopped".to_string(),
+            format!("its plist is kept as {}", kept.display()),
+        ])
+    }
+
     fn which(bin: &str) -> Option<PathBuf> {
         let out = std::process::Command::new("/usr/bin/which").arg(bin).output().ok()?;
         out.status.success().then(|| {
@@ -1073,6 +1089,25 @@ pub mod service {
             || super::profile_autostart::is_registered()
     }
 
+    /// For a machine that runs the agent instead (`agent install`): the unit stopped and
+    /// disabled and its file kept aside, and the shell-profile line taken out. Says what it
+    /// did; nothing when there was neither.
+    pub fn retire() -> Result<Vec<String>> {
+        let mut done = Vec::new();
+        if super::profile_autostart::is_registered() {
+            super::profile_autostart::uninstall()?;
+            done.push("its line in the shell profile is removed".to_string());
+        }
+        let path = unit_path()?;
+        if path.exists() {
+            let _ = run("systemctl", &["--user", "disable", "--now", UNIT]);
+            let kept = super::set_aside(&path, &data_dir()?)?;
+            let _ = run("systemctl", &["--user", "daemon-reload"]);
+            done.push(format!("{UNIT} is stopped and disabled, and kept as {}", kept.display()));
+        }
+        Ok(done)
+    }
+
     pub(super) fn run(cmd: &str, args: &[&str]) -> Result<()> {
         let out = std::process::Command::new(cmd)
             .args(args)
@@ -1113,9 +1148,29 @@ pub mod service {
         false
     }
 
+    /// A local router never ran here, so it left no login item.
+    pub fn retire() -> Result<Vec<String>> {
+        Ok(Vec::new())
+    }
+
     pub fn path() -> Result<PathBuf> {
         Err(anyhow!("no service file on this platform"))
     }
+}
+
+/// Move a retired login item's file into `dir`, named for what it was: kept, so the step
+/// can be undone by hand, but no longer anywhere the system reads at login. A rename where
+/// it can be, a copy where the two are on different volumes.
+#[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
+fn set_aside(file: &Path, dir: &Path) -> Result<PathBuf> {
+    std::fs::create_dir_all(dir)?;
+    let name = file.file_name().ok_or_else(|| anyhow!("{} names no file", file.display()))?;
+    let kept = dir.join(format!("{}.retired", name.to_string_lossy()));
+    if std::fs::rename(file, &kept).is_err() {
+        std::fs::copy(file, &kept).with_context(|| format!("keeping {}", file.display()))?;
+        std::fs::remove_file(file).with_context(|| format!("removing {}", file.display()))?;
+    }
+    Ok(kept)
 }
 
 /// Take `AGENT_ROUTER_BIND` out of the login item, if one registered by an older build
@@ -1156,6 +1211,28 @@ fn without_bind_env(text: &str) -> String {
         .filter(|line| !line.contains("AGENT_ROUTER_BIND"))
         .map(|line| format!("{line}\n"))
         .collect()
+}
+
+#[cfg(test)]
+mod set_aside_tests {
+    use super::set_aside;
+
+    /// A retired login item leaves the folder the system reads at login, and is kept whole,
+    /// under a name that says what it was.
+    #[test]
+    fn a_retired_login_item_is_kept_where_nothing_starts_it() {
+        let root = std::env::temp_dir().join(format!("ar-retire-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let agents = root.join("LaunchAgents");
+        std::fs::create_dir_all(&agents).unwrap();
+        let plist = agents.join("ca.whnet.agent-router.plist");
+        std::fs::write(&plist, "<plist/>").unwrap();
+        let kept = set_aside(&plist, &root.join("data")).unwrap();
+        assert_eq!(kept, root.join("data").join("ca.whnet.agent-router.plist.retired"));
+        assert!(!plist.exists());
+        assert_eq!(std::fs::read_to_string(&kept).unwrap(), "<plist/>");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
 
 #[cfg(test)]

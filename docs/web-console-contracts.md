@@ -2576,9 +2576,8 @@ defect.
   says "That session is no longer listed." by the hit, a hosted router says why it cannot open it —
   the session is not on a machine connected to it — and a list that could not be read says that;
   none of them ever reads "no longer listed" for another reason. *Why:* "no longer" is the wrong
-  reason when the router lists nothing or could not be asked. The committed page gives the hosted
-  reason in its empty-list sentence (SE-C187); the working tree, uncommitted, gives it one of its
-  own, "That session is not on a connected machine". *Regression:* no. *Source:*
+  reason when the router lists nothing or could not be asked. A hosted router gives its reason as
+  "That session is not on a connected machine" (`OFF_MACHINE`). *Regression:* no. *Source:*
   `assets/live.html:466, 1533-1543`, `scripts/check-live-ui.js:1113-1115`. *Today:* broken — a list
   read that fails is taken for an empty list, so it reads "no longer listed", and the notice goes to
   the composer, which Find hides.
@@ -2656,14 +2655,21 @@ defect.
   working against it. *Why:* a hosted router has no Mac to assume. *Regression:* no. *Source:*
   `assets/live.html:415-419`; check
   `a hosted router says why its list is empty, and warns of no wrapper`. *Under decision J:* the console ships inside the router it reads, so the older-router case here never reaches it; the rest of the rule stands, and the phones still meet older routers.
-- **SE-C187** A hosted router's empty list says why it is empty — its sessions come only from
-  machines that run the Agent Router agent — and never blames the week as a local router's empty
-  list does. *Why:* live sessions run on machines, which a hosted router reaches only through their
-  agent, so blaming the week would be false. The committed sentence is "Live sessions need the Agent
-  Router agent on the machine that runs them. A hosted router does not have one yet"; the working
-  tree, uncommitted, is changing it to name the install command,
-  `agent-router agent install --server <this router's address>`. *Regression:* no. *Source:*
-  `assets/live.html:415-421, 647-648`, `scripts/check-live-ui.js:1106-1111`.
+- **SE-C187** A hosted router's empty list says why it is empty and how to connect a machine, and
+  never blames the week as a local router's empty list does. Under "No sessions here yet" it says
+  "No machine has connected yet. Run this on a machine to connect it — it asks for this router’s
+  password.", then the installer's command for each platform at the page's own origin, each
+  labelled and with its own copy button — "macOS and Linux",
+  `curl -fsSL <origin>/agent/install.sh | sh`, and "Windows (PowerShell)",
+  `irm <origin>/agent/install.ps1 | iex` — and last "With VS Code’s code command on the machine,
+  the script also adds the Agent Router extension, so its sessions can be typed into from here and
+  from the phone; without it, they can only be followed." *Why:* live sessions run on machines,
+  which a hosted router reaches only through their agent, so blaming the week would be false; and
+  the router serves the installer itself, without a password, so the page can give the command to
+  run rather than name a program the reader has nowhere to get. Decided on 2026-10-07, when the
+  sentence named `agent-router agent install --server <this router's address>` with its address
+  left a placeholder. *Regression:* no. *Source:* `assets/live.html:415-421, 647-648`,
+  `scripts/check-live-ui.js:1106-1111`.
 - **SE-C188** A hosted router never warns that an editor is not wrapped, and the wrapper's state is
   not even asked for. *Why:* it wraps nothing and has no editor to warn about. *Regression:*
   no. *Source:* `assets/live.html:624-628`, `scripts/check-live-ui.js:1112`.
@@ -3646,7 +3652,8 @@ URLs that must keep answering, development, and what a hosted router changes.
   `Origin: null`, which the guard refuses. *Regression:* no. *Source:*
   `vscode/src/dashboard.ts:21-24`, `src/guard.rs:139-140`, `docs/hosting-on-kubernetes.md:220-223`.
 - **SV-C18** `/_router/health` stays outside the password and answers the pid, version and
-  build; the console reads the router's version there, and nothing else it needs is exempt.
+  build; the console reads the router's version there, and nothing else it needs is exempt (a
+  hosted router's agent installer is open too, SV-C40, but the console never reads it).
   *Why:* the handover probe and the kubelet read health before they have anything to
   authenticate with. *Regression:* no. *Source:* `src/guard.rs:197-201`,
   `src/api.rs:1510-1520`, `assets/index.html:969`.
@@ -3783,8 +3790,11 @@ URLs that must keep answering, development, and what a hosted router changes.
 ### A hosted router
 
 - **SV-C40** On a hosted router every caller presents the password, loopback included — a
-  `kubectl port-forward` to localhost too — and only `/_router/health` is open. *Why:* in a
-  pod, loopback is a port-forward or a mesh sidecar, not the owner at the keyboard.
+  `kubectl port-forward` to localhost too — and only `/_router/health` and the agent's
+  installer are open: `/agent/install.sh`, `/agent/install.ps1` and the files they fetch, by
+  exact path (`src/downloads.rs`). *Why:* in a pod, loopback is a port-forward or a mesh
+  sidecar, not the owner at the keyboard; the installer holds nothing secret, and a machine
+  being connected has no password to present until the script asks for it.
   *Regression:* no. *Source:* `src/guard.rs:23-27`, `src/guard.rs:197-201`,
   `src/auth.rs:24-26`, `src/main.rs:505-510`, `docs/hosting-on-kubernetes.md:149-151`.
 - **SV-C41** A hosted router answers to the names it was given (`--allow-host` and the
@@ -3806,9 +3816,9 @@ URLs that must keep answering, development, and what a hosted router changes.
   do instead. *Regression:* yes — check "a per-session action a hosted router refuses says
   what it said". *Source:* `src/hosted.rs:1-13`, `src/hosted.rs:36-68`,
   `scripts/check-live-ui.js:1053-1091`.
-- **SV-C44** On a hosted router Sessions lists nothing and says why — live sessions need the
-  Agent Router agent on the machine that runs them, which a hosted router does not have yet —
-  never "No sessions in the last week", and warns of no unwrapped editor. *Why:* the empty
+- **SV-C44** On a hosted router with no machine connected, Sessions lists nothing and says why,
+  with the commands that connect one (SE-C187) — never "No sessions in the last week", and warns
+  of no unwrapped editor. *Why:* the empty
   list is a fact about the router, not about the reader's week. *Regression:* yes — check "a
   hosted router says why its list is empty, and warns of no wrapper". *Source:*
   `assets/live.html:415-421`, `assets/live.html:624-655`, `src/hosted.rs:32-33`,

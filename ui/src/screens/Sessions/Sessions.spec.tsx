@@ -433,14 +433,33 @@ describe('arriving at an entry', () => {
 });
 
 describe('a hosted router', () => {
-  it('SE-C187, SE-C188: says why its list is empty, never blaming the week, and never asks after a wrapper', async () => {
+  it('SE-C187, SE-C188: says why its list is empty and how to connect a machine, never blaming the week, and never asks after a wrapper', async () => {
     const router = stubRouter((req) => {
       if (req.method === 'GET' && req.path === '/api/auth') return json({ mode: 'server' });
       if (req.method === 'GET' && req.path === '/api/live/sessions') return json([]);
       return undefined;
     });
     renderSessions();
-    expect(await screen.findByText(/A machine shows its sessions here once it runs the Agent Router agent/)).toBeInTheDocument();
+    expect(await screen.findByText(/^No machine has connected yet\. Run this on a machine to connect it/)).toBeInTheDocument();
+    // The installer's command for each platform, at the page's own origin, each with its own copy
+    // button.
+    const commands = [
+      ['macOS and Linux', `curl -fsSL ${location.origin}/agent/install.sh | sh`],
+      ['Windows (PowerShell)', `irm ${location.origin}/agent/install.ps1 | iex`],
+    ] as const;
+    const writeText = vi.fn(async (_text: string): Promise<void> => {});
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    try {
+      for (const [label, command] of commands) {
+        const install = screen.getByRole('group', { name: label });
+        expect(within(install).getByRole('textbox', { name: `The command to run on ${label}` })).toHaveTextContent(command);
+        await press(within(install).getByRole('button', { name: 'Copy command' }));
+        expect(writeText, label).toHaveBeenLastCalledWith(command);
+      }
+    } finally {
+      Reflect.deleteProperty(navigator, 'clipboard');
+    }
+    expect(screen.getByText(/the script also adds the Agent Router extension, so its sessions can be typed into from here and from the phone/)).toBeInTheDocument();
     expect(screen.queryByText('No sessions in the last week.')).toBeNull();
     expect(router.gets('/api/setup/shim')).toEqual([]);
   });

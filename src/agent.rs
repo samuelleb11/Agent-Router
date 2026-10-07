@@ -632,6 +632,20 @@ async fn install(args: &[String]) -> Result<()> {
     store_saved(&saved)?;
     println!("saved     {} (owner-only)", saved_path()?.display());
 
+    // A machine that ran the router itself still has its login item, which starts
+    // `bin/agent-router` — the path `install_binary` is about to give the agent — so at the
+    // next login it would start this build as an empty local router. The agent replaces it.
+    match crate::setup::service::retire() {
+        Ok(done) if done.is_empty() => {}
+        Ok(done) => {
+            println!("router    the local router's login item is retired: this machine runs the agent instead");
+            for line in done {
+                println!("          {line}");
+            }
+        }
+        Err(e) => println!("router    the local router's login item could not be retired ({e:#})"),
+    }
+
     if args.no_config {
         println!("config    left alone (--no-config)");
     } else {

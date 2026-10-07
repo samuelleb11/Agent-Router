@@ -148,7 +148,9 @@ and the live Mac router are unaffected.
   Any other name gets 403, naming what the router does answer to.
 - **No address is exempt from the password**, loopback included. In a pod, loopback means
   a port-forward or a mesh sidecar, not the owner at the keyboard. `/_router/health` stays
-  open.
+  open, and so does the agent's installer: `/agent/install.sh`, `/agent/install.ps1` and
+  the files they fetch, none of them secret (`src/downloads.rs`,
+  [hosting-machine-agent.md](hosting-machine-agent.md#connecting-a-machine)).
 - **The password is pinned at every start.** If the stored record already verifies the
   variable, it is kept. Otherwise it is replaced.
 - **`POST /api/auth` answers 409 while the password is pinned:** "the password is set by

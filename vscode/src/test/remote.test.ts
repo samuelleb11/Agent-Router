@@ -63,6 +63,51 @@ test('the mode follows agentRouter.server', () => {
   assert.equal(remote.decideMode(8787).kind, 'invalid');
 });
 
+test('a set-up the install script made is taken over from local mode only, and only whole', () => {
+  const saved = (o: unknown) => JSON.stringify(o, null, 2);
+  const file = saved({ server: 'https://Router.example.com/', password: 'hunter22', machine: 'c0ffee', label: null });
+  const taken = { server: 'https://router.example.com', password: 'hunter22' };
+  assert.deepEqual(remote.adoptable(file, undefined), taken);
+  assert.deepEqual(remote.adoptable(file, null), taken);
+  assert.deepEqual(remote.adoptable(file, ''), taken);
+  assert.deepEqual(remote.adoptable(file, '  '), taken);
+  assert.deepEqual(remote.adoptable(saved({ server: 'http://192.0.2.10:8787', password: ' pass:with:colons ' }), undefined),
+    { server: 'http://192.0.2.10:8787', password: ' pass:with:colons ' }, 'the password as the agent keeps it');
+
+  // A setting that names a server, or is not usable, is the person's.
+  assert.equal(remote.adoptable(file, 'https://router.example.com'), undefined);
+  assert.equal(remote.adoptable(file, 'https://other.example.com'), undefined);
+  assert.equal(remote.adoptable(file, 'https://router.example.com/sub'), undefined);
+  assert.equal(remote.adoptable(file, 8787), undefined);
+
+  // No file, or not the agent's.
+  assert.equal(remote.adoptable(undefined, undefined), undefined);
+  assert.equal(remote.adoptable('', undefined), undefined);
+  assert.equal(remote.adoptable('{"server": "https://router.example.com", "password": ', undefined), undefined);
+  assert.equal(remote.adoptable('null', undefined), undefined);
+  assert.equal(remote.adoptable('"https://router.example.com"', undefined), undefined);
+  assert.equal(remote.adoptable('[]', undefined), undefined);
+
+  // After `agent uninstall` only the machine's id is left.
+  assert.equal(remote.adoptable(saved({ server: null, password: null, machine: 'c0ffee', label: null }), undefined), undefined);
+  assert.equal(remote.adoptable(saved({ machine: 'c0ffee' }), undefined), undefined);
+
+  // Half a set-up, or not text where text belongs.
+  assert.equal(remote.adoptable(saved({ server: 'https://router.example.com' }), undefined), undefined);
+  assert.equal(remote.adoptable(saved({ password: 'hunter22' }), undefined), undefined);
+  assert.equal(remote.adoptable(saved({ server: 'https://router.example.com', password: '' }), undefined), undefined);
+  assert.equal(remote.adoptable(saved({ server: 'https://router.example.com', password: ' \n' }), undefined), undefined);
+  assert.equal(remote.adoptable(saved({ server: 'https://router.example.com', password: 22 }), undefined), undefined);
+  assert.equal(remote.adoptable(saved({ server: 42, password: 'hunter22' }), undefined), undefined);
+
+  // An address the extension could not use either.
+  assert.equal(remote.adoptable(saved({ server: '', password: 'hunter22' }), undefined), undefined);
+  assert.equal(remote.adoptable(saved({ server: '  ', password: 'hunter22' }), undefined), undefined);
+  assert.equal(remote.adoptable(saved({ server: 'https://router.example.com/agent', password: 'hunter22' }), undefined), undefined);
+  assert.equal(remote.adoptable(saved({ server: 'ftp://router.example.com', password: 'hunter22' }), undefined), undefined);
+  assert.equal(remote.adoptable(saved({ server: 'https://me:pw@router.example.com', password: 'hunter22' }), undefined), undefined);
+});
+
 test('the host names a server in messages', () => {
   assert.equal(remote.hostOf('https://router.example.com'), 'router.example.com');
   assert.equal(remote.hostOf('http://192.0.2.10:8787'), '192.0.2.10:8787');

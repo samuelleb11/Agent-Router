@@ -65,6 +65,7 @@ impl Lab {
             allow_hosts: Vec::new(),
             public_url: server.then(|| "https://router.invalid".to_string()),
             push_keys_dir: None,
+            agents_dir: None,
             drain: Duration::from_secs(1),
         };
         let (capture, _) = tokio::sync::mpsc::channel(1);

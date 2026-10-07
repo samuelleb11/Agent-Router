@@ -87,6 +87,16 @@ export function uninstall(log: vscode.OutputChannel): Promise<Ran> {
  *  nothing anywhere. */
 export const logPath = (): string => path.join(router.dataDir(), 'logs', 'agent.log');
 
+/** The file `agent install` saves, owner-only: the server, its password and this
+ *  machine's id. Read here only to take over a set-up made without the editor. */
+export const savedPath = (): string => path.join(router.dataDir(), 'agent.json');
+
+/** Its text, or undefined: on most machines there is none, and one that cannot be read
+ *  is as good as none. */
+export function readSaved(): string | undefined {
+  try { return fs.readFileSync(savedPath(), 'utf8'); } catch { return undefined; }
+}
+
 function openLog(): number | 'ignore' {
   try {
     fs.mkdirSync(path.dirname(logPath()), { recursive: true });

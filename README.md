@@ -249,7 +249,15 @@ agent-router serve --server --bind 0.0.0.0 --data-dir /data \
   request to the one that holds it. A machine that goes offline reads as offline, not as
   closed.
 
-**Joining a machine.** `agent-router agent install --server <url>` asks for the password
+**Joining a machine.** The router hands out its own agent. On the machine, run
+`curl -fsSL https://<router>/agent/install.sh | sh` (macOS, Linux) or
+`irm https://<router>/agent/install.ps1 | iex` (Windows); the live page shows both with
+the router's address filled in. The script downloads the agent from the router and runs
+`agent install`, and where VS Code's `code` command exists it installs this extension from
+the router too, which takes the set-up over and wires the wrapper so sessions can be typed
+into. See [docs/hosting-machine-agent.md](docs/hosting-machine-agent.md#connecting-a-machine).
+
+`agent-router agent install --server <url>` asks for the password
 and checks it against the server, points Claude Code at the server
 (`ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN` under `env` in `~/.claude/settings.json`,
 or in one project's `.claude/settings.local.json` with `--project <dir>`), and starts the
@@ -283,7 +291,10 @@ so reaching it is kept as hard as it can be:
 
 A hosted router changes layers 1, 3 and 5. It listens only where it was told. It answers
 to the names it was given as well as to IP addresses. It asks everyone for the password,
-loopback included, because in a container loopback is a port-forward, not you.
+loopback included, because in a container loopback is a port-forward, not you. Besides
+health, only the agent's installer is open (`/agent/install.sh`, `/agent/install.ps1` and
+the files they fetch): nothing in it is secret, and a machine being connected has nothing
+to present yet.
 
 Inbound `authorization` and `x-api-key` headers are discarded, never stored. Captured
 bodies may contain your source code — the database is local and gitignored.

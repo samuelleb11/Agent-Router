@@ -1,7 +1,12 @@
 # syntax=docker/dockerfile:1
 #
-# Agent Router as a hosted server (docs/hosting-on-kubernetes.md): the router binary and
-# its licence, and nothing else.
+# Agent Router as a hosted server (docs/hosting-on-kubernetes.md): the router binary, its
+# licence, and the machine agent it hands out to the developer machines it serves.
+#
+# The agent comes from the package builds, not from here: CI runs scripts/stage-agents.sh
+# over their output before this, which puts every platform's agent and editor package in
+# dist/agents. A build without them still works; its installer then says it has nothing
+# to hand out (src/downloads.rs).
 #
 #   docker build -t agent-router .
 #   docker run -p 8787:8787 -v agent-router:/data \
@@ -48,6 +53,10 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
  && cargo build --release --locked -p agent-router \
  && install -D target/release/agent-router /out/agent-router \
  && mkdir -p /out/data
+# The agent's files, when this build was given them: an empty directory otherwise.
+RUN mkdir -p /out/agents \
+ && if [ -d dist/agents ]; then cp -R dist/agents/. /out/agents/; fi \
+ && ls -lR /out/agents
 
 # ---------------------------------------------------------------- runtime
 # glibc, libgcc, libssl and CA certificates, and nothing else: no shell, no package manager.
@@ -56,6 +65,8 @@ FROM gcr.io/distroless/cc-debian12:nonroot
 COPY --from=router /out/agent-router /usr/local/bin/agent-router
 # Where a Debian system keeps a package's licence.
 COPY LICENSE /usr/local/share/doc/agent-router/
+# Where the router looks for them by default, relative to itself (`--agents-dir`).
+COPY --from=router /out/agents /usr/local/share/agent-router/agents
 # The directory `--data-dir` names below: the store, the token file, dropped key files.
 # Created here because the image has no shell to create it at run time, and owned by the
 # user the router runs as.

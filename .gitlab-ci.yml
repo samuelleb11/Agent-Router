@@ -156,6 +156,21 @@ check chart:
     # What `publish chart` runs, so a packaging failure stops a merge and not a publish.
     - scripts/package-chart.sh 0 "$CI_COMMIT_SHA" registry.example.com/check/agent-router /tmp/chart
 
+# The installer a hosted router serves Windows (src/downloads/install.ps1), parsed by
+# PowerShell itself: no Windows machine runs it before a user does, and the Rust tests can
+# only parse the shell one. The address it is served with stands in for the placeholder.
+check installer:
+  stage: check
+  extends: .rules-agent-router
+  needs: []
+  image: mcr.microsoft.com/powershell:latest
+  script:
+    - sed "s|@SERVER@|'https://router.example.com'|" src/downloads/install.ps1 > /tmp/install.ps1
+    - >-
+      pwsh -NoProfile -Command '$e = $null;
+      [System.Management.Automation.Language.Parser]::ParseFile("/tmp/install.ps1", [ref]$null, [ref]$e) | Out-Null;
+      if ($e) { $e | ForEach-Object { Write-Host $_.Extent.StartLineNumber $_.Message }; exit 1 }'
+
 # The web console (ui/), which every router binary embeds, built once. The binary jobs and the
 # console check take its ui/dist through `needs`, so the Mac runner needs no pnpm, and
 # scripts/build-target.sh, finding ui/dist there, does not build it again. `pnpm run build` is
@@ -200,13 +215,18 @@ check console:
 
 # ---------------------------------------------------------------- build
 
-# The image starts at once: it builds its own console and binary, and no check stage job
-# gates it. What is published is gated instead (publish chart needs the checks).
+# The image builds its own console and router, and carries the machine agent the router
+# hands out (src/downloads.rs): every platform's agent and editor package, from the build
+# jobs below, so it waits for them. No check stage job gates it; what is published is
+# gated instead (publish chart needs the checks).
 build docker image:
   extends:
     - .docker-build
     - .rules-agent-router
-  needs: []
+  needs: ["build:macos", "build:linux", "build:windows"]
+  before_script:
+    - !reference [.docker-setup, before_script]
+    - scripts/stage-agents.sh
 
 # The extension builds in every pipeline the workflow lets through, as it did before there
 # was a workflow: a job with no rules is left out of merge request pipelines. It needs only
@@ -221,8 +241,9 @@ build docker image:
   cache:
     key: cargo-$CI_JOB_NAME
     paths: [.cargo/registry, target]
+  # The bare agent too, which the image hands out beside the packages.
   artifacts:
-    paths: [dist/*.vsix]
+    paths: [dist/*.vsix, dist/*/agent-router, dist/*/agent-router.exe]
     expire_in: 2 weeks
 
 # Both Macs' packages, cross-built on Linux through zig with no Apple SDK: the programs link
@@ -257,9 +278,8 @@ build:linux:
     - scripts/package-vsix.sh linux-arm64
 
 # Windows is the GNU ABI, cross-built through zig as Linux is, so no Windows runner. Only
-# the machine agent runs there (docs/hosting-machine-agent.md). Its package goes to the
-# release's registry but not to the marketplaces, which `publish` leaves to the build jobs
-# it needs, until it has been tried on a Windows machine.
+# the machine agent runs there (docs/hosting-machine-agent.md). Its package ships wherever
+# the others do.
 build:windows:
   extends: .vsix-build
   image: rust:1-bookworm
@@ -366,7 +386,7 @@ publish:
   image: node:22
   rules:
     - if: $CI_COMMIT_TAG =~ /^v/ && ($VSCE_PAT || $OVSX_PAT)
-  needs: ["build:macos", "build:linux"]
+  needs: ["build:macos", "build:linux", "build:windows"]
   script:
     - |
       for f in dist/*.vsix; do

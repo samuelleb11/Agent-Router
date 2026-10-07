@@ -20,6 +20,7 @@ mod capture;
 mod config;
 mod console;
 mod db;
+mod downloads;
 mod fcm;
 mod fold;
 mod forecast;
@@ -77,6 +78,8 @@ SERVE OPTIONS:
   --public-url <url>     the https URL clients use; its host is allowed too
   --push-keys-dir <dir>  a read-only directory of push keys (AuthKey_<id>.p8, or a
                          Firebase service-account JSON)
+  --agents-dir <dir>     the agent's files its installer hands out, one directory per
+                         platform (default <binary>/../share/agent-router/agents)
   --drain-seconds <n>    how long a stop waits for open requests (default 20)
 
 INSTALL OPTIONS:

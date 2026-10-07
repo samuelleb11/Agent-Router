@@ -5,10 +5,11 @@
 import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 import { Button, CodeSnippet, Form, InlineLoading, PasswordInput, RadioTile, TextInput, Tile, TileGroup } from '@carbon/react';
 import { keys } from '~/app/query';
+import { CopyButton } from '~/components/CopyButton';
 import { addAccount, probeProfile, readLogin, startSignin, useReread, type AccountRow } from '~/data/settings';
 import { accountSources, addForm, isHosted, notes, type Auth, type Source } from '~/model/settings';
 import { accountId, looksLikeEmail, nameProblem, PROFILE_POLL_MS, running, signin, SIGNIN_POLL_MS, signinWords, TOKEN_NEEDED, tokenProblem, type Signin } from './rules';
-import { CopyButton, Explain, Outcome, ReadFailed, Words } from './parts';
+import { Explain, Outcome, ReadFailed, Words } from './parts';
 import styles from './Settings.module.scss';
 
 /// Each way in, as its choice says it (ST-C40, ST-C43).

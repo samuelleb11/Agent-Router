@@ -29,6 +29,11 @@ password, checks both with the server, and keeps the password in VS Code's secre
 storage, never in settings. Use an `https://` address: over plain `http://` the password
 crosses the network in the clear.
 
+A machine set up from the server's install script, which runs `agent-router agent
+install`, needs none of that: the first window to open finds the server and the password
+in the agent's own file, keeps the password in secret storage, sets `agentRouter.server`
+and the wrapper, and says so, instead of starting a router on this machine.
+
 No router runs on this machine then. Instead:
 
 - Claude Code's API traffic goes to the server, which signs it with an account added

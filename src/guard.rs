@@ -196,9 +196,14 @@ pub async fn layer(
     }
     // Layer 5. Health stays open: it is pid and version, and the handover probe in
     // `lifecycle` reads it before it has anything to authenticate with — as do the
-    // kubelet's probes, for a hosted router. A hosted router asks loopback too.
+    // kubelet's probes, for a hosted router. A hosted router asks loopback too, and
+    // leaves its agent installer open: a machine being connected has no password to
+    // present until the script asks for one, and nothing it fetches is secret
+    // (`downloads`).
     let asks = !peer.ip().is_loopback() || state.config.server;
-    if asks && req.uri().path() != "/_router/health" {
+    let path = req.uri().path();
+    let open = path == "/_router/health" || (state.config.server && crate::downloads::is_open(path));
+    if asks && !open {
         match state.auth.check(req.headers()).await {
             Verdict::Ok => {}
             Verdict::NoPassword => {

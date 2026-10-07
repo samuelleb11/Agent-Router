@@ -44,6 +44,9 @@ pub struct Config {
     pub public_url: Option<String>,
     /// Server mode: a read-only directory holding push keys (a mounted Secret).
     pub push_keys_dir: Option<PathBuf>,
+    /// Server mode: the agent's programs and packages the installer hands out
+    /// (`downloads`), one directory per platform.
+    pub agents_dir: Option<PathBuf>,
     /// Server mode: how long SIGTERM waits for open requests.
     pub drain: Duration,
 }
@@ -59,6 +62,7 @@ pub struct ServeArgs {
     pub allow_hosts: Vec<String>,
     pub public_url: Option<String>,
     pub push_keys_dir: Option<PathBuf>,
+    pub agents_dir: Option<PathBuf>,
     pub drain_seconds: Option<u64>,
 }
 
@@ -99,6 +103,7 @@ impl ServeArgs {
                 "--allow-host" => out.allow_hosts.push(value()?),
                 "--public-url" => out.public_url = Some(value()?),
                 "--push-keys-dir" => out.push_keys_dir = Some(PathBuf::from(value()?)),
+                "--agents-dir" => out.agents_dir = Some(PathBuf::from(value()?)),
                 "--drain-seconds" => {
                     let v = value()?;
                     out.drain_seconds =
@@ -125,6 +130,7 @@ impl Config {
                 (!args.allow_hosts.is_empty(), "--allow-host"),
                 (args.public_url.is_some(), "--public-url"),
                 (args.push_keys_dir.is_some(), "--push-keys-dir"),
+                (args.agents_dir.is_some(), "--agents-dir"),
                 (args.drain_seconds.is_some(), "--drain-seconds"),
             ] {
                 // A name the router answers to is only safe where every caller, loopback
@@ -215,6 +221,12 @@ impl Config {
             allow_hosts,
             public_url,
             push_keys_dir: args.push_keys_dir.clone(),
+            // Beside the binary unless told otherwise, so an image needs no flag for it.
+            agents_dir: match &args.agents_dir {
+                Some(dir) => Some(dir.clone()),
+                None if args.server => crate::downloads::default_dir(),
+                None => None,
+            },
             drain: args.drain_seconds.map(Duration::from_secs).unwrap_or(DEFAULT_DRAIN),
         };
 

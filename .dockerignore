@@ -13,7 +13,10 @@
 target
 target-*
 .cargo
-dist
+dist/*
+# ...but for what scripts/stage-agents.sh lays out there for the image to hand out
+# (src/downloads.rs): the agent and its editor package, for every platform.
+!dist/agents
 # The image builds its own console (the Dockerfile's console stage); a local one would merge
 # stale hashed files into it.
 ui/dist
@@ -24,6 +27,7 @@ vscode/bin/*
 vscode/package.json.orig
 vscode/LICENSE
 **/*.vsix
+!dist/agents/*/agent-router.vsix
 
 # iOS and Android: build output, and what each machine supplies for itself.
 ios/AgentRouter/AgentRouter.xcodeproj
