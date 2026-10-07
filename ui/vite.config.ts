@@ -68,6 +68,11 @@ export default defineConfig({
     environment: 'jsdom',
     setupFiles: ['./src/test-setup.ts'],
     css: false,
+    // Specs draw whole screens in jsdom. The CI runner builds with no cache and runs them about
+    // twice as slowly as a Mac, so Vitest's 5 s default failed a screen that drew in 5.9 s
+    // (SE-C216, pipeline 3307). A slow machine is not a broken screen. Specs that need longer
+    // still set their own.
+    testTimeout: 30_000,
     // The fixture harness (`harness/`, `pnpm harness`) is tested where it lives.
     include: ['src/**/*.spec.{ts,tsx}', 'harness/**/*.spec.{ts,tsx}'],
   },
