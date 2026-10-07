@@ -40,9 +40,11 @@ agent-router agent — connect this machine's Claude Code sessions to a hosted r
 
 USAGE:
   agent-router agent install --server <url> [--project <dir>] [--label <name>]
-                                     [--no-service] [--no-config]
+                                     [--no-service] [--no-config] [--no-library]
                                      check the password, save it, point Claude Code at
-                                     the server, and start the agent at login
+                                     the server, and start the agent at login.
+                                     --no-library: never place the hosted router's
+                                     Library in ~/.claude (remembered; --library undoes it)
   agent-router agent uninstall       undo exactly what install changed
   agent-router agent status          what is installed, and whether it runs
   agent-router agent [--server <url>] [--label <name>] [--data-dir <dir>]
@@ -132,6 +134,28 @@ struct Saved {
     /// What to call the machine, when `install` was told.
     #[serde(default)]
     label: Option<String>,
+    /// `false` when installed with `--no-library`: the agent never places the hosted
+    /// router's Library in `~/.claude`. Absent, it does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    library: Option<bool>,
+}
+
+/// What `agent install` saved that the Library's commands need (`library::cli`).
+pub(crate) struct Connection {
+    pub server: String,
+    pub password: String,
+    pub library: Option<bool>,
+}
+
+pub(crate) fn connection() -> Result<Connection> {
+    let saved = load_saved();
+    let server = saved.server.ok_or_else(|| anyhow!("this machine has no agent: run `agent-router agent install --server <url>`"))?;
+    let password = std::env::var("AGENT_ROUTER_PASSWORD")
+        .ok()
+        .filter(|p| !p.is_empty())
+        .or(saved.password)
+        .ok_or_else(|| anyhow!("no password saved: run `agent-router agent install --server <url>` again"))?;
+    Ok(Connection { server, password, library: saved.library })
 }
 
 fn saved_path() -> Result<PathBuf> {
@@ -446,12 +470,34 @@ async fn run(args: RunArgs) -> Result<()> {
         }
     });
 
+    // The Library: in step at every connection and every fifteen minutes between, unless this
+    // machine opted out (docs/library.md, "The sync").
+    let (connected, on_connect) = tokio::sync::watch::channel(0u64);
+    if saved.library != Some(false) {
+        let places = crate::library::sync::Places::system(dir.clone());
+        let library = Arc::new(crate::library::sync::Router::new(&server, &password)?);
+        tokio::spawn(crate::library::sync::keep_in_step(on_connect, crate::library::sync::EVERY, move || {
+            let (places, library) = (places.clone(), library.clone());
+            async move {
+                match crate::library::sync::run_once(places, library, None).await {
+                    Ok(Some(report)) => {
+                        for line in report.items.iter().filter(|l| l.outcome != crate::library::sync::Outcome::InStep) {
+                            tracing::info!(kind = %line.kind, name = %line.name, version = line.version, outcome = ?line.outcome, kept = ?line.kept, why = ?line.why, "the Library");
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(e) => tracing::warn!("the Library could not be synced: {e:#}"),
+                }
+            }
+        }));
+    }
+
     let router = routes();
     let mut backoff = Duration::from_secs(1);
     loop {
         let started = Instant::now();
         let outcome = tokio::select! {
-            outcome = connect_and_serve(&target, &password, &hello, router.clone()) => outcome,
+            outcome = connect_and_serve(&target, &password, &hello, router.clone(), &connected) => outcome,
             why = stopping.wait() => {
                 tracing::info!("{why} received; agent stopping");
                 return Ok(());
@@ -484,6 +530,9 @@ struct InstallArgs {
     data_dir: Option<PathBuf>,
     no_service: bool,
     no_config: bool,
+    /// `Some(false)` from `--no-library`, `Some(true)` from `--library`: otherwise left as
+    /// it was saved.
+    library: Option<bool>,
 }
 
 fn parse_install(args: &[String]) -> Result<InstallArgs, String> {
@@ -511,6 +560,8 @@ fn parse_install(args: &[String]) -> Result<InstallArgs, String> {
             "--data-dir" => out.data_dir = Some(PathBuf::from(value()?)),
             "--no-service" if inline.is_none() => out.no_service = true,
             "--no-config" if inline.is_none() => out.no_config = true,
+            "--no-library" if inline.is_none() => out.library = Some(false),
+            "--library" if inline.is_none() => out.library = Some(true),
             other => return Err(format!("unknown option {other:?}")),
         }
     }
@@ -629,8 +680,12 @@ async fn install(args: &[String]) -> Result<()> {
     if args.label.is_some() {
         saved.label = args.label.clone();
     }
+    if let Some(on) = args.library {
+        saved.library = (!on).then_some(false);
+    }
     store_saved(&saved)?;
     println!("saved     {} (owner-only)", saved_path()?.display());
+    println!("library   {}", library_words(saved.library));
 
     // A machine that ran the router itself still has its login item, which starts
     // `bin/agent-router` — the path `install_binary` is about to give the agent — so at the
@@ -737,6 +792,7 @@ fn status(args: &[String]) -> Result<()> {
     println!("password  {}", if saved.password.is_some() { "saved" } else { "not saved" });
     println!("machine   {}", saved.machine.as_deref().unwrap_or("no id yet"));
     println!("label     {}", saved.label.clone().unwrap_or_else(host_name));
+    println!("library   {}", library_words(saved.library));
     match lock(&dir)? {
         Lock::Busy { pid, build } => println!("running   yes (pid {pid}, {build})"),
         Lock::Held(_) => println!("running   no"),
@@ -749,6 +805,13 @@ fn status(args: &[String]) -> Result<()> {
         println!("config    {} ({})", m.settings_path, m.scope);
     }
     Ok(())
+}
+
+fn library_words(library: Option<bool>) -> &'static str {
+    match library {
+        Some(false) => "not taken (--no-library): nothing is placed in ~/.claude",
+        _ => "kept in step in ~/.claude at every connection, and every 15 minutes",
+    }
 }
 
 /// Up to a second, so machines that lost the router together do not return together.
@@ -773,7 +836,13 @@ fn tls_config() -> Arc<rustls::ClientConfig> {
     Arc::new(config)
 }
 
-async fn connect_and_serve(target: &Target, password: &str, hello: &Hello, router: Router) -> Result<()> {
+async fn connect_and_serve(
+    target: &Target,
+    password: &str,
+    hello: &Hello,
+    router: Router,
+    connected: &tokio::sync::watch::Sender<u64>,
+) -> Result<()> {
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
     use tokio_tungstenite::tungstenite::http::{header::AUTHORIZATION, HeaderValue};
 
@@ -819,6 +888,7 @@ async fn connect_and_serve(target: &Target, password: &str, hello: &Hello, route
         Ok(Err(e)) => return Err(e.into()),
     };
     tracing::info!(server = %target.ws_url(), "connected to the router");
+    connected.send_modify(|n| *n += 1);
     serve(socket, hello, router).await
 }
 
@@ -980,6 +1050,32 @@ mod tests {
         assert_eq!(id.as_bytes()[14], b'4');
         assert!(matches!(id.as_bytes()[19], b'8' | b'9' | b'a' | b'b'));
         assert_ne!(id, new_machine_id());
+    }
+
+    /// `install --no-library` is remembered in agent.json, and a machine that has it takes
+    /// no part: nothing is asked of the router and nothing is written under ~/.claude.
+    #[tokio::test]
+    async fn a_machine_that_opted_out_never_writes_into_claude() {
+        rustls::crypto::ring::default_provider().install_default().ok();
+        let args = |rest: &[&str]| parse_install(&rest.iter().map(|s| s.to_string()).collect::<Vec<_>>()).unwrap();
+        assert_eq!(args(&["--server", "https://r.example.com", "--no-library"]).library, Some(false));
+        assert_eq!(args(&["--server", "https://r.example.com", "--library"]).library, Some(true));
+        assert_eq!(args(&["--server", "https://r.example.com"]).library, None, "left as it was saved");
+        let saved: Saved = serde_json::from_str(&serde_json::to_string(&Saved { library: Some(false), ..Default::default() }).unwrap()).unwrap();
+        assert_eq!(saved.library, Some(false));
+        let before: Saved = serde_json::from_str(r#"{"server":"https://r.example.com","password":"p"}"#).unwrap();
+        assert_eq!(before.library, None, "a machine installed before the Library takes it");
+
+        let root = std::env::temp_dir().join(format!("ar-opted-out-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let places = crate::library::sync::Places { claude: root.join("claude"), data: root.join("data") };
+        // No router answers there: a machine that asked anything would fail.
+        let router = Arc::new(crate::library::sync::Router::new("http://127.0.0.1:9", "unused").unwrap());
+        let report = crate::library::sync::run_once(places.clone(), router.clone(), Some(false)).await.unwrap();
+        assert!(report.is_none());
+        assert!(!root.exists(), "nothing was written anywhere");
+        assert!(crate::library::sync::run_once(places, router, None).await.is_err(), "a machine that takes it does ask");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// The agent's routes answer what the router may ask, and nothing else.

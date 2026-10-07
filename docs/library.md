@@ -206,33 +206,50 @@ on finding and messaging agents on other machines when that feature exists.
 The agent asks for `GET /api/library/manifest`. That is the live versions, as
 `{kind, name, version, digest, size}`, with an ETag, so an unchanged Library costs one 304.
 For each item:
-1. **Its place matches the digest:** nothing to do.
+1. **Its place matches the digest:** nothing to do. A copy of the same content that the
+   Library did not place is taken as the Library's from then on.
 2. **Otherwise:**
-   - It downloads `GET /api/library/blobs/<digest>`, checks the digest, and unpacks into a
-     staging directory beside the target, on the same filesystem.
-   - It moves whatever is at the target aside to `<data-dir>/library/replaced/<kind>/<name>`,
-     keeping the last one only. That is either the Library's own copy or one edited or
-     written on the machine, since the Library wins.
-   - It renames the staged copy into place. Windows retries a rename that a reader briefly
-     blocks.
+   - It downloads `GET /api/library/blobs/<digest>`, checks the digest, and unpacks into
+     `~/.claude/.agent-router-staging`. That is on the same filesystem as `skills/`, and
+     outside it, so Claude Code never lists a half-written skill.
+   - What is at the target goes:
+     - The agent's own unchanged copy of an older version simply goes.
+     - Anything else is moved aside to `<data-dir>/library/replaced/<kind>/<name>`, keeping
+       the last one only, and named in the report. That covers a copy edited on the machine,
+       a skill of that name the Library did not place, and a link. The Library wins.
+   - It renames the staged copy into place, whole. Windows retries a rename that a reader
+     briefly blocks.
 3. **A symlink at the target** is moved aside as a link. It is never written through. The
    Northstar skill on this Mac is such a link, into a repository.
 4. **An item no longer in the manifest** is removed, but only where the ledger
-   (`<data-dir>/library/ledger.json`) says the agent placed it.
+   (`<data-dir>/library/ledger.json`) says the agent placed it. A copy edited since is kept
+   aside, as a replaced one is.
+
+One sync runs at a time per data directory (`library/sync.lock`). The last report is kept as
+`<data-dir>/library/last-sync.json`.
 
 **The agent syncs:**
 - when it connects;
-- every 15 minutes;
-- when told to;
-- from `agent-router library sync`.
+- every 15 minutes after its last sync;
+- when told to (AGEN-0046);
+- from `agent-router library sync`, which prints what it did.
 
-After each sync it reports what it holds to `POST /api/library/report`.
+**Reports to the router come with AGEN-0046**, which adds `POST /api/library/report`. Until
+that route exists, a hosted router would hand an unknown path to its proxy, so nothing is
+posted.
 
-**`agent-router library status`** prints one line per item: name, kind, version, and one of
-`in step`, `behind`, `replaced` or `failed`.
+**`agent-router library status`** prints one line per item: name, kind, version, and where it
+stands here. That is one of:
+- `in step`;
+- `behind`;
+- `changed here`;
+- `not the Library's`;
+- `failed`, with why;
+- `withdrawn`.
 
 **Opting out.** `agent install --no-library` writes `"library": false` into `agent.json`, and
-that machine's agent never writes into `~/.claude`.
+that machine's agent never writes into `~/.claude` nor asks the router for the Library.
+`agent install --library` takes it back. `agent status` says which.
 
 ### Push
 

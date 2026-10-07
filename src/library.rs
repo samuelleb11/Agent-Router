@@ -7,10 +7,14 @@
 //!   canonical form whose sha256 is the version's digest.
 //! - [`store`] keeps the items, their versions and the blobs, in the main store.
 //! - [`api`] is how a hosted router serves them, to the console and to the machines' agents.
+//! - [`sync`] is the agent's half: keeping a machine's `~/.claude` in step with them, and
+//!   [`cli`] is `agent-router library` on that machine.
 
 pub mod api;
 pub mod bundle;
+pub mod cli;
 pub mod store;
+pub mod sync;
 
 use std::fmt;
 

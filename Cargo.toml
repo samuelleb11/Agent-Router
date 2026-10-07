@@ -46,6 +46,10 @@ tower = { version = "0.5", features = ["util"] }
 # router reads a console file from disk at run time.
 rust-embed = { version = "8.12", features = ["debug-embed"] }
 
+[dev-dependencies]
+# A paused clock, for what runs every fifteen minutes (`library::sync`).
+tokio = { version = "1", features = ["test-util"] }
+
 # Windows runs the machine agent: process liveness and stopping an older agent.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [

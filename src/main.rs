@@ -26,7 +26,7 @@ mod fold;
 mod forecast;
 mod guard;
 mod hosted;
-#[allow(dead_code)] // the agent's sync (AGEN-0045) and publishing (AGEN-0049) call the rest
+#[allow(dead_code)] // publishing (AGEN-0049) and the push (AGEN-0046) call the rest
 mod library;
 mod lifecycle;
 mod live;
@@ -65,6 +65,7 @@ USAGE:
   agent-router uninstall             undo exactly what install changed
   agent-router status                show what is installed and what is managed
   agent-router agent [OPTIONS]       connect this machine's sessions to a hosted router
+  agent-router library status|sync   the hosted router's Library on this machine
 
 SERVE OPTIONS:
   --bind <ip>            also listen here, not only on loopback (like AGENT_ROUTER_BIND)
@@ -132,6 +133,7 @@ async fn main() -> anyhow::Result<()> {
             };
         }
         Some("agent") => return agent::main(&args[1..]).await,
+        Some("library") => return library::cli::main(&args[1..]).await,
         Some("install") => return cmd_install(&args[1..]),
         Some("uninstall") => return cmd_uninstall(),
         Some("status") => return cmd_status(),
