@@ -12,6 +12,9 @@
   handed the wrapper.
 - Windows: `.exe` programs, the agent started without a console window, and a
   `win32-x64` package.
+- Runs where Claude Code runs: in a Remote - SSH, WSL or dev container window that is
+  the remote machine, which it sets up, rather than the computer the window is shown on
+  (extension kind `workspace`, was `ui`).
 
 ## 0.1.0
 

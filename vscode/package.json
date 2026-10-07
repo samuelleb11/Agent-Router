@@ -27,7 +27,7 @@
     "quota"
   ],
   "extensionKind": [
-    "ui"
+    "workspace"
   ],
   "activationEvents": [
     "onStartupFinished"

@@ -253,9 +253,9 @@ agent-router serve --server --bind 0.0.0.0 --data-dir /data \
 `curl -fsSL https://<router>/agent/install.sh | sh` (macOS, Linux) or
 `irm https://<router>/agent/install.ps1 | iex` (Windows); the live page shows both with
 the router's address filled in. The script downloads the agent from the router and runs
-`agent install`, and where VS Code's `code` command exists it installs this extension from
-the router too, which takes the set-up over and wires the wrapper so sessions can be typed
-into. See [docs/hosting-machine-agent.md](docs/hosting-machine-agent.md#connecting-a-machine).
+`agent install`, and it installs this extension from the router too, into VS Code and
+into the VS Code Server a Remote - SSH window runs on that machine; the extension takes
+the set-up over and wires the wrapper so sessions can be typed into. See [docs/hosting-machine-agent.md](docs/hosting-machine-agent.md#connecting-a-machine).
 
 `agent-router agent install --server <url>` asks for the password
 and checks it against the server, points Claude Code at the server

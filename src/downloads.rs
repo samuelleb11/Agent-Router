@@ -217,4 +217,76 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     }
+
+    /// A machine opened from another computer through Remote - SSH has no `code` command,
+    /// only the VS Code Server, and that is where Claude Code runs for such a window. The
+    /// script runs on a PATH of stand-ins alone, so no VS Code on the machine running the
+    /// test can be reached.
+    #[cfg(unix)]
+    #[test]
+    fn the_shell_script_installs_the_extension_where_vs_code_runs() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::path::Path;
+        let root = std::env::temp_dir().join(format!("ar-install-vscode-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let calls = root.join("calls");
+        let stub = |path: &Path, body: &str| {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        for tool in ["uname", "mktemp", "chmod", "rm"] {
+            let real = ["/usr/bin", "/bin"].iter().map(|d| Path::new(d).join(tool)).find(|p| p.exists()).unwrap();
+            std::os::unix::fs::symlink(real, bin.join(tool)).unwrap();
+        }
+        // Every download is a program that succeeds, which serves as the agent too.
+        stub(&bin.join("curl"), r#"while [ "$1" != -o ]; do shift; done; printf '#!/bin/sh\nexit 0\n' > "$2""#);
+        let server = root.join("home/.vscode-server/cli/servers/Stable-0123/server/bin");
+        stub(&server.join("code-server"), &format!("echo \"code-server $*\" >> '{}'", calls.display()));
+        stub(&server.join("remote-cli/code"), &format!("echo \"remote-cli $*\" >> '{}'", calls.display()));
+        let script = root.join("install.sh");
+        std::fs::write(&script, INSTALL_SH.replace(SERVER_MARK, &sh_quote("https://r.example.com"))).unwrap();
+
+        let run = |path: String| {
+            let _ = std::fs::remove_file(&calls);
+            let out = std::process::Command::new("/bin/sh")
+                .arg(&script)
+                .env_clear()
+                .env("PATH", path)
+                .env("HOME", root.join("home"))
+                .env("TMPDIR", &root)
+                .env("AGENT_ROUTER_PASSWORD", "pw")
+                .stdin(std::process::Stdio::null())
+                .output()
+                .unwrap();
+            let said = String::from_utf8_lossy(&out.stderr).into_owned();
+            assert!(out.status.success(), "{said}");
+            (std::fs::read_to_string(&calls).unwrap_or_default(), said)
+        };
+        let installed_once = |calls: &str| {
+            let lines: Vec<&str> = calls.lines().collect();
+            lines.len() == 1
+                && lines[0].starts_with("code-server --install-extension ")
+                && lines[0].ends_with("/agent-router.vsix --force")
+        };
+
+        // Headless, over ssh: no `code` anywhere, only the server.
+        let (got, said) = run(bin.display().to_string());
+        assert!(installed_once(&got), "{got}\n{said}");
+        assert!(said.contains("Reload the VS Code windows"), "{said}");
+
+        // In the server's own terminal `code` is its shim: the server takes it, once.
+        let (got, said) = run(format!("{}:{}", server.join("remote-cli").display(), bin.display()));
+        assert!(installed_once(&got), "{got}\n{said}");
+
+        // Neither: nothing is installed, and the script says how to do it by hand.
+        std::fs::remove_dir_all(root.join("home/.vscode-server")).unwrap();
+        let (got, said) = run(bin.display().to_string());
+        assert_eq!(got, "", "{said}");
+        assert!(said.contains("nor a VS Code Server was found"), "{said}");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

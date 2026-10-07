@@ -34,6 +34,11 @@ install`, needs none of that: the first window to open finds the server and the 
 in the agent's own file, keeps the password in secret storage, sets `agentRouter.server`
 and the wrapper, and says so, instead of starting a router on this machine.
 
+"This machine" is always the one Claude Code runs on. In a Remote - SSH window that is
+the remote machine: the extension is installed and runs there, beside Claude Code, and
+the install script, run on that machine, puts it into the VS Code Server there. Reload
+a window that was open at the time.
+
 No router runs on this machine then. Instead:
 
 - Claude Code's API traffic goes to the server, which signs it with an account added

@@ -68,8 +68,12 @@ The `/live` page shows both, with the router's address in them, until a machine 
 
 - **What the script does.** It downloads the agent for the machine's platform from the
   router and runs `agent-router agent install --server <the router>`, which asks for the
-  password. Where VS Code's `code` command exists, it also installs the Agent Router
-  extension from the router. `sh -s -- <options>` passes options on to `agent install`.
+  password. It also installs the Agent Router extension from the router: into VS Code
+  through its `code` command, and into the VS Code Server that a Remote - SSH window from
+  another computer runs on this machine (`$VSCODE_AGENT_FOLDER`, by default
+  `~/.vscode-server`), through the server's own `code-server`. A headless machine has
+  only the server; a window open at the time picks the extension up when reloaded.
+  `sh -s -- <options>` passes options on to `agent install`.
 - **The extension takes the set-up over.** Its first window finds the server and the
   password in `agent.json` and switches to remote mode instead of starting a router: the
   password goes into secret storage, `agentRouter.server` is set, and Claude Code is
@@ -227,6 +231,10 @@ Everything above has to work on Windows, steering included. Six things are Unix-
 ## The clients
 
 - **VS Code extension.**
+  - It runs on the machine Claude Code runs on (extension kind `workspace`): in a
+    Remote - SSH window, the remote one. Claude Code reads `claudeProcessWrapper` from
+    that machine's settings, so an extension on the client would hand it a path that
+    exists only on the client, and no session there could start.
   - A remote mode: `agentRouter.server` (a URL) plus the password in the editor's secret
     storage.
   - In remote mode it installs and supervises the agent instead of a router
