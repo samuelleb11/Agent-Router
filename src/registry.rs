@@ -630,7 +630,7 @@ pub(crate) fn civil_from_days(z: i64) -> (i64, i64, i64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(unix)]
+    #[cfg(target_os = "macos")]
     use std::os::unix::fs::PermissionsExt;
 
     /// `ps -o lstart=` in UTC, as the CLI stores it.
@@ -773,7 +773,6 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    #[cfg(unix)]
     fn records_are_read_and_verified_and_keys_are_never_opened() {
         let dir = tempdir("fixtures");
         let me = std::process::id();
