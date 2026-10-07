@@ -313,9 +313,9 @@ the same path through the Service IP.
   `terminationGracePeriodSeconds`. The router writes its capture queue after the drain,
   and that must finish before the kubelet kills the pod.
 
-**Ingress.** Off by default. TLS is on when it is enabled. The values document the
-ingress-nginx annotations the proxy needs:
-- `proxy-body-size: 64m`
+**Ingress.** Off by default. TLS is on when it is enabled. The ingress-nginx annotations
+the proxy needs are on by default, and other controllers ignore them:
+- `proxy-body-size: 32m`
 - `proxy-buffering: "off"`
 - `proxy-read-timeout: "3600"` and `proxy-send-timeout: "3600"`
 

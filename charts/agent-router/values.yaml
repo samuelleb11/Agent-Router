@@ -90,16 +90,17 @@ ingress:
   # The one name Claude Code and the phones use. It is passed to the router as an allowed
   # host, so it must be exactly what clients type.
   host: agent-router.example.com
-  annotations: {}
-    # cert-manager.io/cluster-issuer: letsencrypt
-    #
-    # ingress-nginx's defaults break the proxy: a 1 MiB body limit refuses Claude Code's
-    # larger requests, buffering delivers the event streams in lumps, and a 60 s timeout
-    # cuts long generations and every open stream. What it needs:
-    # nginx.ingress.kubernetes.io/proxy-body-size: "64m"   # the router accepts up to 64 MiB
-    # nginx.ingress.kubernetes.io/proxy-buffering: "off"
-    # nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
-    # nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+  # ingress-nginx's defaults break the proxy: a 1 MiB body limit refuses Claude Code's
+  # larger requests, buffering delivers the event streams in lumps, and a 60 s timeout
+  # cuts long generations and every open stream. So these are on by default; other
+  # controllers ignore them. Add your TLS issuer beside them, for example
+  # cert-manager.io/cluster-issuer: letsencrypt. A key set to null removes a default.
+  annotations:
+    # Claude Code's requests stay well under it; the router itself accepts up to 64 MiB.
+    nginx.ingress.kubernetes.io/proxy-body-size: "32m"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
   tls:
     # Every caller presents the password. Without TLS it crosses the network in the clear.
     enabled: true
