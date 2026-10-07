@@ -105,7 +105,13 @@ from the router's build. Every other item takes uploads and publishes.
 ### Upload
 
 The console takes a dropped folder, a `.zip` or a single `.md`, and the API takes the same
-body. An upload goes live at once.
+body (a `.tar.gz`, a `.zip`, a `.tar` or one Markdown file).
+- **It goes live at once.**
+- **A wrapper is dropped.** A folder around everything, and macOS's `__MACOSX` and `._` files,
+  are taken off.
+- **The newest content is made live, not stored twice.** Content that is already the item's
+  newest version makes that version live.
+- **A rejected version never goes live.** Uploading its content again makes it a new version.
 
 ### Forges and sources
 
@@ -329,9 +335,14 @@ The phones are not in this epic. iOS's Machines screen can show the Library stat
 
 ## API
 
-All routes need the password unless marked otherwise. Write routes refuse in the router's
-usual words, `{"ok":false,"error":…}`. Upload bodies may be up to 8 MiB, and the ingress
-allows 32 MiB.
+All routes need the password unless marked otherwise.
+- **Refusals.** Write routes refuse in the router's usual words, `{"ok":false,"error":…}`.
+- **Upload size.** An upload body may be up to 8 MiB, and one that declares more is refused
+  before it is read. The ingress allows 32 MiB.
+- **Files.** A version's files are served as plain text under `Content-Security-Policy:
+  sandbox`, so a skill's HTML never runs as a page of the router.
+- **Local mode.** A router on a developer's machine answers every `/api/library` path with a
+  409 saying the Library is a hosted router's.
 
 | Route | What it does |
 | --- | --- |

@@ -140,6 +140,39 @@ pub struct Version {
     pub decided_at: Option<i64>,
 }
 
+/// An item and every version of it, newest first. An item never exists without a version:
+/// the first is stored with it.
+#[derive(Clone, Debug, Serialize)]
+pub struct Item {
+    pub kind: Kind,
+    pub name: String,
+    pub source: Option<String>,
+    pub created_at: i64,
+    /// Taken off every machine; going live again brings it back.
+    pub archived_at: Option<i64>,
+    pub versions: Vec<Version>,
+}
+
+impl Item {
+    pub fn live(&self) -> Option<&Version> {
+        self.versions.iter().find(|v| v.state == State::Live)
+    }
+
+    /// The live version's description, or the newest's while none is live.
+    pub fn description(&self) -> &str {
+        self.live().or(self.versions.first()).map_or("", |v| v.description.as_str())
+    }
+}
+
+/// Why a version's state, or an item's, was not changed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Unmade {
+    /// There is no such item, or no such version of it.
+    Missing,
+    /// It cannot move that way, and why, in words.
+    Refused(String),
+}
+
 /// What publishing did.
 #[derive(Debug)]
 pub enum Published {
@@ -161,7 +194,14 @@ const COLUMNS: &str = "kind, name, number, digest, size, description, provenance
 /// Store `bundle` as its item's next version, live or pending — unless it is exactly the
 /// item's newest version already, when nothing changes. Content that goes back to an older
 /// version's is a new version all the same: it is the newest change, and a forge reverting a
-/// skill has to reach machines like any other change. Going live supersedes the live one.
+/// skill has to reach machines like any other change. Going live supersedes the live one and
+/// brings an archived item back.
+///
+/// The one exception to "unchanged": the newest version was rejected and this publish goes
+/// live. Only the owner, or a source the owner trusts, publishes live, and sending again what
+/// was rejected is a new decision, which a rejected version cannot take (`make_live`).
+/// Anything published to wait — a re-import, an untrusted publish — is unchanged, so what was
+/// rejected is not asked about again.
 pub fn publish(conn: &Connection, bundle: &Bundle, provenance: &Provenance, live: bool, now: i64) -> Result<Published> {
     let packed = bundle.pack();
     let digest = bundle::digest(&packed);
@@ -178,7 +218,7 @@ pub fn publish(conn: &Connection, bundle: &Bundle, provenance: &Provenance, live
             version,
         )
         .optional()?;
-    if let Some(newest) = newest.as_ref().filter(|v| v.digest == digest) {
+    if let Some(newest) = newest.as_ref().filter(|v| v.digest == digest && !(live && v.state == State::Rejected)) {
         let unchanged = newest.clone();
         tx.commit()?;
         return Ok(Published::Unchanged(unchanged));
@@ -189,6 +229,7 @@ pub fn publish(conn: &Connection, bundle: &Bundle, provenance: &Provenance, live
     )?;
     if live {
         supersede(&tx, kind, name, now)?;
+        unarchive(&tx, kind, name)?;
     }
     let number = newest.map_or(1, |v| v.number + 1);
     let state = if live { State::Live } else { State::Pending };
@@ -213,21 +254,62 @@ pub fn publish(conn: &Connection, bundle: &Bundle, provenance: &Provenance, live
 }
 
 /// Make version `number` the item's live one — approving a pending version, or rolling back
-/// to an older one — and supersede the version that was. `None` when there is no such
-/// version; a version already live is left as it is.
-pub fn make_live(conn: &Connection, kind: Kind, name: &str, number: i64, now: i64) -> Result<Option<Version>> {
+/// to an older one — and supersede the version that was. A version already live is left as
+/// it is, and a rejected one never goes live.
+pub fn make_live(conn: &Connection, kind: Kind, name: &str, number: i64, now: i64) -> Result<Result<Version, Unmade>> {
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
-    let Some(found) = get(&tx, kind, name, number)? else { return Ok(None) };
-    if found.state != State::Live {
-        supersede(&tx, kind, name, now)?;
-        tx.execute(
-            "UPDATE library_versions SET state = 'live', decided_at = ?4 WHERE kind = ?1 AND name = ?2 AND number = ?3",
-            params![kind.as_str(), name, number, now],
-        )?;
+    let Some(found) = get(&tx, kind, name, number)? else { return Ok(Err(Unmade::Missing)) };
+    match found.state {
+        State::Live => {}
+        State::Rejected => {
+            return Ok(Err(Unmade::Refused(format!(
+                "version {number} of the {kind} {name} was rejected, and a rejected version never goes live: \
+                 upload its content again to make it a new version"
+            ))))
+        }
+        State::Pending | State::Superseded => {
+            supersede(&tx, kind, name, now)?;
+            unarchive(&tx, kind, name)?;
+            tx.execute(
+                "UPDATE library_versions SET state = 'live', decided_at = ?4 WHERE kind = ?1 AND name = ?2 AND number = ?3",
+                params![kind.as_str(), name, number, now],
+            )?;
+        }
     }
-    let live = get(&tx, kind, name, number)?;
+    let live = get(&tx, kind, name, number)?.expect("the version just read");
     tx.commit()?;
-    Ok(live)
+    Ok(Ok(live))
+}
+
+/// Turn down a pending version. Only a version waiting for approval can be rejected: one
+/// that is or was live is rolled back from instead.
+pub fn reject(conn: &Connection, kind: Kind, name: &str, number: i64, now: i64) -> Result<Result<Version, Unmade>> {
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    let Some(found) = get(&tx, kind, name, number)? else { return Ok(Err(Unmade::Missing)) };
+    if found.state != State::Pending {
+        return Ok(Err(Unmade::Refused(format!(
+            "version {number} of the {kind} {name} is {}, not waiting for approval: only a pending version can be \
+             rejected",
+            found.state.as_str()
+        ))));
+    }
+    tx.execute(
+        "UPDATE library_versions SET state = 'rejected', decided_at = ?4 WHERE kind = ?1 AND name = ?2 AND number = ?3",
+        params![kind.as_str(), name, number, now],
+    )?;
+    let rejected = get(&tx, kind, name, number)?.expect("the version just read");
+    tx.commit()?;
+    Ok(Ok(rejected))
+}
+
+/// Take an item off every machine: its live version leaves the manifest, and the agents
+/// remove what they placed. Its versions stay, and going live again brings it back.
+pub fn archive(conn: &Connection, kind: Kind, name: &str, now: i64) -> Result<Result<(), Unmade>> {
+    let found = conn.execute(
+        "UPDATE library_items SET archived_at = coalesce(archived_at, ?3) WHERE kind = ?1 AND name = ?2",
+        params![kind.as_str(), name, now],
+    )?;
+    Ok(if found == 1 { Ok(()) } else { Err(Unmade::Missing) })
 }
 
 fn supersede(tx: &Transaction, kind: Kind, name: &str, now: i64) -> rusqlite::Result<usize> {
@@ -235,6 +317,39 @@ fn supersede(tx: &Transaction, kind: Kind, name: &str, now: i64) -> rusqlite::Re
         "UPDATE library_versions SET state = 'superseded', decided_at = ?3 WHERE kind = ?1 AND name = ?2 AND state = 'live'",
         params![kind.as_str(), name, now],
     )
+}
+
+fn unarchive(tx: &Transaction, kind: Kind, name: &str) -> rusqlite::Result<usize> {
+    tx.execute(
+        "UPDATE library_items SET archived_at = NULL WHERE kind = ?1 AND name = ?2",
+        params![kind.as_str(), name],
+    )
+}
+
+/// One item with all its versions, if there is one.
+pub fn item(conn: &Connection, kind: Kind, name: &str) -> Result<Option<Item>> {
+    let row = conn
+        .query_row(
+            "SELECT source, created_at, archived_at FROM library_items WHERE kind = ?1 AND name = ?2",
+            params![kind.as_str(), name],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?;
+    let Some((source, created_at, archived_at)) = row else { return Ok(None) };
+    let versions = versions(conn, kind, name)?;
+    Ok(Some(Item { kind, name: name.to_string(), source, created_at, archived_at, versions }))
+}
+
+/// Every item, archived ones included, by kind and name.
+pub fn items(conn: &Connection) -> Result<Vec<Item>> {
+    let mut stmt = conn.prepare("SELECT kind, name FROM library_items ORDER BY kind, name")?;
+    let keys: Vec<(String, String)> = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
+    let mut items = Vec::with_capacity(keys.len());
+    for (kind, name) in keys {
+        let Some(kind) = Kind::parse(&kind) else { continue };
+        items.extend(item(conn, kind, &name)?);
+    }
+    Ok(items)
 }
 
 /// One version, if there is one.
@@ -417,7 +532,7 @@ mod tests {
         assert_eq!(live_numbers(&db), [1], "rolled back");
         make_live(&db, Kind::Skill, "bench", 1, 6).unwrap().unwrap();
         assert_eq!(live_numbers(&db), [1]);
-        assert!(make_live(&db, Kind::Skill, "bench", 9, 7).unwrap().is_none());
+        assert_eq!(make_live(&db, Kind::Skill, "bench", 9, 7).unwrap(), Err(Unmade::Missing));
 
         let states: Vec<_> = versions(&db, Kind::Skill, "bench").unwrap().iter().map(|v| v.state).collect();
         assert_eq!(states, [State::Superseded, State::Superseded, State::Live]);

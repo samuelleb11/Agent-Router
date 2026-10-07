@@ -26,7 +26,7 @@ mod fold;
 mod forecast;
 mod guard;
 mod hosted;
-#[allow(dead_code)] // the Library's API (AGEN-0044) and the agent's sync (AGEN-0045) call the rest
+#[allow(dead_code)] // the agent's sync (AGEN-0045) and publishing (AGEN-0049) call the rest
 mod library;
 mod lifecycle;
 mod live;
@@ -541,6 +541,10 @@ fn machine_routes(router: Router<Arc<proxy::AppState>>) -> Router<Arc<proxy::App
         .route("/api/live/effort", post(live::set_effort))
         .route("/api/live/mode", post(live::set_mode))
         .route("/api/live/aside", post(live::aside))
+        // A router on a developer's machine keeps no Library, and says so at its addresses
+        // rather than passing them to the proxy.
+        .route("/api/library", any(library::api::not_offered))
+        .route("/api/library/{*rest}", any(library::api::not_offered))
 }
 
 /// A hosted router: one listener on its bind address, and the handover a rolling update

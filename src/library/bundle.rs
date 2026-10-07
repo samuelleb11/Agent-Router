@@ -138,6 +138,28 @@ impl Bundle {
         Bundle::check(kind, name, read_tar(archive)?)
     }
 
+    /// Read an upload, by what its first bytes say it is: a gzipped tar, a zip (as Finder,
+    /// `zip` and claude.ai's skill downloads make), a plain tar, or else one Markdown file —
+    /// a skill's `SKILL.md`, or a command's or subagent's one file. What a laptop's archive
+    /// carries besides the item is dropped first: a folder around everything, a machine's
+    /// clutter ([`LEFT_OUT`]), and macOS's `__MACOSX` folder and `._` companions. A command's
+    /// or subagent's one file takes the item's name, as [`Bundle::from_path`] gives it.
+    pub fn from_upload(kind: Kind, name: &str, upload: &[u8]) -> Result<Bundle, Refused> {
+        let files = if upload.starts_with(&[0x1f, 0x8b]) {
+            read_tar(&gunzip(upload)?)?
+        } else if upload.starts_with(b"PK\x03\x04") {
+            read_zip(upload)?
+        } else if upload.get(257..262) == Some(&b"ustar"[..]) {
+            read_tar(upload)?
+        } else if std::str::from_utf8(upload).is_ok() {
+            let path = if kind == Kind::Skill { "SKILL.md".to_string() } else { format!("{name}.md") };
+            vec![File { path, bytes: upload.to_vec(), executable: false }]
+        } else {
+            return Err(Refused("this upload is not a .tar.gz, a .zip, a .tar, nor a Markdown file".into()));
+        };
+        Bundle::check(kind, name, tidy(kind, name, files))
+    }
+
     pub fn kind(&self) -> Kind {
         self.kind
     }
@@ -283,6 +305,192 @@ pub fn read_tar(archive: &[u8]) -> Result<Vec<File>, Refused> {
             b'1' | b'2' => return Err(Refused(format!("{path} is a link; a bundle holds only files"))),
             _ => return Err(Refused(format!("{path} is neither a file nor a directory; a bundle holds only files"))),
         }
+    }
+}
+
+/// The most an upload may unpack to: twice what a version may hold, leaving room for the
+/// archive's own headers, and no room for an archive made to fill the router's memory.
+const UNPACKED_MAX: usize = 2 * BUNDLE_MAX;
+
+fn gunzip(upload: &[u8]) -> Result<Vec<u8>, Refused> {
+    use std::io::Read;
+    let mut out = Vec::new();
+    flate2::read::GzDecoder::new(upload)
+        .take(UNPACKED_MAX as u64 + 1)
+        .read_to_end(&mut out)
+        .map_err(|e| Refused(format!("this .tar.gz cannot be read: {e}")))?;
+    if out.len() > UNPACKED_MAX {
+        return Err(Refused(format!("this archive unpacks to more than {}", mib(UNPACKED_MAX))));
+    }
+    Ok(out)
+}
+
+/// Every regular file in a zip archive, stored or deflated. An encrypted entry, a link and a
+/// zip64 archive are refused, and so is an entry that does not unpack to what the archive's
+/// directory says it holds.
+fn read_zip(zip: &[u8]) -> Result<Vec<File>, Refused> {
+    use std::io::Read;
+    let damaged = || Refused("this .zip is damaged: its directory does not match its entries".into());
+    let u16_at = |at: usize| zip.get(at..at + 2).map(|b| usize::from(u16::from_le_bytes([b[0], b[1]]))).ok_or_else(damaged);
+    let u32_at = |at: usize| zip.get(at..at + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]])).ok_or_else(damaged);
+
+    // The directory's end record, searched for from the end, past a comment of any length.
+    let last = zip.len().checked_sub(22).ok_or_else(damaged)?;
+    let end = (last.saturating_sub(65_535)..=last).rev().find(|&at| zip[at..].starts_with(b"PK\x05\x06")).ok_or_else(damaged)?;
+    let count = u16_at(end + 10)?;
+    let mut at = u32_at(end + 16)? as usize;
+    if count == 0xFFFF || at == 0xFFFF_FFFF {
+        return Err(Refused("this .zip is a zip64 archive, which is not read here: upload a .tar.gz".into()));
+    }
+    let mut files = Vec::new();
+    let mut total = 0;
+    for _ in 0..count {
+        if !zip.get(at..).is_some_and(|rest| rest.starts_with(b"PK\x01\x02")) {
+            return Err(damaged());
+        }
+        let unix = u16_at(at + 4)? >> 8 == 3;
+        let flags = u16_at(at + 8)?;
+        let method = u16_at(at + 10)?;
+        let crc = u32_at(at + 16)?;
+        let packed = u32_at(at + 20)? as usize;
+        let size = u32_at(at + 24)? as usize;
+        let name_len = u16_at(at + 28)?;
+        let mode = u32_at(at + 38)? >> 16;
+        let local = u32_at(at + 42)? as usize;
+        let name = zip.get(at + 46..at + 46 + name_len).ok_or_else(damaged)?;
+        let path = String::from_utf8(name.to_vec())
+            .map_err(|_| Refused("the .zip names a file in something other than UTF-8".into()))?
+            .trim_start_matches("./")
+            .to_string();
+        at += 46 + name_len + u16_at(at + 30)? + u16_at(at + 32)?;
+        if path.ends_with('/') {
+            continue;
+        }
+        if unix && mode & 0o170000 == 0o120000 {
+            return Err(Refused(format!("{path} is a link; a bundle holds only files")));
+        }
+        if flags & 1 != 0 {
+            return Err(Refused(format!("{path} is encrypted: upload the files as they are")));
+        }
+        if size > FILE_MAX {
+            return Err(too_big(&path, size));
+        }
+        total += size;
+        if total > BUNDLE_MAX {
+            return Err(Refused(format!("this .zip unpacks to more than the {} one version may hold", mib(BUNDLE_MAX))));
+        }
+        // The entry's own header says where its data starts.
+        if !zip.get(local..).is_some_and(|rest| rest.starts_with(b"PK\x03\x04")) {
+            return Err(damaged());
+        }
+        let start = local + 30 + u16_at(local + 26)? + u16_at(local + 28)?;
+        let data = start.checked_add(packed).and_then(|stop| zip.get(start..stop)).ok_or_else(damaged)?;
+        let bytes = match method {
+            0 => data.to_vec(),
+            8 => {
+                let mut out = Vec::with_capacity(size);
+                flate2::read::DeflateDecoder::new(data)
+                    .take(size as u64 + 1)
+                    .read_to_end(&mut out)
+                    .map_err(|_| damaged())?;
+                out
+            }
+            _ => {
+                return Err(Refused(format!(
+                    "{path} is compressed in a way this does not read (method {method}): use deflate, or upload a .tar.gz"
+                )))
+            }
+        };
+        let mut sum = flate2::Crc::new();
+        sum.update(&bytes);
+        if bytes.len() != size || sum.sum() != crc {
+            return Err(damaged());
+        }
+        files.push(File { path, bytes, executable: unix && mode & 0o111 != 0 });
+    }
+    Ok(files)
+}
+
+/// An uploaded archive's files, without what a laptop adds around an item: see
+/// [`Bundle::from_upload`].
+fn tidy(kind: Kind, name: &str, files: Vec<File>) -> Vec<File> {
+    let mut files: Vec<File> = files
+        .into_iter()
+        .filter(|f| !f.path.split('/').any(|part| LEFT_OUT.contains(&part) || part == "__MACOSX" || part.starts_with("._")))
+        .collect();
+    let around = files.first().and_then(|f| f.path.split_once('/')).map(|(top, _)| format!("{top}/"));
+    if let Some(around) = around.filter(|top| files.iter().all(|f| f.path.starts_with(top.as_str()))) {
+        for file in &mut files {
+            file.path = file.path[around.len()..].to_string();
+        }
+    }
+    if kind != Kind::Skill && files.len() == 1 && files[0].path.ends_with(".md") {
+        files[0].path = format!("{name}.md");
+    }
+    files
+}
+
+/// Archives as other tools write them, for the tests that take uploads: a tar of `files` in
+/// the order given, and a deflated zip made on a Unix machine.
+#[cfg(test)]
+pub(crate) mod made {
+    use super::*;
+
+    pub(crate) fn tar(files: &[File]) -> Vec<u8> {
+        let mut out = Vec::new();
+        for file in files {
+            let mode = if file.executable { 0o755 } else { 0o644 };
+            out.extend_from_slice(&header(&file.path, file.bytes.len(), mode, b'0'));
+            out.extend_from_slice(&file.bytes);
+            out.resize(out.len().next_multiple_of(512), 0);
+        }
+        out.resize(out.len() + 1024, 0);
+        out
+    }
+
+    pub(crate) fn tar_gz(files: &[File]) -> Vec<u8> {
+        use std::io::Write;
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gz.write_all(&tar(files)).unwrap();
+        gz.finish().unwrap()
+    }
+
+    pub(crate) fn zip(files: &[File]) -> Vec<u8> {
+        use std::io::Write;
+        let (mut out, mut directory) = (Vec::new(), Vec::new());
+        for file in files {
+            let mut deflate = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+            deflate.write_all(&file.bytes).unwrap();
+            let data = deflate.finish().unwrap();
+            let mut crc = flate2::Crc::new();
+            crc.update(&file.bytes);
+            let name = file.path.as_bytes();
+            let offset = out.len() as u32;
+            let sizes = [crc.sum(), data.len() as u32, file.bytes.len() as u32];
+            out.extend_from_slice(b"PK\x03\x04\x14\0\0\0\x08\0\0\0\0\0");
+            sizes.iter().for_each(|n| out.extend_from_slice(&n.to_le_bytes()));
+            out.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(name);
+            out.extend_from_slice(&data);
+            let mode: u32 = if file.executable { 0o100755 } else { 0o100644 };
+            directory.extend_from_slice(b"PK\x01\x02\x14\x03\x14\0\0\0\x08\0\0\0\0\0");
+            sizes.iter().for_each(|n| directory.extend_from_slice(&n.to_le_bytes()));
+            directory.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            directory.extend_from_slice(&[0; 8]);
+            directory.extend_from_slice(&(mode << 16).to_le_bytes());
+            directory.extend_from_slice(&offset.to_le_bytes());
+            directory.extend_from_slice(name);
+        }
+        let at = out.len() as u32;
+        out.extend_from_slice(&directory);
+        out.extend_from_slice(b"PK\x05\x06\0\0\0\0");
+        out.extend_from_slice(&(files.len() as u16).to_le_bytes());
+        out.extend_from_slice(&(files.len() as u16).to_le_bytes());
+        out.extend_from_slice(&(directory.len() as u32).to_le_bytes());
+        out.extend_from_slice(&at.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out
     }
 }
 

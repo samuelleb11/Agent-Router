@@ -6,7 +6,9 @@
 //! - [`bundle`] is what one version is: its files, checked against its kind, packed in one
 //!   canonical form whose sha256 is the version's digest.
 //! - [`store`] keeps the items, their versions and the blobs, in the main store.
+//! - [`api`] is how a hosted router serves them, to the console and to the machines' agents.
 
+pub mod api;
 pub mod bundle;
 pub mod store;
 

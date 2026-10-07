@@ -22,22 +22,23 @@ use tower::ServiceExt;
 
 use crate::proxy::AppState;
 
-/// A router over a store of its own, built as `serve` builds one.
-struct Lab {
-    app: axum::Router,
-    state: Arc<AppState>,
+/// A router over a store of its own, built as `serve` builds one. Other modules' API tests
+/// drive it too (`library::api`).
+pub(crate) struct Lab {
+    pub(crate) app: axum::Router,
+    pub(crate) state: Arc<AppState>,
     dir: PathBuf,
     /// What a hosted router asks of every caller, loopback included.
-    password: Option<&'static str>,
+    pub(crate) password: Option<&'static str>,
 }
 
 impl Lab {
-    fn local(name: &str) -> Self {
+    pub(crate) fn local(name: &str) -> Self {
         Self::new(name, false)
     }
 
     /// A hosted router, its password pinned as a deployment pins it at every start.
-    async fn hosted(name: &str) -> Self {
+    pub(crate) async fn hosted(name: &str) -> Self {
         const PASSWORD: &str = "the deployment's own";
         let mut lab = Self::new(name, true);
         lab.state.auth.pin(&lab.state.config.db_path, PASSWORD).await.unwrap();
@@ -110,7 +111,7 @@ impl Drop for Lab {
 
 /// The words of a refusal answered with `status`, once it is known to have the shape every
 /// client reads: `ok: false`, and the words under `error`.
-fn words((got, body): (StatusCode, Value), status: StatusCode) -> String {
+pub(crate) fn words((got, body): (StatusCode, Value), status: StatusCode) -> String {
     assert_eq!(got, status, "{body}");
     assert!(got.is_client_error(), "a refusal is a 4xx: {got}");
     assert_eq!(body["ok"], json!(false), "{body}");

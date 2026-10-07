@@ -63,6 +63,17 @@ pub fn routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
         .route("/api/live/archive", post(crate::machines::api::archive))
         .route("/api/machines", get(crate::machines::api::machines))
         .route(crate::tunnel::PATH, get(crate::machines::api::connect))
+        // The Library: what the console reads and writes, and what every machine's agent
+        // syncs from (`library::api`, docs/library.md).
+        .route("/api/library", get(crate::library::api::list))
+        .route("/api/library/manifest", get(crate::library::api::manifest))
+        .route("/api/library/blobs/{digest}", get(crate::library::api::blob))
+        .route("/api/library/items/{kind}/{name}", get(crate::library::api::item))
+        .route("/api/library/items/{kind}/{name}/archive", post(crate::library::api::archive))
+        .route("/api/library/items/{kind}/{name}/versions", post(crate::library::api::publish))
+        .route("/api/library/items/{kind}/{name}/versions/{number}/live", post(crate::library::api::make_live))
+        .route("/api/library/items/{kind}/{name}/versions/{number}/reject", post(crate::library::api::reject))
+        .route("/api/library/items/{kind}/{name}/versions/{number}/files/{*path}", get(crate::library::api::file))
         // The agent's installer, open without the password (see `downloads`).
         .route("/agent/install.sh", get(crate::downloads::install_sh))
         .route("/agent/install.ps1", get(crate::downloads::install_ps1))
