@@ -30,8 +30,13 @@ export interface Scope {
   readonly range: Range;
 }
 
-/// Nothing narrowed, every range: where the Overview starts.
+/// Nothing narrowed, every range.
 export const UNSCOPED: Scope = { account: null, project: null, session: null, range: 'all' };
+
+/// The range an address that names none reads as, so where the Overview starts. The last hour,
+/// not all: a hosted router on network storage takes longer than a read's deadline to sum its
+/// whole history. All stays one click away, and in the address as `range=all`.
+export const DEFAULT_RANGE: Range = '1h';
 
 /// A range named in a link reads as itself when it is one of the five, and as all otherwise —
 /// never as a property every object has, `constructor` or `__proto__` (OV-C28).
@@ -105,13 +110,13 @@ export function readQuery(search: string): OverviewAddress {
   const p = new URLSearchParams(search);
   const kind = p.get('kind');
   return {
-    scope: { account: p.get('account') || null, project: p.get('project') || null, session: p.get('session') || null, range: parseRange(p.get('range')) },
+    scope: { account: p.get('account') || null, project: p.get('project') || null, session: p.get('session') || null, range: p.get('range') ? parseRange(p.get('range')) : DEFAULT_RANGE },
     open: ids(p.get('open')),
     requests: { kind: KINDS.find((k) => k === kind) ?? 'all', model: p.get('model') || null, stop: p.get('stop') || null },
   };
 }
 
-/// The Overview's query string, "" when nothing is narrowed: the range left out when all, the open
+/// The Overview's query string, "" when nothing is narrowed: the range left out when the default, the open
 /// request ids joined by dots, as the dashboard spelled them.
 export function writeQuery(address: Partial<OverviewAddress> & { readonly scope: Scope }): string {
   const p = new URLSearchParams();
@@ -119,7 +124,7 @@ export function writeQuery(address: Partial<OverviewAddress> & { readonly scope:
   if (scope.account) p.set('account', scope.account);
   if (scope.project) p.set('project', scope.project);
   if (scope.session) p.set('session', scope.session);
-  if (scope.range !== 'all') p.set('range', scope.range);
+  if (scope.range !== DEFAULT_RANGE) p.set('range', scope.range);
   if (open.length) p.set('open', open.join('.'));
   if (requests.kind !== 'all') p.set('kind', requests.kind);
   if (requests.model) p.set('model', requests.model);

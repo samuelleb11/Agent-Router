@@ -64,7 +64,9 @@ function Nav() {
   );
 }
 
-const show = (at = '/') =>
+// At every range unless a spec says otherwise: the specs below were written for the unscoped
+// page, and the 1h the page starts at (DEFAULT_RANGE) is pinned by OV-C29's own.
+const show = (at = '/?range=all') =>
   renderScreen(
     <>
       <Overview />
@@ -176,13 +178,13 @@ describe('the address', () => {
     show();
     await loaded();
     fireEvent.click(within(panel('Projects')).getByRole('button', { name: 'agent-router' }));
-    await waitFor(() => expect(where()).toBe('/?project=%2Fcode%2Fagent-router'));
+    await waitFor(() => expect(where()).toBe('/?project=%2Fcode%2Fagent-router&range=all'));
     fireEvent.click(within(screen.getByRole('tablist', { name: 'Time range' })).getByRole('tab', { name: '24h' }));
     await waitFor(() => expect(where()).toBe('/?project=%2Fcode%2Fagent-router&range=24h'));
     fireEvent.click(screen.getByRole('button', { name: 'test: back' }));
-    await waitFor(() => expect(where()).toBe('/?project=%2Fcode%2Fagent-router'));
+    await waitFor(() => expect(where()).toBe('/?project=%2Fcode%2Fagent-router&range=all'));
     fireEvent.click(screen.getByRole('button', { name: 'test: back' }));
-    await waitFor(() => expect(where()).toBe('/'));
+    await waitFor(() => expect(where()).toBe('/?range=all'));
   });
 
   it('OV-C32: an edited or followed address re-scopes the page without a reload', async () => {
@@ -202,10 +204,18 @@ describe('the address', () => {
     expect([asked.get('project'), asked.has('since')]).toEqual(['/code/northstar', true]);
     expect(within(panel('Requests')).getAllByRole('button', { expanded: true })).toHaveLength(1);
 
+    // An old bookmark opens the page unscoped at the range an address with none starts at.
     const old = router();
     show('/#a=primary&p=%2Fcode%2Fnorthstar&r=7d');
     await waitFor(() => expect(old.calls('/api/summary').length).toBeGreaterThan(0));
-    expect([...old.calls('/api/summary')[0]!.query.keys()]).toEqual(['tz']);
+    expect([...old.calls('/api/summary')[0]!.query.keys()].sort()).toEqual(['since', 'tz']);
+
+    // That range is the last hour, and choosing all puts it in the address.
+    const bare = router();
+    show('/');
+    await waitFor(() => expect(bare.calls('/api/summary').length).toBeGreaterThan(0));
+    const since = Number(bare.calls('/api/summary')[0]!.query.get('since'));
+    expect(Math.abs(Date.now() - 3600e3 - since)).toBeLessThan(60e3);
   });
 
   it('OV-C33: a scope change reads at once and returns the request list to its first twenty rows', async () => {
@@ -343,7 +353,7 @@ describe('searching the transcripts', () => {
     expect(within(hit).getByText('kestrel', { selector: 'mark' })).toBeInTheDocument();
     expect(scss).toMatch(/\.snippet \{[^}]*-webkit-line-clamp: 3;[^}]*line-clamp: 3;/);
     fireEvent.click(hit);
-    await waitFor(() => expect(where()).toBe(`/?project=%2Fcode%2Fagent-router&session=${S1}`));
+    await waitFor(() => expect(where()).toBe(`/?project=%2Fcode%2Fagent-router&session=${S1}&range=all`));
   });
 
   it('OV-C53: the search’s session rows mark the session the page is scoped to as soon as it changes', async () => {
@@ -407,7 +417,7 @@ describe('Totals in scope', () => {
     const button = within(tile('Errors')).getByRole('button', { name: 'List the 3 errors' });
     expect(button.tagName).toBe('BUTTON');
     fireEvent.click(button);
-    await waitFor(() => expect(where()).toBe('/?kind=errors'));
+    await waitFor(() => expect(where()).toBe('/?range=all&kind=errors'));
     expect(within(panel('Requests')).getAllByRole('listitem')).toHaveLength(1);
     await waitFor(() => expect(into).toHaveBeenCalled());
     expect(into.mock.contexts.at(-1)).toBe(document.getElementById('requests'));
@@ -428,7 +438,7 @@ describe('the lists', () => {
     await loaded();
     fireEvent.click(within(panel('Projects')).getByRole('button', { name: '(unresolved)' }));
     await waitFor(() => expect(r.calls('/api/summary').some((c) => c.query.get('project') === '(unresolved)')).toBe(true));
-    expect(where()).toBe('/?project=%28unresolved%29');
+    expect(where()).toBe('/?project=%28unresolved%29&range=all');
   });
 
   it('OV-C139: a long list shows a first page and a visible "Show more"; Sessions holds up to 200', async () => {

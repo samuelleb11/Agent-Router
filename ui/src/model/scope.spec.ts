@@ -17,6 +17,7 @@ import {
   sinceMs,
   toggle,
   UNSCOPED,
+  DEFAULT_RANGE,
   writeQuery,
   type OverviewAddress,
   type Scope,
@@ -57,7 +58,11 @@ describe('scope', () => {
   it('OV-C29, OV-C31: the scope, the range, the open rows and the request filters live in the address and read back as themselves', () => {
     const address: OverviewAddress = { scope: S, open: ['12', '13'], requests: { kind: 'errors', model: 'claude-opus-5', stop: 'end_turn' } };
     expect(readQuery(writeQuery(address))).toEqual(address);
-    expect(writeQuery({ scope: UNSCOPED })).toBe('');
+    // The range is left out when it is the default the page starts at, and named otherwise.
+    expect(writeQuery({ scope: { ...UNSCOPED, range: DEFAULT_RANGE } })).toBe('');
+    expect(writeQuery({ scope: UNSCOPED })).toBe('?range=all');
+    expect(readQuery('').scope.range).toBe(DEFAULT_RANGE);
+    expect(DEFAULT_RANGE).toBe('1h');
     expect(readQuery('?kind=__proto__&range=__proto__')).toMatchObject({ scope: { range: 'all' }, requests: { kind: 'all' } });
   });
 
