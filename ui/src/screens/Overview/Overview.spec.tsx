@@ -18,6 +18,7 @@ import {
   held,
   HOSTED,
   LOCAL,
+  NOW,
   ok,
   project,
   PROJECTS,
@@ -79,6 +80,12 @@ const tile = (label: string) => within(panel('Totals in scope')).getByText(label
 
 beforeEach(() => {
   chart.StackedBarChart.mockClear();
+  // The fixtures are built around NOW, read when they loaded; the page reads the clock when it
+  // draws. Held at NOW, a countdown reads as the fixtures mean it however long the run took to
+  // get here: on a slow runner "resets in 2h 00m" had become 1h 59m (AGEN-0032). Only Date is
+  // held; timers stay real, and a spec that fakes them installs its own clock.
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(NOW);
 });
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -476,7 +483,9 @@ describe('the requests', () => {
 
 describe('reading the router', () => {
   it('OV-C161: the next read starts five seconds after the previous one finished, so reads never overlap', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
+    // Fake timers already in place (the held Date) would keep this spec's own from installing.
+    vi.useRealTimers();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'], now: NOW });
     const r = router((path) => (path === '/api/summary' ? new Promise<Response>((done) => setTimeout(() => done(ok(summary())), 3_000)) : undefined));
     show();
     const step = (ms: number) => act(() => vi.advanceTimersByTimeAsync(ms));

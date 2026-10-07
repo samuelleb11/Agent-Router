@@ -12,7 +12,10 @@ export const HOUR = 60 * MIN;
 export const DAY = 24 * HOUR;
 
 /// The moment the fixtures are built around: the spec's own now, so "ago" reads as it would.
-export const NOW = Date.now();
+/// It is read once, when this module loads, and a page reads the clock again when it draws,
+/// so a spec that draws a page holds `Date` at NOW (AGEN-0032). `AR_FIXTURE_SKEW_MS` sets
+/// NOW that far behind the run, as a slow run would, to prove that none of them forgot.
+export const NOW = Date.now() - Number(process.env['AR_FIXTURE_SKEW_MS'] ?? 0);
 
 export const SERVING = { id: 'secondary', label: 'secondary', email: 'secondary@example.test', org_name: null, subscription_type: 'max' } as const;
 
