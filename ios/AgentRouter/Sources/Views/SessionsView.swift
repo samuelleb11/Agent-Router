@@ -1,16 +1,21 @@
 import SwiftUI
 
 /// Every session the router can see, grouped the way the web view groups them — machine by
-/// machine when a hosted router merges more than one.
+/// machine when a hosted router merges more than one, with a tab for each machine over them.
 struct SessionsView: View {
     let state: RouterState
     /// The older and archived folds that are open, by machine: one of each, as there always
-    /// was, when the list names no machines.
+    /// was, when the list names no machines. A machine's folds are the same on All and on
+    /// its own tab.
     @State private var unfolded: Set<String> = []
     @State private var notice: String?
+    /// Said when the chosen machine left the list and the list went back to All.
+    @State private var tabNotice: String?
 
     var body: some View {
-        let machines = SessionGroups.byMachine(state.sessions)
+        let all = SessionGroups.byMachine(state.sessions)
+        let tabs = SessionTabs.tabs(all)
+        let machines = SessionTabs.parts(all, showing: state.sessionsTab)
         List {
             if let t = state.shim?.newestUnwrapped {
                 Section {
@@ -22,6 +27,14 @@ struct SessionsView: View {
             }
             if let notice {
                 Section { Text(notice).font(.footnote).foregroundStyle(.red) }
+            }
+            if let tabNotice {
+                Section {
+                    Text(tabNotice)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier("machine-tab-notice")
+                }
             }
             // A listing that failed keeps the last one on screen, and its dots would go on
             // claiming "working" or "waiting" long after either stopped being true.
@@ -94,14 +107,38 @@ struct SessionsView: View {
                     .accessibilityIdentifier("sessions-error")
                 } else if state.auth?.isHosted == true {
                     // A hosted router runs no sessions of its own: they come from the machines
-                    // running the agent, and until one connects it lists nothing.
-                    ContentUnavailableView("No sessions", systemImage: "bubble.left.and.bubble.right",
-                                           description: Text("Sessions appear here once a machine runs the Agent Router agent:\n`agent-router agent install --server \(agentServer)`"))
+                    // running the agent, and until one connects it lists nothing. How to connect
+                    // one is on the Machines screen, the commands' one home (SE-C187).
+                    ContentUnavailableView {
+                        Label("No sessions", systemImage: "bubble.left.and.bubble.right")
+                    } description: {
+                        Text(Machines.agentless)
+                    } actions: {
+                        NavigationLink(Machines.connect, value: MachinesRoute(routerId: state.router.id))
+                            .accessibilityIdentifier("connect-a-machine")
+                    }
                 } else {
                     ContentUnavailableView("No sessions", systemImage: "bubble.left.and.bubble.right",
                                            description: Text("Nothing has run on this Mac in the last week."))
                 }
             }
+        }
+        // Over a list of several machines, a tab for each: pinned above the list, and only
+        // there when there is more than one machine to choose between.
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if !tabs.isEmpty {
+                MachineTabStrip(tabs: tabs, selected: state.sessionsTab) { machine in
+                    tabNotice = nil
+                    state.sessionsTab = machine
+                }
+            }
+        }
+        // A chosen machine that has left the list — gone offline, say — gives way to All,
+        // and the list says so once rather than show nothing.
+        .onChange(of: SessionTabs.isUnlisted(state.sessionsTab, rows: state.sessions), initial: true) { _, gone in
+            guard gone else { return }
+            state.sessionsTab = nil
+            tabNotice = SessionTabs.unlisted
         }
         .refreshable { await state.refreshSessions() }
         .task {
@@ -140,12 +177,58 @@ struct SessionsView: View {
             Section { content() }
         }
     }
+}
 
-    /// What a machine's agent connects to: the address the router gives for itself, or the
-    /// one this phone reaches it at.
-    private var agentServer: String {
-        if let url = state.auth?.publicURL?.trimmingCharacters(in: .whitespaces), !url.isEmpty { return url }
-        return state.router.origin
+/// The tabs over a list that holds more than one machine's sessions: All, then each machine,
+/// each with what is at work there and what waits on you, and the attention dot when
+/// something does. One row that scrolls sideways rather than squeeze, as a session's tabs do.
+private struct MachineTabStrip: View {
+    let tabs: [SessionTabs.Tab]
+    /// The chosen machine's part; nil is All.
+    let selected: String?
+    let choose: (String?) -> Void
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(tabs) { t in
+                    let on = t.machine == selected
+                    Button {
+                        if !on { choose(t.machine) }
+                    } label: {
+                        HStack(spacing: 5) {
+                            if t.waiting {
+                                Circle()
+                                    .fill(StateColor.of(tone: .attention).color)
+                                    .frame(width: 7, height: 7)
+                            }
+                            // A label is whatever the machine's agent was given: a long one is
+                            // cut short, so one tab never takes the whole row.
+                            Text(t.label)
+                                .lineLimit(1)
+                                .frame(maxWidth: 160)
+                            if !t.counts.isEmpty {
+                                Text(t.counts)
+                                    .foregroundStyle(t.waiting ? Color.orange : Color.secondary)
+                                    .lineLimit(1)
+                            }
+                        }
+                        .font(.caption)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(Capsule().fill(on ? Color.accentColor.opacity(0.18) : Color(.secondarySystemBackground)))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(t.spoken)
+                    .accessibilityAddTraits(on ? .isSelected : [])
+                    .accessibilityIdentifier("machine-tab")
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+        }
+        .background(.bar)
+        .accessibilityLabel("Machines")
     }
 }
 

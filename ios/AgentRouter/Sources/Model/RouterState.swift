@@ -21,6 +21,10 @@ final class RouterState {
     /// Why the last listing failed, when it did — the page must say so rather than
     /// show an empty week.
     var sessionsFailure: String?
+    /// The machine tab the sessions list is on, by its part's id (`SessionTabs`); nil is
+    /// All. Kept here rather than on the screen, so leaving the list and coming back finds
+    /// it where it was, router by router.
+    var sessionsTab: String?
     var shim: ShimStatus?
     var failure: RouterClient.Failure?
     var lastRefresh: Date?
@@ -48,18 +52,10 @@ final class RouterState {
     var activeSessions: Int { sessions.filter(\.active).count }
     /// Sessions at work and sessions waiting on you, when the router names each session's
     /// activity. Nil from an older router, whose only word for either is `active`.
-    var sessionCounts: (working: Int, waiting: Int)? {
-        guard sessions.contains(where: { $0.activity != nil }) else { return nil }
-        return (sessions.filter(\.isWorking).count, sessions.filter(\.needsYou).count)
-    }
+    var sessionCounts: (working: Int, waiting: Int)? { sessions.activityCounts }
     /// "2 working · 1 waiting", or from an older router "3 active"; nil when nothing is.
     /// An ended session is neither, so it is never counted.
-    var liveSummary: String? {
-        guard let c = sessionCounts else { return activeSessions > 0 ? "\(activeSessions) active" : nil }
-        let parts = [c.working > 0 ? "\(c.working) working" : nil, c.waiting > 0 ? "\(c.waiting) waiting" : nil]
-        let said = parts.compactMap { $0 }
-        return said.isEmpty ? nil : said.joined(separator: " · ")
-    }
+    var liveSummary: String? { sessions.liveSummary }
     /// For the pages that stream: the same address and password this state uses.
     var liveClient: RouterClient? { client }
 

@@ -99,6 +99,8 @@ extension Router {
 /// at the root — a destination declared inside a pushed, re-rendering screen is exactly
 /// the arrangement SwiftUI resolves unreliably.
 struct SessionsRoute: Hashable { let routerId: UUID }
+/// A hosted router's machines, and how to connect one.
+struct MachinesRoute: Hashable { let routerId: UUID }
 struct SessionRoute: Hashable {
     let routerId: UUID
     let session: LiveSession

@@ -23,6 +23,9 @@ struct RoutersListView: View {
             .navigationDestination(for: SessionsRoute.self) { route in
                 if let state = store.state(id: route.routerId) { SessionsView(state: state) }
             }
+            .navigationDestination(for: MachinesRoute.self) { route in
+                if let state = store.state(id: route.routerId) { MachinesView(state: state) }
+            }
             .navigationDestination(for: SessionRoute.self) { route in
                 if let state = store.state(id: route.routerId) { SessionView(state: state, session: route.session) }
             }

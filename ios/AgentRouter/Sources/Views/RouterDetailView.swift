@@ -82,6 +82,14 @@ struct RouterDetailView: View {
                         .accessibilityIdentifier("live-sessions")
                 }
             }
+            // A hosted router's sessions come from the machines connected to it; a local
+            // router takes none.
+            if state.auth?.isHosted == true {
+                NavigationLink(value: MachinesRoute(routerId: state.router.id)) {
+                    Label("Machines", systemImage: "desktopcomputer")
+                        .accessibilityIdentifier("machines")
+                }
+            }
             NavigationLink(value: UsageRoute(routerId: state.router.id, scope: UsageScope())) {
                 LabeledContent {
                     Text(state.forecast.map { Fmt.usd($0.global.cost) } ?? "").foregroundStyle(.secondary)

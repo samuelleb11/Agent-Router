@@ -11,6 +11,24 @@ struct Health: Decodable, Sendable {
     let ok: Bool
     let pid: Int
     let version: String
+    /// The source tree the router was built from, `tree:<sha>`: the version is the same for
+    /// every build, so this is what says whether a machine's agent runs the router's own.
+    /// Absent from an older router.
+    let build: String?
+
+    enum CodingKeys: String, CodingKey { case ok, pid, version, build }
+}
+
+extension Health {
+    /// The keys every router sends decode exactly as they always have; `build` leniently,
+    /// since a health that fails to decode makes the whole router read as unreachable.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        ok = try c.decode(Bool.self, forKey: .ok)
+        pid = try c.decode(Int.self, forKey: .pid)
+        version = try c.decode(String.self, forKey: .version)
+        build = c.lenient(String.self, .build)
+    }
 }
 
 /// `GET /api/auth`. `remoteBind` is whether the router listens beyond loopback at all.

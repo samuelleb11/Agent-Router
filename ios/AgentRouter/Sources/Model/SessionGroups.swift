@@ -150,17 +150,24 @@ extension SessionGroups {
         let names = Set(rows.compactMap(\.machineName))
         guard names.count > 1 else { return [Machine(id: "", name: nil, groups: build(rows, now: now))] }
         var parts = names.sorted(by: alphabetically).map { name in
-            Machine(id: "machine:" + name, name: name, groups: build(rows.filter { $0.machineName == name }, now: now))
+            Machine(id: partId(machine: name), name: name, groups: build(rows.filter { $0.machineName == name }, now: now))
         }
         let unnamed = rows.filter { $0.machineName == nil }
         if !unnamed.isEmpty {
-            parts.append(Machine(id: "unnamed", name: unnamedMachine, groups: build(unnamed, now: now)))
+            parts.append(Machine(id: partId(machine: nil), name: unnamedMachine, groups: build(unnamed, now: now)))
         }
         return parts
     }
 
+    /// The id of the part a machine's sessions make when the list is headed per machine, by
+    /// the name its rows give it; the rows that name none make "unnamed".
+    static func partId(machine name: String?) -> String {
+        name.map { "machine:" + $0 } ?? "unnamed"
+    }
+
     /// Case-insensitive, and the same order every time for names that differ only in case.
-    private static func alphabetically(_ a: String, _ b: String) -> Bool {
+    /// The Machines screen orders its machines the same way.
+    static func alphabetically(_ a: String, _ b: String) -> Bool {
         let order = a.localizedCaseInsensitiveCompare(b)
         return order == .orderedSame ? a < b : order == .orderedAscending
     }
