@@ -389,8 +389,13 @@ impl Machines {
         );
     }
 
-    fn connected(&self) -> Vec<Arc<Machine>> {
+    pub(crate) fn connected(&self) -> Vec<Arc<Machine>> {
         locked(&self.online).values().cloned().collect()
+    }
+
+    /// The machine with this id, if it is connected now.
+    pub(crate) fn online(&self, id: &str) -> Option<Arc<Machine>> {
+        locked(&self.online).get(id).cloned()
     }
 
     /// Every machine seen since the router started, connected ones first.
@@ -602,9 +607,22 @@ pub mod api {
             .on_upgrade(move |socket| machines.serve(socket))
     }
 
-    /// `GET /api/machines`.
+    /// `GET /api/machines`: each machine, with where its Library stands (`library::push`),
+    /// from what it last said and what is live now.
     pub async fn machines(State(state): State<Arc<AppState>>) -> Json<Value> {
-        Json(json!(state.machines.seen()))
+        let standings = crate::library::push::standings(&state).await;
+        let rows = state
+            .machines
+            .seen()
+            .into_iter()
+            .map(|m| {
+                let library = standings.get(&m.id).cloned().unwrap_or_else(crate::library::push::Standing::not_yet);
+                let mut row = json!(m);
+                row["library"] = json!(library);
+                row
+            })
+            .collect();
+        Json(Value::Array(rows))
     }
 
     /// `GET /api/live/sessions`: every machine's sessions, merged.

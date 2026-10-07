@@ -6,13 +6,15 @@
 //! - [`bundle`] is what one version is: its files, checked against its kind, packed in one
 //!   canonical form whose sha256 is the version's digest.
 //! - [`store`] keeps the items, their versions and the blobs, in the main store.
-//! - [`api`] is how a hosted router serves them, to the console and to the machines' agents.
+//! - [`api`] is how a hosted router serves them, to the console and to the machines' agents,
+//!   and [`push`] how it tells those agents to sync now, through their own tunnels.
 //! - [`sync`] is the agent's half: keeping a machine's `~/.claude` in step with them, and
 //!   [`cli`] is `agent-router library` on that machine.
 
 pub mod api;
 pub mod bundle;
 pub mod cli;
+pub mod push;
 pub mod store;
 pub mod sync;
 

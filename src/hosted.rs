@@ -68,6 +68,8 @@ pub fn routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
         .route("/api/library", get(crate::library::api::list))
         .route("/api/library/manifest", get(crate::library::api::manifest))
         .route("/api/library/blobs/{digest}", get(crate::library::api::blob))
+        .route("/api/library/sync", post(crate::library::push::sync_now))
+        .route("/api/library/report", post(crate::library::push::report))
         .route("/api/library/items/{kind}/{name}", get(crate::library::api::item))
         .route("/api/library/items/{kind}/{name}/archive", post(crate::library::api::archive))
         .route("/api/library/items/{kind}/{name}/versions", post(crate::library::api::publish))

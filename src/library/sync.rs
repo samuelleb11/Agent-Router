@@ -562,15 +562,24 @@ impl Router {
     }
 
     async fn get(&self, path: &str, etag: Option<&str>) -> Result<(StatusCode, HeaderMap, Bytes)> {
+        let headers = etag.map(|tag| (header::IF_NONE_MATCH, tag.to_string())).into_iter().collect();
+        self.send(Method::GET, path, headers, Bytes::new()).await
+    }
+
+    async fn send(
+        &self,
+        method: Method,
+        path: &str,
+        headers: Vec<(header::HeaderName, String)>,
+        body: Bytes,
+    ) -> Result<(StatusCode, HeaderMap, Bytes)> {
         use http_body_util::BodyExt;
-        let mut request = Request::builder()
-            .method(Method::GET)
-            .uri(format!("{}{path}", self.server))
-            .header(header::AUTHORIZATION, self.auth.clone());
-        if let Some(etag) = etag {
-            request = request.header(header::IF_NONE_MATCH, etag);
+        let mut request =
+            Request::builder().method(method).uri(format!("{}{path}", self.server)).header(header::AUTHORIZATION, self.auth.clone());
+        for (name, value) in headers {
+            request = request.header(name, value);
         }
-        let request = request.body(http_body_util::Full::new(Bytes::new()))?;
+        let request = request.body(http_body_util::Full::new(body))?;
         let response = tokio::time::timeout(Duration::from_secs(60), self.client.request(request))
             .await
             .map_err(|_| anyhow!("{} did not answer", self.server))?
@@ -597,6 +606,18 @@ impl Router {
             }
             (status, _) => bail!("{} answered {status} for its Library: {}", self.server, words(&body)),
         }
+    }
+
+    /// Tell the router what this machine holds after a sync it ran on its own
+    /// (`POST /api/library/report`). A sync the router asked for answers it instead.
+    pub async fn report(&self, machine: &str, label: &str, report: &Report) -> Result<()> {
+        let body = serde_json::to_vec(&serde_json::json!({ "machine": machine, "label": label, "report": report }))?;
+        let json = vec![(header::CONTENT_TYPE, "application/json".to_string())];
+        let (status, _, answer) = self.send(Method::POST, "/api/library/report", json, Bytes::from(body)).await?;
+        if !status.is_success() {
+            bail!("{} answered {status} to the report: {}", self.server, words(&answer));
+        }
+        Ok(())
     }
 
     pub async fn blob(&self, digest: &str) -> Result<Vec<u8>> {

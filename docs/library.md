@@ -234,9 +234,9 @@ One sync runs at a time per data directory (`library/sync.lock`). The last repor
 - when told to (AGEN-0046);
 - from `agent-router library sync`, which prints what it did.
 
-**Reports to the router come with AGEN-0046**, which adds `POST /api/library/report`. Until
-that route exists, a hosted router would hand an unknown path to its proxy, so nothing is
-posted.
+**Reports.** After a sync it ran on its own (at a connection, or on its timer), the agent
+posts its report to `POST /api/library/report`. A sync the router asked for answers with the
+report instead.
 
 **`agent-router library status`** prints one line per item: name, kind, version, and where it
 stands here. That is one of:
@@ -283,16 +283,21 @@ the router never holds is listed under [Later](#later).
 The router keeps each machine's last report in the store. Machines themselves are in memory
 only today, so without this an offline machine's state would be lost at every restart.
 
-`/api/machines` gains `library` for each machine:
-- `in step`;
-- `behind` (with how many);
-- `replaced`;
+`/api/machines` gains `library` for each machine: `{state, behind, failed, replaced, at_ms}`.
+The `state` is one of:
+- `in_step`;
+- `behind`, with how many live items its last sync did not leave at their live version;
 - `failed`;
-- `predates the Library`;
-- `opted out`.
+- `replaced`, when its last sync put items back over local copies (they are named);
+- `predates`;
+- `opted_out`;
+- `not_yet`, for a machine that has said nothing of the Library.
 
-A machine that was offline when a version went live reads as behind until it reconnects and
-syncs.
+**Offline machines.** One that was offline when a version went live reads as behind until it
+reconnects and syncs. Asked to sync now, it is answered as offline.
+
+**After a restart.** A router started again reads each machine's last word from the store, so
+a machine back online shows its state at once.
 
 ## Usage
 

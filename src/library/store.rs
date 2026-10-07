@@ -65,7 +65,26 @@ CREATE TRIGGER IF NOT EXISTS library_blobs_fixed
 BEGIN
   SELECT RAISE(ABORT, 'a Library blob never changes');
 END;
+
+-- What each machine last said about the Library: its last sync's report, or that it takes
+-- no part, or that its agent predates the Library. Kept here because machines themselves
+-- are known only in memory, and a router restarted would otherwise know nothing of them.
+-- `heard` is JSON: see `Heard`.
+CREATE TABLE IF NOT EXISTS library_machines (
+  machine TEXT PRIMARY KEY,
+  label   TEXT,
+  at_ms   INTEGER NOT NULL,
+  heard   TEXT NOT NULL
+);
 "#;
+
+/// A connection that may write: one of its own, waiting on other writers as the store's do.
+pub fn writer(path: &std::path::Path) -> Result<Connection> {
+    let conn = Connection::open(path)?;
+    conn.busy_timeout(std::time::Duration::from_secs(30))?;
+    conn.pragma_update(None, "foreign_keys", "ON")?;
+    Ok(conn)
+}
 
 /// Create the Library's tables where they are missing. Called by `db::Db::open`.
 pub fn ensure(conn: &Connection) -> rusqlite::Result<()> {
@@ -173,6 +192,42 @@ pub enum Unmade {
     Refused(String),
 }
 
+/// What a machine last said about the Library.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Heard {
+    /// Its last sync, item by item.
+    Report(super::sync::Report),
+    /// Installed with `--no-library`.
+    OptedOut,
+    /// Its agent has no `/agent/library/sync`: it was installed before the Library.
+    Predates,
+}
+
+/// Keep what a machine said, over what it said before.
+pub fn hear(conn: &Connection, machine: &str, label: Option<&str>, heard: &Heard, now: i64) -> Result<()> {
+    conn.execute(
+        "INSERT INTO library_machines (machine, label, at_ms, heard) VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(machine) DO UPDATE SET label = coalesce(excluded.label, label), at_ms = excluded.at_ms, heard = excluded.heard",
+        params![machine, label, now, serde_json::to_string(heard)?],
+    )?;
+    Ok(())
+}
+
+/// What every machine last said, by machine id, with when.
+pub fn heard(conn: &Connection) -> Result<std::collections::HashMap<String, (i64, Heard)>> {
+    let mut stmt = conn.prepare("SELECT machine, at_ms, heard FROM library_machines")?;
+    let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?)))?;
+    let mut out = std::collections::HashMap::new();
+    for row in rows {
+        let (machine, at_ms, heard) = row?;
+        if let Ok(heard) = serde_json::from_str(&heard) {
+            out.insert(machine, (at_ms, heard));
+        }
+    }
+    Ok(out)
+}
+
 /// What publishing did.
 #[derive(Debug)]
 pub enum Published {
@@ -182,6 +237,7 @@ pub enum Published {
 }
 
 impl Published {
+    #[cfg(test)]
     pub fn version(&self) -> &Version {
         match self {
             Published::New(v) | Published::Unchanged(v) => v,
@@ -583,6 +639,7 @@ mod tests {
                 "library_blobs",
                 "library_blobs_fixed",
                 "library_items",
+                "library_machines",
                 "library_versions",
                 "library_versions_fixed",
                 "library_versions_one_live"

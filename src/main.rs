@@ -26,7 +26,6 @@ mod fold;
 mod forecast;
 mod guard;
 mod hosted;
-#[allow(dead_code)] // publishing (AGEN-0049) and the push (AGEN-0046) call the rest
 mod library;
 mod lifecycle;
 mod live;

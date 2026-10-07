@@ -129,9 +129,17 @@ local `agent-router install` registers it again.
 stop, then replaced.
 
 **What it runs:**
-- **Request routes.** Only these answer tunneled requests: the `live` routes, and two
-  for the notifier, `GET /agent/waiting` and `GET /agent/still-waiting`. Nothing else is
-  reachable through the tunnel: no setup, no shim install, no files.
+- **Request routes.** Only these answer tunneled requests:
+  - the `live` routes;
+  - two for the notifier, `GET /agent/waiting` and `GET /agent/still-waiting`;
+  - one for the Library, `POST /agent/library/sync`
+    ([library.md](library.md#push)). It syncs now and answers with its report.
+
+  That last route is the one through which a router can cause a write on a machine. It
+  carries nothing: the agent pulls the manifest and blobs over HTTPS and checks every
+  digest. So all it can place in `~/.claude` is what the router's Library lists. A machine
+  installed with `--no-library` answers it 409. Nothing else is reachable through the
+  tunnel: no setup, no shim install, no files.
 - **Housekeeping.** The wrapper janitor runs every 60 s, as the router does locally today.
 - **Clock.** It derives activity on its own clock. Rows carry `as_of_ms` and the router
   never re-derives them, because a few seconds of clock skew would misread turn
@@ -178,7 +186,8 @@ answers it 404.
 | `GET /api/live/project` | Every agent's answer for that working directory, summed. |
 | `POST /api/live/archive` | On the router: the shelf. |
 | `GET /api/push/pending` | The waiting keys of connected agents, plus the announced keys of machines that are offline. |
-| `GET /api/machines` | New: every machine seen, with label, platform, build, online, and since when. |
+| `GET /api/machines` | New: every machine seen, with label, platform, build, online, and since when, and `library`: where its Library stands ([library.md](library.md#each-machines-state)). |
+| `POST /api/library/sync` | Tells every connected agent, or `{machine}`, to sync the Library now, through its tunnel. |
 
 **Errors:**
 - A session no agent knows answers 404.

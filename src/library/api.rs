@@ -189,6 +189,7 @@ pub async fn publish(
         })
     })
     .await?;
+    super::push::push(&state);
     let status = if new { StatusCode::CREATED } else { StatusCode::OK };
     Ok((status, Json(json!({ "ok": true, "unchanged": !new, "version": version }))).into_response())
 }
@@ -198,7 +199,9 @@ pub async fn make_live(
     State(state): State<Arc<AppState>>,
     Path((kind, name, number)): Path<(String, String, String)>,
 ) -> Answer {
-    decide(state, kind, name, number, store::make_live).await
+    let decided = decide(&state, kind, name, number, store::make_live).await?;
+    super::push::push(&state);
+    Ok(decided)
 }
 
 /// `POST …/versions/{number}/reject`: turn down a version waiting for approval.
@@ -206,16 +209,16 @@ pub async fn reject(
     State(state): State<Arc<AppState>>,
     Path((kind, name, number)): Path<(String, String, String)>,
 ) -> Answer {
-    decide(state, kind, name, number, store::reject).await
+    decide(&state, kind, name, number, store::reject).await
 }
 
 type Decision = fn(&Connection, Kind, &str, i64, i64) -> anyhow::Result<Result<Version, Unmade>>;
 
-async fn decide(state: Arc<AppState>, kind: String, name: String, number: String, how: Decision) -> Answer {
+async fn decide(state: &Arc<AppState>, kind: String, name: String, number: String, how: Decision) -> Answer {
     let kind = kind_of(&kind)?;
     let number = number_of(&number)?;
     let named = name.clone();
-    let decided = write(&state, move |conn| how(conn, kind, &named, number, crate::db::now_ms())).await?;
+    let decided = write(state, move |conn| how(conn, kind, &named, number, crate::db::now_ms())).await?;
     match decided {
         Ok(version) => Ok(Json(json!({ "ok": true, "version": version })).into_response()),
         Err(Unmade::Missing) => Err(no_version(kind, &name, number)),
@@ -231,7 +234,10 @@ pub async fn archive(
     let kind = kind_of(&kind)?;
     let named = name.clone();
     match write(&state, move |conn| store::archive(conn, kind, &named, crate::db::now_ms())).await? {
-        Ok(()) => Ok(Json(json!({ "ok": true })).into_response()),
+        Ok(()) => {
+            super::push::push(&state);
+            Ok(Json(json!({ "ok": true })).into_response())
+        }
         Err(_) => Err(no_item_named(kind, &name)),
     }
 }
@@ -341,9 +347,7 @@ async fn write<T: Send + 'static>(
 ) -> Result<T, Refusal> {
     let path = state.config.db_path.clone();
     tokio::task::spawn_blocking(move || {
-        let conn = Connection::open(&path)?;
-        conn.busy_timeout(std::time::Duration::from_secs(30))?;
-        conn.pragma_update(None, "foreign_keys", "ON")?;
+        let conn = store::writer(&path)?;
         f(&conn)
     })
     .await

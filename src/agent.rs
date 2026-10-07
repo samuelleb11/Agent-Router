@@ -6,7 +6,8 @@
 //! sessions here, follow this one, answer that prompt — by running them through the very
 //! `live` handlers a local router serves, in process. It listens on nothing. Only the
 //! routes in `routes` can be asked for: nothing about setting the machine up, installing
-//! anything, or reading files the live view does not.
+//! anything, or reading files the live view does not — and one sync of the Library, which
+//! places only what the router's Library lists, through the agent's own checks.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -275,10 +276,13 @@ impl Target {
     }
 }
 
-/// The routes a router may ask an agent for: the live view, and what the notifier needs.
-/// Nothing else is served — no setup, no shim, no files — so the router can never ask
-/// a machine for more than its sessions.
-fn routes() -> Router {
+/// The routes a router may ask an agent for: the live view, what the notifier needs, and
+/// one sync of the Library (`library::push`). That one is the only route that writes here,
+/// and it carries nothing: the agent pulls the manifest and the blobs itself and checks every
+/// digest, so all a router can have a machine place in `~/.claude` is what its Library
+/// lists. Nothing else is served — no setup, no shim, no files. `library` is `None` on a
+/// machine installed with `--no-library`, whose answer to a sync says so.
+fn routes(library: Option<Library>) -> Router {
     use crate::live;
     Router::new()
         .route("/api/live/sessions", get(live::sessions))
@@ -295,6 +299,51 @@ fn routes() -> Router {
         .route("/api/live/aside", post(live::aside))
         .route("/agent/waiting", get(waiting))
         .route("/agent/still-waiting", get(still_waiting))
+        .route(crate::library::push::PATH, post(move || library_sync(library.clone())))
+}
+
+/// What the agent syncs the Library with: where on this machine, from which router, and
+/// who it says it is when it reports.
+#[derive(Clone)]
+pub(crate) struct Library {
+    pub places: crate::library::sync::Places,
+    pub router: Arc<crate::library::sync::Router>,
+    pub machine: String,
+    pub label: String,
+}
+
+impl Library {
+    /// Sync once, and log what changed. A sync the agent ran on its own is reported to the
+    /// router; one the router asked for is answered instead.
+    async fn sync(&self, report_it: bool) -> Result<crate::library::sync::Report> {
+        let report = crate::library::sync::run_once(self.places.clone(), self.router.clone(), None)
+            .await?
+            .ok_or_else(|| anyhow!("this machine takes no part in the Library"))?;
+        for line in report.items.iter().filter(|l| l.outcome != crate::library::sync::Outcome::InStep) {
+            tracing::info!(kind = %line.kind, name = %line.name, version = line.version, outcome = ?line.outcome, kept = ?line.kept, why = ?line.why, "the Library");
+        }
+        if report_it {
+            if let Err(e) = self.router.report(&self.machine, &self.label, &report).await {
+                tracing::warn!("the Library's report did not reach the router: {e:#}");
+            }
+        }
+        Ok(report)
+    }
+}
+
+/// `POST /agent/library/sync`, from the router: sync now, and answer with the report.
+async fn library_sync(library: Option<Library>) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let Some(library) = library else {
+        return crate::refusal::refuse(
+            axum::http::StatusCode::CONFLICT,
+            "this machine takes no part in the Library: it was installed with --no-library",
+        );
+    };
+    match library.sync(false).await {
+        Ok(report) => Json(report).into_response(),
+        Err(e) => crate::refusal::failed(format!("the Library could not be synced: {e:#}")),
+    }
 }
 
 /// What is waiting on a person here, named the way a banner names it.
@@ -473,26 +522,27 @@ async fn run(args: RunArgs) -> Result<()> {
     // The Library: in step at every connection and every fifteen minutes between, unless this
     // machine opted out (docs/library.md, "The sync").
     let (connected, on_connect) = tokio::sync::watch::channel(0u64);
-    if saved.library != Some(false) {
-        let places = crate::library::sync::Places::system(dir.clone());
-        let library = Arc::new(crate::library::sync::Router::new(&server, &password)?);
+    let library = match saved.library {
+        Some(false) => None,
+        _ => Some(Library {
+            places: crate::library::sync::Places::system(dir.clone()),
+            router: Arc::new(crate::library::sync::Router::new(&server, &password)?),
+            machine: hello.machine.clone(),
+            label: hello.label.clone(),
+        }),
+    };
+    if let Some(library) = library.clone() {
         tokio::spawn(crate::library::sync::keep_in_step(on_connect, crate::library::sync::EVERY, move || {
-            let (places, library) = (places.clone(), library.clone());
+            let library = library.clone();
             async move {
-                match crate::library::sync::run_once(places, library, None).await {
-                    Ok(Some(report)) => {
-                        for line in report.items.iter().filter(|l| l.outcome != crate::library::sync::Outcome::InStep) {
-                            tracing::info!(kind = %line.kind, name = %line.name, version = line.version, outcome = ?line.outcome, kept = ?line.kept, why = ?line.why, "the Library");
-                        }
-                    }
-                    Ok(None) => {}
-                    Err(e) => tracing::warn!("the Library could not be synced: {e:#}"),
+                if let Err(e) = library.sync(true).await {
+                    tracing::warn!("the Library could not be synced: {e:#}");
                 }
             }
         }));
     }
 
-    let router = routes();
+    let router = routes(library);
     let mut backoff = Duration::from_secs(1);
     loop {
         let started = Instant::now();
@@ -1078,12 +1128,68 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// The tunnel's one new route syncs the Library and answers its report; a machine that
+    /// opted out says so; and everything else the router might try is still not there.
+    #[tokio::test]
+    async fn the_tunnel_serves_library_sync_and_nothing_else_new() {
+        use crate::library::store::{self, Provenance};
+        use crate::library::{bundle::Bundle, bundle::File, Kind};
+
+        let lab = crate::api_refusals::Lab::hosted("agent-library-route").await;
+        let conn = store::writer(&lab.state.config.db_path).unwrap();
+        let text = "---\nname: bench\ndescription: Drives the bench.\n---\n";
+        let bench = Bundle::check(Kind::Skill, "bench", vec![File { path: "SKILL.md".into(), bytes: text.into(), executable: false }]).unwrap();
+        store::publish(&conn, &bench, &Provenance::Upload, true, 1).unwrap();
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = lab.app.clone().into_make_service_with_connect_info::<std::net::SocketAddr>();
+        tokio::spawn(async move { axum::serve(listener, app).await });
+
+        let root = std::env::temp_dir().join(format!("ar-agent-library-route-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let library = Library {
+            places: crate::library::sync::Places { claude: root.join("claude"), data: root.join("data") },
+            router: Arc::new(crate::library::sync::Router::new(&format!("http://{addr}"), lab.password.unwrap()).unwrap()),
+            machine: "m".into(),
+            label: "the test's machine".into(),
+        };
+        let ask = |method: &str, path: &str| {
+            axum::http::Request::builder().method(method).uri(path).body(Body::empty()).unwrap()
+        };
+
+        let synced = routes(Some(library.clone())).oneshot(ask("POST", "/agent/library/sync")).await.unwrap();
+        assert_eq!(synced.status(), 200);
+        let report: crate::library::sync::Report =
+            serde_json::from_slice(&axum::body::to_bytes(synced.into_body(), 1 << 20).await.unwrap()).unwrap();
+        assert_eq!(report.items.len(), 1);
+        assert_eq!(report.items[0].outcome, crate::library::sync::Outcome::Placed);
+        assert_eq!(std::fs::read_to_string(root.join("claude/skills/bench/SKILL.md")).unwrap(), text);
+
+        let refused = routes(None).oneshot(ask("POST", "/agent/library/sync")).await.unwrap();
+        assert_eq!(refused.status(), 409);
+        let words: Value = serde_json::from_slice(&axum::body::to_bytes(refused.into_body(), 1 << 20).await.unwrap()).unwrap();
+        assert!(words["error"].as_str().unwrap().contains("--no-library"), "{words}");
+
+        assert_eq!(routes(Some(library.clone())).oneshot(ask("GET", "/agent/library/sync")).await.unwrap().status(), 405);
+        for (method, path) in [
+            ("POST", "/agent/library/publish"),
+            ("GET", "/api/library/manifest"),
+            ("POST", "/api/setup/shim"),
+            ("POST", "/api/setup/config"),
+            ("GET", "/agent/install.sh"),
+        ] {
+            let answer = routes(Some(library.clone())).oneshot(ask(method, path)).await.unwrap();
+            assert_eq!(answer.status(), 404, "{method} {path}");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// The agent's routes answer what the router may ask, and nothing else.
     #[tokio::test]
     async fn only_the_live_routes_are_served() {
         let options = axum::http::Request::builder().uri("/api/setup").body(Body::empty()).unwrap();
-        assert_eq!(routes().oneshot(options).await.unwrap().status(), 404);
+        assert_eq!(routes(None).oneshot(options).await.unwrap().status(), 404);
         let setup = axum::http::Request::builder().method("POST").uri("/api/setup/shim").body(Body::empty()).unwrap();
-        assert_eq!(routes().oneshot(setup).await.unwrap().status(), 404);
+        assert_eq!(routes(None).oneshot(setup).await.unwrap().status(), 404);
     }
 }

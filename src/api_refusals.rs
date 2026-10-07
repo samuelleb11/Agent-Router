@@ -30,6 +30,8 @@ pub(crate) struct Lab {
     dir: PathBuf,
     /// What a hosted router asks of every caller, loopback included.
     pub(crate) password: Option<&'static str>,
+    /// Whether dropping this one removes the store: a restarted router leaves it to the first.
+    owns_dir: bool,
 }
 
 impl Lab {
@@ -47,11 +49,26 @@ impl Lab {
     }
 
     fn new(name: &str, server: bool) -> Self {
-        // As `serve` does before anything builds a TLS client.
-        rustls::crypto::ring::default_provider().install_default().ok();
         let dir = std::env::temp_dir().join(format!("ar-refusals-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
+        Self::build(dir, server)
+    }
+
+    /// The same router started again over the same store, as a rollout starts the next one.
+    pub(crate) async fn restarted(&self) -> Self {
+        let mut lab = Self::build(self.dir.clone(), self.state.config.server);
+        lab.owns_dir = false;
+        if let Some(password) = self.password {
+            lab.state.auth.pin(&lab.state.config.db_path, password).await.unwrap();
+            lab.password = Some(password);
+        }
+        lab
+    }
+
+    fn build(dir: PathBuf, server: bool) -> Self {
+        // As `serve` does before anything builds a TLS client.
+        rustls::crypto::ring::default_provider().install_default().ok();
         let db_path = dir.join("agent-router.db");
         crate::db::Db::open(&db_path).unwrap();
         // Built by hand rather than by `Config::load`, which settles the data directory for
@@ -75,7 +92,7 @@ impl Lab {
         // the socket, and anything that got that far would fail at once rather than wait.
         let (network, _) = crate::network::switch();
         let state = AppState::new(config, capture, network).unwrap();
-        Self { app: crate::app(state.clone()), state, dir, password: None }
+        Self { app: crate::app(state.clone()), state, dir, password: None, owns_dir: true }
     }
 
     /// POST `body` as JSON, from this machine, and read the answer.
@@ -105,7 +122,9 @@ impl Lab {
 
 impl Drop for Lab {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
+        if self.owns_dir {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
     }
 }
 
