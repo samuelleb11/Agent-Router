@@ -1,11 +1,15 @@
 #!/bin/sh
 # Build the router and the wrapper for one Rust target, into dist/<vsce target>/.
 #
-#   scripts/build-target.sh aarch64-apple-darwin
+#   scripts/build-target.sh aarch64-apple-darwin          # from Linux too, through zig
 #   scripts/build-target.sh x86_64-apple-darwin           # from an Apple Silicon Mac too
 #   scripts/build-target.sh x86_64-unknown-linux-musl      # from a Mac, through zig or musl-gcc
 #   scripts/build-target.sh aarch64-unknown-linux-musl
 #   scripts/build-target.sh x86_64-pc-windows-gnu          # from a Mac, through zig or mingw-w64
+#
+# macOS builds are native on a Mac. Anywhere else they go through `cargo zigbuild`, with
+# no Apple SDK: both programs link only libSystem and libiconv, no frameworks, and zig
+# and cargo-zigbuild carry stubs for those. CI builds them this way, on Linux.
 #
 # Linux builds are static (musl), so one binary runs on any distribution. From a Mac
 # they go through `cargo zigbuild` when it is installed (cargo install cargo-zigbuild;
@@ -63,6 +67,16 @@ case "$TRIPLE" in
         fi
       fi
     fi ;;
+  *-apple-darwin)
+    case "$HOST" in
+      *-apple-darwin) ;;
+      *)
+        command -v cargo-zigbuild >/dev/null 2>&1 || {
+          echo "no way to cross-build $TRIPLE from $HOST: install cargo-zigbuild and zig" >&2
+          exit 3
+        }
+        BUILD="cargo zigbuild" ;;
+    esac ;;
 esac
 
 # The console, before the first cargo step. A run started beside this one waits on the lock
@@ -89,5 +103,30 @@ $BUILD --release --target "$TRIPLE" -p agent-router -p claude-wrapper
 OUT="dist/$VT"
 mkdir -p "$OUT"
 TDIR="${CARGO_TARGET_DIR:-target}"
+
+# Apple Silicon kills an unsigned program the moment it starts, and only on the user's Mac.
+# A Mac's linker signs ad hoc, and so does zig's; this holds a cross build to it, so a zig
+# that stopped signing fails here rather than there. The test is the LC_CODE_SIGNATURE load
+# command (0x1d) in the 64-bit Mach-O header.
+if [ "$TRIPLE" = aarch64-apple-darwin ] && [ "$BUILD" = "cargo zigbuild" ]; then
+  for prog in agent-router claude-wrapper; do
+    python3 -c '
+import struct, sys
+data = open(sys.argv[1], "rb").read()
+magic, ncmds = struct.unpack_from("<I12xI", data, 0)
+off = 32
+for _ in range(ncmds if magic == 0xFEEDFACF else 0):
+    cmd, size = struct.unpack_from("<2I", data, off)
+    if cmd == 0x1D:
+        sys.exit(0)
+    off += size
+sys.exit(1)
+' "$TDIR/$TRIPLE/release/$prog" || {
+      echo "$prog for $TRIPLE carries no code signature, and macOS would kill it at launch" >&2
+      exit 6
+    }
+  done
+fi
+
 cp "$TDIR/$TRIPLE/release/agent-router$EXE" "$TDIR/$TRIPLE/release/claude-wrapper$EXE" "$OUT/"
 ls -la "$OUT"

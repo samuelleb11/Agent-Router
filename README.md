@@ -499,15 +499,17 @@ scripts/package-vsix.sh darwin-arm64                #    x86_64-unknown-linux-mu
 binary embeds), unless it is already there. Linux builds are static (musl). From a Mac they
 cross-build through `cargo zigbuild` (`brew install zig && cargo install cargo-zigbuild`) or
 a musl cross compiler; on Linux they build natively. Windows builds are the GNU ABI and
-cross-build the same way, through zig or mingw-w64.
+cross-build the same way, through zig or mingw-w64. macOS builds are native on a Mac and
+cross-build from anywhere else through zig, with no Apple SDK: the programs link only
+libSystem and libiconv.
 
 Claude Code is pointed at the router through its settings file and launched through the
 wrapper by way of Claude Code's own `claudeCode.claudeProcessWrapper` setting, so nothing
 inside Anthropic's extension is ever touched.
 
 `.gitlab-ci.yml` does all of them on a tag — the console once, in its `build:ui` job, which
-hands `ui/dist` to the rest; the Linux and Windows jobs in Docker through zig; the Mac job on
-a shell runner tagged `macos` that has rustup, node and zig — puts
+hands `ui/dist` to the rest; the Mac, Linux and Windows jobs in Docker on Linux, through
+zig — puts
 the VSIX files in the package registry, makes a release, and publishes to the
 Marketplace and Open VSX when the `VSCE_PAT` and `OVSX_PAT` variables are set. The
 Windows package stays off the marketplaces until it has run on Windows. The extension's manifest lives in
