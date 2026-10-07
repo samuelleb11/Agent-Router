@@ -26,6 +26,8 @@ mod fold;
 mod forecast;
 mod guard;
 mod hosted;
+#[allow(dead_code)] // the Library's API (AGEN-0044) and the agent's sync (AGEN-0045) call the rest
+mod library;
 mod lifecycle;
 mod live;
 mod machines;

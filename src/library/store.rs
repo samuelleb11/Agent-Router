@@ -1,0 +1,483 @@
+//! The Library's items, their versions and the blobs, in the main store beside the router's
+//! own tables. `db::Db::open` creates the tables, on a new store and an existing one alike.
+//!
+//! A version never changes once stored. Its number, digest, description and provenance are
+//! fixed, and so is the blob behind a digest: triggers refuse an UPDATE that would change
+//! either. What moves is a version's state — `pending` to `live` or `rejected`, `live` to
+//! `superseded` — and at most one version of an item is live, which a partial unique index
+//! holds even against a mistake here.
+
+use anyhow::Result;
+use rusqlite::{params, Connection, OptionalExtension, Row, Transaction, TransactionBehavior};
+use serde::{Deserialize, Serialize};
+
+use super::bundle::{self, Bundle};
+use super::Kind;
+
+const SCHEMA: &str = r#"
+-- One row per item. `source` says where its versions may come from: NULL for uploads and
+-- publishes, or the one place an item imported from a forge, or built into the router, takes
+-- them from (docs/library.md, "An item has one source of truth").
+CREATE TABLE IF NOT EXISTS library_items (
+  kind        TEXT NOT NULL CHECK (kind IN ('skill', 'command', 'subagent')),
+  name        TEXT NOT NULL,
+  source      TEXT,
+  created_at  INTEGER NOT NULL,
+  archived_at INTEGER,
+  PRIMARY KEY (kind, name)
+);
+
+-- Packed bundles by the sha256 of their bytes. Versions with the same content share one.
+CREATE TABLE IF NOT EXISTS library_blobs (
+  digest     TEXT PRIMARY KEY,
+  bytes      BLOB NOT NULL,
+  created_at INTEGER NOT NULL
+);
+
+-- `size` is the packed bundle's, which is what a machine downloads. `provenance` is JSON:
+-- see `Provenance`.
+CREATE TABLE IF NOT EXISTS library_versions (
+  kind        TEXT NOT NULL,
+  name        TEXT NOT NULL,
+  number      INTEGER NOT NULL,
+  digest      TEXT NOT NULL REFERENCES library_blobs(digest),
+  size        INTEGER NOT NULL,
+  description TEXT NOT NULL,
+  provenance  TEXT NOT NULL,
+  state       TEXT NOT NULL CHECK (state IN ('live', 'pending', 'rejected', 'superseded')),
+  created_at  INTEGER NOT NULL,
+  decided_at  INTEGER,
+  PRIMARY KEY (kind, name, number),
+  FOREIGN KEY (kind, name) REFERENCES library_items(kind, name)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS library_versions_one_live
+  ON library_versions(kind, name) WHERE state = 'live';
+
+CREATE TRIGGER IF NOT EXISTS library_versions_fixed
+  BEFORE UPDATE OF kind, name, number, digest, size, description, provenance, created_at
+  ON library_versions
+BEGIN
+  SELECT RAISE(ABORT, 'a Library version never changes: publish a new one');
+END;
+
+CREATE TRIGGER IF NOT EXISTS library_blobs_fixed
+  BEFORE UPDATE ON library_blobs
+BEGIN
+  SELECT RAISE(ABORT, 'a Library blob never changes');
+END;
+"#;
+
+/// Create the Library's tables where they are missing. Called by `db::Db::open`.
+pub fn ensure(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(SCHEMA)
+}
+
+/// Where a version came from. Stored as JSON, its origin under `from`, which the console
+/// and the phones read.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "from", rename_all = "snake_case")]
+pub enum Provenance {
+    /// Sent from the console, or through the API with the password.
+    Upload,
+    /// Imported from a forge: the forge's key, the repository, the commit and the path in it.
+    Forge { forge: String, repository: String, commit: String, path: String },
+    /// Published with a publish token, named here by the token's name.
+    Token { token: String },
+    /// Published from a connected machine, by the Claude Code session that ran the publish
+    /// when there was one.
+    Machine {
+        machine: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<String>,
+    },
+    /// Built into the router: its build.
+    Router { build: String },
+}
+
+/// Where a version stands. Machines get only the `live` one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum State {
+    Live,
+    /// Waiting for the owner's approval.
+    Pending,
+    Rejected,
+    /// Was live, until another version was made live.
+    Superseded,
+}
+
+impl State {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            State::Live => "live",
+            State::Pending => "pending",
+            State::Rejected => "rejected",
+            State::Superseded => "superseded",
+        }
+    }
+
+    fn parse(s: &str) -> Option<State> {
+        [State::Live, State::Pending, State::Rejected, State::Superseded].into_iter().find(|v| v.as_str() == s)
+    }
+}
+
+/// One stored version of an item.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Version {
+    pub kind: Kind,
+    pub name: String,
+    /// From 1, in the order the item's versions were stored.
+    pub number: i64,
+    pub digest: String,
+    pub size: i64,
+    pub description: String,
+    pub provenance: Provenance,
+    pub state: State,
+    pub created_at: i64,
+    /// When it last went live, was superseded or was rejected.
+    pub decided_at: Option<i64>,
+}
+
+/// What publishing did.
+#[derive(Debug)]
+pub enum Published {
+    New(Version),
+    /// Nothing: the content is the item's newest version already, which is answered.
+    Unchanged(Version),
+}
+
+impl Published {
+    pub fn version(&self) -> &Version {
+        match self {
+            Published::New(v) | Published::Unchanged(v) => v,
+        }
+    }
+}
+
+const COLUMNS: &str = "kind, name, number, digest, size, description, provenance, state, created_at, decided_at";
+
+/// Store `bundle` as its item's next version, live or pending — unless it is exactly the
+/// item's newest version already, when nothing changes. Content that goes back to an older
+/// version's is a new version all the same: it is the newest change, and a forge reverting a
+/// skill has to reach machines like any other change. Going live supersedes the live one.
+pub fn publish(conn: &Connection, bundle: &Bundle, provenance: &Provenance, live: bool, now: i64) -> Result<Published> {
+    let packed = bundle.pack();
+    let digest = bundle::digest(&packed);
+    let (kind, name) = (bundle.kind(), bundle.name());
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    tx.execute(
+        "INSERT OR IGNORE INTO library_items (kind, name, created_at) VALUES (?1, ?2, ?3)",
+        params![kind.as_str(), name, now],
+    )?;
+    let newest = tx
+        .query_row(
+            &format!("SELECT {COLUMNS} FROM library_versions WHERE kind = ?1 AND name = ?2 ORDER BY number DESC LIMIT 1"),
+            params![kind.as_str(), name],
+            version,
+        )
+        .optional()?;
+    if let Some(newest) = newest.as_ref().filter(|v| v.digest == digest) {
+        let unchanged = newest.clone();
+        tx.commit()?;
+        return Ok(Published::Unchanged(unchanged));
+    }
+    tx.execute(
+        "INSERT OR IGNORE INTO library_blobs (digest, bytes, created_at) VALUES (?1, ?2, ?3)",
+        params![digest, packed, now],
+    )?;
+    if live {
+        supersede(&tx, kind, name, now)?;
+    }
+    let number = newest.map_or(1, |v| v.number + 1);
+    let state = if live { State::Live } else { State::Pending };
+    tx.execute(
+        &format!("INSERT INTO library_versions ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)"),
+        params![
+            kind.as_str(),
+            name,
+            number,
+            digest,
+            packed.len() as i64,
+            bundle.description(),
+            serde_json::to_string(provenance)?,
+            state.as_str(),
+            now,
+            live.then_some(now),
+        ],
+    )?;
+    let stored = get(&tx, kind, name, number)?.expect("the version just written");
+    tx.commit()?;
+    Ok(Published::New(stored))
+}
+
+/// Make version `number` the item's live one — approving a pending version, or rolling back
+/// to an older one — and supersede the version that was. `None` when there is no such
+/// version; a version already live is left as it is.
+pub fn make_live(conn: &Connection, kind: Kind, name: &str, number: i64, now: i64) -> Result<Option<Version>> {
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    let Some(found) = get(&tx, kind, name, number)? else { return Ok(None) };
+    if found.state != State::Live {
+        supersede(&tx, kind, name, now)?;
+        tx.execute(
+            "UPDATE library_versions SET state = 'live', decided_at = ?4 WHERE kind = ?1 AND name = ?2 AND number = ?3",
+            params![kind.as_str(), name, number, now],
+        )?;
+    }
+    let live = get(&tx, kind, name, number)?;
+    tx.commit()?;
+    Ok(live)
+}
+
+fn supersede(tx: &Transaction, kind: Kind, name: &str, now: i64) -> rusqlite::Result<usize> {
+    tx.execute(
+        "UPDATE library_versions SET state = 'superseded', decided_at = ?3 WHERE kind = ?1 AND name = ?2 AND state = 'live'",
+        params![kind.as_str(), name, now],
+    )
+}
+
+/// One version, if there is one.
+pub fn get(conn: &Connection, kind: Kind, name: &str, number: i64) -> Result<Option<Version>> {
+    Ok(conn
+        .query_row(
+            &format!("SELECT {COLUMNS} FROM library_versions WHERE kind = ?1 AND name = ?2 AND number = ?3"),
+            params![kind.as_str(), name, number],
+            version,
+        )
+        .optional()?)
+}
+
+/// Every version of an item, newest first.
+pub fn versions(conn: &Connection, kind: Kind, name: &str) -> Result<Vec<Version>> {
+    let mut stmt =
+        conn.prepare(&format!("SELECT {COLUMNS} FROM library_versions WHERE kind = ?1 AND name = ?2 ORDER BY number DESC"))?;
+    let rows = stmt.query_map(params![kind.as_str(), name], version)?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// The live version of every item that is not archived: what machines hold.
+pub fn live(conn: &Connection) -> Result<Vec<Version>> {
+    let columns = COLUMNS.split(", ").map(|c| format!("v.{c}")).collect::<Vec<_>>().join(", ");
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {columns} FROM library_versions v JOIN library_items i USING (kind, name)
+         WHERE v.state = 'live' AND i.archived_at IS NULL ORDER BY v.kind, v.name"
+    ))?;
+    let rows = stmt.query_map([], version)?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// The packed bundle a digest names.
+pub fn blob(conn: &Connection, digest: &str) -> Result<Option<Vec<u8>>> {
+    Ok(conn.query_row("SELECT bytes FROM library_blobs WHERE digest = ?1", [digest], |r| r.get(0)).optional()?)
+}
+
+fn version(row: &Row) -> rusqlite::Result<Version> {
+    let unreadable = |column: usize, what: String| {
+        rusqlite::Error::FromSqlConversionFailure(column, rusqlite::types::Type::Text, what.into())
+    };
+    let kind: String = row.get(0)?;
+    let provenance: String = row.get(6)?;
+    let state: String = row.get(7)?;
+    Ok(Version {
+        kind: Kind::parse(&kind).ok_or_else(|| unreadable(0, format!("no kind is called {kind}")))?,
+        name: row.get(1)?,
+        number: row.get(2)?,
+        digest: row.get(3)?,
+        size: row.get(4)?,
+        description: row.get(5)?,
+        provenance: serde_json::from_str(&provenance).map_err(|e| unreadable(6, e.to_string()))?,
+        state: State::parse(&state).ok_or_else(|| unreadable(7, format!("no state is called {state}")))?,
+        created_at: row.get(8)?,
+        decided_at: row.get(9)?,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::library::bundle::File;
+
+    fn store() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        ensure(&conn).unwrap();
+        conn
+    }
+
+    fn skill(name: &str, description: &str) -> Bundle {
+        let text = format!("---\nname: {name}\ndescription: {description}\n---\n");
+        Bundle::check(Kind::Skill, name, vec![File { path: "SKILL.md".into(), bytes: text.into_bytes(), executable: false }])
+            .unwrap()
+    }
+
+    fn live_numbers(conn: &Connection) -> Vec<i64> {
+        versions(conn, Kind::Skill, "bench").unwrap().iter().filter(|v| v.state == State::Live).map(|v| v.number).collect()
+    }
+
+    #[test]
+    fn a_stored_version_is_never_rewritten() {
+        let db = store();
+        let first = publish(&db, &skill("bench", "One."), &Provenance::Upload, true, 1).unwrap().version().clone();
+        let packed = blob(&db, &first.digest).unwrap().unwrap();
+        assert_eq!(bundle::digest(&packed), first.digest, "a blob is kept under its own digest");
+
+        for sql in [
+            "UPDATE library_versions SET digest = 'x'",
+            "UPDATE library_versions SET provenance = '{\"from\":\"upload\"}'",
+            "UPDATE library_versions SET number = 9",
+            "UPDATE library_versions SET description = 'Another.'",
+            "UPDATE library_blobs SET bytes = x'00'",
+        ] {
+            let err = db.execute(sql, []).expect_err(sql).to_string();
+            assert!(err.contains("never changes"), "{sql}: {err}");
+        }
+
+        // A change is a second version beside the first, which stays as it was.
+        let second = publish(&db, &skill("bench", "Two."), &Provenance::Upload, true, 2).unwrap().version().clone();
+        assert_eq!(second.number, 2);
+        let all = versions(&db, Kind::Skill, "bench").unwrap();
+        assert_eq!((all[1].number, all[1].digest.as_str(), all[1].description.as_str()), (1, first.digest.as_str(), "One."));
+        assert_eq!(blob(&db, &first.digest).unwrap().unwrap(), packed);
+    }
+
+    #[test]
+    fn identical_content_makes_no_new_version() {
+        let db = store();
+        let (one, two) = (skill("bench", "One."), skill("bench", "Two."));
+        let first = publish(&db, &one, &Provenance::Upload, true, 1).unwrap();
+        assert!(matches!(&first, Published::New(v) if v.number == 1), "{first:?}");
+
+        let again = publish(&db, &one, &Provenance::Token { token: "ci".into() }, true, 2).unwrap();
+        assert!(
+            matches!(&again, Published::Unchanged(v) if v.number == 1 && v.provenance == Provenance::Upload),
+            "the newest version is answered as it was: {again:?}"
+        );
+        assert_eq!(versions(&db, Kind::Skill, "bench").unwrap().len(), 1);
+
+        assert!(matches!(publish(&db, &two, &Provenance::Upload, true, 3).unwrap(), Published::New(v) if v.number == 2));
+        // Going back to the first content is a change, and so a version, sharing its blob.
+        let back = publish(&db, &one, &Provenance::Upload, true, 4).unwrap();
+        assert!(matches!(&back, Published::New(v) if v.number == 3 && v.digest == first.version().digest), "{back:?}");
+        let blobs: i64 = db.query_row("SELECT count(*) FROM library_blobs", [], |r| r.get(0)).unwrap();
+        assert_eq!(blobs, 2);
+    }
+
+    #[test]
+    fn a_version_records_its_provenance() {
+        let db = store();
+        let all = [
+            Provenance::Upload,
+            Provenance::Forge {
+                forge: "gitlab".into(),
+                repository: "tools/skills".into(),
+                commit: "0123abcd".into(),
+                path: "skills/bench".into(),
+            },
+            Provenance::Token { token: "ci-publisher".into() },
+            Provenance::Machine {
+                machine: "5d0c9a1e-0000-4000-8000-000000000001".into(),
+                label: Some("bench-mac".into()),
+                session: Some("d5f37e26-0000-4000-8000-000000000002".into()),
+            },
+            Provenance::Router { build: "tree:0000000000000000000000000000000000000000".into() },
+        ];
+        for (n, from) in all.iter().enumerate() {
+            let live = n % 2 == 0;
+            let stored = publish(&db, &skill("bench", &format!("Version {n}.")), from, live, n as i64).unwrap();
+            assert_eq!(&stored.version().provenance, from);
+            assert_eq!(stored.version().state, if live { State::Live } else { State::Pending });
+        }
+
+        let read = versions(&db, Kind::Skill, "bench").unwrap();
+        let provenances: Vec<_> = read.iter().rev().map(|v| v.provenance.clone()).collect();
+        assert_eq!(provenances, all);
+        let states: Vec<_> = read.iter().map(|v| v.state).collect();
+        assert_eq!(states, [State::Live, State::Pending, State::Superseded, State::Pending, State::Superseded]);
+
+        let json = serde_json::to_value(&all[3]).unwrap();
+        assert_eq!((json["from"].as_str(), json["session"].as_str()), (Some("machine"), Some("d5f37e26-0000-4000-8000-000000000002")));
+        let bare = serde_json::to_value(Provenance::Machine { machine: "m".into(), label: None, session: None }).unwrap();
+        assert_eq!(bare, serde_json::json!({ "from": "machine", "machine": "m" }));
+    }
+
+    #[test]
+    fn at_most_one_version_of_an_item_is_live() {
+        let db = store();
+        publish(&db, &skill("bench", "One."), &Provenance::Upload, true, 1).unwrap();
+        assert_eq!(live_numbers(&db), [1]);
+        publish(&db, &skill("bench", "Two."), &Provenance::Upload, true, 2).unwrap();
+        assert_eq!(live_numbers(&db), [2]);
+        publish(&db, &skill("bench", "Three."), &Provenance::Upload, false, 3).unwrap();
+        assert_eq!(live_numbers(&db), [2], "a pending version leaves the live one live");
+
+        assert_eq!(make_live(&db, Kind::Skill, "bench", 3, 4).unwrap().unwrap().state, State::Live);
+        assert_eq!(live_numbers(&db), [3]);
+        make_live(&db, Kind::Skill, "bench", 1, 5).unwrap().unwrap();
+        assert_eq!(live_numbers(&db), [1], "rolled back");
+        make_live(&db, Kind::Skill, "bench", 1, 6).unwrap().unwrap();
+        assert_eq!(live_numbers(&db), [1]);
+        assert!(make_live(&db, Kind::Skill, "bench", 9, 7).unwrap().is_none());
+
+        let states: Vec<_> = versions(&db, Kind::Skill, "bench").unwrap().iter().map(|v| v.state).collect();
+        assert_eq!(states, [State::Superseded, State::Superseded, State::Live]);
+
+        // Not even a write around this module can make a second.
+        let err = db.execute("UPDATE library_versions SET state = 'live' WHERE number = 2", []).expect_err("a second live version");
+        assert!(err.to_string().contains("UNIQUE"), "{err}");
+
+        // What machines hold: one version per item.
+        publish(&db, &skill("vault", "Keeps secrets."), &Provenance::Upload, true, 8).unwrap();
+        let held: Vec<_> = live(&db).unwrap().into_iter().map(|v| (v.name, v.number)).collect();
+        assert_eq!(held, [("bench".to_string(), 1), ("vault".to_string(), 1)]);
+    }
+
+    #[test]
+    fn the_library_tables_appear_on_an_existing_store() {
+        let dir = std::env::temp_dir().join(format!("ar-library-store-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("agent-router.db");
+        {
+            // A store from before the Library, with something in it.
+            let old = Connection::open(&path).unwrap();
+            old.execute_batch(
+                "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL);
+                 INSERT INTO settings VALUES ('bind', '0.0.0.0', 1);",
+            )
+            .unwrap();
+        }
+        // Twice: the second start finds them there already.
+        for _ in 0..2 {
+            drop(crate::db::Db::open(&path).unwrap());
+        }
+
+        let conn = Connection::open(&path).unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        let mut names: Vec<String> = conn
+            .prepare("SELECT name FROM sqlite_master WHERE name LIKE 'library_%' ORDER BY name")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        names.retain(|n| !n.starts_with("sqlite_autoindex"));
+        assert_eq!(
+            names,
+            [
+                "library_blobs",
+                "library_blobs_fixed",
+                "library_items",
+                "library_versions",
+                "library_versions_fixed",
+                "library_versions_one_live"
+            ]
+        );
+        let bind: String = conn.query_row("SELECT value FROM settings WHERE key = 'bind'", [], |r| r.get(0)).unwrap();
+        assert_eq!(bind, "0.0.0.0", "what was in the store is still there");
+        let stored = publish(&conn, &skill("bench", "One."), &Provenance::Upload, true, 1).unwrap();
+        assert_eq!(stored.version().number, 1);
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

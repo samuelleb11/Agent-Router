@@ -68,6 +68,9 @@ session is unverified.
 - A skill has a `SKILL.md` whose frontmatter has a `name` equal to the item's and a
   `description`. Commands and subagents have their own frontmatter.
 - No symlinks, no absolute paths and no `..`. At most 1 MiB per file and 8 MiB per bundle.
+- Packing a directory leaves out a machine's own clutter wherever it appears: `.git`, `.venv`,
+  `venv`, `__pycache__`, `node_modules` and `.DS_Store`. The vault skill on this Mac carries a
+  whole Python virtual environment, which would otherwise be refused for its size.
 - Nothing that looks like a credential. That means a private key block, or an Anthropic,
   GitLab or GitHub token. The refusal names the file and the line. Credentials belong in the
   vault, never in something copied to every machine.

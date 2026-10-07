@@ -358,6 +358,7 @@ impl Db {
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.execute_batch(SCHEMA)?;
+        crate::library::store::ensure(&conn)?;
         // Lightweight forward migration so an existing store upgrades in place.
         ensure_column(&conn, "requests", "agent_id", "TEXT")?;
         ensure_column(&conn, "requests", "account_email", "TEXT")?;
