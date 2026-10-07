@@ -1,8 +1,9 @@
 // New for agent-router: the Sessions screen at `/live`, the live view (assets/live.html) rebuilt on
 // Carbon inside the shell. The list of sessions by project, and beside it on a desk (decision H) the
 // open session: its stream, tabs, facts, feed, prompt and composer. The address is the view
-// (SE-C189, SE-C175): `?session=<id>` is the open session, `&block=&ordinal=` the entry a search hit
-// arrived at, and `find=` with `scope=` is Find.
+// (SE-C189, SE-C175): `?machine=<id>` is the list's tab on a hosted router listing several machines
+// (SE-C228), `session=<id>` the open session, `&block=&ordinal=` the entry a search hit arrived at,
+// and `find=` with `scope=` is Find.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useSearchParams } from 'react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -15,7 +16,20 @@ import { liveKeys, postLive, readHosted, readSessions, readShim, type Outcome } 
 import { refusalText } from '~/lib/errors';
 import { POLL_MS, since } from '~/lib/freshness';
 import type { FindHit, FindScope, SearchHit } from '~/model/search';
-import { OFF_MACHINE, byMachine, header, hitTarget, notice, wrapperWarning, type Notice, type SessionRow } from '~/model/session';
+import {
+  MACHINE_UNLISTED,
+  OFF_MACHINE,
+  byMachine,
+  header,
+  hitTarget,
+  listsMachine,
+  machineTabs,
+  notice,
+  withMachine,
+  wrapperWarning,
+  type Notice,
+  type SessionRow,
+} from '~/model/session';
 import { Find } from './Find';
 import { KeepContext } from './keep';
 import { List, type RowActions } from './List';
@@ -47,6 +61,9 @@ export default function Sessions() {
   useViewportPin(root);
 
   const session = params.get('session') || null;
+  // The list's tab, kept by every address the screen writes, so opening a session, Find and going
+  // back return to it (SE-C228).
+  const machine = params.get('machine') || null;
   const findOpen = params.has('find');
   const query = params.get('find') ?? '';
   const scope: FindScope = session && params.get('scope') !== 'all' ? 'session' : 'all';
@@ -64,8 +81,10 @@ export default function Sessions() {
   const shim = useQuery({ queryKey: liveKeys.shim, queryFn: ({ signal }) => readShim(signal), enabled: hostedRead.data === false, refetchInterval: 30_000, retry: false, staleTime: 0 });
 
   const rows = useMemo(() => list.value ?? [], [list.value]);
-  // A machine at a time when a hosted router lists more than one, else the one list (SE-C219).
+  // A machine at a time when a hosted router lists more than one, else the one list (SE-C219), and
+  // then a tab for All and one for each machine (SE-C226).
   const shown = useMemo(() => byMachine(rows, Date.now()), [rows]);
+  const tabs = useMemo(() => machineTabs(rows, shown), [rows, shown]);
   // The last row each session was listed with: an open session keeps its tab and its facts when a
   // later read no longer lists it (SE-C45).
   const known = useRef(new Map<string, SessionRow>());
@@ -92,18 +111,34 @@ export default function Sessions() {
     if (was !== view && listSaidFor === was) raise(null, null);
   }, [view, listSaidFor, raise]);
 
-  // A URL naming a session the router does not list lands on the list, and says so (SE-C191). The
-  // list read must be one made since the session was asked for.
+  // A URL naming a session the router does not list lands on the list, and says so (SE-C191); one
+  // naming a machine the list does not hold now — it went offline, or the link is old — lands on
+  // All, and says so, rather than on an empty tab (SE-C229). Each list read must be one made since
+  // what it names was asked for. A session is looked for once, as an open one keeps its tab when a
+  // later read drops it (SE-C45); a machine at every read, so one that leaves while its tab is open
+  // leaves it the same way. An old link can name both, so both are settled in one address.
   const askedAt = useRef<{ id: string; at: number } | null>(null);
   if (session && askedAt.current?.id !== session) askedAt.current = { id: session, at: Date.now() };
+  const machineAskedAt = useRef<{ id: string; at: number } | null>(null);
+  if (machine && machineAskedAt.current?.id !== machine) machineAskedAt.current = { id: machine, at: Date.now() };
   useEffect(() => {
-    const asked = askedAt.current;
-    if (!session || !asked || asked.id !== session || list.value === null || list.at === null || list.at < asked.at) return;
-    askedAt.current = { id: session, at: Number.POSITIVE_INFINITY };
-    if (list.value.some((r) => r.session_id === session)) return;
-    raise(notice(hosted ? OFF_MACHINE : 'That session is no longer listed.'), 'list');
-    void navigate({ search: '' }, { replace: true });
-  }, [session, list.value, list.at, hosted, navigate, raise]);
+    if (list.value === null || list.at === null) return;
+    const read = list.at;
+    const due = (asked: { id: string; at: number } | null, id: string | null) => id !== null && asked?.id === id && read >= asked.at;
+    const sessionDue = due(askedAt.current, session);
+    if (sessionDue && session) askedAt.current = { id: session, at: Number.POSITIVE_INFINITY };
+    const sessionGone = sessionDue && !list.value.some((r) => r.session_id === session);
+    const machineGone = due(machineAskedAt.current, machine) && machine !== null && !listsMachine(list.value, machine);
+    if (machineGone) machineAskedAt.current = null;
+    if (sessionGone) {
+      const said = hosted ? OFF_MACHINE : 'That session is no longer listed.';
+      raise(notice(machineGone ? `${said} ${MACHINE_UNLISTED}` : said), 'list');
+      void navigate({ search: withMachine('', machineGone ? null : machine) }, { replace: true });
+    } else if (machineGone) {
+      raise(notice(MACHINE_UNLISTED), view);
+      void navigate({ search: withMachine(location.search, null) }, { replace: true, state: location.state });
+    }
+  }, [session, machine, view, list.value, list.at, hosted, location.search, location.state, navigate, raise]);
 
   // ---------- where the list was ----------
   const listScroller = useRef<HTMLDivElement>(null);
@@ -111,14 +146,25 @@ export default function Sessions() {
   const goSession = useCallback(
     (id: string) => {
       listTop.current = listScroller.current?.scrollTop ?? 0;
-      void navigate({ search: `?session=${encodeURIComponent(id)}` });
+      void navigate({ search: withMachine(`?session=${encodeURIComponent(id)}`, machine) });
     },
-    [navigate],
+    [navigate, machine],
   );
   // Back on the list, it is put back where the reader left it, once its rows are there (SE-C195).
   useLayoutEffect(() => {
     if (session === null && rows.length && listScroller.current) listScroller.current.scrollTop = listTop.current;
   }, [session, rows.length]);
+  // Another tab is read from its top, not from where the last one was left (SE-C230).
+  const lastTab = useRef(machine);
+  useLayoutEffect(() => {
+    if (lastTab.current === machine) return;
+    lastTab.current = machine;
+    listTop.current = 0;
+    if (listScroller.current) listScroller.current.scrollTop = 0;
+  }, [machine]);
+  // A tab is a history entry of its own, as a session is (SE-C189) and the Overview's scope (OV-C30);
+  // the rest of the address stays, so a session open beside the list stays open (SE-C228).
+  const onTab = useCallback((next: string | null) => void navigate({ search: withMachine(location.search, next) }), [navigate, location.search]);
 
   // ---------- archive and restore ----------
   const [archiving, setArchiving] = useState<ReadonlySet<string>>(() => new Set());
@@ -168,9 +214,9 @@ export default function Sessions() {
       if (session) p.set('session', session);
       p.set('find', q);
       p.set('scope', s);
-      return `?${p}`;
+      return withMachine(`?${p}`, machine);
     },
-    [session],
+    [session, machine],
   );
   const openFind = useCallback(() => {
     void navigate({ search: findSearch(query, session ? 'session' : 'all') }, { state: { find: true } });
@@ -179,8 +225,8 @@ export default function Sessions() {
     // Opened here, it is closed by going back, so Back and this agree; arrived at by its address,
     // it is replaced by the view under it (SE-C175).
     if ((location.state as { find?: boolean } | null)?.find) void navigate(-1);
-    else void navigate({ search: session ? `?session=${encodeURIComponent(session)}` : '' }, { replace: true });
-  }, [location.state, navigate, session]);
+    else void navigate({ search: withMachine(session ? `?session=${encodeURIComponent(session)}` : '', machine) }, { replace: true });
+  }, [location.state, navigate, session, machine]);
   const onQuery = useCallback(
     (q: string) => void navigate({ search: findSearch(q, scope) }, { replace: true, state: location.state }),
     [navigate, findSearch, scope, location.state],
@@ -200,9 +246,9 @@ export default function Sessions() {
       }
       const p = new URLSearchParams({ session: raw.session_id, block: String(raw.block_id), ordinal: String(raw.ordinal ?? 0) });
       listTop.current = listScroller.current?.scrollTop ?? 0;
-      void navigate({ search: `?${p}` });
+      void navigate({ search: withMachine(`?${p}`, machine) });
     },
-    [list.value, list.error, hosted, navigate],
+    [list.value, list.error, hosted, navigate, machine],
   );
 
   // ---------- the list's header ----------
@@ -254,7 +300,16 @@ export default function Sessions() {
                 <p className={styles.muted}>Reading the sessions…</p>
               )
             ) : (
-              <List machines={shown} hosted={hosted} wrapperWarning={wrapperWarning(shim.data, hosted)} actions={actions} level={listPrimary ? 2 : 3} />
+              <List
+                machines={shown}
+                hosted={hosted}
+                wrapperWarning={wrapperWarning(shim.data, hosted)}
+                actions={actions}
+                level={listPrimary ? 2 : 3}
+                tabs={tabs}
+                tab={machine}
+                onTab={onTab}
+              />
             )}
           </div>
         </section>
@@ -268,7 +323,7 @@ export default function Sessions() {
               covered={findOpen}
               arrival={arrival}
               primary={!findOpen}
-              onBack={() => void navigate({ search: '' })}
+              onBack={() => void navigate({ search: withMachine('', machine) })}
               onFind={openFind}
               archive={archive}
               archiving={archiving}

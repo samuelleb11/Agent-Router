@@ -238,6 +238,65 @@ $ar-tab-rule: 0.125rem;
   color: $text-primary;
 }
 
+/// The tabs over a list of several machines (SE-C226): one row at the top of the list that stays
+/// there as the list scrolls under it, and scrolls sideways inside it — Carbon's own overflow, its
+/// chevrons included — rather than wrapping or widening the list at 300–360px (SE-C230). Carbon
+/// caps the row at 64px and hides what overflows it, so a wrapped second row would be out of reach
+/// (Northstar 29472eb): it never wraps.
+.machineTabs:global(.cds--tabs) {
+  position: sticky;
+  inset-block-start: 0;
+  z-index: 1;
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  background: $background;
+  box-shadow: inset 0 -1px 0 $border-subtle-01;
+
+  :global(.cds--tab--list) {
+    flex-wrap: nowrap;
+    min-inline-size: 0;
+    overflow-x: auto;
+  }
+}
+
+/// A tab's label: the attention dot when something waits, the machine, and what is at work there,
+/// on one line (SE-C227). A long label is cut short with an ellipsis, as a machine's heading is
+/// (SE-C225), so one machine's tab never takes the whole row.
+.machineTab {
+  display: inline-flex;
+  align-items: center;
+  gap: $spacing-03;
+  max-inline-size: 18rem;
+  white-space: nowrap;
+}
+
+.machineTabName {
+  min-inline-size: 0;
+  max-inline-size: 12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.machineTabCounts {
+  @include type-style('label-01');
+  flex: none;
+  color: $text-secondary;
+}
+
+/// A tab's panel is the list as it would be drawn without tabs: All's machines, or one machine's
+/// projects, older fold and shelf. The panels of the tabs not chosen hold nothing.
+.machinePanel:global(.cds--tab-content) {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: $spacing-03;
+  min-inline-size: 0;
+  padding: 0;
+
+  &[hidden] {
+    display: none;
+  }
+}
+
 .group {
   min-inline-size: 0;
 }
@@ -887,6 +946,13 @@ button.hit {
   .fold,
   .hit {
     min-block-size: $spacing-09;
+  }
+
+  // Carbon's line tabs are 40px; a machine's tab is a fingertip's target too (SE-C230).
+  .machineTabs :global(.cds--tabs__nav-item) {
+    min-block-size: $spacing-09;
+    display: flex;
+    align-items: center;
   }
 
   .switcher :global(.cds--select-input),

@@ -8,7 +8,7 @@
 // The shot is of the list. The first check looks at the list as it was shot; each after it opens
 // the fixture harness's showcase session (harness/sessions.ts), whose feed holds every kind of row,
 // and looks at it. Shot as `/live?router=hosted`, the harness stands for a hosted router whose
-// sessions come from several machines, so the list is headed per machine.
+// sessions come from several machines, so the list is tabbed and headed per machine.
 
 /// The session whose stream replays every kind of row (harness/sessions.ts, SHOWCASE).
 const SHOWCASE = '7f3a9c2e-5b1d-4e8a-9c3f-0a1b2c3d4e5f';
@@ -106,6 +106,44 @@ const CHECKS = [
     const ellipsised = cut.every((l) => { const cs = getComputedStyle(l); return cs.textOverflow === 'ellipsis' && cs.whiteSpace === 'nowrap' && cs.overflowX === 'hidden'; });
     const ok = heads.length >= 2 && outside.length === 0 && cut.length >= 1 && ellipsised && by <= 0;
     return { ok, detail: heads.length + ' machine headings (' + heads.map((h) => h.textContent.trim().slice(0, 20)).join(', ') + '); ' + cut.length + ' cut short' + (ellipsised ? '' : ', not with an ellipsis') + (outside.length ? '; not within the list: ' + outside.join('; ') : '') + '; sideways by ' + by + ' px' };
+  `,
+  ),
+  listCheck(
+    'SE-C230',
+    'the machines’ tabs are one row that scrolls sideways inside the list, never wrapping nor widening the page, at the top of the list as it scrolls, a long label cut short; a list with one machine or none has no tabs',
+    'both',
+    `
+    const hosted = window.__harness?.router === 'hosted';
+    const list = document.querySelector('[data-pane="list"]');
+    if (!shown(list)) return { ok: false, detail: 'the list is not on screen' };
+    const row = list.querySelector('[role="tablist"][aria-label="Machines"]');
+    const by = sideways();
+    if (!hosted) return { ok: !row && by <= 0, detail: (row ? 'a row of machine tabs' : 'no machine tabs') + ' on a local router; sideways by ' + by + ' px' };
+    if (!row || !shown(row)) return { ok: false, detail: 'no row of machine tabs over a list of several machines' };
+    const pane = list.getBoundingClientRect();
+    const box = row.parentElement.getBoundingClientRect();
+    const tabs = [...row.querySelectorAll('[role="tab"]')];
+    const heights = [...new Set(tabs.map((t) => Math.round(t.getBoundingClientRect().top)))];
+    const inside = box.left >= pane.left - 0.5 && box.right <= pane.right + 0.5;
+    const scrolls = getComputedStyle(row).overflowX === 'auto' && getComputedStyle(row).flexWrap === 'nowrap';
+    const over = row.scrollWidth - row.clientWidth;
+    // The long label is cut short with an ellipsis rather than taking the row.
+    const long = tabs.find((t) => /^a-windows-build-box/.test(t.getAttribute('aria-label') ?? ''));
+    const label = long && [...long.querySelectorAll('span')].find((s) => /^a-windows-build-box/.test(s.textContent ?? '') && s.children.length === 0);
+    const cut = !!label && label.scrollWidth > label.clientWidth + 1 && getComputedStyle(label).textOverflow === 'ellipsis';
+    // At the top of the list as the list scrolls under it.
+    const scroller = list.querySelector(':scope > div:last-child');
+    let stuck = 'not tall enough to scroll';
+    if (scroller.scrollHeight > scroller.clientHeight + 40) {
+      const was = scroller.scrollTop;
+      scroller.scrollTop = scroller.scrollHeight;
+      await frame();
+      stuck = Math.abs(row.parentElement.getBoundingClientRect().top - scroller.getBoundingClientRect().top) <= 1 ? 'stays at the top' : 'scrolled away';
+      scroller.scrollTop = was;
+      await frame();
+    }
+    const ok = tabs.length >= 3 && heights.length === 1 && inside && scrolls && cut && stuck !== 'scrolled away' && by <= 0;
+    return { ok, detail: tabs.length + ' tabs on ' + heights.length + ' row(s), ' + (inside ? 'within the list' : 'outside the list') + ', ' + (scrolls ? 'scrolling' : 'not scrolling') + ' sideways (' + over + ' px over), the long label ' + (cut ? 'cut short' : 'not cut short') + ', ' + stuck + '; page sideways by ' + by + ' px' };
   `,
   ),
   check(

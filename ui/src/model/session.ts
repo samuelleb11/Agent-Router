@@ -253,7 +253,7 @@ export interface RowView {
 const ageOf = (q: number | null): string => (q == null ? DASH : span(q));
 
 /// One row of the list. It never names its machine: on a hosted router listing several, the
-/// machine's heading over the row does (SE-C219).
+/// machine's heading over the row does, or the machine's tab the list is on (SE-C219, SE-C226).
 export function rowView(r: SessionRow, now: number): RowView {
   const tone = toneOf(r);
   const id = String(r.session_id ?? '');
@@ -363,7 +363,8 @@ export interface MachineView extends ListView {
 /// router that lists sessions from more than one machine heads each machine, alphabetically, with
 /// that machine's own projects, older fold and shelf beneath it, so one project on two machines is
 /// two projects; rows that name no machine, beside machines that do, come last under a heading of
-/// their own (SE-C219, SE-C220). With one machine or none — a local router names none — it is one
+/// their own (SE-C219, SE-C220). The console tabs the parts, and its All tab heads them so
+/// (`machineTabs`, SE-C226). With one machine or none — a local router names none — it is one
 /// part with no heading, the whole list exactly as `listView` arranges it.
 export function byMachine(rows: readonly SessionRow[], now: number): MachineView[] {
   const labels = [...new Set(rows.map(machineOf).filter((m): m is string => m !== null))];
@@ -382,6 +383,20 @@ export interface Pip {
   readonly stop: boolean;
 }
 
+/// What is at work among some sessions and what waits on you, "4 working · 1 waiting", never a
+/// closed, idle or failed session (SE-C35); from an older router, "N active" (SE-C37); empty with
+/// neither. The header says it of the whole list, and a machine's tab of that machine's (SE-C227).
+function atWork(rows: readonly SessionRow[]): { readonly tone: Tone; readonly said: string } {
+  if (rows.some((r) => r.activity != null)) {
+    const working = rows.filter((r) => BUSY.has(r.activity ?? '')).length;
+    const waiting = rows.filter((r) => r.activity === 'waiting').length;
+    const said = [working ? `${working} working` : '', waiting ? `${waiting} waiting` : ''].filter(Boolean).join(' · ');
+    return { tone: waiting ? 'attention' : working ? 'busy' : 'idle', said };
+  }
+  const live = rows.filter((r) => !!r.active).length;
+  return { tone: live ? 'busy' : 'idle', said: live ? `${live} active` : '' };
+}
+
 /// With no session open, the header counts what is at work and what waits on you, "4 working · 1
 /// waiting", never a closed, idle or failed session (SE-C35); with neither, how long since anything
 /// moved, "idle · 5m", or "nothing yet" (SE-C36); from an older router, "N active" (SE-C37).
@@ -391,14 +406,8 @@ export function listHeader(rows: readonly SessionRow[], now: number): Pip {
     const quiet = rows.map((r) => quietFor(r, now)).filter((q): q is number => q != null);
     return quiet.length ? `idle · ${span(Math.min(...quiet))}` : 'idle';
   };
-  if (rows.some((r) => r.activity != null)) {
-    const working = rows.filter((r) => BUSY.has(r.activity ?? '')).length;
-    const waiting = rows.filter((r) => r.activity === 'waiting').length;
-    const said = [working ? `${working} working` : '', waiting ? `${waiting} waiting` : ''].filter(Boolean).join(' · ');
-    return { tone: waiting ? 'attention' : working ? 'busy' : 'idle', text: said || lastMoved(), stop: false };
-  }
-  const live = rows.filter((r) => !!r.active).length;
-  return { tone: live ? 'busy' : 'idle', text: live ? `${live} active` : lastMoved(), stop: false };
+  const { tone, said } = atWork(rows);
+  return { tone, text: said || lastMoved(), stop: false };
 }
 
 /// What the header says: the open session's stream while one is open, and the list otherwise. A
@@ -411,6 +420,90 @@ export function header(view: { readonly feed: Feed | null; readonly list: { read
 
 /// What a search hit says on a hosted router when its session is on no connected machine (60cf5f8).
 export const OFF_MACHINE = 'That session is not on a connected machine.';
+
+// ---------- a machine at a time ----------
+
+/// The first tab over a list of several machines, the one that shows them all (SE-C226).
+export const ALL_MACHINES = 'All';
+
+/// A tab with nothing at work and nothing waiting shows only its label; a screen reader hears this
+/// after it (SE-C227).
+const QUIET = 'idle';
+
+/// What the list says when its address names a machine it does not hold now — the machine went
+/// offline, or the link is old — and it shows every machine instead (SE-C229).
+export const MACHINE_UNLISTED = 'That machine has no sessions listed now, so this is all of them.';
+
+/// One tab over a list headed per machine: All, or one machine's part of it (SE-C226).
+export interface MachineTab {
+  /// The part it shows, by its `MachineView.key`; empty for All, which shows every part.
+  readonly key: string;
+  /// Its `machine=` in the address (`machineParam`); null for All, which is the address without
+  /// one (SE-C228).
+  readonly param: string | null;
+  /// "All", the machine's label, or "Unnamed machine".
+  readonly label: string;
+  /// What is at work there and what waits on you, in the header's words, "2 working · 1 waiting";
+  /// empty when nothing is (SE-C227).
+  readonly counts: string;
+  /// Something there waits on you: the tab carries the attention dot, so a prompt on a machine
+  /// that is not on screen is never missed (SE-C227).
+  readonly waiting: boolean;
+  /// Its accessible name, which also labels its panel: its label and its counts, or "idle"
+  /// (SE-C227).
+  readonly name: string;
+}
+
+const idOf = (r: Pick<SessionRow, 'machine'>): string | null => {
+  const id = r.machine?.id;
+  return typeof id === 'string' && id.trim() ? id.trim() : null;
+};
+
+/// The `machine=` that selects a machine's tab (SE-C228): its id, which outlives a new label, when
+/// its sessions carry one; its label when they carry none, or several, since two machines given one
+/// label are one part (SE-C220); and `unnamed` for the rows that name no machine.
+export function machineParam(machine: string | null, rows: readonly SessionRow[]): string {
+  if (machine === null) return 'unnamed';
+  const ids = new Set(rows.filter((r) => machineOf(r) === machine).map(idOf).filter((id): id is string => id !== null));
+  const [only] = ids;
+  return ids.size === 1 && only ? only : machine;
+}
+
+/// The tabs over a list of several machines: All first, then a tab for each machine in the order
+/// `byMachine` heads them, the rows that name none last, each saying what is at work there and
+/// what waits on you, as All says it of the whole list (SE-C226, SE-C227). None for a list that is
+/// not headed per machine: one machine's, or a local router's.
+export function machineTabs(rows: readonly SessionRow[], parts: readonly MachineView[]): MachineTab[] {
+  if (parts.length < 2) return [];
+  const tab = (key: string, param: string | null, label: string, of: readonly SessionRow[]): MachineTab => {
+    const { tone, said } = atWork(of);
+    return { key, param, label, counts: said, waiting: tone === 'attention', name: `${label}, ${said || QUIET}` };
+  };
+  return [tab('', null, ALL_MACHINES, rows), ...parts.map((p) => tab(p.key, machineParam(p.machine, rows), p.heading ?? UNNAMED_MACHINE, rows.filter((r) => machineOf(r) === p.machine)))];
+}
+
+/// Whether the list holds the machine an address names, by the rule that selects its tab, however
+/// many machines it holds: with one there are no tabs, and an address naming it still names it
+/// (SE-C229).
+export function listsMachine(rows: readonly SessionRow[], param: string): boolean {
+  return [...new Set(rows.map(machineOf))].some((m) => machineParam(m, rows) === param);
+}
+
+/// The machine an address's list is on, its `machine=`; null for All (SE-C228).
+export const machineIn = (search: string): string | null => new URLSearchParams(search).get('machine') || null;
+
+/// An address of the live view with its list on a machine's tab, `machine=` first, or on All, with
+/// none; the rest of it — the open session, Find — as it was (SE-C228). An address that names no
+/// machine and is put on All is returned untouched.
+export function withMachine(search: string, machine: string | null): string {
+  const rest = new URLSearchParams(search);
+  if (!machine && !rest.has('machine')) return search;
+  rest.delete('machine');
+  const p = new URLSearchParams(machine ? [['machine', machine]] : []);
+  for (const [k, v] of rest) p.append(k, v);
+  const s = p.toString();
+  return s ? `?${s}` : '';
+}
 
 /// An empty list says which empty it is (SE-C38). A hosted router lists the sessions of the
 /// machines connected to it, so with none it says that no machine has, and the list links to the

@@ -12,8 +12,8 @@
 //
 // `?router=hosted` stands for a hosted router instead: /api/auth says `server`, and the list is the
 // same sessions heard from several machines, a Windows one with a label long enough to be cut short
-// on a phone among them, and one row that names no machine, so the list is headed per machine
-// (SE-C219, SE-C220) and the open session names its own (SE-C221).
+// on a phone among them, and one row that names no machine, so the list is tabbed and headed per
+// machine (SE-C219, SE-C220, SE-C226) and the open session names its own (SE-C221).
 import type { Asked } from './asked';
 import type { StreamEvent } from './fixtures';
 import { AUTH } from './settings';

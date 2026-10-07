@@ -51,7 +51,8 @@ Counts at writing:
 | **All** | **633** | **101** | **140** |
 
 Since then AGEN-0023 has added SE-C219 to SE-C225, for a hosted router's machines, so Sessions
-holds 225. On 2026-10-07 the Machines screen added a section of its own, MA-C1 to MA-C7.
+holds 225. On 2026-10-07 the Machines screen added a section of its own, MA-C1 to MA-C7, and the
+same day Sessions tabbed a hosted router's machines, SE-C226 to SE-C230, so it holds 230.
 
 ## Shell
 
@@ -1545,7 +1546,8 @@ page is the reference for both phones ([session liveness](session-liveness.md), 
 policy"), so a bullet that names phone tests is a three-client contract: it changes on all three
 clients or not at all. Where a phone disagrees today, the bullet says so, and for Markdown the web's
 semantics win (Decision F), but for lists, which follow the phones (SE-C99). A hosted router's list
-is headed per machine, as the phones head it (SE-C219). Both were decided on 2026-10-05. Where
+is headed per machine, as the phones head it (SE-C219). Both were decided on 2026-10-05; on
+2026-10-07 the console also tabbed the machines, which the phones do not (SE-C226). Where
 today's page breaks a rule, the bullet's closing note says how; the rewrite keeps the rule, not the
 defect.
 
@@ -2686,7 +2688,11 @@ platform, build, online, since); neither phone reads it, and the console's Machi
   decided on 2026-10-05 in the phones' favour. The page keyed each project by its machine
   ("agent-router · Laptop") in one alphabetical list, with one older group and one shelf, and named
   the machine on every card ("· on Laptop"); the phones head each machine, and a machine's older
-  sessions and shelf belong under it. *Regression:* no. *Source:* `src/machines.rs:365-410`
+  sessions and shelf belong under it. On the console the parts are also tabbed (SE-C226, decided on
+  2026-10-07): its All tab is this list, headed per machine, and each machine's tab shows its part
+  alone, without the heading its tab takes the place of; the phones draw the parts one after
+  another. The parts themselves, and what each holds, are the three clients' contract and the
+  fixtures' as before. *Regression:* no. *Source:* `src/machines.rs:365-410`
   (`sessions`, which labels every row); `assets/live.html:658-687` at `60cf5f8`;
   `android/app/src/main/java/ca/whnet/agentrouter/data/SessionGroups.kt:61-126` and
   `ios/AgentRouter/Sources/Model/SessionGroups.swift:129-166` (`byMachine`);
@@ -2755,6 +2761,70 @@ platform, build, online, since); neither phone reads it, and the console's Machi
   The open session's machine gives way before its project does (SE-C202). *Why:* a label is
   whatever the machine's agent was given, its host name by default, and can run long.
   *Regression:* no. *Source:* `src/agent.rs:426` (`--label`, else the host name).
+
+The owner decided on 2026-10-07 that the console tabs the machines (SE-C226 to SE-C230): with
+several machines, the parts of SE-C219 one after another were a long scroll, and a prompt on the
+last machine was the furthest from the top. The tabs are the console's; the phones keep the parts
+one after another, and what each part holds does not change.
+
+- **SE-C226** On a hosted router whose list holds more than one machine, a row of tabs sits above
+  the list: All first, then one tab per machine in the order the machines are headed (SE-C220), and
+  "Unnamed machine" last when there are rows that name none. All shows the list headed per machine,
+  exactly as SE-C219 draws it, so nothing is lost; a machine's tab shows only that machine's part —
+  its projects, its own older group and its own shelf — without its heading, since the tab names
+  it. With one machine, or on a local router, there are no tabs and the list is as it always was.
+  The header's pip stays the whole list's (SE-C35). A machine's older group is the same group on All
+  and on its tab: opened on one, it is open on the other, and it keeps its state across every tab,
+  refresh and return to the list (SE-C31). *Why:* decided on 2026-10-07: several machines' parts
+  one after another made a long scroll, and a machine at a time is what is looked at. *Regression:*
+  no. *Source:* `ui/src/screens/Sessions/List.tsx`; `ui/src/model/session.ts` (`machineTabs`).
+- **SE-C227** Each tab says at a glance what is at work there and what waits on you, in the
+  header's words — its label, then "2 working · 1 waiting", or nothing beside the label when
+  neither — and All says it of the whole list. A tab where any session waits on you carries the
+  attention dot, so a prompt on a machine that is not shown is never missed. Each tab's accessible
+  name is its label and its counts, or "idle" ("Laptop, 1 working · 1 waiting", "win-box, idle"), so
+  it says whether something waits; the dot, whose words the counts already say, is not heard twice
+  (SE-C20). The panel is labelled by its tab. The tabs are Carbon's, reached by keyboard: the
+  arrows, Home and End move between them without choosing one, and Enter or Space chooses, so
+  passing over a tab neither draws its machine nor adds a history entry. *Why:* a waiting session
+  is the thing to go and look at (SE-C27), and once the machines are tabbed it can be on a tab that
+  is not on screen. *Regression:* no. *Source:* `ui/src/screens/Sessions/List.tsx`
+  (`MachineTabLabel`); `ui/src/model/session.ts` (`machineTabs`, which counts as `listHeader`
+  does).
+- **SE-C228** The tab is in the address: `/live?machine=<key>`, where the key is the machine's id
+  when its rows carry one — a new label does not break a link — and its label when they carry
+  none, or several, two machines given one label being one part (SE-C220); `unnamed` is the rows
+  that name none, and All is the address without `machine=`. Choosing a tab pushes a history entry,
+  as opening a session does (SE-C189) and the Overview's scope (OV-C30), so Back returns to the tab
+  before; choosing the tab already chosen adds nothing. A link selects its tab. Every address the
+  screen writes on `/live` keeps `machine=`, first, with the rest of the address as it was: opening
+  a session from the list, a search hit, the open session's tabs, Find, closing Find, and Back to
+  the list. So a session opened from a machine's tab goes back to that tab, by the button or the
+  browser, and on a desk the list beside an open session stays on its tab. The open session is
+  drawn as ever. *Why:* the address holds the state (`ui/src/lib/routes.ts`); a refresh, a link or
+  Back that lost the tab would put the reader on a list they did not choose. *Regression:* no.
+  *Source:* `ui/src/screens/Sessions/index.tsx`, `ui/src/screens/Sessions/Strip.tsx`;
+  `ui/src/model/session.ts` (`machineParam`, `withMachine`).
+- **SE-C229** An address whose `machine=` names a machine the list does not hold now — it went
+  offline, or the link is old — shows All, replacing its own history entry, and says so in one
+  line over the list: "That machine has no sessions listed now, so this is all of them." It never
+  draws an empty tab or an error. The list read must be one made since the machine was asked for,
+  and the check is made at every read, so a machine that leaves while its tab is open leaves it the
+  same way. An old link naming both a machine and a session that are gone lands on All and says
+  both sentences, the session's first (SE-C191). With one machine there are no tabs, and an address
+  naming that machine is kept as it is and says nothing. *Why:* a machine's sessions leave the list
+  when its agent disconnects, and a link to it outlives that. *Regression:* no. *Source:*
+  `ui/src/screens/Sessions/index.tsx`; `ui/src/model/session.ts` (`listsMachine`,
+  `MACHINE_UNLISTED`).
+- **SE-C230** The row of tabs is one row that scrolls sideways inside the list, with Carbon's own
+  overflow chevrons, and never wraps or widens the list or the page at 300 to 360 px. It stays at
+  the top of the list as the list scrolls under it. A long label is cut short with an ellipsis, as a
+  machine's heading is (SE-C225), so one machine's tab never takes the whole row. On a coarse
+  pointer each tab is a 48 px target (SE-C205). Choosing another tab shows it from its top, not
+  from where the last tab was left. *Why:* Carbon caps its tabs at one 64 px row, so a wrapped second
+  row would be out of reach on a phone (Northstar `29472eb`); a label is whatever the machine's agent
+  was given. *Regression:* no. *Source:* `ui/src/screens/Sessions/Sessions.module.scss`
+  (`.machineTabs`); `scripts/sessions-checks.mjs` measures it at 360 px.
 
 ### Navigation
 

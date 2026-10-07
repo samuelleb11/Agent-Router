@@ -1,10 +1,11 @@
 // New for agent-router: the live view's session list (assets/live.html, `loadSessions`, `card`,
 // `groupInto`) on Carbon: one ContainedList per project, its rows real buttons, each with a visible
 // Archive, and the archived shelf in the open (decision I). A hosted router's sessions from more
-// than one machine are headed per machine, as the phones head them (SE-C219).
+// than one machine are headed per machine, as the phones head them (SE-C219), and tabbed: All,
+// which heads them so, and a tab for each machine (SE-C226).
 import { Fragment, useId, useState } from 'react';
 import { Link as RouterLink } from 'react-router';
-import { Button, Callout, ContainedList, ContainedListItem } from '@carbon/react';
+import { Button, Callout, ContainedList, ContainedListItem, Tab, TabList, TabPanel, TabPanels, Tabs } from '@carbon/react';
 import { ChevronDown, ChevronRight } from '@carbon/icons-react';
 import { CONCEPTS } from '~/lib/concepts';
 import { EmptyState } from '~/components/EmptyState';
@@ -13,7 +14,7 @@ import { plural } from '~/model/format';
 import { routes, settingsPath } from '~/lib/routes';
 import { useCoarse } from '~/lib/viewport';
 import { CONNECT } from '~/model/machine';
-import { emptyList, type GroupView, type ListView, type MachineView, type Notice, type RowView } from '~/model/session';
+import { emptyList, type GroupView, type ListView, type MachineTab, type MachineView, type Notice, type RowView } from '~/model/session';
 import { NoticeLine } from './Notice';
 import styles from './Sessions.module.scss';
 
@@ -202,16 +203,39 @@ function Machine({ part, level, older, onOlder, actions }: { part: MachineView; 
   );
 }
 
+/// A tab over a list of several machines: its label and, at a glance, what is at work there and
+/// what waits on you, with the attention dot when something does (SE-C227). The dot's words are in
+/// the counts, which the tab's name carries, so the dot is not heard twice.
+function MachineTabLabel({ tab }: { tab: MachineTab }) {
+  return (
+    <span className={styles.machineTab}>
+      {tab.waiting && <StatusDot tone="attention" decorative />}
+      <span className={styles.machineTabName}>{tab.label}</span>
+      {tab.counts && <span className={styles.machineTabCounts}>{tab.counts}</span>}
+    </span>
+  );
+}
+
+const NO_TABS: readonly MachineTab[] = [];
+
 /// The list: a machine at a time when a hosted router lists more than one, and otherwise the one
-/// list with no heading (SE-C219). Each older fold's open state is the list's own, one per machine,
-/// kept across every refresh, archive and return to the list (SE-C31): the list stays mounted while
-/// a session is open, and only its rows are redrawn.
+/// list with no heading (SE-C219). Over several machines, a row of tabs: All, the machines headed
+/// one after another, and a tab for each machine that shows its part alone, its tab naming it in
+/// place of its heading (SE-C226). The tab is the address's (SE-C228); arrows move between the
+/// tabs and Enter or Space chooses one, so passing over a tab neither draws its machine nor adds a
+/// history entry. Each older fold's open state is the list's own, one per machine, kept across
+/// every refresh, archive, tab and return to the list (SE-C31): the list stays mounted while a
+/// session is open, and only its rows are redrawn. A machine's fold is the same fold on All and on
+/// its own tab.
 export function List({
   machines,
   hosted,
   wrapperWarning,
   actions,
   level = 2,
+  tabs = NO_TABS,
+  tab = null,
+  onTab,
 }: {
   machines: readonly MachineView[];
   hosted: boolean;
@@ -220,6 +244,11 @@ export function List({
   /// The level of a machine's heading: under the screen's own, which is the page's first heading
   /// while the list is what the reader is looking at, and its second beside an open session.
   level?: 2 | 3;
+  /// The tabs over a list of several machines (`machineTabs`); none draws the list as All does.
+  tabs?: readonly MachineTab[];
+  /// The `machine=` of the tab the address is on; null, or one no tab has, is All.
+  tab?: string | null;
+  onTab?: (machine: string | null) => void;
 }) {
   const [opened, setOpened] = useState<ReadonlySet<string>>(() => new Set());
   const warningId = useId();
@@ -230,6 +259,17 @@ export function List({
       return next;
     });
   const empty = machines.every((m) => !m.recent.length && !m.older && !m.shelf);
+  const all = machines.map((m) =>
+    m.heading === null ? (
+      <Part key={m.key} view={m} older={opened.has(m.key)} onOlder={() => toggle(m.key)} actions={actions} />
+    ) : (
+      <Machine key={m.key} part={m} level={level} older={opened.has(m.key)} onOlder={() => toggle(m.key)} actions={actions} />
+    ),
+  );
+  const selected = Math.max(0, tabs.findIndex((t) => t.param === tab));
+  // A machine's tab draws its part alone, with no heading; All draws every part under its heading.
+  const part = machines.find((m) => m.key === tabs[selected]?.key);
+  const shown = part ? <Part view={part} older={opened.has(part.key)} onOlder={() => toggle(part.key)} actions={actions} /> : all;
   return (
     <div className={styles.list}>
       {wrapperWarning && (
@@ -258,12 +298,35 @@ export function List({
           {emptyList(hosted)}
         </EmptyState>
       ) : null}
-      {machines.map((m) =>
-        m.heading === null ? (
-          <Part key={m.key} view={m} older={opened.has(m.key)} onOlder={() => toggle(m.key)} actions={actions} />
-        ) : (
-          <Machine key={m.key} part={m} level={level} older={opened.has(m.key)} onOlder={() => toggle(m.key)} actions={actions} />
-        ),
+      {tabs.length ? (
+        // Chosen by the address alone: Carbon reports a choice through `onChange`, which only
+        // writes it there, and an arrow only moves the focus (activation "manual").
+        <Tabs
+          selectedIndex={selected}
+          onChange={({ selectedIndex }) => {
+            const next = tabs[selectedIndex];
+            if (next && selectedIndex !== selected) onTab?.(next.param);
+          }}
+        >
+          {/* One row that scrolls sideways inside the list, never wider than it (SE-C230). */}
+          <TabList aria-label="Machines" activation="manual" className={styles.machineTabs}>
+            {tabs.map((t) => (
+              <Tab key={t.key || 'all'} aria-label={t.name} data-machine-tab={t.param ?? ''}>
+                <MachineTabLabel tab={t} />
+              </Tab>
+            ))}
+          </TabList>
+          {/* Every tab has its panel, labelled by the tab; only the chosen one draws its rows. */}
+          <TabPanels>
+            {tabs.map((t, i) => (
+              <TabPanel key={t.key || 'all'} className={styles.machinePanel}>
+                {i === selected ? shown : null}
+              </TabPanel>
+            ))}
+          </TabPanels>
+        </Tabs>
+      ) : (
+        all
       )}
     </div>
   );

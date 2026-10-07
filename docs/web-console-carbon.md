@@ -411,7 +411,10 @@ From Carbon 1.116's source and Northstar's history, before writing a line:
   across refreshes. A hosted router's sessions from more than one machine are headed per
   machine, as the phones head them: under each machine's label, its own projects, older fold
   and shelf. With one machine, or none named, there is no heading (decided 2026-10-05,
-  SE-C219).
+  SE-C219). Several machines are tabbed with Carbon's `Tabs`, one row that scrolls sideways
+  over the list: All, which heads them so, then a tab per machine showing its part alone, each
+  with its working and waiting counts and the attention dot when something waits, the tab in
+  the address as `?machine=` (decided 2026-10-07, SE-C226 to SE-C230).
 - **Tabs.** A tab strip over the feed, each tab carrying its status dot (see Decision I for
   its close glyph).
 - **Feed.**

@@ -25,8 +25,13 @@ import {
   hitTarget,
   isCurrent,
   listHeader,
+  listsMachine,
   listView,
+  MACHINE_UNLISTED,
+  machineIn,
   machineOf,
+  machineParam,
+  machineTabs,
   openFeed,
   permissionCard,
   permissionSubject,
@@ -41,6 +46,7 @@ import {
   tabsFor,
   UNNAMED_MACHINE,
   vouched,
+  withMachine,
   type ListView,
   type RowView,
   type SessionRow,
@@ -239,6 +245,60 @@ describe('a hosted router’s machines', () => {
     expect(jumps.find((r) => r.key === 'jump:session')?.hits.map((h) => h.detail)).toEqual(['win-app']);
     expect(jumps.find((r) => r.key === 'jump:project')?.hits.map((h) => h.label)).toEqual(['win-app']);
     expect(resolve('kestrel', ctx).runs.find((r) => r.key === 'kind:text')?.hits.map((h) => h.label)).toEqual(['win-app']);
+  });
+
+  it('SE-C226, SE-C227: several machines are tabbed — All first, then each machine in its heading’s order, the rows that name none last — each saying what is at work there and what waits, in the header’s words; one machine or none has no tabs', () => {
+    const at = (activity: string) => ({ activity, tone: activity === 'waiting' ? 'attention' : activity === 'idle' ? 'idle' : 'busy' });
+    const rows = [
+      on('s-1', 'studio', at('generating')),
+      on('s-2', 'studio', at('tool')),
+      on('l-1', 'Laptop', at('waiting')),
+      on('l-2', 'Laptop', at('generating')),
+      on('w-1', 'win-box', at('idle')),
+      on('n-1', null, at('waiting')),
+    ];
+    const tabs = machineTabs(rows, byMachine(rows, NOW));
+    expect(tabs.map((t) => [t.label, t.counts, t.waiting])).toEqual([
+      ['All', '3 working · 2 waiting', true],
+      ['Laptop', '1 working · 1 waiting', true],
+      ['studio', '2 working', false],
+      ['win-box', '', false],
+      [UNNAMED_MACHINE, '1 waiting', true],
+    ]);
+    // All's counts are the header's, over the same rows.
+    expect(tabs[0]?.counts).toBe(listHeader(rows, NOW).text);
+    expect(tabs.map((t) => t.key)).toEqual(['', ...byMachine(rows, NOW).map((p) => p.key)]);
+    // The name says the counts, and a tab with nothing at work says so in a word, not in silence.
+    expect(tabs.map((t) => t.name)).toEqual(['All, 3 working · 2 waiting', 'Laptop, 1 working · 1 waiting', 'studio, 2 working', 'win-box, idle', 'Unnamed machine, 1 waiting']);
+    // One machine, or none, or nothing at all: no tabs, the list as it always was.
+    for (const list of [rows.map((r) => ({ ...r, machine: { id: 'm', label: 'studio' } })), rows.map((r) => ({ ...r, machine: null })), []]) expect(machineTabs(list, byMachine(list, NOW))).toEqual([]);
+  });
+
+  it('SE-C228: a machine’s tab is in the address by its id, else its label, `unnamed` for the rows that name none, All by no `machine=` at all; the rest of the address is kept', () => {
+    const rows = [on('s-1', 'studio'), on('l-1', 'Laptop', { machine: { label: 'Laptop' } }), on('t-1', 'twin', { machine: { id: 'id-a', label: 'twin' } }), on('t-2', 'twin', { machine: { id: 'id-b', label: 'twin' } }), on('n-1', null)];
+    expect(machineTabs(rows, byMachine(rows, NOW)).map((t) => t.param)).toEqual([null, 'Laptop', 'id-studio', 'twin', 'unnamed']);
+    // A blank id is none, as a blank label is (SE-C220).
+    expect([machineParam('studio', rows), machineParam('studio', [on('x', ' studio ', { machine: { id: '  ', label: ' studio ' } })]), machineParam(null, rows)]).toEqual(['id-studio', 'studio', 'unnamed']);
+    // On a tab: `machine=` first, whatever else the address holds kept in its order.
+    expect(withMachine('?session=abc&find=kestrel&scope=all', 'id-studio')).toBe('?machine=id-studio&session=abc&find=kestrel&scope=all');
+    expect(withMachine('', 'my laptop')).toBe('?machine=my+laptop');
+    expect(machineIn(withMachine('', 'my laptop'))).toBe('my laptop');
+    expect(withMachine('?machine=old&session=abc', 'id-studio')).toBe('?machine=id-studio&session=abc');
+    // All is the address without one, and an address that names none is left as it was.
+    expect(withMachine('?machine=id-studio&session=abc', null)).toBe('?session=abc');
+    expect(withMachine('?machine=id-studio', null)).toBe('');
+    expect(withMachine(`?session=${encodeURIComponent('a b')}`, null)).toBe('?session=a%20b');
+    expect([machineIn(''), machineIn('?machine='), machineIn('?session=abc&machine=id-studio')]).toEqual([null, null, 'id-studio']);
+  });
+
+  it('SE-C229: an address names a machine the list holds by the rule its tab is chosen by, with one machine as with several; a machine gone from the list, or never in it, is not held', () => {
+    const rows = [on('s-1', 'studio'), on('l-1', 'Laptop')];
+    expect(['id-studio', 'id-Laptop', 'studio', 'id-gone', 'unnamed'].map((m) => listsMachine(rows, m))).toEqual([true, true, false, false, false]);
+    // One machine draws no tabs, and an address naming it still names it.
+    expect(listsMachine([on('s-1', 'studio')], 'id-studio')).toBe(true);
+    expect(listsMachine([on('s-1', 'studio'), on('n-1', null)], 'unnamed')).toBe(true);
+    expect(listsMachine([], 'id-studio')).toBe(false);
+    expect(MACHINE_UNLISTED).toBe('That machine has no sessions listed now, so this is all of them.');
   });
 });
 

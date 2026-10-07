@@ -2,13 +2,13 @@
 // links, not Carbon's Tabs: those are capped at one 64px row, wrap out of reach on a phone (Northstar
 // 29472eb), and their dismissable form hard-codes a Close glyph where put-away is Archive (decision I).
 import { useEffect, useRef } from 'react';
-import { Link } from 'react-router';
+import { Link, useLocation } from 'react-router';
 import { Button, Toggletip, ToggletipButton, ToggletipContent } from '@carbon/react';
 import { Information } from '@carbon/icons-react';
 import { CONCEPTS } from '~/lib/concepts';
 import { StatusDot } from '~/components/StatusDot';
 import { useCoarse } from '~/lib/viewport';
-import type { Notice, TabView } from '~/model/session';
+import { machineIn, withMachine, type Notice, type TabView } from '~/model/session';
 import { NoticeLine } from './Notice';
 import styles from './Sessions.module.scss';
 
@@ -17,7 +17,8 @@ const PUT_AWAY = CONCEPTS.putAway.icon;
 
 /// The strip over the feed: the project's current sessions, oldest first, each with its dot and its
 /// words, the open one marked (SE-C49); one row that scrolls sideways and brings the open tab into
-/// view (SE-C54); and on every tab a visible Archive, a target of its own (SE-C50).
+/// view (SE-C54); and on every tab a visible Archive, a target of its own (SE-C50). A tab keeps the
+/// list's machine tab in its address, so the list beside it stays where it is (SE-C228).
 export function Strip({
   tabs,
   onArchive,
@@ -32,6 +33,7 @@ export function Strip({
   onNoticeClose: () => void;
 }) {
   const coarse = useCoarse();
+  const machine = machineIn(useLocation().search);
   const open = useRef<HTMLAnchorElement>(null);
   const openId = tabs.find((t) => t.open)?.id;
   useEffect(() => {
@@ -45,7 +47,7 @@ export function Strip({
             <li key={t.id} className={styles.tab} data-open={t.open || undefined}>
               <Link
                 ref={t.open ? open : undefined}
-                to={`?session=${encodeURIComponent(t.id)}`}
+                to={withMachine(`?session=${encodeURIComponent(t.id)}`, machine)}
                 className={styles.tabLink}
                 aria-current={t.open ? 'page' : undefined}
               >
