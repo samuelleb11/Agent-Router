@@ -201,10 +201,13 @@ check console:
 
 # ---------------------------------------------------------------- build
 
+# The image starts at once: it builds its own console and binary, and no check stage job
+# gates it. What is published is gated instead (publish chart needs the checks).
 build docker image:
   extends:
     - .docker-build
     - .rules-agent-router
+  needs: []
 
 # The extension builds in every pipeline the workflow lets through, as it did before there
 # was a workflow: a job with no rules is left out of merge request pipelines. It needs only
@@ -297,7 +300,7 @@ tag docker image with latest:
 publish chart:
   stage: publish
   extends: .rules-publish
-  needs: [tag docker image with commit]
+  needs: [tag docker image with commit, check rust, check chart]
   image:
     name: alpine/helm:4.3.0
     entrypoint: [""]
