@@ -510,7 +510,7 @@ describe('Palette: jumping to a session or a project', () => {
 });
 
 describe('Palette: commands behind > (SH-C51)', () => {
-  it("SH-C51: '>' lists the commands: a session's model, effort and mode, archive and restore, each account, the theme and the pages", async () => {
+  it("SH-C51, MA-C1: '>' lists the commands: a session's model, effort and mode, archive and restore, each account, the theme and the pages, Machines among them", async () => {
     const { user } = await mount();
     await user.type(input(), '>');
     await screen.findByRole('option', { name: /Use work@example\.com/ });
@@ -531,6 +531,7 @@ describe('Palette: commands behind > (SH-C51)', () => {
       'Theme: light',
       'Theme: dark',
       'Overview',
+      'Machines',
       'Settings: Accounts',
       'Settings: Router',
     ]) {

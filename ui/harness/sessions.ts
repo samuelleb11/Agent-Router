@@ -153,10 +153,11 @@ export const SESSIONS: readonly SessionRow[] = [
   },
 ];
 
-/// The machines a hosted router hears from (src/machines.rs: `machine: {id, label}` on every row).
-const STUDIO = { id: '5f0c2a8e-3b1d-4c6f-9e7a-2d4b6c8e0f13', label: 'studio' };
-const LAPTOP = { id: '9b3e1d47-6a2c-4f8e-b1d3-7c5e9a0b2d46', label: 'Laptop' };
-const WINDOWS = { id: 'c41d07e2-8f3a-4b6d-a2e9-5d1c3b7f9e08', label: 'a-windows-build-box-whose-label-goes-on-long-enough-to-cut-short' };
+/// The machines a hosted router hears from (src/machines.rs: `machine: {id, label}` on every row),
+/// which the Machines screen lists too (harness/machines.ts).
+export const STUDIO = { id: '5f0c2a8e-3b1d-4c6f-9e7a-2d4b6c8e0f13', label: 'studio' };
+export const LAPTOP = { id: '9b3e1d47-6a2c-4f8e-b1d3-7c5e9a0b2d46', label: 'Laptop' };
+export const WINDOWS = { id: 'c41d07e2-8f3a-4b6d-a2e9-5d1c3b7f9e08', label: 'a-windows-build-box-whose-label-goes-on-long-enough-to-cut-short' };
 
 /// Where each session runs on the hosted router: the showcase and its project's siblings on one
 /// machine, so its tabs are those; another machine with a failed session, an ended one folded under

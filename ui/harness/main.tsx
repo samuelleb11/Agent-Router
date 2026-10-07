@@ -54,9 +54,11 @@ function chosen(): { unread: Unread[]; router: HarnessRouter } {
 
 const { unread, router } = chosen();
 const record = asked();
-// The Sessions screen's reads and streams (harness/sessions.ts), its reads answered before the rest.
+// The Sessions screen's reads and streams (harness/sessions.ts), its reads answered before the rest,
+// and a hosted router's machines (harness/machines.ts) before those.
 const sessions = await import('./sessions');
-window.fetch = sessions.withSessions(fixtureServer({ unread, asked: record }).fetch, record, router);
+const machines = await import('./machines');
+window.fetch = machines.withMachines(sessions.withSessions(fixtureServer({ unread, asked: record }).fetch, record, router), record, router);
 window.EventSource = fakeEventSource({ ...STREAMS, ...sessions.STREAMS }, { asked: record }).EventSource;
 window.__harness = { unread, router, answered: record.answered, unanswered: record.unanswered };
 

@@ -22,6 +22,7 @@
 // - every dot carries its words, a heading's and a tab's included (SE-C20).
 
 import { DASH, factUsd, id8, rowDuration, span } from './format';
+import { AGENTLESS, machineOrder } from './machine';
 import { md, type Block } from './markdown';
 import type { FindScope } from './search';
 
@@ -358,11 +359,6 @@ export interface MachineView extends ListView {
   readonly heading: string | null;
 }
 
-/// Machines by label, alphabetically with case aside, so a machine keeps its place as its sessions
-/// move; two labels that differ only in case stay two machines, the capitalised one first, as the
-/// iPhone orders them (SE-C220).
-const machineOrder = (a: string, b: string): number => a.localeCompare(b, undefined, { sensitivity: 'accent' }) || (a < b ? -1 : a > b ? 1 : 0);
-
 /// The list a machine at a time, as both phones' `SessionGroups.byMachine` arrange it. A hosted
 /// router that lists sessions from more than one machine heads each machine, alphabetically, with
 /// that machine's own projects, older fold and shelf beneath it, so one project on two machines is
@@ -413,33 +409,12 @@ export function header(view: { readonly feed: Feed | null; readonly list: { read
   return listHeader(view.list.rows, now);
 }
 
-/// A hosted router lists the sessions of the machines connected to it, and a machine connects by
-/// running the installer the router serves without a password, which installs the Agent Router
-/// agent and asks there for the router's password. With none connected, the list says so, above
-/// the commands that connect one (SE-C187).
-export const AGENTLESS = 'No machine has connected yet. Run this on a machine to connect it — it asks for this router’s password.';
-/// What else the installer does where VS Code is: it adds the Agent Router extension, which wraps
-/// Claude Code there, so the machine's sessions can be typed into and not only followed (SE-C187).
-export const WITH_VS_CODE = 'With VS Code’s code command on the machine, the script also adds the Agent Router extension, '
-  + 'so its sessions can be typed into from here and from the phone; without it, they can only be followed.';
-
-export interface InstallCommand {
-  /// The platforms it runs on, which label it.
-  readonly label: string;
-  readonly command: string;
-}
-
-/// The commands that connect a machine to the router at `origin`, one for each platform: a shell's
-/// on macOS and Linux, PowerShell's on Windows (SE-C187).
-export const installCommands = (origin: string): readonly InstallCommand[] => [
-  { label: 'macOS and Linux', command: `curl -fsSL ${origin}/agent/install.sh | sh` },
-  { label: 'Windows (PowerShell)', command: `irm ${origin}/agent/install.ps1 | iex` },
-];
-
 /// What a search hit says on a hosted router when its session is on no connected machine (60cf5f8).
 export const OFF_MACHINE = 'That session is not on a connected machine.';
 
-/// An empty list says which empty it is (SE-C38).
+/// An empty list says which empty it is (SE-C38). A hosted router lists the sessions of the
+/// machines connected to it, so with none it says that no machine has, and the list links to the
+/// Machines screen, where the commands that connect one are (SE-C187, MA-C2).
 export const emptyList = (hosted: boolean): string => (hosted ? AGENTLESS : 'No sessions in the last week.');
 
 export interface Shim {

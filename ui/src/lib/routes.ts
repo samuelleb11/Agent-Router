@@ -1,5 +1,5 @@
 // Copied from Northstar ui/src/lib/routes.ts at e9c1589.
-// Changed: agent-router's three screens and its six settings pages.
+// Changed: agent-router's four screens and its six settings pages.
 
 /// Where things live: one route table for the rail, the settings sub-navigation and every
 /// screen that links to a sibling, so a link and the screen it reaches cannot drift apart. A
@@ -22,10 +22,12 @@ export const settingsPath = (slug: SectionSlug): string => `/settings/${slug}`;
 
 /// The screens, at the paths the old pages answer today: `/` was the dashboard and `/live` the
 /// live view, and every bookmark, the VS Code extension, the menubar app and the iPhone open
-/// those. A project opens the Overview scoped to it, keyed by its working directory.
+/// those. `/machines` is new, a hosted router's machines and how to connect one (MA-C1). A
+/// project opens the Overview scoped to it, keyed by its working directory.
 export const routes = {
   overview: '/',
   sessions: '/live',
+  machines: '/machines',
   settings: '/settings',
   project: (key: string) => `/?project=${encodeURIComponent(key)}`,
 } as const;

@@ -1,5 +1,5 @@
 // Copied from Northstar ui/src/app/Shell.tsx at e9c1589.
-// Changed: agent-router's navigation (Overview, Sessions, the projects, Settings at the foot); the freshness badge reads the router's health and the open session's stream; no sign-in and no log-out, because the router's LAN gate is HTTP Basic, which the browser asks for itself; the address the console was reached at beside the name; no wide routes; the phone drawer closes on every arrival, a project link's included; the palette is open at a location as the drawer is, and opening either puts the other away; the first-boot password prompt is decided here, on every screen but Settings, in a chunk of its own.
+// Changed: agent-router's navigation (Overview, Sessions, Machines on a hosted router, the projects, Settings at the foot); the freshness badge reads the router's health and the open session's stream; no sign-in and no log-out, because the router's LAN gate is HTTP Basic, which the browser asks for itself; the address the console was reached at beside the name; no wide routes; the phone drawer closes on every arrival, a project link's included; the palette is open at a location as the drawer is, and opening either puts the other away; the first-boot password prompt is decided here, on every screen but Settings, in a chunk of its own.
 import { Suspense, lazy, useCallback, useEffect, useMemo, useState, type MouseEvent } from 'react';
 import { Link, Outlet, useHref, useLocation, useNavigate } from 'react-router';
 import {
@@ -16,11 +16,13 @@ import {
   SkipToContent,
   Theme,
 } from '@carbon/react';
-import { Asleep, Awake, Dashboard, Search, Settings, Terminal } from '@carbon/icons-react';
+import { Asleep, Awake, Dashboard, Screen, Search, Settings, Terminal } from '@carbon/icons-react';
 import { useLive } from '~/app/live';
+import { keys } from '~/app/query';
 import { useTheme } from '~/app/theme';
 import { projectKey, projectName, UNRESOLVED, useProjects } from '~/data/projects';
-import { availabilityOf } from '~/data/held';
+import { availabilityOf, useRead } from '~/data/held';
+import { readAuth } from '~/data/router';
 import { useNarrow } from '~/lib/viewport';
 import { routes } from '~/lib/routes';
 import { InitialsIcon } from '~/components/InitialsIcon';
@@ -33,6 +35,9 @@ import styles from './Shell.module.scss';
 const FirstBootGate = lazy(() => import('~/screens/Settings/FirstBootGate').then((m) => ({ default: m.FirstBootGate })));
 
 const RAIL_KEY = 'agent-router.rail';
+
+/// How often the rail asks what kind of router this is: as Settings and the Overview ask it (ST-C5).
+const AUTH_EVERY_MS = 30_000;
 
 function readRail(): boolean {
   try {
@@ -57,6 +62,11 @@ export function Shell() {
   const theme = useTheme();
   const live = useLive();
   const projects = useProjects();
+  // Machines is offered on a hosted router only: a local router takes no machines, and until
+  // /api/auth has said which kind this is, it is not offered at all (MA-C1). `mode` is read as
+  // `isHosted` in ~/model/settings reads it, which every page's first load need not carry.
+  const auth = useRead({ queryKey: keys.auth, queryFn: ({ signal }) => readAuth(signal), refetchInterval: AUTH_EVERY_MS });
+  const hosted = auth.value?.mode === 'server';
   const navigate = useNavigate();
   const location = useLocation();
   // The console's root as the browser addresses it: the header's name is a
@@ -193,6 +203,13 @@ export function Shell() {
           <SideNavLink renderIcon={Terminal} as={Link} to={routes.sessions} {...current(under(routes.sessions))}>
             Sessions
           </SideNavLink>
+          {/* The machine concept's icon (CONCEPTS.machine), imported alone so the rail does not
+              carry the whole registry into every page's first load. */}
+          {hosted && (
+            <SideNavLink renderIcon={Screen} as={Link} to={routes.machines} {...current(under(routes.machines))}>
+              Machines
+            </SideNavLink>
+          )}
           {/* A list item, not Northstar's div: the only child a <ul> may have. */}
           <li className={styles.section} aria-hidden={!open}>
             Projects

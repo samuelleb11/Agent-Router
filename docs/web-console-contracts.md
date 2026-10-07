@@ -19,8 +19,8 @@ exists and which bug it took to learn it. The rest come from:
 
 Each contract is one bullet:
 
-- **The id**: two capitals for the area (SH Shell, OV Overview, SE Sessions, ST Settings, SV
-  Serving), `-C` and a number.
+- **The id**: two capitals for the area (SH Shell, OV Overview, SE Sessions, MA Machines, ST
+  Settings, SV Serving), `-C` and a number.
 - **The rule**: what the console must do, not how the old page did it.
 - *Why:* the reason, from the comment, commit or check behind it.
 - *Regression:* yes when it was a real bug once, with the evidence.
@@ -51,7 +51,7 @@ Counts at writing:
 | **All** | **633** | **101** | **140** |
 
 Since then AGEN-0023 has added SE-C219 to SE-C225, for a hosted router's machines, so Sessions
-holds 225.
+holds 225. On 2026-10-07 the Machines screen added a section of its own, MA-C1 to MA-C7.
 
 ## Shell
 
@@ -78,9 +78,10 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
   `env(safe-area-inset-top)`. *Regression:* no. *Source:*
   `docs/web-console-carbon.md:210-212`, `docs/web-console-carbon.md:328-329`,
   `docs/web-console-carbon.md:545-548`, `assets/live.html:38-44`.
-- **SH-C3** The destinations are Overview, Sessions, then each project (opening the
-  Overview scoped to it), with Settings pinned at the foot; a desk shows them in a rail, a
-  phone in a drawer behind the menu button, with the same destinations in the same order.
+- **SH-C3** The destinations are Overview, Sessions, on a hosted router Machines (MA-C1),
+  then each project (opening the Overview scoped to it), with Settings pinned at the foot; a
+  desk shows them in a rail, a phone in a drawer behind the menu button, with the same
+  destinations in the same order.
   *Why:* Northstar §7 — only the container differs between widths; Settings at the foot so
   a growing project list never moves it. *Regression:* no. *Source:*
   `docs/web-console-carbon.md:195-200`, `../northstar/ui/src/app/Shell.tsx:64-67`,
@@ -2655,21 +2656,17 @@ defect.
   working against it. *Why:* a hosted router has no Mac to assume. *Regression:* no. *Source:*
   `assets/live.html:415-419`; check
   `a hosted router says why its list is empty, and warns of no wrapper`. *Under decision J:* the console ships inside the router it reads, so the older-router case here never reaches it; the rest of the rule stands, and the phones still meet older routers.
-- **SE-C187** A hosted router's empty list says why it is empty and how to connect a machine, and
-  never blames the week as a local router's empty list does. Under "No sessions here yet" it says
-  "No machine has connected yet. Run this on a machine to connect it — it asks for this router’s
-  password.", then the installer's command for each platform at the page's own origin, each
-  labelled and with its own copy button — "macOS and Linux",
-  `curl -fsSL <origin>/agent/install.sh | sh`, and "Windows (PowerShell)",
-  `irm <origin>/agent/install.ps1 | iex` — and last "With VS Code’s code command on the machine,
-  the script also adds the Agent Router extension, so its sessions can be typed into from here and
-  from the phone; without it, they can only be followed." *Why:* live sessions run on machines,
-  which a hosted router reaches only through their agent, so blaming the week would be false; and
-  the router serves the installer itself, without a password, so the page can give the command to
-  run rather than name a program the reader has nowhere to get. Decided on 2026-10-07, when the
-  sentence named `agent-router agent install --server <this router's address>` with its address
-  left a placeholder. *Regression:* no. *Source:* `assets/live.html:415-421, 647-648`,
-  `scripts/check-live-ui.js:1106-1111`.
+- **SE-C187** A hosted router's empty list says why it is empty and where to connect a machine,
+  and never blames the week as a local router's empty list does. Under "No sessions here yet" it
+  says "No machine has connected yet.", and links to the Machines screen, "Connect a machine",
+  where the installer's commands are (MA-C2); it never repeats the commands. *Why:* live sessions
+  run on machines, which a hosted router reaches only through their agent, so blaming the week
+  would be false. The commands were first given here, decided on 2026-10-07 when the sentence named
+  `agent-router agent install --server <this router's address>` with its address left a
+  placeholder; the same day they moved to the Machines screen, so they have one home, because a
+  list that holds one machine's sessions is never empty and its readers never saw them.
+  *Regression:* no. *Source:* `assets/live.html:415-421, 647-648`,
+  `scripts/check-live-ui.js:1106-1111`; `ui/src/screens/Sessions/List.tsx`.
 - **SE-C188** A hosted router never warns that an editor is not wrapped, and the wrapper's state is
   not even asked for. *Why:* it wraps nothing and has no editor to warn about. *Regression:*
   no. *Source:* `assets/live.html:624-628`, `scripts/check-live-ui.js:1112`.
@@ -2677,7 +2674,8 @@ defect.
 A hosted router hears its sessions from an agent on each machine (commit `60cf5f8`). Every row of
 `/api/live/sessions` names its machine, `machine: {id, label}`, and the router relays each
 session's requests to the machine holding it. `GET /api/machines` lists the machines (label,
-platform, build, online, since); neither phone reads it, and nor does the console.
+platform, build, online, since); neither phone reads it, and the console's Machines screen does
+(MA-C3).
 
 - **SE-C219** On a hosted router whose rows name more than one machine, the list is headed per
   machine: each machine's label heads a part of its own, and under it is what that machine's
@@ -2929,6 +2927,91 @@ platform, build, online, since); neither phone reads it, and nor does the consol
   click-through. *Regression:* yes — 3fe8c5d, 3ffb04f; checks `script evaluates`,
   `opening a session does not throw`, `going back to the list does not throw`. *Source:*
   `scripts/check-live-ui.js:204, 276-282`; plan, "What we take from Northstar".
+
+## Machines
+
+A hosted router (`agent-router serve --server`) serves the Claude Code sessions of developers'
+machines, each running the Agent Router agent, which dials out to the router
+([hosting the machine agent](hosting-machine-agent.md), commit `60cf5f8`). The Machines screen, at
+`/machines`, is where a machine is connected and where the machines the router has heard from are
+seen. It was asked for on 2026-10-07: "Machines should be first level right after the Live sessions
+in the menu." Until then the installer's commands showed only in the Sessions list's empty state,
+which a router with one machine connected never draws, so its owner could not find them. A local
+router takes no machines. Line numbers are as of commit `48533db`.
+
+### Where it is
+
+- **MA-C1** The screen is at `/machines` and names itself in the tab's title, "Machines · Agent
+  Router" (SH-C7). On a hosted router the rail lists Machines directly after Sessions, with the
+  machine icon (SH-C39), at both widths, marked as current on its screen; a local router's rail
+  does not, and nor does the rail before `/api/auth` has said which kind of router this is
+  (ST-C101). The palette's "Go to" lists it on every router, as it lists every Settings page, and
+  the address says why on a local router (MA-C7). *Why:* the owner's request; a local router takes
+  no agents, so its rail would offer a page with nothing on it, and a link drawn before the router
+  has answered and then taken away would move the rail under the reader. *Regression:* no.
+  *Source:* `src/auth.rs:356` (`mode`); `ui/src/app/Shell.tsx`, `ui/src/lib/routes.ts`,
+  `ui/src/screens/Palette/hits.ts`.
+
+### Connecting a machine
+
+- **MA-C2** On a hosted router the screen opens with "Connect a machine", whatever its list holds:
+  "Run this on a machine to connect it — it asks for this router’s password.", then the
+  installer's command for each platform at the page's own origin, each labelled and with its own
+  copy button — "macOS and Linux", `curl -fsSL <origin>/agent/install.sh | sh`, and "Windows
+  (PowerShell)", `irm <origin>/agent/install.ps1 | iex` — and last "With VS Code’s code command on
+  the machine, the script also adds the Agent Router extension, so its sessions can be typed into
+  from here and from the phone; without it, they can only be followed." It is the console's one
+  place for the commands: a hosted router's empty session list links here (SE-C187). *Why:* the
+  router serves the installer itself, without a password, so the page gives the command to run
+  rather than name a program the reader has nowhere to get; and a machine is connected while
+  others are listed, so the commands cannot wait for an empty list. *Regression:* no. *Source:*
+  `src/downloads.rs:64-72` (`install_sh`, `install_ps1`), `src/downloads/install.sh:1-13`;
+  `ui/src/components/InstallCommands.tsx`.
+
+### The machines
+
+- **MA-C3** Under the commands, "Seen since this router started" lists every machine
+  `GET /api/machines` names — every machine that has connected since the router last started,
+  online or not — read every five seconds on the console's one clock (SH-C15). The online ones come
+  first, then the rest, each part by label in the order the session list heads its machines
+  (SE-C220), and over the list it says how many are online and how many are not ("2 online · 1
+  offline"). Each machine shows its label, its platform in words (macOS, Linux, Windows, and one
+  the console does not know as the agent sent it), and whether it is online, with a dot and in
+  words, and for how long, measured from `since_ms`: "online for 3h", "offline for 2d". A machine
+  whose label is blank is named by the start of its id. *Why:* the owner reads a page at a glance
+  rather than across a wide table, and which machines are connected decides which sessions a
+  hosted router can reach (SE-C223). *Regression:* no. *Source:* `src/machines.rs:229-240`
+  (`Seen`), `src/machines.rs:396-400` (`seen`), `src/agent.rs:426-427` (`--label`, else the host
+  name; `std::env::consts::OS`).
+- **MA-C4** Each machine says whether its agent runs the router's own build, its `build` compared
+  with `/_router/health`'s: the same build is said quietly, "Same build as this router"; another is
+  said in the warning colour, with what updates it: "Runs a different build from this router — run
+  the installer on it again to update it." Until the router's health has answered, nothing is
+  said of any machine's build. *Why:* a hosted router is upgraded on its own, and each machine's
+  agent stays on the build it was installed with until the installer runs there again; and a
+  build is `tree:` and forty hex digits, which nobody compares by eye. *Regression:* no. *Source:*
+  `build.rs:80-101` (`tree_id`), `src/api.rs:1716`, `src/machines.rs:229-240`.
+- **MA-C5** With no machine seen, one line under the commands says "No machine has connected
+  yet." — the sentence a hosted router's empty session list says (SE-C187) — and no empty list is
+  drawn. *Why:* an empty list says which empty it is (SH-C22, Northstar `docs/13` §8).
+  *Regression:* no. *Source:* `ui/src/model/machine.ts`.
+- **MA-C6** A failed read blanks nothing: the machines already read stay, under "Showing what was
+  read 12s ago: the last read failed — " and the router's words; a read that never succeeded says
+  "Could not read the machines" and the router's words, never that no machine has connected; and a
+  reply that is not a list is a failed read. The commands stay in every case. *Why:* a blip is not
+  an empty router, and an empty list and an unreadable one are different facts (SH-C14, SH-C22).
+  *Regression:* no. *Source:* `ui/src/data/held.ts`, `ui/src/data/machines.ts`.
+
+### A local router
+
+- **MA-C7** On a local router, `/machines` reached by its address says "Machines connect to a
+  hosted router. This router runs on this machine and serves its sessions itself, so there is
+  nothing to connect.", offers no command and never reads `/api/machines`. Until `/api/auth` has
+  answered it says it is asking, and a failed answer says "Could not read what kind of router this
+  is" with the router's words. *Why:* a local router takes no agents and does not answer
+  `/api/machines`, and an address it does not serve says why rather than drawing a blank, as a
+  hosted router's Settings address does (ST-C103). *Regression:* no. *Source:* `src/hosted.rs:64`,
+  `src/auth.rs:356`.
 
 ## Settings
 

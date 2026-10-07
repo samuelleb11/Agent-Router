@@ -4,16 +4,16 @@
 // than one machine are headed per machine, as the phones head them (SE-C219).
 import { Fragment, useId, useState } from 'react';
 import { Link as RouterLink } from 'react-router';
-import { Button, Callout, CodeSnippet, ContainedList, ContainedListItem } from '@carbon/react';
+import { Button, Callout, ContainedList, ContainedListItem } from '@carbon/react';
 import { ChevronDown, ChevronRight } from '@carbon/icons-react';
 import { CONCEPTS } from '~/lib/concepts';
-import { CopyButton } from '~/components/CopyButton';
 import { EmptyState } from '~/components/EmptyState';
 import { StatusDot } from '~/components/StatusDot';
 import { plural } from '~/model/format';
-import { settingsPath } from '~/lib/routes';
+import { routes, settingsPath } from '~/lib/routes';
 import { useCoarse } from '~/lib/viewport';
-import { emptyList, installCommands, WITH_VS_CODE, type GroupView, type InstallCommand, type ListView, type MachineView, type Notice, type RowView } from '~/model/session';
+import { CONNECT } from '~/model/machine';
+import { emptyList, type GroupView, type ListView, type MachineView, type Notice, type RowView } from '~/model/session';
 import { NoticeLine } from './Notice';
 import styles from './Sessions.module.scss';
 
@@ -202,38 +202,6 @@ function Machine({ part, level, older, onOlder, actions }: { part: MachineView; 
   );
 }
 
-/// One platform's command, under its label, with its own copy button: a group named by the label,
-/// so each Copy says which command it copies.
-function Install({ label, command }: InstallCommand) {
-  const labelId = useId();
-  return (
-    <div role="group" aria-labelledby={labelId} className={styles.install}>
-      <p id={labelId} className={styles.installLabel}>
-        {label}
-      </p>
-      <div className={styles.installRow}>
-        <CodeSnippet type="single" hideCopyButton aria-label={`The command to run on ${label}`}>
-          {command}
-        </CodeSnippet>
-        <CopyButton text={command} label="Copy command" what="the command" />
-      </div>
-    </div>
-  );
-}
-
-/// How a machine connects to a hosted router with none: the installer's command for each platform,
-/// at this page's own origin, and what else it installs where VS Code is (SE-C187).
-function Connect() {
-  return (
-    <div className={styles.connect}>
-      {installCommands(location.origin).map((c) => (
-        <Install key={c.label} {...c} />
-      ))}
-      <p className={styles.connectNote}>{WITH_VS_CODE}</p>
-    </div>
-  );
-}
-
 /// The list: a machine at a time when a hosted router lists more than one, and otherwise the one
 /// list with no heading (SE-C219). Each older fold's open state is the list's own, one per machine,
 /// kept across every refresh, archive and return to the list (SE-C31): the list stays mounted while
@@ -275,9 +243,18 @@ export function List({
         </Callout>
       )}
       {empty ? (
-        // Which empty it is: a quiet week, or a hosted router with no machine to list, and how to
-        // connect one (SE-C38, SE-C187).
-        <EmptyState title={hosted ? 'No sessions here yet' : 'No sessions'} action={hosted ? <Connect /> : null}>
+        // Which empty it is: a quiet week, or a hosted router with no machine to list, and where to
+        // connect one: the Machines screen, the commands' one home (SE-C38, SE-C187, MA-C2).
+        <EmptyState
+          title={hosted ? 'No sessions here yet' : 'No sessions'}
+          action={
+            hosted ? (
+              <RouterLink className="cds--link" to={routes.machines}>
+                {CONNECT}
+              </RouterLink>
+            ) : null
+          }
+        >
           {emptyList(hosted)}
         </EmptyState>
       ) : null}

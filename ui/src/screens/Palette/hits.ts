@@ -444,11 +444,14 @@ function themeCommands(ctx: Context): Hit[] {
   }));
 }
 
-/// The pages, each where the rail and the settings tabs go (`routes` in ~/lib/routes).
+/// The pages, each where the rail and the settings tabs go (`routes` in ~/lib/routes). Machines is
+/// listed on every router, as every Settings page is: on a local router its address says why it
+/// has nothing to show (MA-C1, MA-C7).
 function pageCommands(): Hit[] {
   return [
     { id: 'go:overview', label: 'Overview', keywords: 'go page', action: { type: 'go', href: routes.overview } },
     { id: 'go:sessions', label: 'Sessions', keywords: 'go page live', action: { type: 'go', href: routes.sessions } },
+    { id: 'go:machines', label: 'Machines', keywords: 'go page connect install agent', action: { type: 'go', href: routes.machines } },
     ...SECTIONS.map(
       (s): Hit => ({ id: `go:settings:${s.slug}`, label: `Settings: ${s.label}`, keywords: 'go page', action: { type: 'go', href: settingsPath(s.slug) } }),
     ),

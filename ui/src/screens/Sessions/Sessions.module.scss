@@ -215,49 +215,6 @@ $ar-tab-rule: 0.125rem;
   margin: $spacing-03 $spacing-05 0;
 }
 
-/// How a machine connects to a hosted router, under its empty list's sentence: each platform's
-/// command under its label, then what else the script installs (SE-C187). As wide as a command
-/// needs, and never wider than the list.
-.connect {
-  display: grid;
-  gap: $spacing-05;
-  inline-size: min(40rem, 100%);
-  margin-inline: auto;
-}
-
-.install {
-  display: grid;
-  gap: $spacing-03;
-  min-inline-size: 0;
-  text-align: start;
-}
-
-.installLabel {
-  @include type-style('heading-compact-01');
-  margin: 0;
-}
-
-/// A command and its copy button on one line while they fit; the command scrolls in its own box
-/// rather than widen a phone.
-.installRow {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: $spacing-03;
-  min-inline-size: 0;
-
-  > :global(.cds--snippet) {
-    flex: 1 1 14rem;
-  }
-}
-
-/// What else the script installs, said as the sentence above the commands is.
-.connectNote {
-  @include type-style('body-01');
-  color: $text-secondary;
-  margin: 0;
-}
-
 /// One machine's part of a hosted router's list, under its heading: its projects, its older fold
 /// and its shelf (SE-C219).
 .machine {

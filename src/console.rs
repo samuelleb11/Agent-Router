@@ -1,7 +1,7 @@
 //! The web console: the React and IBM Carbon app in `ui/`, built into `ui/dist` and compiled
-//! into the binary. It answers at `/` (the Overview), `/live` (Sessions) and `/settings/…`,
-//! behind the same guard as `/api` and `/v1`: `main::app` adds these routes before its one
-//! guard layer, in the local and the hosted route sets alike. The design is "Serving and
+//! into the binary. It answers at `/` (the Overview), `/live` (Sessions), `/machines` and
+//! `/settings/…`, behind the same guard as `/api` and `/v1`: `main::app` adds these routes
+//! before its one guard layer, in the local and the hosted route sets alike. The design is "Serving and
 //! security" in docs/web-console-carbon.md; the rules it keeps are the SV-C contracts in
 //! docs/web-console-contracts.md, each named by the test in `tests` that holds it.
 //!
@@ -70,12 +70,13 @@ pub const POLICY: &str = "default-src 'self'; script-src 'self'; style-src 'self
 
 /// The addresses the app shows, each answered with the document so a reload lands where it
 /// was. The client's route table (ui/src/app, ui/src/lib/routes.ts) is held to these by a test.
-const DOCUMENT: [&str; 4] = ["/", "/live", "/settings", "/settings/{*section}"];
+const DOCUMENT: [&str; 5] = ["/", "/live", "/machines", "/settings", "/settings/{*section}"];
 
 /// Top-level names the router answers itself. A file the build puts at its root under one of
 /// them is not routed, rather than shadowing the router: `v1` is Claude Code's, `api` and
 /// `_router` the API's, and the rest are the console's own addresses.
-const RESERVED: [&str; 8] = ["api", "v1", "_router", "live", "settings", "assets", "index.html", "favicon.svg"];
+const RESERVED: [&str; 9] =
+    ["api", "v1", "_router", "live", "machines", "settings", "assets", "index.html", "favicon.svg"];
 
 const HTML: &str = "text/html; charset=utf-8";
 const IMMUTABLE: &str = "public, max-age=31536000, immutable";

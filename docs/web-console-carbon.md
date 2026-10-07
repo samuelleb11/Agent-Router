@@ -188,6 +188,7 @@ the 10 px radius.
 | --- | --- | --- |
 | `/` | the dashboard | **Overview** |
 | `/live`, `/live?session=` | the live view | **Sessions** |
+| `/machines` | nothing: the installer's commands sat in the live view's empty list | **Machines**, a hosted router's only (added 2026-10-07) |
 | `/settings/<section>` | a modal over the dashboard | **Settings**, pages under one header with tabs: Accounts, Claude Code, Network, Password, Notifications, Router |
 
 The shell is Northstar's (`ui/src/app/Shell.tsx`, 234 lines), reused rather than redesigned:
@@ -196,9 +197,9 @@ The shell is Northstar's (`ui/src/app/Shell.tsx`, 234 lines), reused rather than
   `LiveBadge`, standing in for today's live/stale/unreachable chip), a search action that opens
   the ⌘K palette, and the system/light/dark switch.
 - **Navigation.**
-  - On a desk, a rail that collapses and is remembered: Overview, Sessions, then the projects,
-    each opening the Overview scoped to it, where Northstar lists its projects. Settings is
-    pinned at the foot.
+  - On a desk, a rail that collapses and is remembered: Overview, Sessions, on a hosted router
+    Machines, then the projects, each opening the Overview scoped to it, where Northstar lists
+    its projects. Settings is pinned at the foot.
   - On a phone the same links sit in a drawer behind the hamburger, closed by the overlay,
     Escape or arriving.
 - **The palette.** A passive modal near the top on a desk, and a full-height sheet under the
@@ -436,7 +437,17 @@ From Carbon 1.116's source and Northstar's history, before writing a line:
   state in the URL so Back closes it.
 - **Notices.** `InlineNotification` next to whatever they concern, on a timer of our own.
 
-**Responsive rules** for all three: desktop-first and the same product on a phone. No
+**Machines**
+
+- **Connect a machine.** Always first: each platform's installer command in a `CodeSnippet`
+  with the console's own `CopyButton` beside it (`components/InstallCommands.tsx`, the one
+  place the commands are drawn; a hosted router's empty session list links here).
+- **The machines.** One `ContainedList`, online first, each item its status dot, label,
+  platform, how long online or offline, and whether it runs the router's build, with how
+  many are online over the list. Never a DataTable.
+- **A local router.** One sentence, and nothing to run.
+
+**Responsive rules** for all four: desktop-first and the same product on a phone. No
 horizontal scroll at 360 px, so transcripts, tool output and paths wrap anywhere. No fact
 reachable only by hover. Fields at 16 px and targets at 48 px on coarse pointers (Northstar's
 rules). The live view in two panes at 1,056 px and wider (Decision H).

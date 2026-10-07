@@ -6,7 +6,7 @@ import { act, configure, fireEvent, render, screen, waitFor, within } from '@tes
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProjectRow } from '~/data/router';
 import { LiveBadge } from '~/components/LiveBadge';
-import { json, refusal, renderScreen, stubFetch, stubNarrow, unreachable, type Answers } from '~/test-utils';
+import { flush, json, refusal, renderScreen, stubFetch, stubNarrow, unreachable, type Answers } from '~/test-utils';
 import { LIVE_WORD, UNREACHABLE_AFTER, lastGood, sentence, useStreamReport, type LiveMode } from './live';
 import { Shell } from './Shell';
 
@@ -335,6 +335,49 @@ describe('Shell — the rail', () => {
     await projectsRead();
     expect(within(rail()).getByRole('link', { name: 'agent-router' })).toHaveAttribute('aria-current', 'page');
     expect(within(rail()).getByRole('link', { name: 'Overview' })).not.toHaveAttribute('aria-current');
+  });
+
+  /// A local router takes no machines, so the rail offers the screen only where there are some to
+  /// connect, and not before the router has said which kind it is.
+  it('MA-C1: on a hosted router lists Machines right after Sessions, at both widths, marked on its screen; a local router, and one that has not said which kind it is, list no Machines', async () => {
+    const withMachines = [RAIL[0], RAIL[1], ['Machines', '/machines'], ...RAIL.slice(2)];
+    answer({ '/api/auth': () => json({ mode: 'server' }) });
+    const hosted = show('/machines');
+    const machines = await within(rail()).findByRole('link', { name: 'Machines' });
+    await projectsRead();
+    expect(railLinks()).toEqual(withMachines);
+    expect(machines).toHaveAttribute('aria-current', 'page');
+    expect(within(rail()).getByRole('link', { name: 'Sessions' })).not.toHaveAttribute('aria-current');
+    hosted.unmount();
+
+    stubNarrow();
+    const hand = show();
+    fireEvent.click(await screen.findByRole('button', { name: 'Open the menu' }));
+    await within(rail()).findByRole('link', { name: 'Machines' });
+    await projectsRead();
+    expect(railLinks()).toEqual(withMachines);
+    hand.unmount();
+    vi.unstubAllGlobals();
+
+    for (const [who, auth] of [
+      ['a local router', () => json({ mode: 'local' })],
+      ['a local router that predates the field', () => json({ configured: true })],
+      ['a router whose answer failed', unreachable],
+    ] as const) {
+      const fetch = answer({ '/api/auth': auth });
+      const page = show();
+      await projectsRead();
+      await waitFor(() => expect(fetch.mock.calls.some(([url]) => String(url) === '/api/auth'), who).toBe(true));
+      await flush();
+      expect(railLinks(), who).toEqual(RAIL);
+      page.unmount();
+    }
+
+    // Not yet answered: nothing is offered that a local router would not have.
+    answer({ '/api/auth': () => new Promise<Response>(() => {}) });
+    show();
+    await projectsRead();
+    expect(railLinks()).toEqual(RAIL);
   });
 
   it('marks Settings on any of its pages, and Sessions on the live view', async () => {

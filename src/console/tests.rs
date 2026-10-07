@@ -69,9 +69,10 @@ fn fixture() -> Files {
 }
 
 /// Every address the console answers with a file or the document, in the fixture.
-const CONSOLE: [&str; 9] = [
+const CONSOLE: [&str; 10] = [
     "/",
     "/live",
+    "/machines",
     "/settings",
     "/settings/accounts",
     "/assets/index-Fx1a2B.js",
@@ -422,7 +423,7 @@ fn writes_only(table: &str) -> Vec<&str> {
 #[tokio::test]
 async fn serves_root_and_live_as_one_document_under_one_policy() {
     let lab = Lab::local("document", fixture());
-    for path in ["/", "/live", "/live?session=0f3c", "/settings", "/settings/network"] {
+    for path in ["/", "/live", "/live?session=0f3c", "/machines", "/settings", "/settings/network"] {
         let answer = lab.ask(get(path)).await;
         answer.assert_document(path);
         assert!(answer.headers.get("content-security-policy-report-only").is_none(), "{path}: enforced");

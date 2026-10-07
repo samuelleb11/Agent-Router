@@ -8,6 +8,7 @@ import { ErrorScreen, NotFound } from '~/app/ErrorScreen';
 
 const Overview = lazy(() => import('~/screens/Overview'));
 const Sessions = lazy(() => import('~/screens/Sessions'));
+const Machines = lazy(() => import('~/screens/Machines'));
 const SettingsLayout = lazy(() => import('~/screens/Settings').then((m) => ({ default: m.SettingsLayout })));
 const SettingsSection = lazy(() => import('~/screens/Settings').then((m) => ({ default: m.SettingsSection })));
 
@@ -19,8 +20,8 @@ const SettingsSection = lazy(() => import('~/screens/Settings').then((m) => ({ d
 ///
 /// The route table is the contract every screen is built to. The paths are the ones the old
 /// pages answer, because the VS Code extension, the menubar app, the iPhone and every bookmark
-/// open them: `/` for the Overview, `/live` for Sessions. The screens are lazy, so nothing
-/// loads before it is looked at.
+/// open them: `/` for the Overview, `/live` for Sessions. `/machines` is new, a hosted router's
+/// machines (MA-C1). The screens are lazy, so nothing loads before it is looked at.
 ///
 /// No `/login`: a LAN browser meets the router's password as HTTP Basic, before this page loads
 /// at all, and a loopback one is never asked.
@@ -31,6 +32,7 @@ export const routeTable: RouteObject[] = [
     children: [
       { index: true, element: <Overview />, errorElement: <ErrorScreen /> },
       { path: 'live', element: <Sessions />, errorElement: <ErrorScreen /> },
+      { path: 'machines', element: <Machines />, errorElement: <ErrorScreen /> },
       {
         path: 'settings',
         element: <SettingsLayout />,

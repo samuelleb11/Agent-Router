@@ -2,6 +2,7 @@
 // router has no OpenAPI spec to generate them from. One read per endpoint the shell uses.
 
 import { getJson } from '~/data/http';
+import type { Auth } from '~/model/settings';
 
 /// `GET /_router/health` (src/api.rs, `health`). Open to every caller, the LAN included,
 /// because the handover probe reads it before it has anything to authenticate with.
@@ -36,6 +37,11 @@ export interface ProjectRow {
 }
 
 export const readHealth = (signal?: AbortSignal) => getJson<Health>('/_router/health', { signal });
+
+/// `GET /api/auth` (src/auth.rs): what kind of router this is. The rail reads it for its `mode`
+/// alone, to offer Machines on a hosted router only (MA-C1), under the key Settings and the Overview
+/// read the whole answer by, `keys.auth`, so one read serves every reader.
+export const readAuth = (signal?: AbortSignal) => getJson<Auth>('/api/auth', { signal });
 
 /// Every project, over all time. The rail is how a project is picked, so it is never narrowed
 /// by the scope it sets.
