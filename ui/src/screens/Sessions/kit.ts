@@ -3,7 +3,7 @@
 // at an address. The router's clock is set seven minutes behind the spec's, so a duration measured
 // on the wrong clock shows (SE-C212).
 import { Fragment, createElement, type ReactNode } from 'react';
-import { act, configure } from '@testing-library/react';
+import { act } from '@testing-library/react';
 import { vi } from 'vitest';
 import { renderScreen } from '~/test-utils';
 import type { SessionRow } from '~/model/session';
@@ -14,7 +14,6 @@ import Sessions from './index';
 /// longer than the defaults allow: a timeout here is a slow machine, never a pass. So the waits are
 /// long, and a test's own limit longer still, so that a slow one fails by its own assertion rather
 /// than leaving its work running into the next test.
-configure({ asyncUtilTimeout: 10_000 });
 vi.setConfig({ testTimeout: 60_000 });
 
 export const NOW = Date.UTC(2026, 9, 5, 12, 0, 0);

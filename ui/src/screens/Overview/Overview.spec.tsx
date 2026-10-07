@@ -3,7 +3,7 @@
 // router — one snapshot per scope, every five seconds — against a router faked at `fetch`.
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { act, configure, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useNavigate } from 'react-router';
 import { keys } from '~/app/query';
@@ -37,7 +37,6 @@ import {
 /// machine is not mistaken for a broken page. What "at once" means is asserted on the order of events,
 /// never on how long they took.
 vi.setConfig({ testTimeout: 30_000 });
-configure({ asyncUtilTimeout: 10_000 });
 
 const chart = vi.hoisted(() => ({ StackedBarChart: vi.fn() }));
 vi.mock('@carbon/charts-react', () => ({

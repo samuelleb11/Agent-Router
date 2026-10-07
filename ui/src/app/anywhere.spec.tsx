@@ -2,14 +2,13 @@
 // whole app, its real screens on the router's answers, in a browser whose storage refuses every read
 // and write, as a private window or a frame with storage off does. What a sandboxed frame does is shown
 // in a browser by scripts/shell-checks.mjs, which opens the console in one.
-import { act, configure, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ok, router } from '~/screens/Overview/fixtures';
 import { LOCAL as SETTINGS_LOCAL, ACCOUNTS as SETTINGS_ACCOUNTS } from '~/screens/Settings/testing';
 import { FakeEventSource } from '~/screens/Sessions/fakes';
 
 vi.setConfig({ testTimeout: 60_000 });
-configure({ asyncUtilTimeout: 10_000 });
 
 // The activity chart's library is drawn by a browser, never by jsdom.
 vi.mock('@carbon/charts-react', () => ({ StackedBarChart: () => <svg data-testid="chart" /> }));

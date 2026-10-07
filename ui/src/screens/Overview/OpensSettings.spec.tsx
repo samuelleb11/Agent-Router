@@ -2,7 +2,7 @@
 // "Pages and tabs" and "Hosted router"): once per load, only from the Overview as the load opened it,
 // when nothing can sign or a credential that could sign does not work. Each case is a load of its own:
 // the modules are loaded afresh, since "once per load" is module state.
-import { act, configure, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Account } from '~/model/settings';
 import { renderScreen } from '~/test-utils';
@@ -12,7 +12,6 @@ import { held, HOSTED, LOCAL, ok, router } from './fixtures';
 /// machine is not mistaken for a broken page. What "at once" means is asserted on the order of events,
 /// never on how long they took.
 vi.setConfig({ testTimeout: 30_000 });
-configure({ asyncUtilTimeout: 10_000 });
 
 vi.mock('@carbon/charts-react', () => ({ StackedBarChart: () => <svg data-testid="chart" /> }));
 

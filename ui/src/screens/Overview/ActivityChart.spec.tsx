@@ -1,7 +1,7 @@
 // New for agent-router: the activity chart as Carbon Charts is handed it (docs/web-console-contracts.md,
 // "Activity", "Refresh" and "Learned from Northstar's console"). The chart is a spy: @carbon/charts
 // draws from SVG measurements jsdom does not have, and what matters here is what it is handed, when.
-import { act, configure, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Timeline } from '~/data/overview';
 import { ActivityChart } from './ActivityChart';
@@ -11,7 +11,6 @@ import { buckets } from './timeline';
 /// machine is not mistaken for a broken page. What "at once" means is asserted on the order of events,
 /// never on how long they took.
 vi.setConfig({ testTimeout: 30_000 });
-configure({ asyncUtilTimeout: 10_000 });
 
 const chart = vi.hoisted(() => ({ StackedBarChart: vi.fn() }));
 vi.mock('@carbon/charts-react', () => ({

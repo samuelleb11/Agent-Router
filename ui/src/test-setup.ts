@@ -1,10 +1,16 @@
 // Copied from Northstar ui/src/test-setup.ts at e9c1589.
-// Changed: nothing.
+// Changed: one wait limit for every spec, 15 s (`configure`, below).
 import '@testing-library/jest-dom/vitest';
-import { cleanup } from '@testing-library/react';
+import { cleanup, configure } from '@testing-library/react';
 import { afterEach, vi } from 'vitest';
 
 afterEach(cleanup);
+
+/// Every wait for a screen (`waitFor`, `findBy*`) may take 15 s, not Testing Library's 1 s. The CI
+/// runner draws screens several times slower than a Mac, and slower still when its cluster is busy:
+/// specs that waited 1 s failed there and passed here (AGEN-0041). A timeout is a slow machine, never
+/// a pass, and no spec relies on a wait running out. Each test's own limit is in vite.config.ts.
+configure({ asyncUtilTimeout: 15_000 });
 
 /// A Storage in memory, installed over BOTH `globalThis.localStorage` and
 /// `window.localStorage`.

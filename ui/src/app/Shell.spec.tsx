@@ -2,7 +2,7 @@
 // Changed: the router's shell has no sign-in and no log-out to test, so those cases are gone; the topbar, the rail and the phone drawer are tested instead, each case under the Shell contract it holds (docs/web-console-contracts.md, "Shell"). The narrow-width margin case is Northstar's, kept with its stylesheet reader.
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { act, configure, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProjectRow } from '~/data/router';
 import { LiveBadge } from '~/components/LiveBadge';
@@ -13,7 +13,6 @@ import { Shell } from './Shell';
 /// Waits and limits generous enough for a machine busy with other work: a timeout here is a slow
 /// machine, never a pass.
 vi.setConfig({ testTimeout: 30_000 });
-configure({ asyncUtilTimeout: 10_000 });
 
 const HEALTH = { ok: true, pid: 4242, version: '0.9.0', build: 'f00dfeed' };
 

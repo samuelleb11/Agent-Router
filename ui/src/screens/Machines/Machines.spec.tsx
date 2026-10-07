@@ -3,16 +3,12 @@
 // machine, always first, and every machine the router has seen, compared with the router's own
 // build; on a local router the sentence that says why there is nothing here. The clock is pinned, so
 // "online for 3h" is a fact the spec can state.
-import { act, configure, screen, waitFor, within } from '@testing-library/react';
+import { act, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AGENTLESS, CONNECT_HOW, ON_THIS_MACHINE, OTHER_BUILD, SAME_BUILD, SEEN, WITH_VS_CODE, type MachineRow } from '~/model/machine';
 import { HOSTED, LOCAL, ok, stubRouter, type Answer } from '~/screens/Settings/testing';
 import { json, press, refusal, renderScreen, unreachable } from '~/test-utils';
 import Machines from './index';
-
-/// Waits generous enough for a machine busy with other work: a timeout here is a slow machine,
-/// never a pass.
-configure({ asyncUtilTimeout: 10_000 });
 
 const NOW = Date.UTC(2026, 9, 7, 12, 0, 0);
 const HOUR = 3600e3;

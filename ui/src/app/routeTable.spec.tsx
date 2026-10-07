@@ -3,7 +3,7 @@
 // the shell (docs/web-console-contracts.md, "Shell").
 import { Theme } from '@carbon/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { configure, fireEvent, render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { RouterProvider, createMemoryRouter } from 'react-router';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { json, stubFetch, type Answers } from '~/test-utils';
@@ -12,7 +12,6 @@ import { routeTable } from './routeTable';
 /// Waits and limits generous enough for a machine busy with other work: a timeout here is a slow
 /// machine, never a pass.
 vi.setConfig({ testTimeout: 30_000 });
-configure({ asyncUtilTimeout: 10_000 });
 
 const crash = vi.hoisted(() => ({ overview: false }));
 

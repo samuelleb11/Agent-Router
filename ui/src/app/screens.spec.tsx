@@ -5,7 +5,7 @@
 // view — held on the screens themselves, against the router faked at `fetch`.
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
-import { act, configure, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useNavigate } from 'react-router';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -25,7 +25,6 @@ import { A, json as live, renderSessions, streamOf, stubRouter as sessionsRouter
 /// Whole screens are drawn in jsdom beside every other spec in the run: generous limits, so a loaded
 /// machine is not mistaken for a broken page.
 vi.setConfig({ testTimeout: 60_000 });
-configure({ asyncUtilTimeout: 10_000 });
 
 // The activity chart's library is drawn by a browser, never by jsdom.
 vi.mock('@carbon/charts-react', () => ({ StackedBarChart: () => <svg data-testid="chart" /> }));
