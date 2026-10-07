@@ -52,14 +52,18 @@ later and less clearly.
 {{- fail "auth.password is shorter than 8 characters, and the router refuses to start with it" }}
 {{- end }}
 {{- /*
-  On SIGTERM the router waits up to drainSeconds for open requests, then gives its capture
-  5 s more. The kubelet kills the pod when the grace period ends, and whatever capture has
-  not written by then is lost.
+  On SIGTERM the router keeps accepting for stopDelaySeconds, waits up to drainSeconds for
+  open requests, then gives its capture 5 s more. The kubelet kills the pod when the grace
+  period ends, and whatever capture has not written by then is lost.
 */}}
+{{- $stop := int64 (.Values.server.stopDelaySeconds | default 0) }}
 {{- $drain := int64 .Values.server.drainSeconds }}
 {{- $grace := int64 .Values.terminationGracePeriodSeconds }}
-{{- if ge (add $drain 5) $grace }}
-{{- fail (printf "server.drainSeconds is %d, and the router then gives its capture 5 s more: all of it must end before terminationGracePeriodSeconds (%d), when the kubelet kills the pod. Lower server.drainSeconds or raise terminationGracePeriodSeconds" $drain $grace) }}
+{{- if ge (add $stop $drain 5) $grace }}
+{{- fail (printf "server.stopDelaySeconds (%d) and server.drainSeconds (%d), and then 5 s for the router's capture: all of it must end before terminationGracePeriodSeconds (%d), when the kubelet kills the pod. Lower one of them or raise terminationGracePeriodSeconds" $stop $drain $grace) }}
+{{- end }}
+{{- if not (has .Values.rollout.strategy (list "RollingUpdate" "Recreate")) }}
+{{- fail (printf "rollout.strategy is %q: it is RollingUpdate or Recreate" .Values.rollout.strategy) }}
 {{- end }}
 {{- end }}
 

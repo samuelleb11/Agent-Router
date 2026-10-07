@@ -1,9 +1,11 @@
 # Agent Router's Helm chart: the router as a hosted server (docs/hosting-on-kubernetes.md).
 #
-# ONE router, always. The process holds state beside its store -- the cached signing
-# credential, the quota cache, what the notifier has already pushed -- and two pods must
-# never write one SQLite store. That is why there is no replicaCount to raise, and why a
-# rollout stops the old pod before starting the new one (a Recreate strategy).
+# ONE router. The process holds state beside its store -- the cached signing credential,
+# the quota cache, what the notifier has already pushed -- so there is no replicaCount to
+# raise. A rollout overlaps two for as long as the old one drains, as the router's own
+# handover does on a laptop: the new pod serves first, on the old pod's node (SQLite's
+# shared memory is only shared on one host), and the old one then lets its agents go,
+# stops taking requests and finishes the ones it holds. See `rollout` below.
 
 image:
   # CI sets this to the project's registry image.
@@ -31,10 +33,15 @@ server:
   # stays on.
   allowHosts: []
   # How long a stop waits for open requests -- a generation still streaming is one -- before
-  # the router gives its capture 5 s more and exits. Both must end inside the pod's
-  # terminationGracePeriodSeconds, when the kubelet kills it, so the chart refuses a value
-  # that would not fit.
-  drainSeconds: 20
+  # the router gives its capture 5 s more and exits. 600 s is Claude Code's own limit on a
+  # request, so no generation is cut by a rollout; the new pod serves meanwhile. All of it
+  # must end inside the pod's terminationGracePeriodSeconds, when the kubelet kills it, so
+  # the chart refuses a value that would not fit.
+  drainSeconds: 600
+  # How long a stop keeps taking new requests before that, while the ingress controller
+  # learns the pod is going: a pod that stops accepting at once is still sent requests for
+  # a moment, and they fail. The agents are let go at once all the same.
+  stopDelaySeconds: 10
   # Extra arguments for `agent-router serve`.
   extraArgs: []
   # Extra environment. For example, more detail in the logs:
@@ -42,10 +49,18 @@ server:
   #     value: agent_router=debug
   extraEnv: []
 
-# Seconds between the kubelet's SIGTERM and its SIGKILL. Raise it together with
-# server.drainSeconds to let longer generations finish across a rollout; a Recreate rollout
-# serves nothing while the old pod drains, so a longer drain is also a longer gap.
-terminationGracePeriodSeconds: 30
+# Seconds between the kubelet's SIGTERM and its SIGKILL: the stop delay, the drain and 5 s
+# of capture, with room to spare. Raise it together with server.drainSeconds.
+terminationGracePeriodSeconds: 630
+
+rollout:
+  # RollingUpdate: the new pod serves before the old one is stopped, so an upgrade has no
+  # gap. It must be scheduled where the old one runs -- the chart requires that, by pod
+  # affinity -- and that node must have room for both while the old one drains.
+  # Recreate: the old pod stops before the new one starts, with a gap as long as its drain
+  # and the new one's start. For a release whose store migration must not run beside the
+  # router before it, or a node with no room for two.
+  strategy: RollingUpdate
 
 # The password every caller presents: the dashboard and the phones ask for it, and Claude
 # Code sends it as ANTHROPIC_AUTH_TOKEN. The router sets it from this Secret at every start,
@@ -132,4 +147,5 @@ resources: {}
 
 nodeSelector: {}
 tolerations: []
+# A RollingUpdate rollout adds a required pod affinity to its own pods on the same node.
 affinity: {}

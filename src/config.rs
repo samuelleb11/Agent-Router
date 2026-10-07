@@ -49,6 +49,9 @@ pub struct Config {
     pub agents_dir: Option<PathBuf>,
     /// Server mode: how long SIGTERM waits for open requests.
     pub drain: Duration,
+    /// Server mode: how long SIGTERM keeps accepting before that, while whatever balances
+    /// the load stops sending this router new connections.
+    pub stop_delay: Duration,
 }
 
 /// What `serve` was given on the command line.
@@ -64,6 +67,7 @@ pub struct ServeArgs {
     pub push_keys_dir: Option<PathBuf>,
     pub agents_dir: Option<PathBuf>,
     pub drain_seconds: Option<u64>,
+    pub stop_delay_seconds: Option<u64>,
 }
 
 impl ServeArgs {
@@ -109,6 +113,11 @@ impl ServeArgs {
                     out.drain_seconds =
                         Some(v.trim().parse().map_err(|_| format!("--drain-seconds wants a number, got {v:?}"))?);
                 }
+                "--stop-delay-seconds" => {
+                    let v = value()?;
+                    out.stop_delay_seconds =
+                        Some(v.trim().parse().map_err(|_| format!("--stop-delay-seconds wants a number, got {v:?}"))?);
+                }
                 other => return Err(format!("unknown option {other:?}")),
             }
         }
@@ -132,6 +141,7 @@ impl Config {
                 (args.push_keys_dir.is_some(), "--push-keys-dir"),
                 (args.agents_dir.is_some(), "--agents-dir"),
                 (args.drain_seconds.is_some(), "--drain-seconds"),
+                (args.stop_delay_seconds.is_some(), "--stop-delay-seconds"),
             ] {
                 // A name the router answers to is only safe where every caller, loopback
                 // included, must present the password — which is server mode. Locally,
@@ -228,6 +238,7 @@ impl Config {
                 None => None,
             },
             drain: args.drain_seconds.map(Duration::from_secs).unwrap_or(DEFAULT_DRAIN),
+            stop_delay: args.stop_delay_seconds.map(Duration::from_secs).unwrap_or(Duration::ZERO),
         };
 
         // The modules that write beside the store, or behave differently on a server,
@@ -373,6 +384,8 @@ mod tests {
             "--allow-host=other.example.com",
             "--public-url=https://router.example.com/",
             "--drain-seconds=15",
+            "--stop-delay-seconds",
+            "10",
             "--data-dir",
             "/data",
         ]))
@@ -383,6 +396,7 @@ mod tests {
         assert_eq!(a.allow_hosts, vec!["Router.Example.com.", "other.example.com"]);
         assert_eq!(a.public_url.as_deref(), Some("https://router.example.com/"));
         assert_eq!(a.drain_seconds, Some(15));
+        assert_eq!(a.stop_delay_seconds, Some(10));
         assert_eq!(a.data_dir, Some(PathBuf::from("/data")));
     }
 

@@ -6,10 +6,16 @@ metadata:
   labels:
     {{- include "agent-router.labels" . | nindent 4 }}
 spec:
-  # One, and never two at once: see the note at the top of values.yaml.
+  # One, and two only while a rollout hands over: see the note at the top of values.yaml.
   replicas: 1
   strategy:
-    type: Recreate
+    type: {{ .Values.rollout.strategy }}
+    {{- if eq .Values.rollout.strategy "RollingUpdate" }}
+    # The new pod first, and the old one stopped only once the new one is ready.
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+    {{- end }}
   selector:
     matchLabels:
       {{- include "agent-router.selectorLabels" . | nindent 6 }}
@@ -33,9 +39,10 @@ spec:
       enableServiceLinks: false
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
-      # SIGTERM stops new requests and lets open ones finish (server.drainSeconds), then
-      # the capture writes what it holds. Give it the time to do that before the kubelet
-      # escalates; the chart refuses a drain that would not fit.
+      # SIGTERM lets the agents go, keeps taking requests for server.stopDelaySeconds, then
+      # stops new ones and lets open ones finish (server.drainSeconds), and then the capture
+      # writes what it holds. Give it the time to do that before the kubelet escalates; the
+      # chart refuses a drain that would not fit.
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       containers:
         - name: agent-router
@@ -53,6 +60,7 @@ spec:
             # HOME is never consulted for them.
             - --data-dir=/data
             - --drain-seconds={{ int64 .Values.server.drainSeconds }}
+            - --stop-delay-seconds={{ int64 (.Values.server.stopDelaySeconds | default 0) }}
             {{- range (include "agent-router.allowHosts" . | fromJsonArray) }}
             - --allow-host={{ . }}
             {{- end }}
@@ -133,7 +141,22 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.affinity }}
+      {{- /*
+        A rolling update runs the old pod and the new one on one store for as long as the
+        old one drains. Both must be on one node: the volume is ReadWriteOnce, and SQLite's
+        shared memory is only shared between processes on one host. Required, so the new
+        pod waits for room there rather than starting anywhere; the first pod, with none
+        to join, is placed as usual.
+      */}}
+      {{- $affinity := deepCopy (.Values.affinity | default dict) }}
+      {{- if eq .Values.rollout.strategy "RollingUpdate" }}
+      {{- $term := dict "topologyKey" "kubernetes.io/hostname" "labelSelector" (dict "matchLabels" (include "agent-router.selectorLabels" . | fromYaml)) }}
+      {{- $pod := get $affinity "podAffinity" | default dict }}
+      {{- $required := get $pod "requiredDuringSchedulingIgnoredDuringExecution" | default list }}
+      {{- $_ := set $pod "requiredDuringSchedulingIgnoredDuringExecution" (append $required $term) }}
+      {{- $_ := set $affinity "podAffinity" $pod }}
+      {{- end }}
+      {{- with $affinity }}
       affinity:
         {{- toYaml . | nindent 8 }}
       {{- end }}

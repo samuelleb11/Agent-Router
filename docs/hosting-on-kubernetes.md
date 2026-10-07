@@ -106,6 +106,10 @@ agent-router serve [OPTIONS]        the same, with options
   --push-keys-dir <dir>    server: read-only directory holding AuthKey_<id>.p8 and/or a
                            Firebase service-account JSON (a mounted Secret)
   --drain-seconds <n>      server: how long SIGTERM waits for open requests (default 20)
+  --stop-delay-seconds <n> server: how long SIGTERM keeps accepting first, while the
+                           load balancer lets go of the pod (default 0)
+  --agents-dir <dir>       server: the agent files the installer hands out (default
+                           <binary>/../share/agent-router/agents)
 ```
 
 - **Precedence.** Flags override env, and env overrides stored settings.
@@ -186,8 +190,11 @@ and the live Mac router are unaffected.
 
 **Shutdown.**
 - The SIGTERM handler is installed first.
-- On SIGTERM the router stops accepting, waits up to `--drain-seconds` for open requests,
-  then gives capture 5 s. That fits inside the pod's 30 s grace period.
+- On SIGTERM the router lets its agents go at once and turns new ones away with 503, so
+  they reconnect to the pod replacing it. It keeps accepting other requests for
+  `--stop-delay-seconds`, while the ingress controller learns the pod is going, then stops
+  accepting, waits up to `--drain-seconds` for open requests, and gives capture 5 s. All of
+  it fits inside the pod's grace period (the chart refuses values that would not).
 
 ### How each changed route answers in server mode
 
@@ -287,8 +294,23 @@ A Node stage for a future console slots in front of the build stage.
 The chart is modelled on Northstar's.
 
 **Shape.**
-- One replica, with a `Recreate` rollout. The process holds the credential cache, the
-  quota cache and the notifier's state, and two pods must never write one SQLite store.
+- One replica, and a rolling update with no gap (`rollout.strategy`, default
+  `RollingUpdate`, `maxSurge: 1`, `maxUnavailable: 0`). The process holds the credential
+  cache, the quota cache and the notifier's state, so there is never a second replica; two
+  routers share the store only while the old one drains, as the router's own handover does
+  on a laptop:
+  - the new pod is placed on the old pod's node by a required pod affinity: the volume is
+    `ReadWriteOnce`, and SQLite's shared memory (WAL) is only shared on one host;
+  - it serves as soon as it is ready, and only then is the old one stopped (see Shutdown);
+  - the store housekeeping that must not run beside another router (moving the bodies)
+    waits for `router.lock` in the data directory, which a hosted router takes for its
+    life, so the new pod runs it once the old one has exited;
+  - the drain is 600 s, Claude Code's own limit on a request, so no generation is cut;
+    the new pod serves meanwhile, so a long drain costs nothing.
+
+  `rollout.strategy: Recreate` stops the old pod first, with a gap. Use it for a release
+  whose store migration must not run beside the build before it, or when the node has no
+  room for two pods.
 - A `ReadWriteOnce` PVC for `/data`, kept on uninstall, default 20 Gi. Captured response
   bodies grow by about 100 MB a day. The PVC must be block storage, never NFS.
 - An auth Secret, generated on first install, reused through `lookup`, and kept on
@@ -311,9 +333,9 @@ the same path through the Service IP.
   Service in the namespace, and a Service named `agent-router` produces
   `AGENT_ROUTER_PORT=tcp://<ip>:8787`, the router's own port variable. `--port` outranks
   it, so this is a second guard.
-- The chart refuses a `server.drainSeconds` that does not leave 5 s before
-  `terminationGracePeriodSeconds`. The router writes its capture queue after the drain,
-  and that must finish before the kubelet kills the pod.
+- The chart refuses a `server.stopDelaySeconds` plus `server.drainSeconds` that does not
+  leave 5 s before `terminationGracePeriodSeconds`. The router writes its capture queue
+  after the drain, and that must finish before the kubelet kills the pod.
 
 **Ingress.** Off by default. TLS is on when it is enabled. The ingress-nginx annotations
 the proxy needs are on by default, and other controllers ignore them:

@@ -67,6 +67,7 @@ impl Lab {
             push_keys_dir: None,
             agents_dir: None,
             drain: Duration::from_secs(1),
+            stop_delay: Duration::ZERO,
         };
         let (capture, _) = tokio::sync::mpsc::channel(1);
         // The other half of the switch is dropped, never supervised: a refusal stops before
@@ -381,7 +382,7 @@ const UNLISTED: &str = "live body refusal elsewhere";
 /// Connect a machine to this hosted router, as `agent run` connects one, and wait until the
 /// router counts it online. It answers the live writes with `agent::routes`' handlers, and
 /// lists `LISTED` alone: a machine's real list reads its transcripts and its shelf.
-async fn connect_machine(hosted: &Lab) {
+async fn connect_machine(hosted: &Lab) -> SocketAddr {
     use axum::routing::{get, post};
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
@@ -422,6 +423,36 @@ async fn connect_machine(hosted: &Lab) {
         }
     };
     tokio::time::timeout(Duration::from_secs(10), online).await.expect("the machine comes online");
+    addr
+}
+
+/// A rolling update stops this router once its replacement serves: its agents are let go at
+/// once, to reconnect through the load balancer to the replacement, and an agent that tries
+/// this router again is turned away with 503, which it retries like any refusal.
+#[tokio::test]
+async fn a_stopping_router_lets_its_agents_go_and_takes_no_more() {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+    let hosted = Lab::hosted("stopping").await;
+    let addr = connect_machine(&hosted).await;
+    hosted.state.machines.stop();
+    let gone = async {
+        while hosted.state.machines.seen().iter().any(|m| m.online) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(5), gone).await.expect("the machine is let go");
+
+    let mut request = format!("ws://{addr}{}", crate::tunnel::PATH).into_client_request().unwrap();
+    let password = hosted.password.expect("a hosted router");
+    request.headers_mut().insert(header::AUTHORIZATION, format!("Bearer {password}").parse().unwrap());
+    let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+    match tokio_tungstenite::client_async(request, tcp).await {
+        Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE)
+        }
+        other => panic!("a stopping router took an agent: {:?}", other.map(|(_, r)| r.status())),
+    }
 }
 
 /// A live handler's own refusal: `{ok: false, reason}`, with its status.

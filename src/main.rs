@@ -81,6 +81,9 @@ SERVE OPTIONS:
   --agents-dir <dir>     the agent's files its installer hands out, one directory per
                          platform (default <binary>/../share/agent-router/agents)
   --drain-seconds <n>    how long a stop waits for open requests (default 20)
+  --stop-delay-seconds <n>
+                         how long a stop keeps accepting first, while the load
+                         balancer lets go of this router (default 0)
 
 INSTALL OPTIONS:
   --project <dir>   configure one project instead of every project
@@ -431,7 +434,9 @@ async fn serve_here(args: config::ServeArgs) -> anyhow::Result<()> {
             departing = Some(pid);
         }
     }
-    spawn_store_housekeeping(db_path.clone(), departing);
+    spawn_store_housekeeping(db_path.clone(), move || {
+        departing.is_none_or(|pid| lifecycle::has_exited_within(pid, Duration::from_secs(60)))
+    });
 
     // The wider listener, when there is to be one, serves this same app from a second
     // socket. Started last, once loopback is about to be accepted on and the incumbent
@@ -536,10 +541,12 @@ fn machine_routes(router: Router<Arc<proxy::AppState>>) -> Router<Arc<proxy::App
         .route("/api/live/aside", post(live::aside))
 }
 
-/// A hosted router: one listener on its bind address, no handover (Kubernetes replaces
-/// the pod instead), and a stop that waits for open requests only so long. The kubelet
-/// sends SIGKILL when its grace period runs out, and capture still needs a moment after
-/// the last connection.
+/// A hosted router: one listener on its bind address, and the handover a rolling update
+/// makes of it. The next pod serves before this one is told to stop; then this one lets
+/// its agents go at once (`Machines::stop`), keeps accepting for the stop delay while the
+/// load balancer lets go of it, and drains open requests only so long. The kubelet sends
+/// SIGKILL when its grace period runs out, and capture still needs a moment after the
+/// last connection.
 async fn serve_hosted(
     app: Router,
     state: Arc<proxy::AppState>,
@@ -550,6 +557,7 @@ async fn serve_hosted(
 
     let addr = state.config.bind;
     let drain = state.config.drain;
+    let stop_delay = state.config.stop_delay;
     // Every caller is on another machine — behind the ingress, or a probe by pod IP —
     // so the peer and Host checks work from names and the password from the first
     // request, not from a switch thrown later.
@@ -557,22 +565,37 @@ async fn serve_hosted(
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .map_err(|e| anyhow::anyhow!("binding {addr}: {e}"))?;
-    spawn_store_housekeeping(state.config.db_path.clone(), None);
+    // The previous pod may still be draining on this same store: what must not run beside
+    // it waits for the store's lock, which that pod holds until it exits.
+    let data_dir = config::data_dir()?;
+    spawn_store_housekeeping(state.config.db_path.clone(), move || {
+        lifecycle::hold_store(&data_dir);
+        true
+    });
 
     let mut told = stopping.clone();
+    let machines = state.machines.clone();
     let serving = axum::serve(
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
     .with_graceful_shutdown(async move {
         let why = told.wait().await;
+        machines.stop();
+        if !stop_delay.is_zero() {
+            tracing::info!(
+                "{why} received; the agents are let go, and new requests are still taken for {}s",
+                stop_delay.as_secs()
+            );
+            tokio::time::sleep(stop_delay).await;
+        }
         tracing::info!("{why} received; draining in-flight requests for at most {}s", drain.as_secs());
     })
     .into_future();
     let mut limit = stopping;
     let limit = async move {
         limit.wait().await;
-        tokio::time::sleep(drain).await;
+        tokio::time::sleep(stop_delay + drain).await;
     };
     tokio::select! {
         served = serving => served?,
@@ -607,15 +630,14 @@ fn log_hosted_start(config: &config::Config) {
 
 /// Captured bodies moved out of the main store into their own file. The move waits for
 /// the outgoing router to finish draining, because until it exits it is still writing
-/// the very table this drops — see `db::migrate_bodies_if_needed`. Off the startup path
-/// either way: it is housekeeping, and the port is already being served.
-fn spawn_store_housekeeping(db_path: std::path::PathBuf, departing: Option<i32>) {
+/// the very table this drops — see `db::migrate_bodies_if_needed`. `alone` is that wait:
+/// false when the outgoing router outlasted it. Off the startup path either way: it is
+/// housekeeping, and the port is already being served.
+fn spawn_store_housekeeping(db_path: std::path::PathBuf, alone: impl FnOnce() -> bool + Send + 'static) {
     tokio::task::spawn_blocking(move || {
-        if let Some(pid) = departing {
-            if !lifecycle::has_exited_within(pid, Duration::from_secs(60)) {
-                tracing::warn!(pid, "previous router still running; leaving the bodies where they are");
-                return;
-            }
+        if !alone() {
+            tracing::warn!("previous router still running; leaving the bodies where they are");
+            return;
         }
         match db::migrate_bodies_if_needed(&db_path) {
             Ok(()) => {}

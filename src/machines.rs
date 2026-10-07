@@ -11,7 +11,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -23,7 +23,7 @@ use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
 use serde_json::{json, Value};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, Notify};
 
 use crate::tunnel::{self, Head, Hello};
 
@@ -259,6 +259,9 @@ pub struct Machines {
     sessions: Mutex<HashMap<String, String>>,
     /// Machines the notifier has taken evidence from since they connected.
     heard: Mutex<HashSet<String>>,
+    /// The router is stopping: its agents are let go, and none is taken on (`stop`).
+    stopping: AtomicBool,
+    stopped: Notify,
 }
 
 fn locked<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -266,8 +269,39 @@ fn locked<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 impl Machines {
+    /// Let every agent go, and take no more. A rolling update stops this router once its
+    /// replacement is serving, and an agent can only be reached through the router it
+    /// dialled: closed now, each one reconnects within a second or two, and the load
+    /// balancer sends it to the replacement. Held until the drain ends, they would leave
+    /// the replacement with no machines for as long.
+    pub fn stop(&self) {
+        self.stopping.store(true, Ordering::SeqCst);
+        self.stopped.notify_waiters();
+    }
+
+    pub fn is_stopping(&self) -> bool {
+        self.stopping.load(Ordering::SeqCst)
+    }
+
+    /// Resolves once `stop` has been called, whenever that was.
+    async fn until_stopped(&self) {
+        loop {
+            let notified = self.stopped.notified();
+            tokio::pin!(notified);
+            // Registered before the flag is read, so a `stop` between the two still wakes it.
+            notified.as_mut().enable();
+            if self.is_stopping() {
+                return;
+            }
+            notified.await;
+        }
+    }
+
     /// One agent's connection, for as long as it lasts.
     pub async fn serve(self: Arc<Self>, socket: WebSocket) {
+        if self.is_stopping() {
+            return;
+        }
         let (mut sink, mut stream) = socket.split();
         let hello = match tokio::time::timeout(Duration::from_secs(10), stream.next()).await {
             Ok(Some(Ok(Message::Binary(data)))) => match tunnel::decode(&data) {
@@ -310,7 +344,11 @@ impl Machines {
             let _ = sink.close().await;
         });
         loop {
-            match tokio::time::timeout(IDLE_LIMIT, stream.next()).await {
+            let next = tokio::select! {
+                next = tokio::time::timeout(IDLE_LIMIT, stream.next()) => next,
+                () = self.until_stopped() => break,
+            };
+            match next {
                 Ok(Some(Ok(Message::Binary(data)))) => machine.dispatch(&data),
                 Ok(Some(Ok(Message::Close(_)))) | Ok(Some(Err(_))) | Ok(None) | Err(_) => break,
                 Ok(Some(Ok(_))) => {}
@@ -548,8 +586,16 @@ pub mod api {
     /// that holds one is a little more.
     const MAX_BODY: usize = 2 * 1024 * 1024;
 
-    /// `GET /_router/agent`: an agent connecting.
+    /// `GET /_router/agent`: an agent connecting. A stopping router turns it away, and the
+    /// agent tries again, through the load balancer, to the router replacing it.
     pub async fn connect(State(state): State<Arc<AppState>>, ws: WebSocketUpgrade) -> Response {
+        if state.machines.is_stopping() {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "agent-router: this router is stopping; the one replacing it takes the machines\n",
+            )
+                .into_response();
+        }
         let machines = state.machines.clone();
         ws.max_message_size(crate::tunnel::MAX_MESSAGE)
             .max_frame_size(crate::tunnel::MAX_MESSAGE)

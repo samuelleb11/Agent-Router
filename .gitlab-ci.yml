@@ -136,8 +136,11 @@ check chart:
       > /dev/null 2>&1
       || { echo "an ingress with no host rendered; it must be refused"; exit 1; }
     - >-
-      ! helm template ci charts/agent-router --set server.drainSeconds=30 > /dev/null 2>&1
+      ! helm template ci charts/agent-router --set server.drainSeconds=620 > /dev/null 2>&1
       || { echo "a drain the pod's grace period would cut short rendered; it must be refused"; exit 1; }
+    - >-
+      ! helm template ci charts/agent-router --set rollout.strategy=BlueGreen > /dev/null 2>&1
+      || { echo "a rollout strategy that is neither RollingUpdate nor Recreate rendered; it must be refused"; exit 1; }
     # The router runs in server mode, is given its password, and answers to its Service's
     # names. Rendered to a file first: a reader that stops at its first match can fail the
     # writer, and with it the step.
@@ -153,6 +156,26 @@ check chart:
     - >-
       grep -qx ' *- --allow-host=ci-agent-router.ci.svc.cluster.local' /tmp/deployment.yaml
       || { echo "the router does not answer to its Service's names"; exit 1; }
+    # A rollout with no gap: the new pod serves before the old one stops, on the old one's
+    # node, and the old one keeps taking requests while the ingress lets go of it. Recreate
+    # stays possible, with neither.
+    - >-
+      grep -qx '    type: RollingUpdate' /tmp/deployment.yaml
+      && grep -qx '      maxUnavailable: 0' /tmp/deployment.yaml
+      || { echo "the default rollout is not a rolling update that keeps the old pod until the new one serves"; exit 1; }
+    - >-
+      grep -qx ' *topologyKey: kubernetes.io/hostname' /tmp/deployment.yaml
+      || { echo "a rolling update does not keep both pods on one node, where both can open the store"; exit 1; }
+    - >-
+      grep -qx ' *- --stop-delay-seconds=10' /tmp/deployment.yaml
+      || { echo "the router is not told to keep accepting while the ingress lets go of it"; exit 1; }
+    - >-
+      helm template ci charts/agent-router --set rollout.strategy=Recreate
+      --show-only templates/deployment.yaml > /tmp/recreate.yaml
+    - >-
+      grep -qx '    type: Recreate' /tmp/recreate.yaml
+      && ! grep -qE 'rollingUpdate|podAffinity' /tmp/recreate.yaml
+      || { echo "a Recreate rollout carries a rolling update's settings"; exit 1; }
     # What `publish chart` runs, so a packaging failure stops a merge and not a publish.
     - scripts/package-chart.sh 0 "$CI_COMMIT_SHA" registry.example.com/check/agent-router /tmp/chart
 

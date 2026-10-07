@@ -170,6 +170,51 @@ pub fn has_exited_within(pid: i32, within: Duration) -> bool {
     false
 }
 
+/// The store's lock, `router.lock` in the data directory, once no other process holds it.
+/// A hosted router's half of the handover: a rolling update starts the next pod while this
+/// one still serves the same store, so whoever holds the lock is the last router left on
+/// it, and the housekeeping that must not run beside another router waits for it.
+#[cfg(unix)]
+pub fn take_store_lock(dir: &std::path::Path) -> Option<std::fs::File> {
+    use std::os::fd::AsRawFd;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join("router.lock"))
+        .ok()?;
+    // SAFETY: flock(2) on a descriptor this function owns. The lock belongs to the open
+    // file, so it holds for as long as the returned File does, and the kernel drops it
+    // with the process, however the process ends.
+    (unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0).then_some(file)
+}
+
+/// Wait for the store's lock and keep it for the life of the process. A router that
+/// drains takes as long as its drain to let go, so this waits as long as that.
+#[cfg(unix)]
+pub fn hold_store(dir: &std::path::Path) {
+    let mut told = false;
+    loop {
+        if let Some(file) = take_store_lock(dir) {
+            // Never closed: the lock is this process's until it exits.
+            std::mem::forget(file);
+            if told {
+                tracing::info!("the previous router has exited; the store is this one's alone");
+            }
+            return;
+        }
+        if !told {
+            tracing::info!("the previous router is still draining; its housekeeping waits for it");
+            told = true;
+        }
+        std::thread::sleep(Duration::from_secs(1));
+    }
+}
+
+/// Windows runs only the machine agent, which keeps no store.
+#[cfg(not(unix))]
+pub fn hold_store(_dir: &std::path::Path) {}
+
 /// Whether the process has been asked to stop, and why. Cloned by everything that has to
 /// wind down on the same signal.
 #[derive(Clone)]
@@ -263,6 +308,25 @@ pub fn listen_for_shutdown() -> Stopping {
         let _ = tx.send(Some(why));
     });
     Stopping(rx)
+}
+
+#[cfg(unix)]
+#[cfg(test)]
+mod store_lock_tests {
+    use super::take_store_lock;
+
+    /// Two routers on one store: the lock is the first one's for as long as it holds it,
+    /// and the next one's the moment it is let go — as when the old pod exits.
+    #[test]
+    fn the_store_lock_is_one_routers_at_a_time() {
+        let dir = std::env::temp_dir().join(format!("ar-store-lock-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let first = take_store_lock(&dir).expect("a store nobody holds");
+        assert!(take_store_lock(&dir).is_none(), "held by the first");
+        drop(first);
+        assert!(take_store_lock(&dir).is_some(), "free once the first lets go");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 #[cfg(test)]

@@ -123,6 +123,7 @@ impl Lab {
             push_keys_dir: None,
             agents_dir: server.then(|| dir.join("agents")),
             drain: Duration::from_secs(1),
+            stop_delay: Duration::ZERO,
         };
         let (capture, _) = tokio::sync::mpsc::channel(1);
         // The switch's other half is dropped, never supervised: nothing here opens a socket.

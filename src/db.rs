@@ -350,6 +350,10 @@ impl Db {
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)
             .with_context(|| format!("opening {}", path.display()))?;
+        // A router starting beside the one it replaces — a handover on a laptop, a rolling
+        // update in a pod — opens and migrates the store while the other is writing to it.
+        // Wait as the other connections on this file do, not rusqlite's 5 s.
+        conn.busy_timeout(std::time::Duration::from_secs(30))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
