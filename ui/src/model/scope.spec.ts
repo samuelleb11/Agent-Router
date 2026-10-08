@@ -18,6 +18,8 @@ import {
   toggle,
   UNSCOPED,
   DEFAULT_RANGE,
+  DEFAULT_TAB,
+  TABS,
   writeQuery,
   type OverviewAddress,
   type Scope,
@@ -55,8 +57,8 @@ describe('scope', () => {
     expect(setRange(S, 'hasOwnProperty').range).toBe('all');
   });
 
-  it('OV-C29, OV-C31: the scope, the range, the open rows and the request filters live in the address and read back as themselves', () => {
-    const address: OverviewAddress = { scope: S, open: ['12', '13'], requests: { kind: 'errors', model: 'claude-opus-5', stop: 'end_turn' } };
+  it('OV-C29, OV-C31, OV-C215: the scope, the range, the open tab, the open rows and the request filters live in the address and read back as themselves', () => {
+    const address: OverviewAddress = { scope: S, tab: 'requests', open: ['12', '13'], requests: { kind: 'errors', model: 'claude-opus-5', stop: 'end_turn' } };
     expect(readQuery(writeQuery(address))).toEqual(address);
     // The range is left out when it is the default the page starts at, and named otherwise.
     expect(writeQuery({ scope: { ...UNSCOPED, range: DEFAULT_RANGE } })).toBe('');
@@ -64,6 +66,15 @@ describe('scope', () => {
     expect(readQuery('').scope.range).toBe(DEFAULT_RANGE);
     expect(DEFAULT_RANGE).toBe('1h');
     expect(readQuery('?kind=__proto__&range=__proto__')).toMatchObject({ scope: { range: 'all' }, requests: { kind: 'all' } });
+  });
+
+  it('OV-C215: the open tab is in the address as tab=, Activity by default and left out, and a tab the page does not know opens Activity', () => {
+    expect(TABS).toEqual(['activity', 'context', 'projects', 'tools', 'requests', 'search']);
+    expect(readQuery('').tab).toBe(DEFAULT_TAB);
+    expect(DEFAULT_TAB).toBe('activity');
+    expect(writeQuery({ scope: UNSCOPED, tab: 'activity' })).toBe('?range=all');
+    expect(writeQuery({ scope: UNSCOPED, tab: 'tools', requests: { kind: 'errors', model: null, stop: null } })).toBe('?range=all&tab=tools&kind=errors');
+    for (const bad of ['constructor', '__proto__', 'Tools', '']) expect(readQuery(`?tab=${bad}`).tab, bad).toBe('activity');
   });
 
   it('OV-C12, OV-C13: each crumb names its level as the lists do', () => {

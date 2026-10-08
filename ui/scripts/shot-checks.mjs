@@ -19,6 +19,18 @@ export function checksFor(route, mode) {
   return [...(CHECKS[path] ?? []), ...SHELL_CHECKS].filter((c) => c.at === 'both' || c.at === mode);
 }
 
+/// In a check's page: open one of the Overview's tabs and wait, up to four seconds, for its figures
+/// to be drawn rather than read, as the console's own press would (OV-C215, OV-C216).
+const OPEN_TAB = `const openTab = async (tab, drawn) => {
+  document.querySelector('[data-overview-tab="' + tab + '"]')?.click();
+  for (let i = 0; i < 40; i++) {
+    await new Promise((r) => setTimeout(r, 100));
+    const panel = [...document.querySelectorAll('[role="tabpanel"]')].find((p) => !p.hidden);
+    if (panel && !panel.querySelector('.cds--skeleton__text') && (!drawn || document.querySelector(drawn))) return;
+  }
+};
+const tabNow = () => document.querySelector('[data-overview-tab][aria-selected="true"]')?.getAttribute('data-overview-tab');`;
+
 const OVERVIEW = [
   {
     id: 'OV-C35',
@@ -40,26 +52,34 @@ const OVERVIEW = [
   },
   {
     id: 'OV-C196',
-    says: 'long unbroken paths, branches, model ids and errors wrap or ellipsise and never widen the page',
+    says: 'long unbroken paths, branches, model ids and errors wrap or ellipsise and never widen the page, on any tab',
     at: 'both',
     expression: `(async () => {
+      ${OPEN_TAB}
       const long = ['a-directory-name-long-enough-to-wrap-in-a-phones-rail', 'gpt-oss-120b-with-a-name-long-enough-to-wrap-on-a-phone', 'a-branch-name-that-goes-on-for-quite-a-while-without-a-break'];
-      // The long error is in a request's detail: open the first request that ended in one.
-      const errored = [...document.querySelectorAll('[aria-label="Requests, newest first"] button[aria-expanded]')].find((b) => /529/.test(b.textContent ?? ''));
-      if (errored && errored.getAttribute('aria-expanded') !== 'true') {
-        errored.click();
-        await new Promise((r) => setTimeout(r, 150));
+      const root = document.scrollingElement ?? document.documentElement;
+      const was = tabNow();
+      let text = '';
+      let wide = 0;
+      for (const tab of ['activity', 'context', 'projects', 'tools', 'requests']) {
+        await openTab(tab, tab === 'requests' ? '[aria-label="Requests, newest first"]' : null);
+        // The long error is in a request's detail: open the first request that ended in one.
+        const errored = [...document.querySelectorAll('[aria-label="Requests, newest first"] button[aria-expanded]')].find((b) => /529/.test(b.textContent ?? ''));
+        if (errored && errored.getAttribute('aria-expanded') !== 'true') {
+          errored.click();
+          await new Promise((r) => setTimeout(r, 150));
+        }
+        text += document.getElementById('main-content')?.innerText ?? '';
+        wide = Math.max(wide, root.scrollWidth - root.clientWidth);
+        if (errored && errored.getAttribute('aria-expanded') === 'true') {
+          errored.click();
+          await new Promise((r) => setTimeout(r, 50));
+        }
       }
-      const text = document.getElementById('main-content')?.innerText ?? '';
+      if (was) await openTab(was, null);
       const missing = long.filter((s) => !text.includes(s));
       const error = /longunbrokenidentifierthatkeepsgoing/.test(text);
-      const root = document.scrollingElement ?? document.documentElement;
-      const wide = root.scrollWidth - root.clientWidth;
-      if (errored && errored.getAttribute('aria-expanded') === 'true') {
-        errored.click();
-        await new Promise((r) => setTimeout(r, 50));
-      }
-      return { ok: missing.length === 0 && error && wide <= 0, detail: (missing.length ? 'not on the page: ' + missing.join(', ') + '; ' : '') + (error ? '' : 'the long error was not shown; ') + 'scroll width over the window: ' + wide + ' px' };
+      return { ok: missing.length === 0 && error && wide <= 0, detail: (missing.length ? 'not on the page: ' + missing.join(', ') + '; ' : '') + (error ? '' : 'the long error was not shown; ') + 'widest scroll over the window, on any tab: ' + wide + ' px' };
     })()`,
   },
   {
@@ -90,7 +110,11 @@ const OVERVIEW = [
     id: 'OV-C202',
     says: 'on a phone the headline tiles sit two to a row with the largest across both, and side-by-side panels stack',
     at: 'phone',
-    expression: `(() => {
+    expression: `(async () => {
+      ${OPEN_TAB}
+      // The side-by-side panels are the Context tab's.
+      const was = tabNow();
+      if (!document.querySelector('[data-two]')) await openTab('context', '[data-two]');
       const grid = document.querySelector('section[aria-label="Totals in scope"]');
       if (!grid) return { ok: false, detail: 'no Totals in scope grid' };
       const tiles = [...grid.children].map((t) => t.getBoundingClientRect());
@@ -101,6 +125,7 @@ const OVERVIEW = [
       const across = hero && Math.abs(hero.width - g.width) < 1;
       const twos = [...document.querySelectorAll('[data-two]')].map((two) => [...two.children].map((c) => Math.round(c.getBoundingClientRect().left)));
       const stacked = twos.length > 0 && twos.every((lefts) => lefts.every((l) => l === lefts[0]));
+      if (was && was !== tabNow()) await openTab(was, null);
       return { ok: !!(pair && halves && across && stacked), detail: 'hero ' + Math.round(hero?.width ?? 0) + ' of ' + Math.round(g.width) + ' px; two to a row: ' + !!pair + '; two-up panels stacked: ' + stacked + ' (' + twos.length + ' pairs)' };
     })()`,
   },

@@ -1,13 +1,16 @@
-// New for agent-router: the Overview, at `/` (assets/index.html, the dashboard, rebuilt). Every section the
-// dashboard shows, in its order (OV-C1), read as one snapshot per scope every five seconds (OV-C160).
+// New for agent-router: the Overview, at `/` (assets/index.html, the dashboard, rebuilt). Quota headroom,
+// All accounts and Totals in scope on top, and every other section the dashboard shows in a tab under
+// them (OV-C1), read every five seconds as one snapshot of the top and the open tab, and nothing for a
+// tab that is not open (OV-C160, OV-C216).
 //
-// The address is the view (SH-C53): the scope, the range, the request filters and the open request
-// rows are its query string. A change of scope or range pushes a history entry, so Back un-scopes
-// (OV-C30); a filter or an open row replaces the entry. An old `#a=&p=…` bookmark is not rewritten:
-// the clean cut keeps no compatibility code (decision J), and opens the page unscoped.
+// The address is the view (SH-C53): the scope, the range, the open tab, the request filters and the
+// open request rows are its query string. A change of scope, range or tab pushes a history entry, so
+// Back un-scopes (OV-C30) and goes back to the last tab (OV-C215); a filter or an open row replaces the
+// entry. An old `#a=&p=…` bookmark is not rewritten: the clean cut keeps no compatibility code
+// (decision J), and opens the page unscoped.
 import { ArrowUp } from '@carbon/icons-react';
-import { Button, SkeletonText } from '@carbon/react';
-import { useEffect, useMemo, useState } from 'react';
+import { Button, SkeletonText, Tab, TabList, TabPanel, TabPanels, Tabs } from '@carbon/react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useLocation, useNavigate } from 'react-router';
 import { useTick } from '~/app/tick';
 import { Page } from '~/components/Page';
@@ -17,13 +20,13 @@ import { refusalText } from '~/lib/errors';
 import { since } from '~/lib/freshness';
 import { settingsPath } from '~/lib/routes';
 import { useCoarse } from '~/lib/viewport';
-import { readQuery, writeQuery, type OverviewAddress, type RequestFilters, type Scope } from '~/model/scope';
+import { readQuery, TABS, writeQuery, type OverviewAddress, type OverviewTab, type RequestFilters, type Scope } from '~/model/scope';
 import { networkStatus, opensSettings, type Auth } from '~/model/settings';
 import { Activity } from './Activity';
 import { buckets } from './timeline';
 import { AllAccounts } from './AllAccounts';
 import { Headline } from './Headline';
-import { Lists } from './Lists';
+import { Lists, Tools } from './Lists';
 import { Quota } from './Quota';
 import { Reading } from './Reading';
 import { Requests, REQUESTS_ID } from './Requests';
@@ -43,6 +46,16 @@ let settingsDecided = false;
 let firstDrawn: string | null = null;
 
 const reducedMotion = (): boolean => globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
+
+/// What each tab is called, in the tab row's order (OV-C1).
+const TAB_NAMES: Readonly<Record<OverviewTab, string>> = {
+  activity: 'Activity',
+  context: 'Context',
+  projects: 'Projects & sessions',
+  tools: 'Tools',
+  requests: 'Requests',
+  search: 'Search',
+};
 
 /// "read 3s ago", kept moving between polls (OV-C173), or the stale and unreachable sentences, each
 /// with the time of the last good read (OV-C164).
@@ -108,8 +121,8 @@ export default function Overview() {
   const location = useLocation();
   const navigate = useNavigate();
   const address = useMemo(() => readQuery(location.search), [location.search]);
-  const { scope, requests: filters, open } = address;
-  const read = useOverview(scope);
+  const { scope, tab, requests: filters, open } = address;
+  const read = useOverview(scope, tab);
   const auth = useAuth();
   // The accounts every 30 s, beside the snapshot and never failing it (OV-C166), with no credential
   // checked (OV-C167).
@@ -142,6 +155,10 @@ export default function Overview() {
   const setScope = (next: Scope) => go({ scope: next }, false);
   const setFilters = (next: RequestFilters) => go({ requests: next }, true);
   const setOpen = (ids: readonly string[]) => go({ open: ids }, true);
+  /// A tab: a history entry of its own, read at once (OV-C215).
+  const setTab = (next: OverviewTab) => {
+    if (next !== tab) go({ tab: next }, false);
+  };
 
   // The request list's page, back to twenty on any scope or filter change (OV-C33, OV-C154): the page
   // is kept for the scope and filters it was set under, and any other reads as the first.
@@ -150,10 +167,13 @@ export default function Overview() {
   const shown = paging.key === pageOf ? paging.shown : REQUEST_PAGE;
   const setShown = (n: number) => setPaging({ key: pageOf, shown: n });
 
+  // The open tab's own figures, once they are in: until then the snapshot holds another tab's.
+  const part = snapshot?.part.tab === tab ? snapshot.part : null;
+
   // A model or stop filter whose value has left the loaded rows is cleared, never left filtering to
   // nothing (OV-C153). Only once this scope's own rows are in: the previous scope's say nothing
   // about this one's.
-  const effective = snapshot && !read.pending ? filtering(snapshot.requests, filters, snapshot.summary.latency?.ttfb_p95 ?? null).effective : null;
+  const effective = snapshot && part?.tab === 'requests' && !read.pending ? filtering(part.requests, filters, snapshot.summary.latency?.ttfb_p95 ?? null).effective : null;
   useEffect(() => {
     if (!effective) return;
     if (effective.model !== filters.model || effective.stop !== filters.stop) {
@@ -165,10 +185,53 @@ export default function Overview() {
   const bk = useMemo(() => (snapshot ? buckets(snapshot.summary.timeline, snapshot.tz * 60_000) : []), [snapshot]);
   const busy = read.pending;
 
+  // "List the N errors" opens the Requests tab filtered to errors, and brings the list into view once
+  // it is drawn, which on another tab is after its rows are read (OV-C107).
+  const toRequests = useRef(false);
   const listErrors = () => {
     setShown(REQUEST_PAGE);
-    setFilters({ kind: 'errors', model: null, stop: null });
-    requestAnimationFrame(() => document.getElementById(REQUESTS_ID)?.scrollIntoView({ block: 'start', behavior: reducedMotion() ? 'auto' : 'smooth' }));
+    go({ tab: 'requests', requests: { kind: 'errors', model: null, stop: null } }, tab === 'requests');
+    toRequests.current = true;
+  };
+  useEffect(() => {
+    const list = toRequests.current ? document.getElementById(REQUESTS_ID) : null;
+    if (!list) return;
+    toRequests.current = false;
+    requestAnimationFrame(() => list.scrollIntoView({ block: 'start', behavior: reducedMotion() ? 'auto' : 'smooth' }));
+  });
+
+  // The open tab's body: Activity draws from the top's timeline whichever tab the snapshot was read
+  // for; the others wait for their own figures, said as being read rather than drawn empty.
+  const body = (): ReactNode => {
+    if (!snapshot) return null;
+    if (tab === 'activity') return <Activity bk={bk} timeline={snapshot.summary.timeline} now={now} busy={busy} />;
+    if (!part) return <SkeletonText paragraph lineCount={4} />;
+    switch (part.tab) {
+      case 'context':
+        return <Reading summary={snapshot.summary} part={part} scope={scope} busy={busy} />;
+      case 'projects':
+        return <Lists part={part} unattributed={snapshot.summary.unattributed} scope={scope} now={now} busy={busy} auth={auth.value} onScope={setScope} />;
+      case 'tools':
+        return <Tools tools={part.tools} scope={scope} busy={busy} />;
+      case 'requests':
+        return (
+          <Requests
+            requests={part.requests}
+            p95={snapshot.summary.latency?.ttfb_p95 ?? null}
+            scope={scope}
+            filters={filters}
+            open={open}
+            now={now}
+            busy={busy}
+            shown={shown}
+            onShown={setShown}
+            onFilters={setFilters}
+            onOpen={setOpen}
+          />
+        );
+      default:
+        return null;
+    }
   };
 
   return (
@@ -184,27 +247,11 @@ export default function Overview() {
       />
       <ScopeBar scope={scope} snapshot={snapshot} now={now} onScope={setScope} />
       <ProjectPlaces scope={scope} snapshot={snapshot} />
-      <SearchPanel scope={scope} onScope={setScope} now={now} />
       {snapshot ? (
         <>
           <Quota snapshot={snapshot} bk={bk} now={now} busy={busy} />
           <AllAccounts forecast={snapshot.forecast} now={now} busy={busy} />
           <Headline snapshot={snapshot} scope={scope} bk={bk} now={now} busy={busy} onListErrors={listErrors} />
-          <Activity bk={bk} timeline={snapshot.summary.timeline} now={now} busy={busy} />
-          <Reading snapshot={snapshot} scope={scope} busy={busy} />
-          <Lists snapshot={snapshot} scope={scope} now={now} busy={busy} auth={auth.value} onScope={setScope} />
-          <Requests
-            snapshot={snapshot}
-            scope={scope}
-            filters={filters}
-            open={open}
-            now={now}
-            busy={busy}
-            shown={shown}
-            onShown={setShown}
-            onFilters={setFilters}
-            onOpen={setOpen}
-          />
         </>
       ) : read.freshness === 'connecting' ? (
         <SkeletonText paragraph lineCount={6} />
@@ -214,6 +261,32 @@ export default function Overview() {
           Could not read the router{read.error ? `: ${refusalText(read.error)}` : ''}. Asking again every 5 s.
         </p>
       )}
+      {/* Chosen by the address alone: Carbon reports a choice through `onChange`, which only writes it
+          there, and an arrow only moves the focus (activation "manual"), as Sessions' machine tabs do. */}
+      <Tabs
+        selectedIndex={TABS.indexOf(tab)}
+        onChange={({ selectedIndex }) => {
+          const next = TABS[selectedIndex];
+          if (next) setTab(next);
+        }}
+      >
+        <TabList aria-label="Overview sections" activation="manual" className={styles.tabs}>
+          {TABS.map((t) => (
+            <Tab key={t} data-overview-tab={t}>
+              {TAB_NAMES[t]}
+            </Tab>
+          ))}
+        </TabList>
+        {/* Only the open tab draws, and only it was read (OV-C216). Search stays mounted, hidden, so what
+            was asked survives a tab change and "/" reaches it from any tab (OV-C37). */}
+        <TabPanels>
+          {TABS.map((t) => (
+            <TabPanel key={t} className={styles.tabPanel}>
+              {t === 'search' ? <SearchPanel scope={scope} onScope={setScope} now={now} shown={tab === 'search'} onShow={() => setTab('search')} /> : t === tab ? body() : null}
+            </TabPanel>
+          ))}
+        </TabPanels>
+      </Tabs>
       <BackToTop />
     </Page>
   );

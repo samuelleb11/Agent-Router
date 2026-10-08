@@ -78,6 +78,16 @@ const loaded = () => screen.findByRole('heading', { level: 2, name: 'Totals in s
 const panel = (name: string) => screen.getByRole('heading', { level: 2, name }).closest('section') as HTMLElement;
 const freshness = () => document.querySelector('[data-freshness]') as HTMLElement;
 const tile = (label: string) => within(panel('Totals in scope')).getByText(label).closest('.cds--tile') as HTMLElement;
+/// Opens a tab as a reader does, and waits for the panel it draws first.
+const tabTo = async (name: string, heading: string) => {
+  const tab = screen.getByRole('tab', { name });
+  // A press moves the focus to the tab, as a browser's does; jsdom leaves it where it was.
+  act(() => tab.focus());
+  fireEvent.click(tab);
+  return screen.findByRole('heading', { level: 2, name: heading }, { timeout: 20_000 });
+};
+/// The h2s a reader can see, in the page's order.
+const headings = () => screen.getAllByRole('heading', { level: 2 }).map((h) => h.textContent);
 
 beforeEach(() => {
   chart.StackedBarChart.mockClear();
@@ -95,95 +105,130 @@ afterEach(() => {
 });
 
 describe('the Overview’s layout', () => {
-  it('OV-C1: keeps every section the dashboard shows, in its order, the scope bar first', async () => {
+  it('OV-C1: Quota headroom, All accounts and Totals in scope sit above the tabs, which keep every other section the dashboard shows in its order, the scope bar first', async () => {
     router();
     show();
     await loaded();
-    expect(screen.getAllByRole('heading', { level: 2 }).map((h) => h.textContent)).toEqual([
-      'Search the transcripts',
-      'Quota headroom',
-      'All accounts',
-      'Totals in scope',
-      'Activity over time',
-      'What the model read',
-      'What fills the context window',
-      'By model',
-      'Main thread vs subagents',
-      'Accounts',
-      'Projects',
-      'Sessions',
-      'Tool output the model read',
-      'Tool calls made',
-      'Requests',
-    ]);
+    const top = ['Quota headroom', 'All accounts', 'Totals in scope'];
+    expect(within(screen.getByRole('tablist', { name: 'Overview sections' })).getAllByRole('tab').map((t) => t.textContent)).toEqual(['Activity', 'Context', 'Projects & sessions', 'Tools', 'Requests', 'Search']);
+    expect(headings()).toEqual([...top, 'Activity over time']);
+    const tabs: [string, string[]][] = [
+      ['Context', ['What the model read', 'What fills the context window', 'By model', 'Main thread vs subagents']],
+      ['Projects & sessions', ['Accounts', 'Projects', 'Sessions']],
+      ['Tools', ['Tool output the model read', 'Tool calls made']],
+      ['Requests', ['Requests']],
+      ['Search', ['Search the transcripts']],
+    ];
+    for (const [name, panels] of tabs) {
+      await tabTo(name, panels[0]!);
+      expect(headings(), name).toEqual([...top, ...panels]);
+    }
     const bar = screen.getByRole('region', { name: 'Scope' });
-    expect(bar.compareDocumentPosition(panel('Search the transcripts')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(bar.compareDocumentPosition(panel('Quota headroom')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(panel('Totals in scope').compareDocumentPosition(screen.getByRole('tablist', { name: 'Overview sections' })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('OV-C2: every heading carries its caption as visible text beside it', async () => {
     router();
     show();
     await loaded();
-    const captions: Record<string, string | RegExp> = {
-      'Search the transcripts': 'every message, tool call and result ever captured',
-      'Quota headroom': /^the account that is serving right now/,
-      'All accounts': '2 accounts · spend and tokens add up, quota does not',
-      'Totals in scope': /^412 requests · /,
-      'Activity over time': '12.40M prompt tokens · 412 requests',
-      'What the model read': 'cache vs. paid in full',
-      'What fills the context window': 'estimate · by character share',
-      'By model': 'prompt tokens read',
-      'Main thread vs subagents': 'share of prompt tokens',
-      Projects: '2 projects · click one to scope the page',
-      'Tool output the model read': 'est. tokens',
-      'Tool calls made': 'by the model',
-    };
-    for (const [heading, caption] of Object.entries(captions)) {
-      const h = screen.getByRole('heading', { level: 2, name: heading });
-      // Beside it: the heading's own row, as text, never a title.
-      expect(h.nextElementSibling?.textContent, heading).toMatch(caption);
-      expect(h.parentElement?.querySelector('[title]'), heading).toBeNull();
+    const captions: [string | null, Record<string, string | RegExp>][] = [
+      [
+        null,
+        {
+          'Quota headroom': /^the account that is serving right now/,
+          'All accounts': '2 accounts · spend and tokens add up, quota does not',
+          'Totals in scope': /^412 requests · /,
+          'Activity over time': '12.40M prompt tokens · 412 requests',
+        },
+      ],
+      [
+        'Context',
+        {
+          'What the model read': 'cache vs. paid in full',
+          'What fills the context window': 'estimate · by character share',
+          'By model': 'prompt tokens read',
+          'Main thread vs subagents': 'share of prompt tokens',
+        },
+      ],
+      ['Projects & sessions', { Projects: '2 projects · click one to scope the page' }],
+      ['Tools', { 'Tool output the model read': 'est. tokens', 'Tool calls made': 'by the model' }],
+      ['Search', { 'Search the transcripts': 'every message, tool call and result ever captured' }],
+    ];
+    for (const [tab, panels] of captions) {
+      if (tab) await tabTo(tab, Object.keys(panels)[0]!);
+      for (const [heading, caption] of Object.entries(panels)) {
+        const h = screen.getByRole('heading', { level: 2, name: heading });
+        // Beside it: the heading's own row, as text, never a title.
+        expect(h.nextElementSibling?.textContent, heading).toMatch(caption);
+        expect(h.parentElement?.querySelector('[title]'), heading).toBeNull();
+      }
     }
   });
 
-  it('OV-C3: every control is visible at rest, none in an overflow menu or behind a disclosure', async () => {
+  it('OV-C3: every control is visible at rest — the tabs, and in the open tab its own — none in an overflow menu or behind a disclosure', async () => {
     router();
-    show('/?project=%2Fcode%2Fagent-router');
+    show('/?project=%2Fcode%2Fagent-router&tab=requests');
     await loaded();
     expect(within(screen.getByRole('tablist', { name: 'Time range' })).getAllByRole('tab').map((t) => t.textContent)).toEqual(['all', '1h', '24h', '7d', '30d']);
+    expect(within(screen.getByRole('tablist', { name: 'Overview sections' })).getAllByRole('tab')).toHaveLength(6);
     expect(screen.getByRole('button', { name: 'Clear scope' })).toBeVisible();
-    expect(within(screen.getByRole('tablist', { name: 'What to search' })).getAllByRole('tab')).toHaveLength(5);
-    expect(within(screen.getByRole('tablist', { name: 'Which requests' })).getAllByRole('tab').map((t) => t.textContent)).toEqual(['All 30', 'Errors 1', 'Subagents 1', 'Slow 1']);
+    expect(within(await screen.findByRole('tablist', { name: 'Which requests' })).getAllByRole('tab').map((t) => t.textContent)).toEqual(['All 30', 'Errors 1', 'Subagents 1', 'Slow 1']);
     expect(within(screen.getByRole('group', { name: 'Models' })).getAllByRole('button')).toHaveLength(2);
     expect(within(screen.getByRole('group', { name: 'Stop reasons' })).getAllByRole('button')).toHaveLength(3);
     expect(screen.getByRole('button', { name: 'Show 10 more' })).toBeVisible();
     expect(document.querySelector('.cds--overflow-menu, details, [aria-expanded="false"][aria-haspopup="menu"]')).toBeNull();
+    await tabTo('Search', 'Search the transcripts');
+    expect(within(screen.getByRole('tablist', { name: 'What to search' })).getAllByRole('tab')).toHaveLength(5);
   });
 
   it('OV-C11, OV-C86: a panel the page turns off is not in the page at all', async () => {
-    router((path) => (path === '/api/forecast' ? ok(forecast([])) : path === '/api/summary' ? ok(summary({ by_account: summary().by_account.slice(0, 1) })) : undefined));
-    show();
+    router((path) => (path === '/api/forecast' ? ok(forecast([])) : path === '/api/summary' ? ok(summary({ by_account: summary().by_account!.slice(0, 1) })) : undefined));
+    show('/?range=all&tab=projects');
     await loaded();
+    await screen.findByRole('heading', { level: 2, name: 'Projects' });
     expect(screen.queryByRole('heading', { name: 'All accounts' })).toBeNull();
     expect(screen.queryByRole('heading', { name: 'Accounts' })).toBeNull();
     expect(screen.queryByText('Spend, every account')).toBeNull();
-    expect(document.querySelectorAll('#main-content [hidden], [hidden] [data-panel]')).toHaveLength(0);
+    // The one panel kept while hidden is Search, inside its closed tab, so what was asked survives
+    // a tab change (OV-C37); nothing else is hidden rather than left out.
+    expect(document.querySelectorAll('#main-content [hidden]')).toHaveLength(0);
+    expect([...document.querySelectorAll('[hidden] [data-panel]')].map((p) => [p.getAttribute('data-panel'), p.closest('[hidden]')?.getAttribute('role')])).toEqual([['search', 'tabpanel']]);
   });
 });
 
 describe('the address', () => {
   it('OV-C30: a scope or range change pushes a history entry, so Back un-scopes the page', async () => {
     router();
+    show('/?range=all&tab=projects');
+    await loaded();
+    fireEvent.click(within(await screen.findByRole('list', { name: 'Projects' })).getByRole('button', { name: 'agent-router' }));
+    await waitFor(() => expect(where()).toBe('/?project=%2Fcode%2Fagent-router&range=all&tab=projects'));
+    fireEvent.click(within(screen.getByRole('tablist', { name: 'Time range' })).getByRole('tab', { name: '24h' }));
+    await waitFor(() => expect(where()).toBe('/?project=%2Fcode%2Fagent-router&range=24h&tab=projects'));
+    fireEvent.click(screen.getByRole('button', { name: 'test: back' }));
+    await waitFor(() => expect(where()).toBe('/?project=%2Fcode%2Fagent-router&range=all&tab=projects'));
+    fireEvent.click(screen.getByRole('button', { name: 'test: back' }));
+    await waitFor(() => expect(where()).toBe('/?range=all&tab=projects'));
+  });
+
+  it('OV-C215: the open tab is in the address, Activity by default, and choosing a tab pushes a history entry, so Back returns to the last one', async () => {
+    router();
     show();
     await loaded();
-    fireEvent.click(within(panel('Projects')).getByRole('button', { name: 'agent-router' }));
-    await waitFor(() => expect(where()).toBe('/?project=%2Fcode%2Fagent-router&range=all'));
-    fireEvent.click(within(screen.getByRole('tablist', { name: 'Time range' })).getByRole('tab', { name: '24h' }));
-    await waitFor(() => expect(where()).toBe('/?project=%2Fcode%2Fagent-router&range=24h'));
+    const selected = () => within(screen.getByRole('tablist', { name: 'Overview sections' })).getByRole('tab', { selected: true }).textContent;
+    expect(selected()).toBe('Activity');
+    await tabTo('Context', 'What the model read');
+    expect(where()).toBe('/?range=all&tab=context');
+    await tabTo('Requests', 'Requests');
+    expect(where()).toBe('/?range=all&tab=requests');
     fireEvent.click(screen.getByRole('button', { name: 'test: back' }));
-    await waitFor(() => expect(where()).toBe('/?project=%2Fcode%2Fagent-router&range=all'));
+    await waitFor(() => expect(where()).toBe('/?range=all&tab=context'));
+    expect(await screen.findByRole('heading', { level: 2, name: 'What the model read' })).toBeInTheDocument();
+    expect(selected()).toBe('Context');
     fireEvent.click(screen.getByRole('button', { name: 'test: back' }));
     await waitFor(() => expect(where()).toBe('/?range=all'));
+    expect(selected()).toBe('Activity');
   });
 
   it('OV-C32: an edited or followed address re-scopes the page without a reload', async () => {
@@ -197,17 +242,18 @@ describe('the address', () => {
 
   it('OV-C29: the scope, the range and the open rows are in the address, and an old #a=&p=… bookmark opens the page unscoped, never rewritten (decision J)', async () => {
     const r = router();
-    show('/?project=%2Fcode%2Fnorthstar&range=7d&open=3');
+    show('/?project=%2Fcode%2Fnorthstar&range=7d&tab=requests&open=3');
     await loaded();
     const asked = r.calls('/api/summary')[0]!.query;
     expect([asked.get('project'), asked.has('since')]).toEqual(['/code/northstar', true]);
+    await screen.findByRole('heading', { level: 2, name: 'Requests' });
     expect(within(panel('Requests')).getAllByRole('button', { expanded: true })).toHaveLength(1);
 
     // An old bookmark opens the page unscoped at the range an address with none starts at.
     const old = router();
     show('/#a=primary&p=%2Fcode%2Fnorthstar&r=7d');
     await waitFor(() => expect(old.calls('/api/summary').length).toBeGreaterThan(0));
-    expect([...old.calls('/api/summary')[0]!.query.keys()].sort()).toEqual(['since', 'tz']);
+    expect([...old.calls('/api/summary')[0]!.query.keys()].sort()).toEqual(['parts', 'since', 'tz']);
 
     // That range is the last hour, and choosing all puts it in the address.
     const bare = router();
@@ -219,18 +265,83 @@ describe('the address', () => {
 
   it('OV-C33: a scope change reads at once and returns the request list to its first twenty rows', async () => {
     const r = router();
-    show();
+    show('/?range=all&tab=requests');
     await loaded();
-    fireEvent.click(screen.getByRole('button', { name: 'Show 10 more' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Show 10 more' }));
     expect(within(panel('Requests')).getAllByRole('listitem')).toHaveLength(30);
     const before = r.calls('/api/summary').length;
     // Read at once: by the time the press has been handled, not at the next tick.
     await act(async () => {
-      fireEvent.click(within(panel('Projects')).getByRole('button', { name: 'northstar' }));
+      fireEvent.click(within(screen.getByRole('tablist', { name: 'Time range' })).getByRole('tab', { name: '7d' }));
     });
     expect(r.calls('/api/summary').length).toBe(before + 1);
-    expect(r.calls('/api/summary').at(-1)!.query.get('project')).toBe('/code/northstar');
+    expect(r.calls('/api/requests').at(-1)!.query.has('since')).toBe(true);
     await waitFor(() => expect(within(panel('Requests')).getAllByRole('listitem')).toHaveLength(20));
+  });
+
+  it('OV-C216: only the open tab is read: the top and its tab every cycle, a tab opened read at once, and nothing for one that is closed', async () => {
+    const r = router();
+    const { client } = show();
+    await loaded();
+    const tabReads = ['/api/projects', '/api/sessions', '/api/tools', '/api/requests'];
+    const read = () => tabReads.filter((path) => r.calls(path).length > 0);
+    expect(read()).toEqual([]);
+    expect(r.calls('/api/summary')[0]!.query.get('parts')).toBe('totals,quota,account,models,latency,timeline,quota_history');
+    // Opened, a tab is read at once, by the time the press has been handled.
+    await act(async () => {
+      fireEvent.click(screen.getByRole('tab', { name: 'Tools' }));
+    });
+    expect(read()).toEqual(['/api/tools']);
+    await screen.findByRole('heading', { level: 2, name: 'Tool calls made' });
+    await tabTo('Context', 'By model');
+    expect(r.calls('/api/summary').at(-1)!.query.get('parts')).toBe('totals,quota,account,context,models,threads,latency,timeline,quota_history');
+    // Closed, it is read no more: the next cycles read the top and the open tab.
+    const tools = r.calls('/api/tools').length;
+    await act(() => client.refetchQueries({ queryKey: ['overview'] }));
+    await act(() => client.refetchQueries({ queryKey: ['overview'] }));
+    expect(r.calls('/api/tools')).toHaveLength(tools);
+    expect(read()).toEqual(['/api/tools']);
+  });
+
+  it('OV-C217: the scope pickers read their lists when opened, never on the five-second poll', async () => {
+    const r = router();
+    const { client } = show('/?range=all&account=secondary');
+    await loaded();
+    expect(r.calls('/api/projects')).toHaveLength(0);
+    expect(r.calls('/api/sessions')).toHaveLength(0);
+    const pickers = r.calls('/api/summary').filter((c) => c.query.get('parts') === 'by_account');
+    expect(pickers).toHaveLength(0);
+    // The scoped account's crumb is named from what the top's read asked for it (OV-C13).
+    expect(screen.getByRole('button', { name: 'Account: secondary@example.test' })).toBeInTheDocument();
+
+    // Reached through the crumb that controls it: Carbon's popover keeps itself invisible until
+    // floating-ui has placed it, and in jsdom, where nothing has a size, it judges the crumb clipped
+    // inside the page's layout, so the listbox has no accessible name to be found by.
+    const listbox = async (crumb: string) => {
+      const button = screen.getByRole('button', { name: crumb });
+      await waitFor(() => expect(button).toHaveAttribute('aria-controls'));
+      return document.getElementById(button.getAttribute('aria-controls')!)!;
+    };
+    fireEvent.click(screen.getByRole('button', { name: 'Project: All projects' }));
+    const options = await listbox('Project: All projects');
+    await waitFor(() => expect(options.textContent).toContain('northstar'));
+    expect(r.calls('/api/projects').map((c) => Object.fromEntries(c.query))).toEqual([{ account: 'secondary' }]);
+    // Open, it is not on the clock: the poll's cycles read nothing of it.
+    await act(() => client.refetchQueries({ queryKey: ['overview'] }));
+    await act(() => client.refetchQueries({ queryKey: ['overview'] }));
+    expect(r.calls('/api/projects')).toHaveLength(1);
+    // Opened again, it reads again.
+    fireEvent.keyDown(within(options).getAllByRole('option', { hidden: true })[0]!, { key: 'Escape' });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Project: All projects' })).not.toHaveAttribute('aria-controls'));
+    fireEvent.click(screen.getByRole('button', { name: 'Project: All projects' }));
+    await waitFor(() => expect(r.calls('/api/projects')).toHaveLength(2));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Session: All sessions' }));
+    await listbox('Session: All sessions');
+    expect(r.calls('/api/sessions').map((c) => Object.fromEntries(c.query))).toEqual([{ account: 'secondary' }]);
+    fireEvent.click(screen.getByRole('button', { name: 'Account: secondary@example.test' }));
+    await listbox('Account: secondary@example.test');
+    expect(r.calls('/api/summary').filter((c) => c.query.get('parts') === 'by_account')).toHaveLength(1);
   });
 });
 
@@ -262,7 +373,7 @@ describe('searching the transcripts', () => {
 
   it('OV-C36: the box is labelled, invites a word, a phrase, an identifier, does no spell-checking or completion, and the idle caption says what it searches', async () => {
     router();
-    show();
+    show('/?range=all&tab=search');
     await loaded();
     expect(box()).toHaveAttribute('placeholder', 'a word, a phrase, an identifier…');
     expect(box()).toHaveAttribute('spellcheck', 'false');
@@ -270,17 +381,27 @@ describe('searching the transcripts', () => {
     expect(within(panel('Search the transcripts')).getByText('every message, tool call and result ever captured')).toBeVisible();
   });
 
-  it('OV-C37: "/" focuses the box and selects its text from anywhere, except in a field or with a modifier, beside a visible "/" hint', async () => {
+  it('OV-C37: "/" opens the Search tab and focuses the box, selecting its text, from anywhere except in a field or with a modifier, beside a visible "/" hint; what was asked survives a tab change', async () => {
     router();
     show();
     await loaded();
-    type('kestrel');
-    act(() => box().blur());
     fireEvent.keyDown(document, { key: '/', metaKey: true });
+    expect(where()).toBe('/?range=all');
+    fireEvent.keyDown(document, { key: '/' });
+    await waitFor(() => expect(box()).toHaveFocus());
+    expect(where()).toBe('/?range=all&tab=search');
+    type('kestrel');
+    // From another tab, the text typed is still there, and selected.
+    await tabTo('Activity', 'Activity over time');
+    fireEvent.keyDown(document, { key: '/' });
+    await waitFor(() => expect(box()).toHaveFocus());
+    expect([(box() as HTMLInputElement).selectionStart, (box() as HTMLInputElement).selectionEnd]).toEqual([0, 7]);
+    // And on its own tab, at once.
+    act(() => box().blur());
+    fireEvent.keyDown(document, { key: '/', ctrlKey: true });
     expect(box()).not.toHaveFocus();
     fireEvent.keyDown(document, { key: '/' });
     expect(box()).toHaveFocus();
-    expect([(box() as HTMLInputElement).selectionStart, (box() as HTMLInputElement).selectionEnd]).toEqual([0, 7]);
     const field = document.createElement('input');
     document.body.append(field);
     act(() => field.focus());
@@ -292,7 +413,7 @@ describe('searching the transcripts', () => {
 
   it('OV-C39: typing searches 160 ms after the last keystroke, and changing the kind searches at once', async () => {
     const r = router();
-    show();
+    show('/?range=all&tab=search');
     await loaded();
     type('k');
     type('ke');
@@ -312,7 +433,7 @@ describe('searching the transcripts', () => {
   it('OV-C41: a reply that arrives after a newer query was sent is dropped', async () => {
     const first = held();
     router((path, q) => (path === '/api/search' && q.get('q') === 'one' ? first.promise : path === '/api/search' ? ok(reply(q.get('q') ?? '')) : undefined));
-    show();
+    show('/?range=all&tab=search');
     await loaded();
     type('one');
     await new Promise((done) => setTimeout(done, 250));
@@ -326,12 +447,12 @@ describe('searching the transcripts', () => {
 
   it('OV-C42: the search is not part of the five-second poll, and asking again asks the router again', async () => {
     const r = router((path, q) => (path === '/api/search' ? ok(reply(q.get('q') ?? '')) : undefined));
-    const { client } = show();
+    const { client } = show('/?range=all&tab=search');
     await loaded();
     type('kestrel');
     await waitFor(() => expect(r.calls('/api/search')).toHaveLength(1));
     const reads = r.calls('/api/summary').length;
-    await act(() => client.refetchQueries({ queryKey: keys.overview({ account: null, project: null, session: null, range: 'all' }) }));
+    await act(() => client.refetchQueries({ queryKey: keys.overview({ account: null, project: null, session: null, range: 'all' }, 'search') }));
     expect(r.calls('/api/summary').length).toBe(reads + 1);
     expect(r.calls('/api/search')).toHaveLength(1);
     const kinds = within(screen.getByRole('tablist', { name: 'What to search' }));
@@ -343,7 +464,7 @@ describe('searching the transcripts', () => {
 
   it('OV-C48: a hit is a button naming its kind, role, project, session and time over a snippet of three lines at most, and pressing it scopes the page', async () => {
     router((path, q) => (path === '/api/search' ? ok(reply(q.get('q') ?? '')) : undefined));
-    show();
+    show('/?range=all&tab=search');
     await loaded();
     type('kestrel');
     const hits = await screen.findByRole('list', { name: 'Best matches' });
@@ -352,12 +473,12 @@ describe('searching the transcripts', () => {
     expect(within(hit).getByText('kestrel', { selector: 'mark' })).toBeInTheDocument();
     expect(scss).toMatch(/\.snippet \{[^}]*-webkit-line-clamp: 3;[^}]*line-clamp: 3;/);
     fireEvent.click(hit);
-    await waitFor(() => expect(where()).toBe(`/?project=%2Fcode%2Fagent-router&session=${S1}&range=all`));
+    await waitFor(() => expect(where()).toBe(`/?project=%2Fcode%2Fagent-router&session=${S1}&range=all&tab=search`));
   });
 
   it('OV-C53: the search’s session rows mark the session the page is scoped to as soon as it changes', async () => {
     const r = router((path, q) => (path === '/api/search' ? ok(reply(q.get('q') ?? '')) : undefined));
-    show();
+    show('/?range=all&tab=search');
     await loaded();
     type('kestrel');
     const rows = await screen.findByRole('list', { name: 'Sessions that mention it' });
@@ -407,16 +528,29 @@ describe('all accounts', () => {
 });
 
 describe('Totals in scope', () => {
-  it('OV-C107: Errors offers a visible "List the N errors" that sets the filter to errors, returns that list to its first page and brings it into view', async () => {
+  it('OV-C107: Errors offers a visible "List the N errors" that opens the Requests tab filtered to errors, returns that list to its first page and brings it into view', async () => {
     const into = vi.spyOn(Element.prototype, 'scrollIntoView').mockImplementation(() => {});
     router();
-    show();
+    const first = show();
     await loaded();
-    fireEvent.click(screen.getByRole('button', { name: 'Show 10 more' }));
+    // From another tab: the Requests tab opens, and the list is brought into view once it is drawn.
     const button = within(tile('Errors')).getByRole('button', { name: 'List the 3 errors' });
     expect(button.tagName).toBe('BUTTON');
     fireEvent.click(button);
-    await waitFor(() => expect(where()).toBe('/?range=all&kind=errors'));
+    await waitFor(() => expect(where()).toBe('/?range=all&tab=requests&kind=errors'));
+    await waitFor(() => expect(into).toHaveBeenCalled());
+    expect(into.mock.contexts.at(-1)).toBe(document.getElementById('requests'));
+    expect(within(panel('Requests')).getAllByRole('listitem')).toHaveLength(1);
+    first.unmount();
+
+    // On the Requests tab, from its second page.
+    into.mockClear();
+    router();
+    show('/?range=all&tab=requests');
+    await loaded();
+    fireEvent.click(await screen.findByRole('button', { name: 'Show 10 more' }));
+    fireEvent.click(within(tile('Errors')).getByRole('button', { name: 'List the 3 errors' }));
+    await waitFor(() => expect(where()).toBe('/?range=all&tab=requests&kind=errors'));
     expect(within(panel('Requests')).getAllByRole('listitem')).toHaveLength(1);
     await waitFor(() => expect(into).toHaveBeenCalled());
     expect(into.mock.contexts.at(-1)).toBe(document.getElementById('requests'));
@@ -426,18 +560,19 @@ describe('Totals in scope', () => {
 describe('the lists', () => {
   it('OV-C132: lists keep the router’s order', async () => {
     router((path) => (path === '/api/projects' ? ok([project('/code/small', 10), project('/code/large', 9_000_000)]) : undefined));
-    show();
+    show('/?range=all&tab=projects');
     await loaded();
+    await screen.findByRole('list', { name: 'Projects' });
     expect(within(panel('Projects')).getAllByRole('button').map((b) => b.getAttribute('aria-labelledby') && b.textContent?.split('/')[0])).toEqual(['small', 'large']);
   });
 
   it('OV-C136: a project with no recorded path is "(unresolved)" and scopes like any other', async () => {
     const r = router((path) => (path === '/api/projects' ? ok([...PROJECTS, project(null, 1_000)]) : undefined));
-    show();
+    show('/?range=all&tab=projects');
     await loaded();
-    fireEvent.click(within(panel('Projects')).getByRole('button', { name: '(unresolved)' }));
+    fireEvent.click(within(await screen.findByRole('list', { name: 'Projects' })).getByRole('button', { name: '(unresolved)' }));
     await waitFor(() => expect(r.calls('/api/summary').some((c) => c.query.get('project') === '(unresolved)')).toBe(true));
-    expect(where()).toBe('/?project=%28unresolved%29&range=all');
+    expect(where()).toBe('/?project=%28unresolved%29&range=all&tab=projects');
   });
 
   it('OV-C214: a scoped project says its repository and every directory on its machine under the scope bar, and an unscoped page says neither', async () => {
@@ -451,10 +586,10 @@ describe('the lists', () => {
       ],
     });
     const r = router((path) => (path === '/api/projects' ? ok([ui, ...PROJECTS]) : undefined));
-    show();
+    show('/?range=all&tab=projects');
     await loaded();
     expect(screen.queryByLabelText('Where this project ran')).toBeNull();
-    fireEvent.click(within(panel('Projects')).getByRole('button', { name: 'ui-kit-web' }));
+    fireEvent.click(within(await screen.findByRole('list', { name: 'Projects' })).getByRole('button', { name: 'ui-kit-web' }));
     await waitFor(() => expect(r.calls('/api/summary').some((c) => c.query.get('project') === repository)).toBe(true));
     const places = await screen.findByLabelText('Where this project ran');
     expect(within(places).getAllByRole('term').map((t) => t.textContent)).toEqual(['Repository', '3 directories']);
@@ -472,8 +607,9 @@ describe('the lists', () => {
   it('OV-C139: a long list shows a first page and a visible "Show more"; Sessions holds up to 200', async () => {
     const many = Array.from({ length: 45 }, (_, i) => session(`${String(i).padStart(8, '0')}-0000-4000-8000-000000000000`));
     router((path) => (path === '/api/sessions' ? ok(many) : undefined));
-    show();
+    show('/?range=all&tab=projects');
     await loaded();
+    await screen.findByRole('list', { name: 'Sessions' });
     const list = () => within(panel('Sessions')).getByRole('list', { name: 'Sessions' });
     expect(within(list()).getAllByRole('listitem')).toHaveLength(20);
     fireEvent.click(within(panel('Sessions')).getByRole('button', { name: 'Show 20 more' }));
@@ -487,32 +623,32 @@ describe('the lists', () => {
 describe('the requests', () => {
   it('OV-C155: filters that leave nothing say so beside "Clear the filters", and no requests at all say that', async () => {
     router();
-    const filtered = show('/?kind=errors&stop=end_turn');
+    const filtered = show('/?tab=requests&kind=errors&stop=end_turn');
     await loaded();
-    expect(within(panel('Requests')).getByText('No request matches these filters.')).toBeInTheDocument();
+    expect(await within(panel('Requests')).findByText('No request matches these filters.')).toBeInTheDocument();
     fireEvent.click(within(panel('Requests')).getByRole('button', { name: 'Clear the filters' }));
-    await waitFor(() => expect(where()).toBe('/'));
+    await waitFor(() => expect(where()).toBe('/?tab=requests'));
     filtered.unmount();
 
     router((path) => (path === '/api/requests' ? ok([]) : undefined));
-    show();
+    show('/?range=all&tab=requests');
     await loaded();
-    expect(within(panel('Requests')).getByText('No requests for this scope.')).toBeInTheDocument();
+    expect(await within(panel('Requests')).findByText('No requests for this scope.')).toBeInTheDocument();
   });
 
   it('OV-C153: a model filter whose model has left the loaded rows is cleared from the address, never left filtering to nothing', async () => {
     router();
-    show('/?model=claude-haiku-4-5&kind=subagents');
+    show('/?tab=requests&model=claude-haiku-4-5&kind=subagents');
     await loaded();
-    await waitFor(() => expect(where()).toBe('/?kind=subagents'));
+    await waitFor(() => expect(where()).toBe('/?tab=requests&kind=subagents'));
     expect(within(panel('Requests')).getAllByRole('listitem')).toHaveLength(1);
   });
 
   it('OV-C154: a filter change returns the list to its first twenty rows', async () => {
     router();
-    show();
+    show('/?range=all&tab=requests');
     await loaded();
-    fireEvent.click(screen.getByRole('button', { name: 'Show 10 more' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Show 10 more' }));
     expect(within(panel('Requests')).getAllByRole('listitem')).toHaveLength(30);
     fireEvent.click(within(screen.getByRole('group', { name: 'Stop reasons' })).getByRole('button', { name: /^tool_use/ }));
     await waitFor(() => expect(within(panel('Requests')).getAllByRole('listitem')).toHaveLength(20));
@@ -661,13 +797,15 @@ describe('what the router sends', () => {
             ? ok([request(1, { error: '<script>window.hacked=2</script>' }), ...REQUESTS.slice(1)])
             : undefined,
     );
-    show('/?open=1');
+    show('/?tab=requests&open=1');
     await loaded();
     const main = document.body;
-    expect(main.querySelector('img, b, script')).toBeNull();
-    expect(within(panel('Projects')).getByText(path)).toBeInTheDocument();
+    expect(await within(panel('Requests')).findByText('<script>window.hacked=2</script>')).toBeInTheDocument();
+    await tabTo('Context', 'By model');
     expect(within(panel('By model')).getByText('<b>bold</b>')).toBeInTheDocument();
-    expect(within(panel('Requests')).getByText('<script>window.hacked=2</script>')).toBeInTheDocument();
+    await tabTo('Projects & sessions', 'Projects');
+    expect(await within(panel('Projects')).findByText(path)).toBeInTheDocument();
+    expect(main.querySelector('img, b, script')).toBeNull();
     expect((window as unknown as { hacked?: number }).hacked).toBeUndefined();
   });
 });
@@ -678,21 +816,24 @@ describe('a hosted router', () => {
 
   it('OV-C203: the page learns what the router can do from /api/auth’s mode, never assuming a Mac', async () => {
     router((path) => empty(path) ?? (path === '/api/auth' ? ok(LOCAL) : undefined));
-    const local = show();
+    const local = show('/?range=all&tab=projects');
     await loaded();
+    await screen.findByRole('heading', { level: 2, name: 'Projects' });
     expect(await within(panel('Projects')).findByRole('link', { name: 'Settings → Claude Code' })).toHaveAttribute('href', '/settings/claude-code');
     local.unmount();
 
     router((path) => empty(path) ?? (path === '/api/auth' ? ok(HOSTED) : undefined));
-    const hosted = show();
+    const hosted = show('/?range=all&tab=projects');
     await loaded();
+    await screen.findByRole('heading', { level: 2, name: 'Projects' });
     expect(await within(panel('Projects')).findByRole('link', { name: 'Settings → Router' })).toHaveAttribute('href', '/settings/router');
     expect(within(panel('Projects')).queryByRole('link', { name: 'Settings → Claude Code' })).toBeNull();
     hosted.unmount();
 
     router((path) => empty(path) ?? (path === '/api/auth' ? dropped() : undefined));
-    show();
+    show('/?range=all&tab=projects');
     await loaded();
+    await screen.findByRole('heading', { level: 2, name: 'Projects' });
     await new Promise((done) => setTimeout(done, 50));
     expect(within(panel('Projects')).queryByRole('link')).toBeNull();
   });

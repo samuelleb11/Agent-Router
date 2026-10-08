@@ -145,7 +145,7 @@ describe('a timeout on every request', () => {
     // Every read the Overview's cycle makes answers but one, which never does.
     stubAnswer((path) => (path === '/api/summary' ? undefined : path === '/api/quota' || path === '/api/forecast' ? json({}) : json([])));
     const overview = createPoll();
-    const cycle = outcome(overview.cycle(() => readSnapshot(UNSCOPED)));
+    const cycle = outcome(overview.cycle(() => readSnapshot(UNSCOPED, 'activity')));
     await vi.advanceTimersByTimeAsync(TIMEOUT_MS);
     expect(cycle.done).toBe(true);
     expect(cycle.error).toBeInstanceOf(Unreachable);
@@ -170,7 +170,7 @@ describe('the optional reads', () => {
       return undefined;
     });
     const poll = createPoll();
-    const read = () => poll.cycle(() => readSnapshot(UNSCOPED, { kept: poll.kept() }));
+    const read = () => poll.cycle(() => readSnapshot(UNSCOPED, 'activity', { kept: poll.kept() }));
     const first = await read();
     expect(first.quota?.kept).toBe(false);
     expect(first.forecast?.kept).toBe(false);
@@ -192,7 +192,7 @@ describe('the optional reads', () => {
     let failing = false;
     router((path) => (failing && (path === '/api/auth' || path === '/api/accounts') ? refused('keychain locked', 500) : undefined));
     const { client, wrapper: Wrapper } = wrapper();
-    const { result } = renderHook(() => ({ overview: useOverview(UNSCOPED), auth: useAuth(), accounts: useAccounts() }), { wrapper: Wrapper });
+    const { result } = renderHook(() => ({ overview: useOverview(UNSCOPED, 'activity'), auth: useAuth(), accounts: useAccounts() }), { wrapper: Wrapper });
     await waitFor(() => expect(result.current.overview.freshness).toBe('live'));
     await waitFor(() => expect(result.current.auth.value).toEqual(LOCAL));
     await waitFor(() => expect(result.current.accounts.value).toEqual(ACCOUNTS));
@@ -232,7 +232,7 @@ describe('one clock', () => {
   }
 
   for (const [who, path, use] of [
-    ['the Overview', '/api/summary', () => useOverview(UNSCOPED)],
+    ['the Overview', '/api/summary', () => useOverview(UNSCOPED, 'activity')],
     ['the shell’s health check', '/_router/health', () => useLive()],
   ] as const) {
     it(`SH-C15: ${who} reads again five seconds after its last read finished, never while one is in flight, and never retries a failure quietly`, async () => {
@@ -299,7 +299,7 @@ describe('one clock', () => {
       }),
     );
     const { wrapper: Wrapper } = wrapper();
-    const { result } = renderHook(() => ({ overview: useOverview(UNSCOPED), live: useLive() }), { wrapper: Wrapper });
+    const { result } = renderHook(() => ({ overview: useOverview(UNSCOPED, 'activity'), live: useLive() }), { wrapper: Wrapper });
     await waitFor(() => expect(result.current.overview.freshness).toBe('live'));
     await waitFor(() => expect(result.current.live.mode).toBe('live'));
     const before = { summary: r.calls('/api/summary').length, health };

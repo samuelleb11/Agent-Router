@@ -245,6 +245,15 @@ export const ACCOUNTS: Account[] = [
   { id: 'primary', label: 'primary', email: 'primary@example.test', source: 'keychain', active: 0 },
 ];
 
+/// The summary as the router answers `parts=` (SV-C45): the parts named and nothing else, totals
+/// bringing unattributed; the whole of it without `parts=`.
+export function partsOf(s: Summary, parts: string | null): Partial<Summary> {
+  if (parts === null) return s;
+  const keep = new Set(parts.split(','));
+  if (keep.has('totals')) keep.add('unattributed');
+  return Object.fromEntries(Object.entries(s).filter(([k]) => keep.has(k)));
+}
+
 export type Reply = () => Response | Promise<Response>;
 
 export const ok = (data: unknown): Response => new Response(JSON.stringify(data), { status: 200, headers: { 'Content-Type': 'application/json' } });
@@ -291,7 +300,7 @@ export function router(answer: (path: string, query: URLSearchParams, n: number)
     }
     switch (url.pathname) {
       case '/api/summary':
-        return ok(summary());
+        return ok(partsOf(summary(), url.searchParams.get('parts')));
       case '/api/projects':
         return ok(PROJECTS);
       case '/api/sessions':

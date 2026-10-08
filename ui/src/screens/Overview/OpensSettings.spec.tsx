@@ -2,7 +2,7 @@
 // "Pages and tabs" and "Hosted router"): once per load, only from the Overview as the load opened it,
 // when nothing can sign or a credential that could sign does not work. Each case is a load of its own:
 // the modules are loaded afresh, since "once per load" is module state.
-import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Account } from '~/model/settings';
 import { renderScreen } from '~/test-utils';
@@ -95,13 +95,13 @@ describe('Settings → Accounts, opened by the Overview', () => {
     expect(r.calls('/api/accounts').filter((c) => !c.query.has('probe')).length).toBeGreaterThan(0);
     // The reader goes somewhere before the check answers: it answers "nothing can sign", and the page
     // they chose stays theirs.
-    fireEvent.click(within(screen.getByRole('heading', { level: 2, name: 'Projects' }).closest('section')!).getByRole('button', { name: 'agent-router' }));
-    await waitFor(() => expect(where()).toBe('/?project=%2Fcode%2Fagent-router'));
+    fireEvent.click(screen.getByRole('tab', { name: 'Context' }));
+    await waitFor(() => expect(where()).toBe('/?tab=context'));
     await act(async () => {
       answer.release(ok([]));
       await new Promise((done) => setTimeout(done, 50));
     });
-    expect(where()).toBe('/?project=%2Fcode%2Fagent-router');
+    expect(where()).toBe('/?tab=context');
     expect(probes(r)).toHaveLength(1);
   });
 });

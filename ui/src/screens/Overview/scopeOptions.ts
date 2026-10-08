@@ -1,7 +1,8 @@
 // New for agent-router: the scope pickers' rows (assets/index.html, `menuRows`), with no DOM: "All …" first,
 // then a row per account, project or session with its name, its second line and its figures (OV-C16).
 import type { ScopeOption } from '~/components/ScopePicker';
-import type { AccountSplitRow, SessionRow, Snapshot } from '~/data/overview';
+import type { AccountSplitRow, SessionRow } from '~/data/overview';
+import type { ProjectRow } from '~/data/router';
 import { compact, count, id8, projectName, tod, usd } from '~/model/format';
 import { sessionsHeld, type Scope } from '~/model/scope';
 import { projectKeyOf } from './panels';
@@ -25,11 +26,11 @@ export function accountOptions(list: readonly AccountSplitRow[]): ScopeOption[] 
 }
 
 /// The project picker: each project by its folder's name, its path giving up its head rather than
-/// its tail (OV-C16).
-export function projectOptions(s: Snapshot): ScopeOption[] {
+/// its tail (OV-C16). "All projects" counts the requests the top counts.
+export function projectOptions(list: readonly ProjectRow[], requests: number | null): ScopeOption[] {
   return [
-    { key: ALL, name: 'All projects', meta: `${count(s.summary.totals.requests)} req` },
-    ...s.projects.map((p) => ({ key: projectKeyOf(p), name: projectName(p.project), sub: p.project ?? '', path: true, meta: figures(p) })),
+    { key: ALL, name: 'All projects', meta: `${count(requests)} req` },
+    ...list.map((p) => ({ key: projectKeyOf(p), name: projectName(p.project), sub: p.project ?? '', path: true, meta: figures(p) })),
   ];
 }
 

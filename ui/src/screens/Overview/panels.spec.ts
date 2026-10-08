@@ -161,7 +161,7 @@ describe('the lists', () => {
     expect([projectKeyOf(row), projectKey(row)]).toEqual([repository, repository]);
     expect(projectRows([row], NOW)[0]).toMatchObject({ key: repository, name: 'ui-kit-web', path: repository });
     expect(new URL(routes.project(projectKey(row)), 'http://console.test').searchParams.get('project')).toBe(repository);
-    const paths = snapshotPaths(scoped({ project: repository }), null, 0);
+    const paths = snapshotPaths(scoped({ project: repository }), 'activity', null, 0);
     for (const read of [paths.summary, paths.sessions, paths.tools, paths.requests]) expect(new URL(read, 'http://console.test').searchParams.get('project')).toBe(repository);
     // Where it ran: the repository, then each directory on its machine; a blank label names none.
     expect(projectPlaces(repository, [row])).toEqual({

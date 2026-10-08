@@ -1,11 +1,12 @@
-// New for agent-router: Accounts, Projects, Sessions, and Tool output beside Tool calls (assets/index.html,
-// `renderAccountSplit`, `renderProjects`, `renderSessions`, `orphanRow`, `renderTools`). Bar rows,
-// never a table (OV-C129); a list that scopes the page marks its selected row (OV-C130).
+// New for agent-router: the Projects & sessions tab — Accounts, Projects, Sessions — and the Tools tab — Tool
+// output beside Tool calls (assets/index.html, `renderAccountSplit`, `renderProjects`, `renderSessions`,
+// `orphanRow`, `renderTools`). Bar rows, never a table (OV-C129); a list that scopes the page marks its
+// selected row (OV-C130).
 import { Button } from '@carbon/react';
 import { Fragment, useState } from 'react';
 import { Link } from 'react-router';
 import { BarList } from '~/components/BarList';
-import type { Snapshot } from '~/data/overview';
+import type { TabPart, Tools as ToolsRead } from '~/data/overview';
 import { CONCEPTS, paint } from '~/lib/concepts';
 import { settingsPath } from '~/lib/routes';
 import { useCoarse } from '~/lib/viewport';
@@ -91,19 +92,35 @@ function ShowMore({ total, shown, onMore, onFewer }: { total: number; shown: num
   return null;
 }
 
-export function Lists({ snapshot, scope, now, busy, auth, onScope }: { snapshot: Snapshot; scope: Scope; now: number; busy: boolean; auth: Auth | null; onScope: (next: Scope) => void }) {
-  const split = accountSplit(snapshot.summary.by_account);
-  const projects = projectRows(snapshot.projects, now);
-  const sessions = sessionRows(snapshot.sessions, scope, now);
+/// The Projects & sessions tab, from what was read for it and the top's count of requests no session
+/// holds, which ends the Projects and Sessions lists (OV-C141).
+export function Lists({
+  part,
+  unattributed: orphans,
+  scope,
+  now,
+  busy,
+  auth,
+  onScope,
+}: {
+  part: Extract<TabPart, { tab: 'projects' }>;
+  unattributed: number | null;
+  scope: Scope;
+  now: number;
+  busy: boolean;
+  auth: Auth | null;
+  onScope: (next: Scope) => void;
+}) {
+  const split = accountSplit(part.byAccount);
+  const projects = projectRows(part.projects, now);
+  const sessions = sessionRows(part.sessions, scope, now);
   // Sessions holds up to 200: a first page and "Show more", never every row at once (OV-C139). The
   // page returns to its first twenty when the scope changes (OV-C33).
   const scopeKey = `${scope.account}|${scope.project}|${scope.session}|${scope.range}`;
   const [paging, setPaging] = useState({ key: scopeKey, shown: LIST_PAGE });
   const shown = paging.key === scopeKey ? paging.shown : LIST_PAGE;
-  const orphanProjects = unattributed(snapshot.summary.unattributed, 'project', scope);
-  const orphanSessions = unattributed(snapshot.summary.unattributed, 'session', scope);
-  const produced = toolOutputRows(snapshot.tools.produced);
-  const called = toolCallRows(snapshot.tools.called);
+  const orphanProjects = unattributed(orphans, 'project', scope);
+  const orphanSessions = unattributed(orphans, 'session', scope);
   const start = nothingRecorded(scope);
 
   return (
@@ -131,7 +148,7 @@ export function Lists({ snapshot, scope, now, busy, auth, onScope }: { snapshot:
               // One swatch per model family it used, four at most (OV-C135).
               chips: (
                 <span className={styles.chips}>
-                  {familiesOf(snapshot.projects[i]?.models).map((f) => (
+                  {familiesOf(part.projects[i]?.models).map((f) => (
                     <Swatch key={f.family} family={f.family} />
                   ))}
                 </span>
@@ -181,7 +198,7 @@ export function Lists({ snapshot, scope, now, busy, auth, onScope }: { snapshot:
               }))}
               selected={scope.session}
               onSelect={(key) => {
-                const row = snapshot.sessions.find((x) => x.id === key);
+                const row = part.sessions.find((x) => x.id === key);
                 onScope(toggle(scope, 'session', key, row?.project ?? null));
               }}
             />
@@ -192,16 +209,23 @@ export function Lists({ snapshot, scope, now, busy, auth, onScope }: { snapshot:
         )}
         {orphanSessions && <NotYetAttributed row={orphanSessions} />}
       </Panel>
-
-      <div className={styles.two} data-two="">
-        <Panel concept="tools" title="Tool output the model read" caption="est. tokens" busy={busy}>
-          {produced.length ? <BarList label="Tool output the model read" rows={produced} /> : <p className={styles.empty}>{emptyWords('toolOutput', scope)}</p>}
-        </Panel>
-        <Panel concept="tools" title="Tool calls made" caption="by the model" busy={busy}>
-          {called.length ? <BarList label="Tool calls made" rows={called} /> : <p className={styles.empty}>{emptyWords('toolCalls', scope)}</p>}
-        </Panel>
-      </div>
     </>
+  );
+}
+
+/// The Tools tab: Tool output the model read beside Tool calls made.
+export function Tools({ tools, scope, busy }: { tools: ToolsRead; scope: Scope; busy: boolean }) {
+  const produced = toolOutputRows(tools.produced);
+  const called = toolCallRows(tools.called);
+  return (
+    <div className={styles.two} data-two="">
+      <Panel concept="tools" title="Tool output the model read" caption="est. tokens" busy={busy}>
+        {produced.length ? <BarList label="Tool output the model read" rows={produced} /> : <p className={styles.empty}>{emptyWords('toolOutput', scope)}</p>}
+      </Panel>
+      <Panel concept="tools" title="Tool calls made" caption="by the model" busy={busy}>
+        {called.length ? <BarList label="Tool calls made" rows={called} /> : <p className={styles.empty}>{emptyWords('toolCalls', scope)}</p>}
+      </Panel>
+    </div>
   );
 }
 

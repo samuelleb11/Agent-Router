@@ -55,7 +55,9 @@ holds 225. On 2026-10-07 the Machines screen added a section of its own, MA-C1 t
 same day Sessions tabbed a hosted router's machines, SE-C226 to SE-C230, so it holds 230. On
 2026-10-08 a project became its repository, so a repository's worktrees and clones are one project:
 SE-C231 and SE-C232 in Sessions, which holds 232, and OV-C214 in the Overview, which holds 214.
-The same day the summary learned to answer only the parts asked for, SV-C45, so Serving holds 45.
+The same day the summary learned to answer only the parts asked for, SV-C45, so Serving holds 45,
+and the Overview kept Quota headroom, All accounts and Totals in scope on top and tabbed the rest,
+reading only the open tab: OV-C215 to OV-C217, so the Overview holds 217.
 
 ## Shell
 
@@ -465,20 +467,25 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
 
 ### Layout and identity
 
-- **OV-C1** The Overview keeps every section the dashboard shows, in its order: the scope bar;
-  Search the transcripts; Quota headroom (meters, history, burn-down); All accounts; Totals in
-  scope; Activity over time; What the model read beside What fills the context window; By model
-  beside Main thread vs subagents; Accounts; Projects; Sessions; Tool output the model read beside
-  Tool calls made; Requests. *Why:* the Overview's brief is to keep everything the dashboard shows,
-  in the reading order its readers know. *Regression:* no. *Source:* `assets/index.html:405-511`.
+- **OV-C1** The Overview keeps every section the dashboard shows. On top, whatever tab is open:
+  the scope bar; Quota headroom (meters, history, burn-down); All accounts; Totals in scope. Under
+  them, a row of tabs, each holding the rest in the dashboard's order: Activity (Activity over
+  time); Context (What the model read beside What fills the context window, By model beside Main
+  thread vs subagents); Projects & sessions (Accounts, Projects, Sessions); Tools (Tool output the
+  model read beside Tool calls made); Requests; Search (Search the transcripts). *Why:* the
+  Overview's brief is to keep everything the dashboard shows; on 2026-10-08 the owner asked for it
+  to read less at once, with the sections tabbed under the figures read first, and chose which
+  stay on top. *Regression:* no. *Source:* `assets/index.html:405-511`;
+  `ui/src/screens/Overview/index.tsx`.
 - **OV-C2** Every section heading carries a caption saying what the section measures or how to use
   it — "the account that is serving right now", "cache vs. paid in full", "estimate · by character
   share", "prompt tokens read", "share of prompt tokens", "est. tokens", "by the model" — as visible
   text beside the heading, never in a tooltip. *Why:* an explanation belongs next to what it
   explains (the user's standing preference), and Carbon's `Tag` drops `title`. *Regression:* no.
   *Source:* `assets/index.html:417`, `assets/index.html:439`, `assets/index.html:461-501`.
-- **OV-C3** Every control is visible at rest — the time range, Clear scope, the search kinds, the
-  request filters, Show more — and none sits in an overflow menu or behind a disclosure. *Why:* the
+- **OV-C3** Every control is visible at rest — the time range, Clear scope, the tabs, and the open
+  tab's own: the search kinds, the request filters, Show more — and none sits in an overflow menu or
+  behind a disclosure. *Why:* the
   user's standing preference: controls visible, not behind disclosure. *Regression:* no. *Source:*
   `assets/index.html:405-429`, `assets/index.html:506-511`.
 - **OV-C4** One icon per concept, the same wherever the concept appears: project (folder, in the
@@ -544,10 +551,20 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
 - **OV-C14** Every crumb is a picker, so a scope can be chosen at the top of the page instead of
   hunting for its row further down. *Why:* the comment above `renderCrumbs`. *Regression:* no.
   *Source:* `assets/index.html:997-1013`.
-- **OV-C15** The five-second poll never closes, rebuilds or moves an open picker; the crumbs change
-  only when the scope, or the scoped session's branch, does. *Why:* "Rebuilt only when the scope
+- **OV-C15** The five-second poll never closes, rebuilds or moves an open picker (it does not read
+  a picker's rows at all, OV-C217); the crumbs change only when the scope, or the scoped session's
+  branch, does. *Why:* "Rebuilt only when the scope
   changes, so an open menu is not destroyed by the five-second poll." *Regression:* no. *Source:*
   `assets/index.html:997-1006`.
+- **OV-C217** A scope picker reads its rows when it is opened, and again each time it is opened,
+  never on the five-second poll: the accounts that served in the range (the summary's by_account),
+  the projects under the account, the sessions under the account and the project. While they are
+  read it says so above "All …", and a read that fails says why in the router's words. The crumbs are
+  named from what the poll reads for them, and only while their level is set: by_account while an
+  account is scoped, the sessions while a session is. *Why:* the pickers' lists — up to 200 sessions
+  and every project — were read every five seconds for menus that are almost always closed.
+  *Regression:* no. *Source:* `ui/src/data/overview.ts` (`usePickers`),
+  `ui/src/screens/Overview/ScopeBar.tsx`.
 - **OV-C16** A picker lists "All …" first, then one row per account, project or session, each with
   its name, a second line and a meta of tokens · requests · cost, the current choice marked; the
   name never shrinks, and a project's path gives up the space and ellipsises from the left, keeping
@@ -623,6 +640,13 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
   `assets/index.html:914-923`.
 - **OV-C32** An edited or followed address re-scopes the page without a reload. *Why:* the address
   is the scope. *Regression:* no. *Source:* `assets/index.html:2660`.
+- **OV-C215** The open tab is in the address as `tab=`, left out for Activity, which an address
+  with none — or with a tab the page does not know, `constructor` included — opens on. Choosing a
+  tab pushes a history entry, so Back returns to the last one, and reads at once. The tab row is one
+  row that scrolls sideways inside the page rather than wrapping or widening it, its tabs 48 px on a
+  touch device, as Sessions' machine tabs are (SE-C230). *Why:* the address is the view (SH-C53), so
+  a link to a tab survives a reload. *Regression:* no. *Source:* `ui/src/model/scope.ts`
+  (`readQuery`, `writeQuery`), `ui/src/screens/Overview/index.tsx`.
 - **OV-C33** A scope change reads at once rather than at the next tick, closes any open picker
   without moving the focus, and returns the request list to its first twenty rows. *Why:* what was
   chosen should show at once, and from the top. *Regression:* no. *Source:*
@@ -642,10 +666,12 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
   reads "every message, tool call and result ever captured". *Why:* identifiers are typed exactly as
   they appear. *Regression:* no. *Source:* `assets/index.html:417-421`,
   `assets/index.html:2583-2586`.
-- **OV-C37** "/" focuses the search box and selects its text from anywhere on the page, except while
-  typing in a field or with a modifier held, and a visible "/" hint sits beside the box. *Why:* the
-  shortcut is worth having only if it can be found and never steals a keystroke. *Regression:* no.
-  *Source:* `assets/index.html:422`, `assets/index.html:2573-2578`.
+- **OV-C37** "/" opens the Search tab and focuses the search box, selecting its text, from anywhere
+  on the page, except while typing in a field or with a modifier held, and a visible "/" hint sits
+  beside the box. The Search tab stays mounted while another is open, so what was asked and found
+  survives a tab change. *Why:* the shortcut is worth having only if it can be found and never
+  steals a keystroke. *Regression:* no. *Source:* `assets/index.html:422`,
+  `assets/index.html:2573-2578`.
 - **OV-C38** The five kinds — all, messages, tool calls, results, thinking — are an always-visible
   single-choice switcher that never collapses into a dropdown, all being the default. *Why:* the
   plan, and controls stay visible. *Regression:* no. *Source:* `assets/index.html:423-429`,
@@ -1003,8 +1029,9 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
   `assets/index.html:1512-1513`, `src/api.rs:457-469`. *Today:* broken — the whole reply's p95 and
   the slowest reply are in the tooltip only.
 - **OV-C107** Errors gives the count, red when above zero, "of N requests"; with any errors it
-  offers a visible, keyboard-reachable "List the N errors" button that sets the request filter to
-  errors, returns that list to its first page and brings it into view. *Why:* the plan's visible
+  offers a visible, keyboard-reachable "List the N errors" button that opens the Requests tab with
+  the request filter set to errors, returns that list to its first page and brings it into view
+  once it is drawn. *Why:* the plan's visible
   button. *Regression:* no. *Source:* `assets/index.html:1514-1520`. *Today:* broken — the whole
   tile is a clickable `div` with no role or tab stop, worded "click to list them".
 - **OV-C108** The heading's caption reads "N requests · <last seen>" once anything is recorded.
@@ -1152,8 +1179,8 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
   says where it ran, as facts with nothing to open: its repository when it has one, then every
   directory its sessions ran in, each "<machine> · <path>", the path alone where no machine is named
   — a local router's, or a blank label (SE-C220) — wrapping rather than widening the page. The row
-  is the rail's, read over all time, else the snapshot's, so a project quiet in the range still says
-  where it ran. *Why:* the router named a project by its directory, so one repository was a Mac
+  is the rail's, read over all time, else the Projects & sessions tab's, so a project quiet in the
+  range still says where it ran. *Why:* the router named a project by its directory, so one repository was a Mac
   clone, a Linux clone and lane worktrees — several projects, each with part of its totals. Once the
   key is the repository, the directories are no longer in it and have to be said; facts at a glance
   rather than a table or a disclosure, the owner's standing preference. *Regression:* no. *Source:*
@@ -1279,11 +1306,23 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
 
 ### Refresh
 
-- **OV-C160** One snapshot: every figure on the Overview comes from one read, scoped by the same
-  account, project, session and range, so the tiles, charts and lists agree, and a cycle is drawn
-  whole or not at all. *Why:* "so every figure on the page agrees with every other"
+- **OV-C160** One snapshot: every figure on screen — the top and the open tab — comes from one
+  cycle of reads, scoped by the same account, project, session and range, so the tiles, charts and
+  lists agree, and a cycle is drawn whole or not at all. *Why:* "so every figure on the page agrees with every other"
   (`src/api.rs:302-305`); the unattributed row rests on it. *Regression:* no. *Source:*
   `assets/index.html:2503-2549`, `src/api.rs:302-305`.
+- **OV-C216** Only the open tab is read. Each cycle reads the summary's parts the top shows (totals,
+  quota, account, models, latency, timeline, quota_history, by `parts=`, SV-C45), the quota and
+  the forecast, and the open tab's own: nothing more for Activity and Search, the summary's context
+  and threads for Context, by_account with `/api/projects` and `/api/sessions` for Projects &
+  sessions, `/api/tools` for Tools, `/api/requests` for Requests. A tab opened is read at once, and
+  until its figures are in it says it is reading rather than drawing empty; Activity draws from the
+  top's timeline at once. A snapshot left behind is dropped, so coming back to a tab reads it afresh
+  rather than drawing old figures under a fresh "read 2s ago" (OV-C173). *Why:* every five seconds
+  the page read seven answers — the whole summary, 200 sessions, every project, the tools and 300
+  requests — for sections the reader mostly was not looking at; the owner asked on 2026-10-08 for
+  it to pull less at once. *Regression:* no. *Source:* `ui/src/data/overview.ts` (`summaryParts`,
+  `readSnapshot`, `useOverview`).
 - **OV-C161** The next read starts five seconds after the previous one finished, so reads never
   overlap or pile up, and the router's one-second memo stays shorter than that, so nothing shown is
   staler than it already was. *Why:* `src/api.rs:212-218`. *Regression:* no. *Source:*

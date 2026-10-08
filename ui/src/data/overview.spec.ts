@@ -2,7 +2,7 @@
 // "Lists" and "Refresh"): what each cycle asks the router, what it keeps, and how its failures count.
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Unreachable } from '~/lib/errors';
-import type { Scope } from '~/model/scope';
+import { TABS, type OverviewTab, type Scope } from '~/model/scope';
 import { createPoll, freshnessOf, keepReading, readAccounts, readSnapshot, snapshotPaths, UNREACHABLE_AFTER, type Snapshot } from './overview';
 import { dropped, held, ok, QUOTA, refused, router, forecast, summary } from '~/screens/Overview/fixtures';
 import { TIMEOUT_MS } from './http';
@@ -17,14 +17,14 @@ afterEach(() => {
 });
 
 describe('what a cycle asks', () => {
-  const p = snapshotPaths(SCOPED, NOW - 86_400_000, -240);
+  const p = snapshotPaths(SCOPED, 'projects', NOW - 86_400_000, -240);
 
   it('OV-C27: the range narrows every read but the quota, measured back from the moment of the read', () => {
     const since = String(NOW - 86_400_000);
     for (const path of [p.summary, p.projects, p.sessions, p.tools, p.requests, p.forecast]) expect(query(path).since, path).toBe(since);
     expect(p.quota).toBe('/api/quota');
     // "all" asks for no lower bound at all.
-    expect(Object.keys(query(snapshotPaths({ ...SCOPED, range: 'all' }, null, 0).summary))).not.toContain('since');
+    expect(Object.keys(query(snapshotPaths({ ...SCOPED, range: 'all' }, 'activity', null, 0).summary))).not.toContain('since');
   });
 
   it("OV-C111: the summary goes with the viewer's UTC offset, so the router buckets on the viewer's clock", () => {
@@ -50,26 +50,53 @@ describe('what a cycle asks', () => {
 });
 
 describe('one snapshot', () => {
-  it('OV-C160: every figure comes from one read of every answer, scoped alike, drawn whole or not at all', async () => {
+  it('OV-C160: the top and the open tab come from one cycle of reads, scoped alike, drawn whole or not at all', async () => {
     const r = router();
-    const s = await readSnapshot(SCOPED, { now: NOW, tz: 0 });
-    expect(r.seen.map((x) => x.path).sort()).toEqual(['/api/forecast', '/api/projects', '/api/quota', '/api/requests', '/api/sessions', '/api/summary', '/api/tools']);
-    for (const path of ['/api/summary', '/api/tools', '/api/requests']) expect(r.calls(path)[0]!.query.get('project'), path).toBe('/code/agent-router');
-    expect(s).toMatchObject({ scope: SCOPED, since: NOW - 86_400_000 });
+    const s = await readSnapshot(SCOPED, 'requests', { now: NOW, tz: 0 });
+    // The scoped session's crumb asks for the sessions on any tab.
+    expect(r.seen.map((x) => x.path).sort()).toEqual(['/api/forecast', '/api/quota', '/api/requests', '/api/sessions', '/api/summary']);
+    for (const path of ['/api/summary', '/api/requests', '/api/sessions']) expect(r.calls(path)[0]!.query.get('project'), path).toBe('/code/agent-router');
+    expect(s).toMatchObject({ scope: SCOPED, since: NOW - 86_400_000, part: { tab: 'requests' } });
     // One core read failing fails the whole cycle: nothing of it is drawn.
-    router((path) => (path === '/api/tools' ? refused('database is locked') : undefined));
-    await expect(readSnapshot(SCOPED, { now: NOW })).rejects.toThrow('database is locked');
+    router((path) => (path === '/api/requests' ? refused('database is locked') : undefined));
+    await expect(readSnapshot(SCOPED, 'requests', { now: NOW })).rejects.toThrow('database is locked');
+  });
+
+  it('OV-C216: each cycle reads the top’s summary parts, the quota and the forecast, plus the open tab’s own reads, and nothing for a tab that is not open', async () => {
+    const top = ['totals', 'quota', 'account', 'models', 'latency', 'timeline', 'quota_history'];
+    const own: Record<OverviewTab, { readonly paths: readonly string[]; readonly parts: readonly string[] }> = {
+      activity: { paths: [], parts: [] },
+      context: { paths: [], parts: ['context', 'threads'] },
+      projects: { paths: ['/api/projects', '/api/sessions'], parts: ['by_account'] },
+      tools: { paths: ['/api/tools'], parts: [] },
+      requests: { paths: ['/api/requests'], parts: [] },
+      search: { paths: [], parts: [] },
+    };
+    const unscoped: Scope = { account: null, project: null, session: null, range: '24h' };
+    for (const tab of TABS) {
+      const r = router();
+      const s = await readSnapshot(unscoped, tab, { now: NOW });
+      expect(r.seen.map((x) => x.path).sort(), tab).toEqual(['/api/forecast', '/api/quota', '/api/summary', ...own[tab].paths].sort());
+      expect(r.calls('/api/summary')[0]!.query.get('parts')!.split(',').sort(), tab).toEqual([...top, ...own[tab].parts].sort());
+      expect(s.part.tab).toBe(tab);
+    }
+    // The crumbs of a scoped account and a scoped session ask for what names them, on any tab (OV-C13).
+    const r = router();
+    const s = await readSnapshot({ ...unscoped, account: 'secondary', session: 'aaaaaaaa-1111-4111-8111-111111111111' }, 'activity', { now: NOW });
+    expect(r.calls('/api/summary')[0]!.query.get('parts')!.split(',')).toContain('by_account');
+    expect(r.calls('/api/sessions')).toHaveLength(1);
+    expect(s.session?.git_branch).toBe('dev');
   });
 
   it('OV-C64: a quota or forecast read that fails never fails the cycle, and keeps its last good reading with its age', async () => {
     router();
-    const first = await readSnapshot(SCOPED, { now: NOW });
+    const first = await readSnapshot(SCOPED, 'activity', { now: NOW });
     expect(first.quota).toMatchObject({ value: QUOTA, kept: false, for: 'secondary' });
     router((path) => (path === '/api/quota' || path === '/api/forecast' ? dropped() : undefined));
-    const second = await readSnapshot(SCOPED, { now: NOW, kept: { quota: first.quota, forecast: first.forecast } });
+    const second = await readSnapshot(SCOPED, 'activity', { now: NOW, kept: { quota: first.quota, forecast: first.forecast } });
     expect(second.quota).toEqual({ ...first.quota, kept: true });
     expect(second.forecast).toEqual({ ...first.forecast, kept: true });
-    expect(second.summary).toEqual(summary());
+    expect(second.summary.totals).toEqual(summary().totals);
   });
 
   it('OV-C65: a kept reading is shown only for the account and the range it was read for', () => {
@@ -86,7 +113,7 @@ describe('one snapshot', () => {
   it('OV-C165: every read has a timeout, and one that runs out fails its cycle', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     router((path) => (path === '/api/sessions' ? new Promise<Response>(() => {}) : undefined));
-    const cycle = readSnapshot(SCOPED, { now: NOW });
+    const cycle = readSnapshot(SCOPED, 'activity', { now: NOW });
     const failed = expect(cycle).rejects.toBeInstanceOf(Unreachable);
     await vi.advanceTimersByTimeAsync(TIMEOUT_MS + 1);
     await failed;
@@ -122,7 +149,7 @@ describe('the poll', () => {
     const gate = held();
     const r = router((path) => (path === '/api/summary' ? gate.promise : undefined));
     const superseded = new AbortController();
-    const cycle = poll.cycle(() => readSnapshot(SCOPED, { now: NOW, signal: superseded.signal }), superseded.signal);
+    const cycle = poll.cycle(() => readSnapshot(SCOPED, 'activity', { now: NOW, signal: superseded.signal }), superseded.signal);
     const settled = expect(cycle).rejects.toThrow();
     superseded.abort();
     gate.release(ok(summary()));

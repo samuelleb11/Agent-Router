@@ -92,8 +92,18 @@ export interface RequestFilters {
   readonly stop: string | null;
 }
 
+/// The tabs under the Overview's top, in their order (OV-C1): each reads only what it shows
+/// (OV-C216).
+export const TABS = ['activity', 'context', 'projects', 'tools', 'requests', 'search'] as const;
+export type OverviewTab = (typeof TABS)[number];
+
+/// The tab an address that names none opens on (OV-C215).
+export const DEFAULT_TAB: OverviewTab = 'activity';
+
 export interface OverviewAddress {
   readonly scope: Scope;
+  /// The open tab (OV-C215).
+  readonly tab: OverviewTab;
   /// The request rows open, by id.
   readonly open: readonly string[];
   readonly requests: RequestFilters;
@@ -104,27 +114,31 @@ const NO_FILTERS: RequestFilters = { kind: 'all', model: null, stop: null };
 
 const ids = (v: string | null): string[] => (v ?? '').split('.').filter(Boolean);
 
-/// The Overview's state from its query string: `?account=&project=&session=&range=&open=&kind=
-/// &model=&stop=`, every key optional.
+/// The Overview's state from its query string: `?account=&project=&session=&range=&tab=&open=
+/// &kind=&model=&stop=`, every key optional. A tab it does not know opens the first, as a range it
+/// does not know reads as all (OV-C28).
 export function readQuery(search: string): OverviewAddress {
   const p = new URLSearchParams(search);
   const kind = p.get('kind');
+  const tab = p.get('tab');
   return {
     scope: { account: p.get('account') || null, project: p.get('project') || null, session: p.get('session') || null, range: p.get('range') ? parseRange(p.get('range')) : DEFAULT_RANGE },
+    tab: TABS.find((t) => t === tab) ?? DEFAULT_TAB,
     open: ids(p.get('open')),
     requests: { kind: KINDS.find((k) => k === kind) ?? 'all', model: p.get('model') || null, stop: p.get('stop') || null },
   };
 }
 
-/// The Overview's query string, "" when nothing is narrowed: the range left out when the default, the open
-/// request ids joined by dots, as the dashboard spelled them.
+/// The Overview's query string, "" when nothing is narrowed: the range and the tab left out when the
+/// default, the open request ids joined by dots, as the dashboard spelled them.
 export function writeQuery(address: Partial<OverviewAddress> & { readonly scope: Scope }): string {
   const p = new URLSearchParams();
-  const { scope, open = [], requests = NO_FILTERS } = address;
+  const { scope, tab = DEFAULT_TAB, open = [], requests = NO_FILTERS } = address;
   if (scope.account) p.set('account', scope.account);
   if (scope.project) p.set('project', scope.project);
   if (scope.session) p.set('session', scope.session);
   if (scope.range !== DEFAULT_RANGE) p.set('range', scope.range);
+  if (tab !== DEFAULT_TAB) p.set('tab', tab);
   if (open.length) p.set('open', open.join('.'));
   if (requests.kind !== 'all') p.set('kind', requests.kind);
   if (requests.model) p.set('model', requests.model);

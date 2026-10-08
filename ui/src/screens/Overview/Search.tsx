@@ -1,5 +1,6 @@
-// New for agent-router: Search the transcripts (assets/index.html, `#searchpanel`, `runSearch`). Not part of
-// the five-second poll: it answers the keyboard, not the clock (OV-C42).
+// New for agent-router: Search the transcripts (assets/index.html, `#searchpanel`, `runSearch`), the Search
+// tab. Not part of the five-second poll: it answers the keyboard, not the clock (OV-C42). It stays mounted
+// while another tab is open, so what was asked survives a tab change and "/" works from any tab (OV-C37).
 import { ContentSwitcher, Search as CarbonSearch, Switch } from '@carbon/react';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
@@ -34,7 +35,21 @@ interface Asked {
 /// Whether focus is somewhere a typed slash belongs to (OV-C37).
 const typing = (el: Element | null): boolean => !!el && (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) || (el as HTMLElement).isContentEditable);
 
-export function SearchPanel({ scope, onScope, now }: { scope: Scope; onScope: (next: Scope) => void; now: number }) {
+export function SearchPanel({
+  scope,
+  onScope,
+  now,
+  shown,
+  onShow,
+}: {
+  scope: Scope;
+  onScope: (next: Scope) => void;
+  now: number;
+  /// Its tab is the open one.
+  shown: boolean;
+  /// Open its tab.
+  onShow: () => void;
+}) {
   const coarse = useCoarse();
   const input = useRef<HTMLInputElement>(null);
   const [text, setText] = useState('');
@@ -58,19 +73,35 @@ export function SearchPanel({ scope, onScope, now }: { scope: Scope; onScope: (n
     // The kind is read when the pause ends; changing it asks at once, below.
   }, [text]);
 
-  // "/" focuses the box and selects its text from anywhere, except in a field or with a modifier
-  // (OV-C37).
+  // "/" opens the Search tab, then focuses the box and selects its text, from anywhere except in a
+  // field or with a modifier (OV-C37). A hidden box takes no focus, so from another tab the focus
+  // waits for the tab to open.
+  const focusWanted = useRef(false);
+  const showNow = useRef(onShow);
+  showNow.current = onShow;
+  const shownNow = useRef(shown);
+  shownNow.current = shown;
+  const focusBox = () => {
+    input.current?.focus();
+    input.current?.select();
+  };
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== '/' || e.metaKey || e.ctrlKey || e.altKey) return;
       if (typing(document.activeElement)) return;
       e.preventDefault();
-      input.current?.focus();
-      input.current?.select();
+      if (shownNow.current) return focusBox();
+      focusWanted.current = true;
+      showNow.current();
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
   }, []);
+  useEffect(() => {
+    if (!shown || !focusWanted.current) return;
+    focusWanted.current = false;
+    focusBox();
+  });
 
   const params = asked?.params ?? null;
   const q = useQuery({

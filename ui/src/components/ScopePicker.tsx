@@ -47,6 +47,7 @@ export function ScopePicker({
   options,
   note,
   onPick,
+  onOpenChange,
   className,
 }: {
   level: Level;
@@ -60,6 +61,8 @@ export function ScopePicker({
   /// What the list leaves out, said where it is read: "the 200 most recent sessions" (OV-C34).
   note?: string;
   onPick: (key: string) => void;
+  /// Told when it opens and closes, so its rows can be read only while it is open (OV-C217).
+  onOpenChange?: (open: boolean) => void;
   className?: string;
 }) {
   const ids = useId();
@@ -98,8 +101,13 @@ export function ScopePicker({
   /// an id, and either may hold anything.
   const rowOf = (key: string) => [...(list.current?.querySelectorAll<HTMLElement>('[role="option"]') ?? [])].find((el) => el.dataset.key === key);
 
+  useEffect(() => {
+    onOpenChange?.(open);
+  }, [open]);
+
   // Opened: the focus goes to the filter, else the current row, else the first. Only on opening, so
-  // a poll's new rows never move it (OV-C15).
+  // a poll's new rows never move it (OV-C15) — and once more when the rows it reads on opening bring
+  // a filter with them (OV-C217).
   useEffect(() => {
     if (!open) return;
     if (filter.current) {
@@ -111,7 +119,7 @@ export function ScopePicker({
       setActive(start.key);
       rowOf(start.key)?.focus();
     }
-  }, [open]);
+  }, [open, filterable]);
 
   // A window resize closes it: it was placed for the old window.
   useEffect(() => {

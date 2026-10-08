@@ -3,19 +3,19 @@
 // `renderThreads`).
 import { BarList } from '~/components/BarList';
 import { ShareBar } from '~/components/ShareBar';
-import type { Snapshot } from '~/data/overview';
+import type { Summary, TabPart } from '~/data/overview';
 import { family } from '~/model/format';
 import type { Scope } from '~/model/scope';
 import { CONTEXT_NOTE, contextParts, emptyWords, modelRows, readPanel, threadParts } from './panels';
 import { Panel, Swatch } from './parts';
 import styles from './Overview.module.scss';
 
-export function Reading({ snapshot, scope, busy }: { snapshot: Snapshot; scope: Scope; busy: boolean }) {
-  const s = snapshot.summary;
-  const read = readPanel(s.totals, scope);
-  const context = contextParts(s.context);
+/// The Context tab: the top's totals and models, with the context and threads read for it.
+export function Reading({ summary, part, scope, busy }: { summary: Summary; part: Extract<TabPart, { tab: 'context' }>; scope: Scope; busy: boolean }) {
+  const read = readPanel(summary.totals, scope);
+  const context = contextParts(part.context);
   const contextTotal = context.reduce((a, p) => a + (p.value ?? 0), 0);
-  const models = modelRows(s.models);
+  const models = modelRows(summary.models);
   return (
     <>
       <div className={styles.two} data-two="">
@@ -37,8 +37,8 @@ export function Reading({ snapshot, scope, busy }: { snapshot: Snapshot; scope: 
           )}
         </Panel>
         <Panel concept="subagents" title="Main thread vs subagents" caption="share of prompt tokens" busy={busy}>
-          <ShareBar label="Main thread vs subagents" parts={threadParts(s.threads)} of="of prompt tokens" />
-          {!s.threads.length && <p className={styles.empty}>{emptyWords('models', scope)}</p>}
+          <ShareBar label="Main thread vs subagents" parts={threadParts(part.threads)} of="of prompt tokens" />
+          {!part.threads.length && <p className={styles.empty}>{emptyWords('models', scope)}</p>}
         </Panel>
       </div>
     </>

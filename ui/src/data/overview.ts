@@ -20,7 +20,7 @@ import { useRead, type Read } from '~/data/held';
 import type { MachineRef, ProjectRow } from '~/data/router';
 import { POLL_MS } from '~/lib/freshness';
 import type { Forecast } from '~/model/forecast';
-import { sinceMs, type Scope } from '~/model/scope';
+import { sinceMs, type Level, type OverviewTab, type Scope } from '~/model/scope';
 import type { Account, Auth } from '~/model/settings';
 
 // ---------------------------------------------------------------- the router's answers
@@ -159,22 +159,34 @@ export interface QuotaHistoryRow {
   readonly rl_7d: number | null;
 }
 
-/// `GET /api/summary`: everything above the lists, in one round trip.
+/// `GET /api/summary`, asked for by part (`parts=`, SV-C45): the parts the top of the Overview
+/// shows are always asked for; the others only when a tab or a crumb shows them (OV-C216).
 export interface Summary {
   readonly totals: Totals;
-  /// Requests in scope that no session holds, counted by the router (OV-C141).
+  /// Requests in scope that no session holds, counted by the router (OV-C141). Comes with totals.
   readonly unattributed: number | null;
   readonly quota: HeaderQuota | null;
   readonly account: ServingAccount | null;
-  readonly context: readonly ContextRow[];
   readonly models: readonly ModelRow[];
-  readonly threads: readonly ThreadRow[];
   readonly latency: Latency | null;
-  readonly stop_reasons: readonly { readonly stop_reason: string; readonly requests: number }[];
-  readonly by_account: readonly AccountSplitRow[];
   readonly timeline: Timeline;
   readonly quota_history: readonly QuotaHistoryRow[];
+  /// For the Context tab.
+  readonly context?: readonly ContextRow[];
+  readonly threads?: readonly ThreadRow[];
+  /// For the Projects & sessions tab, and for the crumb of a scoped account.
+  readonly by_account?: readonly AccountSplitRow[];
+  /// Never asked for by the console; the phones read it.
+  readonly stop_reasons?: readonly { readonly stop_reason: string; readonly requests: number }[];
 }
+
+/// The summary's parts, in the order the router answers them (src/api.rs `SUMMARY_PARTS`).
+export const SUMMARY_PARTS = ['totals', 'quota', 'account', 'context', 'models', 'threads', 'latency', 'stop_reasons', 'by_account', 'timeline', 'quota_history'] as const;
+export type SummaryPart = (typeof SUMMARY_PARTS)[number];
+
+/// What the top of the Overview shows whatever tab is open: Quota headroom, All accounts and Totals
+/// in scope, with the timeline their sparklines and history are bucketed on.
+const TOP_PARTS: readonly SummaryPart[] = ['totals', 'quota', 'account', 'models', 'latency', 'timeline', 'quota_history'];
 
 /// One row of `GET /api/sessions`: the 200 most recently seen sessions in scope, and no more.
 export interface SessionRow {
@@ -304,8 +316,18 @@ export function keepReading<T>(fresh: Outcome<T>, previous: Reading<T> | null, f
   return previous && previous.for === forKey ? { ...previous, kept: true } : null;
 }
 
-/// Every figure on the Overview, from one read of eight answers, scoped alike, so the tiles, the
-/// charts and the lists agree (OV-C160).
+/// The open tab's own figures, read in the same cycle as the top (OV-C216). Activity draws from the
+/// top's timeline, and Search asks the router only when typed to, so neither reads anything here.
+export type TabPart =
+  | { readonly tab: 'activity' }
+  | { readonly tab: 'search' }
+  | { readonly tab: 'context'; readonly context: readonly ContextRow[]; readonly threads: readonly ThreadRow[] }
+  | { readonly tab: 'projects'; readonly byAccount: readonly AccountSplitRow[]; readonly projects: readonly ProjectRow[]; readonly sessions: readonly SessionRow[] }
+  | { readonly tab: 'tools'; readonly tools: Tools }
+  | { readonly tab: 'requests'; readonly requests: readonly RequestRecord[] };
+
+/// Every figure on screen, from one cycle of reads scoped alike, so the tiles, the charts and the open
+/// tab agree (OV-C160): the top, whatever tab is open, and the open tab's own (OV-C216).
 export interface Snapshot {
   /// What it was read for.
   readonly scope: Scope;
@@ -316,12 +338,12 @@ export interface Snapshot {
   /// The viewer's UTC offset in minutes it asked with, which its buckets are keyed on (OV-C111).
   readonly tz: number;
   readonly summary: Summary;
-  readonly projects: readonly ProjectRow[];
-  readonly sessions: readonly SessionRow[];
-  readonly tools: Tools;
-  readonly requests: readonly RequestRecord[];
+  /// The scoped session's row, for its crumb's branch (OV-C13); null with no session scoped, and for
+  /// one past the 200 most recent the router lists.
+  readonly session: SessionRow | null;
   readonly quota: Reading<LiveQuota> | null;
   readonly forecast: Reading<Forecast> | null;
+  readonly part: TabPart;
 }
 
 /// A query string from the parameters that are set: an absent level is not sent.
@@ -332,14 +354,26 @@ export function query(params: Readonly<Record<string, string | number | null | u
   return s ? `?${s}` : '';
 }
 
-/// The paths one cycle reads, each with the scope the router narrows it by. The navigators are never
+/// The summary's parts a cycle asks for: the top's, the open tab's, and by_account while an account is
+/// scoped, for its crumb's label (OV-C13, OV-C216).
+export function summaryParts(scope: Scope, tab: OverviewTab): SummaryPart[] {
+  const wanted = new Set<SummaryPart>(TOP_PARTS);
+  if (tab === 'context') {
+    wanted.add('context');
+    wanted.add('threads');
+  }
+  if (tab === 'projects' || scope.account) wanted.add('by_account');
+  return SUMMARY_PARTS.filter((p) => wanted.has(p));
+}
+
+/// The paths a cycle may read, each with the scope the router narrows it by. The navigators are never
 /// narrowed by the level they pick (OV-C131): projects by the account and the range, sessions by the
 /// account, the project and the range. The quota is the serving account's whatever the scope
 /// (OV-C54), and the forecast covers every account, its usage over the range (OV-C27, OV-C87).
-export function snapshotPaths(scope: Scope, since: number | null, tz: number) {
+export function snapshotPaths(scope: Scope, tab: OverviewTab, since: number | null, tz: number) {
   const { account, project, session } = scope;
   return {
-    summary: `/api/summary${query({ account, project, session, since, tz })}`,
+    summary: `/api/summary${query({ account, project, session, since, tz, parts: summaryParts(scope, tab).join(',') })}`,
     projects: `/api/projects${query({ account, since })}`,
     sessions: `/api/sessions${query({ account, project, since })}`,
     tools: `/api/tools${query({ account, project, session, since })}`,
@@ -354,16 +388,18 @@ export interface Kept {
   readonly forecast: Reading<Forecast> | null;
 }
 
-/// One cycle: the eight answers, read together and drawn whole or not at all (OV-C160). A core read
-/// failing fails the cycle; the quota and the forecast are optional and keep their last good value
-/// (SH-C12, OV-C64). The viewer's UTC offset goes with the summary, so a day bar starts at the
-/// viewer's midnight (OV-C111).
+/// One cycle: the top's answers and the open tab's, read together and drawn whole or not at all
+/// (OV-C160), and nothing for a tab that is not open (OV-C216). The sessions are read once, for the
+/// Projects & sessions tab and a scoped session's crumb alike. A core read failing fails the cycle;
+/// the quota and the forecast are optional and keep their last good value (SH-C12, OV-C64). The
+/// viewer's UTC offset goes with the summary, so a day bar starts at the viewer's midnight (OV-C111).
 export async function readSnapshot(
   scope: Scope,
+  tab: OverviewTab,
   { signal, now = Date.now(), tz = -new Date(now).getTimezoneOffset(), kept = { quota: null, forecast: null } }: { signal?: AbortSignal; now?: number; tz?: number; kept?: Kept } = {},
 ): Promise<Snapshot> {
   const since = sinceMs(scope.range, now);
-  const paths = snapshotPaths(scope, since, tz);
+  const paths = snapshotPaths(scope, tab, since, tz);
   const read = <T>(path: string) => getJson<T>(path, { signal });
   const optional = <T>(path: string): Promise<Outcome<T>> =>
     read<T>(path).then(
@@ -374,15 +410,29 @@ export async function readSnapshot(
         return { ok: false };
       },
     );
-  const [summary, projects, sessions, tools, requests, quota, forecast] = await Promise.all([
+  const [summary, sessions, projects, tools, requests, quota, forecast] = await Promise.all([
     read<Summary>(paths.summary),
-    read<ProjectRow[]>(paths.projects),
-    read<SessionRow[]>(paths.sessions),
-    read<Tools>(paths.tools),
-    read<RequestRecord[]>(paths.requests),
+    tab === 'projects' || scope.session ? read<SessionRow[]>(paths.sessions) : null,
+    tab === 'projects' ? read<ProjectRow[]>(paths.projects) : null,
+    tab === 'tools' ? read<Tools>(paths.tools) : null,
+    tab === 'requests' ? read<RequestRecord[]>(paths.requests) : null,
     optional<LiveQuota>(paths.quota),
     optional<Forecast>(paths.forecast),
   ]);
+  const part = ((): TabPart => {
+    switch (tab) {
+      case 'context':
+        return { tab, context: summary.context ?? [], threads: summary.threads ?? [] };
+      case 'projects':
+        return { tab, byAccount: summary.by_account ?? [], projects: projects ?? [], sessions: sessions ?? [] };
+      case 'tools':
+        return { tab, tools: tools ?? { produced: [], called: [] } };
+      case 'requests':
+        return { tab, requests: requests ?? [] };
+      default:
+        return { tab };
+    }
+  })();
   const at = Date.now();
   return {
     scope,
@@ -390,12 +440,10 @@ export async function readSnapshot(
     since,
     tz,
     summary,
-    projects,
-    sessions,
-    tools,
-    requests,
+    session: (scope.session && sessions?.find((x) => x.id === scope.session)) || null,
     quota: keepReading(quota, kept.quota, summary.account?.id ?? '', at),
     forecast: keepReading(forecast, kept.forecast, scope.range, at),
+    part,
   };
 }
 
@@ -460,8 +508,8 @@ export function freshnessOf(state: PollState, drawn: boolean): Freshness {
 }
 
 export interface OverviewRead {
-  /// What to draw: this scope's latest snapshot, else the previous scope's while this one is read
-  /// (OV-C163); null until anything has been read.
+  /// What to draw: this scope and tab's latest snapshot, else the previous one while this one is read
+  /// (OV-C163); null until anything has been read. Its `part` says which tab it holds figures for.
   readonly snapshot: Snapshot | null;
   /// The figures drawn belong to another scope than the crumbs, because this one is still being read.
   readonly pending: boolean;
@@ -474,27 +522,32 @@ export interface OverviewRead {
   readonly refresh: () => void;
 }
 
-/// The Overview's one poll: one query per scope, reading every figure as one snapshot.
+/// The Overview's one poll: one query per scope and open tab, reading the top and that tab as one
+/// snapshot (OV-C160, OV-C216).
 ///
 /// - The next read starts five seconds after the previous one finished: while a read is in flight
 ///   there is no interval to fire, so reads never overlap or pile up (OV-C161).
 /// - A scope change reads at once (a new key) and keeps the previous figures on screen until it
 ///   answers (OV-C33, OV-C163). The superseded read is cancelled when its query loses its observer,
-///   and its answer, landing under another key, is never drawn (OV-C162).
+///   and its answer, landing under another key, is never drawn (OV-C162). A tab change reads at
+///   once the same way.
+/// - A key left behind is dropped at once (gcTime 0): coming back to a tab or a scope reads it
+///   afresh, rather than drawing what was read minutes ago under "read 2s ago" (OV-C173).
 /// - Nothing is retried quietly: a failed cycle is a strike (OV-C164), and every read inside it has
 ///   ~/data/http's timeout, so a hung read fails its cycle rather than stopping the poll (OV-C165).
 /// - A tab shown again reads at once (OV-C169); a hidden one does not poll at all, so a chart is
 ///   handed nothing while it is hidden (OV-C213).
-export function useOverview(scope: Scope): OverviewRead {
+export function useOverview(scope: Scope, tab: OverviewTab): OverviewRead {
   const [poll] = useState(createPoll);
   const state = useSyncExternalStore(poll.subscribe, poll.snapshot, poll.snapshot);
   const q = useQuery({
-    queryKey: keys.overview(scope),
-    queryFn: ({ signal }) => poll.cycle(() => readSnapshot(scope, { signal, kept: poll.kept() }), signal),
+    queryKey: keys.overview(scope, tab),
+    queryFn: ({ signal }) => poll.cycle(() => readSnapshot(scope, tab, { signal, kept: poll.kept() }), signal),
     refetchInterval: (query) => (query.state.fetchStatus === 'fetching' ? false : POLL_MS),
     refetchIntervalInBackground: false,
     refetchOnWindowFocus: true,
     staleTime: 0,
+    gcTime: 0,
     retry: false,
   });
 
@@ -508,12 +561,43 @@ export function useOverview(scope: Scope): OverviewRead {
 
   return {
     snapshot,
-    pending: data === null && snapshot !== null,
+    pending: snapshot !== null && !sameScope(snapshot.scope, scope),
     freshness: freshnessOf(state, snapshot !== null),
     strikes: state.strikes,
     lastOk: state.lastOk,
     error: state.strikes > 0 ? q.error : null,
     refresh: () => void q.refetch({ cancelRefetch: false }),
+  };
+}
+
+const sameScope = (a: Scope, b: Scope): boolean => a.account === b.account && a.project === b.project && a.session === b.session && a.range === b.range;
+
+// ---------------------------------------------------------------- the scope pickers
+
+/// A picker's rows, read when it opens and never on the five-second clock (OV-C217); opened again, it
+/// reads afresh, showing meanwhile what the last opening read.
+function usePickerRead<T>(queryKey: readonly unknown[], path: () => string, open: boolean) {
+  return useQuery({
+    queryKey,
+    queryFn: ({ signal }) => getJson<T>(path(), { signal }),
+    enabled: open,
+    staleTime: 0,
+    retry: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+  });
+}
+
+/// The three pickers' rows, each read only while its picker is open: the accounts that served in the
+/// range, the projects under the account, and the sessions under the account and the project — never
+/// narrowed by the level they pick (OV-C131).
+export function usePickers(scope: Scope, open: Level | null) {
+  const { account, project, range } = scope;
+  const since = () => sinceMs(range);
+  return {
+    account: usePickerRead<Pick<Summary, 'by_account'>>(keys.picker('account', range), () => `/api/summary${query({ since: since(), parts: 'by_account' })}`, open === 'account'),
+    project: usePickerRead<ProjectRow[]>(keys.picker('project', range, account), () => `/api/projects${query({ account, since: since() })}`, open === 'project'),
+    session: usePickerRead<SessionRow[]>(keys.picker('session', range, account, project), () => `/api/sessions${query({ account, project, since: since() })}`, open === 'session'),
   };
 }
 

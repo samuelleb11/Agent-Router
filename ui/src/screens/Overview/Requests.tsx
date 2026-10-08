@@ -2,7 +2,7 @@
 // 300 newest in scope as cards that open in place, the filters over what is loaded, and Show more.
 import { Button, ContentSwitcher, SelectableTag, Switch } from '@carbon/react';
 import { RequestRow } from '~/components/RequestRow';
-import type { RequestRecord, Snapshot } from '~/data/overview';
+import type { RequestRecord } from '~/data/overview';
 import { useCoarse } from '~/lib/viewport';
 import { count, family, shortModel } from '~/model/format';
 import type { RequestFilters, RequestKind, Scope } from '~/model/scope';
@@ -14,7 +14,8 @@ import styles from './Overview.module.scss';
 export const REQUESTS_ID = 'requests';
 
 export function Requests({
-  snapshot,
+  requests: list,
+  p95,
   scope,
   filters,
   open,
@@ -25,7 +26,10 @@ export function Requests({
   onFilters,
   onOpen,
 }: {
-  snapshot: Snapshot;
+  /// The 300 newest in scope, read for the Requests tab.
+  requests: readonly RequestRecord[];
+  /// The top's time-to-first-byte p95, which marks a request slow.
+  p95: number | null;
   scope: Scope;
   /// What the address asks for.
   filters: RequestFilters;
@@ -39,8 +43,6 @@ export function Requests({
   onOpen: (ids: readonly string[]) => void;
 }) {
   const coarse = useCoarse();
-  const list = snapshot.requests;
-  const p95 = snapshot.summary.latency?.ttfb_p95 ?? null;
   const f = filtering(list, filters, p95);
   const rows = f.rows;
   const page = rows.slice(0, shown);

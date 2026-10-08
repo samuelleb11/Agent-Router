@@ -156,9 +156,10 @@ describe('a failed refresh blanks nothing', () => {
   it('SH-C14: every panel of the Overview keeps what it drew through a failed refresh, and the page says how old it is', async () => {
     let failing = false;
     router((path) => (failing && path === '/api/summary' ? refused('database is locked') : undefined));
-    const { client } = showOverview();
+    const { client } = showOverview('/?tab=projects');
     await loaded();
-    const drawn = ['Totals in scope', 'Projects', 'Sessions', 'Requests', 'Quota headroom'].map((name) => [name, panel(name).textContent]);
+    await screen.findByRole('list', { name: 'Sessions' });
+    const drawn = ['Quota headroom', 'All accounts', 'Totals in scope', 'Accounts', 'Projects', 'Sessions'].map((name) => [name, panel(name).textContent]);
     failing = true;
     await act(() => client.refetchQueries({ queryKey: ['overview'] }));
     await waitFor(() => expect(freshness()).toHaveAttribute('data-freshness', 'stale'));
@@ -308,7 +309,7 @@ describe('confirmations are in the page', () => {
 describe('the keyboard', () => {
   it('SH-C49: "/" focuses the Overview’s search and selects its text from anywhere, never from a field, a select or anything editable, nor with ⌘, Ctrl or Alt held; the field shows a "/" hint', async () => {
     router();
-    showOverview();
+    showOverview('/?tab=search');
     await loaded();
     const box = screen.getByRole('searchbox', { name: 'Search the transcripts' }) as HTMLInputElement;
     fireEvent.change(box, { target: { value: 'kestrel' } });
@@ -344,30 +345,36 @@ describe('the keyboard', () => {
 });
 
 describe('the address is the view', () => {
-  it('SH-C53: the Overview’s scope, range and request filters are its address: a change of scope or range pushes, so Back undoes it, a filter replaces, and the address reloads as itself', async () => {
+  it('SH-C53: the Overview’s scope, range, open tab and request filters are its address: a change of scope, range or tab pushes, so Back undoes it, a filter replaces, and the address reloads as itself', async () => {
     router();
-    const first = showOverview();
+    const first = showOverview('/?tab=projects');
     await loaded();
-    fireEvent.click(within(panel('Projects')).getByRole('button', { name: 'agent-router' }));
-    await waitFor(() => expect(where()).toBe('/?project=%2Fcode%2Fagent-router'));
+    fireEvent.click(within(await screen.findByRole('list', { name: 'Projects' })).getByRole('button', { name: 'agent-router' }));
+    await waitFor(() => expect(where()).toBe('/?project=%2Fcode%2Fagent-router&tab=projects'));
     fireEvent.click(within(screen.getByRole('tablist', { name: 'Time range' })).getByRole('tab', { name: '24h' }));
-    await waitFor(() => expect(where()).toBe('/?project=%2Fcode%2Fagent-router&range=24h'));
-    fireEvent.click(within(screen.getByRole('group', { name: 'Stop reasons' })).getByRole('button', { name: /^tool_use/ }));
-    await waitFor(() => expect(where()).toBe('/?project=%2Fcode%2Fagent-router&range=24h&stop=tool_use'));
+    await waitFor(() => expect(where()).toBe('/?project=%2Fcode%2Fagent-router&range=24h&tab=projects'));
+    fireEvent.click(screen.getByRole('tab', { name: 'Requests' }));
+    await waitFor(() => expect(where()).toBe('/?project=%2Fcode%2Fagent-router&range=24h&tab=requests'));
+    fireEvent.click(within(await screen.findByRole('group', { name: 'Stop reasons' })).getByRole('button', { name: /^tool_use/ }));
+    await waitFor(() => expect(where()).toBe('/?project=%2Fcode%2Fagent-router&range=24h&tab=requests&stop=tool_use'));
 
-    // The filter replaced the entry the range pushed: Back undoes the range, filter and all.
+    // The filter replaced the entry the tab pushed: Back undoes the tab, filter and all, then the
+    // range, then the scope.
     await back();
-    await waitFor(() => expect(where()).toBe('/?project=%2Fcode%2Fagent-router'));
+    await waitFor(() => expect(where()).toBe('/?project=%2Fcode%2Fagent-router&range=24h&tab=projects'));
     await back();
-    await waitFor(() => expect(where()).toBe('/'));
+    await waitFor(() => expect(where()).toBe('/?project=%2Fcode%2Fagent-router&tab=projects'));
+    await back();
+    await waitFor(() => expect(where()).toBe('/?tab=projects'));
     first.unmount();
 
     // A link pastes and reloads as the view it was.
-    showOverview('/?project=%2Fcode%2Fnorthstar&range=7d&stop=tool_use');
+    showOverview('/?project=%2Fcode%2Fnorthstar&range=7d&tab=requests&stop=tool_use');
     await loaded();
     expect(screen.getByRole('button', { name: 'Project: northstar' })).toBeInTheDocument();
     expect(within(screen.getByRole('tablist', { name: 'Time range' })).getByRole('tab', { name: '7d' })).toHaveAttribute('aria-selected', 'true');
-    expect(within(screen.getByRole('group', { name: 'Stop reasons' })).getByRole('button', { name: /^tool_use/ })).toHaveAttribute('aria-pressed', 'true');
+    expect(within(screen.getByRole('tablist', { name: 'Overview sections' })).getByRole('tab', { name: 'Requests' })).toHaveAttribute('aria-selected', 'true');
+    expect(within(await screen.findByRole('group', { name: 'Stop reasons' })).getByRole('button', { name: /^tool_use/ })).toHaveAttribute('aria-pressed', 'true');
   });
 
   it('SH-C53: on Sessions the open session and Find are the address: opening either pushes, so Back undoes it, typing in Find replaces, and the address reloads as itself', async () => {

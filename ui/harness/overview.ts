@@ -549,6 +549,15 @@ function search(q: URLSearchParams): SearchReply {
   };
 }
 
+/// The summary as the router answers `parts=` (SV-C45): the parts named and nothing else, totals
+/// bringing unattributed; the whole of it without `parts=`.
+function partsOf(s: Summary, parts: string | null): Partial<Summary> {
+  if (parts === null) return s;
+  const keep = new Set(parts.split(','));
+  if (keep.has('totals')) keep.add('unattributed');
+  return Object.fromEntries(Object.entries(s).filter(([k]) => keep.has(k)));
+}
+
 const json = (payload: unknown): Response => new Response(JSON.stringify(payload), { status: 200, headers: { 'Content-Type': 'application/json' } });
 
 /// The Overview's reads, answered; null for a read this file does not hold, which the harness then
@@ -557,7 +566,7 @@ const json = (payload: unknown): Response => new Response(JSON.stringify(payload
 export function overviewRead(path: string, query: URLSearchParams): Response | null {
   const only = (...allowed: string[]) => [...query.keys()].every((p) => allowed.includes(p));
   const f = filterOf(query);
-  if (path === '/api/summary' && only('account', 'project', 'session', 'since', 'tz')) return json(summary(f));
+  if (path === '/api/summary' && only('account', 'project', 'session', 'since', 'tz', 'parts')) return json(partsOf(summary(f), query.get('parts')));
   if (path === '/api/projects' && only('account', 'since')) return json(projects(f));
   if (path === '/api/sessions' && only('account', 'project', 'since')) return json(sessions(f));
   if (path === '/api/tools' && only('account', 'project', 'session', 'since')) return json(tools(f));
