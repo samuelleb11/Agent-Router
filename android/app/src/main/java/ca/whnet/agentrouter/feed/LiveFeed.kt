@@ -147,6 +147,16 @@ class LiveFeed(
         fun path(endpoint: String, sessionId: String): String =
             endpoint + "?session=" + URLEncoder.encode(sessionId, "UTF-8")
 
+        const val PROJECT = "/api/live/project"
+
+        /**
+         * The totals of a session's project, asked by the project's key ([LiveSession.projectKey]):
+         * its repository, so its clones and worktrees count together, else its directory. Null
+         * when the row has neither, and there is nothing to ask.
+         */
+        fun projectPath(session: LiveSession): String? =
+            session.projectKey?.let { PROJECT + "?project=" + URLEncoder.encode(it, "UTF-8") }
+
         /**
          * Decide how answers to a question in the feed reach the session, from what the
          * router says is waiting right now ([fresh], null when it could not be asked), the
@@ -539,9 +549,8 @@ class LiveFeed(
         runCatching { c.get<SessionStats>(path(STATS, session.sessionId)) }
             .onSuccess { stats = it }
         runCatching { c.get<LiveOptions>("/api/live/options") }.onSuccess { options = it }
-        session.cwd?.let { cwd ->
-            val projectPath = c.query("/api/live/project", mapOf("cwd" to cwd))
-            runCatching { c.get<ProjectStats>(projectPath) }.onSuccess { project = it }
+        projectPath(session)?.let { p ->
+            runCatching { c.get<ProjectStats>(p) }.onSuccess { project = it }
         }
     }
 }

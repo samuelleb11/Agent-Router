@@ -119,12 +119,29 @@ data class LiveSession(
      * list it merges from its machines' agents; a router on a Mac never does.
      */
     val machine: SessionMachine? = null,
+    /**
+     * The git repository the working directory belongs to, as the router spells it: its
+     * `origin` remote, else its first, canonical — `gitlab.whnet.ca/whnet/apps/ui-kit-web`.
+     * Absent when the directory has no remote, or the machine's agent predates it.
+     */
+    val repository: String? = null,
 ) {
     val shortId: String get() = sessionId.take(8)
 
-    /** The last segment of the working directory, a Windows path's included, else the router's own name for the project (SE-C23). */
+    /**
+     * The repository's last segment, so a repository's clones and worktrees on one machine are
+     * one project; without one, the last segment of the working directory, a Windows path's
+     * included, else the router's own name for the project (SE-C23). The web's `projectOf`.
+     */
     val projectName: String
-        get() = ProjectPath.segment(cwd) ?: project.ifEmpty { "—" }
+        get() = ProjectPath.segment(repository) ?: ProjectPath.segment(cwd) ?: project.ifEmpty { "—" }
+
+    /**
+     * What the router knows the project by, to ask for its totals: the repository, else the
+     * working directory. Null when the row has neither.
+     */
+    val projectKey: String?
+        get() = repository?.takeIf { it.isNotEmpty() } ?: cwd?.takeIf { it.isNotEmpty() }
 
     val label: String get() = title ?: shortId
 

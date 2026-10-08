@@ -5,6 +5,10 @@ package ca.whnet.agentrouter.api
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
+/**
+ * One row of `GET /api/projects`. [project] is the project's key: its git repository, else
+ * its directory — from an older router, always the directory. Unresolved, it decodes to "".
+ */
 @Serializable
 data class ProjectRow(
     val project: String = "",
@@ -18,16 +22,43 @@ data class ProjectRow(
     val errors: Double = 0.0,
     val models: String? = null,
     @SerialName("last_seen") val lastSeen: Long? = null,
+    /** The git repository it is, when it is one; absent from an older router. */
+    val repository: String? = null,
+    /** The directories the project was worked in, on whichever machines; empty from an older router. */
+    val directories: List<ProjectDirectory> = emptyList(),
 ) {
-    /** The project by name, a Windows machine's included ([ProjectPath]). */
+    /** The project by name — its key's last segment, a Windows machine's directory included ([ProjectPath]). */
     val name: String get() = ProjectPath.name(project)
 }
 
-/** A session as the proxy saw it — distinct from [LiveSession], which is a transcript. */
+/** A directory a project was worked in, the machine it is on, and the git remotes it has. */
+@Serializable
+data class ProjectDirectory(
+    val cwd: String = "",
+    val machine: SessionMachine? = null,
+    val remotes: List<GitRemote> = emptyList(),
+)
+
+/** One git remote of a directory: `origin`, its URL, and the repository the router reads it as. */
+@Serializable
+data class GitRemote(
+    val name: String = "",
+    val url: String = "",
+    val repository: String? = null,
+)
+
+/**
+ * A session as the proxy saw it — distinct from [LiveSession], which is a transcript. [project]
+ * is its project's key, as [ProjectRow.project] is.
+ */
 @Serializable
 data class ProxySessionRow(
     val id: String = "",
     val project: String? = null,
+    /** The directory it ran in, its repository, and its machine; each absent from an older router. */
+    val cwd: String? = null,
+    val repository: String? = null,
+    val machine: SessionMachine? = null,
     @SerialName("git_branch") val gitBranch: String? = null,
     val entrypoint: String? = null,
     @SerialName("started_at") val startedAt: Long = 0,
