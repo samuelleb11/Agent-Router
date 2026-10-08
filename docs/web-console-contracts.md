@@ -468,9 +468,9 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
 ### Layout and identity
 
 - **OV-C1** The Overview keeps every section the dashboard shows. On top, whatever tab is open:
-  the scope bar; Quota headroom (meters, history, burn-down); All accounts; Totals in scope. Under
-  them, a row of tabs, each holding the rest in the dashboard's order: Activity (Activity over
-  time); Context (What the model read beside What fills the context window, By model beside Main
+  the scope bar; Quota headroom (meters, history, burn-down); All accounts; Totals in scope.
+  Under them, a row of tabs, each holding the rest in the dashboard's order: Activity (Activity
+  over time); Context (What the model read beside What fills the context window, By model beside Main
   thread vs subagents); Projects & sessions (Accounts, Projects, Sessions); Tools (Tool output the
   model read beside Tool calls made); Requests; Search (Search the transcripts). *Why:* the
   Overview's brief is to keep everything the dashboard shows; on 2026-10-08 the owner asked for it
