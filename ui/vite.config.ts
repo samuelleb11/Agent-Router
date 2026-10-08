@@ -73,6 +73,10 @@ export default defineConfig({
     // (SE-C216, pipeline 3307). A slow machine is not a broken screen. Specs that need longer
     // still set their own.
     testTimeout: 30_000,
+    // One worker at a time on a developer's machine, never one per core: each draws whole Carbon
+    // screens in jsdom at up to 2 GB, and beside the editors and agents already running, a worker
+    // per core exhausted memory and swap and panicked the Mac (2026-10-08). CI keeps the default.
+    ...(process.env['CI'] ? {} : { maxWorkers: 1, minWorkers: 1 }),
     // The fixture harness (`harness/`, `pnpm harness`) is tested where it lives.
     include: ['src/**/*.spec.{ts,tsx}', 'harness/**/*.spec.{ts,tsx}'],
   },
