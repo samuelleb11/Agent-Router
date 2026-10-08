@@ -9,7 +9,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { spawn, execFile } from 'child_process';
-import { decideMode, exeName, Mode } from './remote';
+import { decideMode, exeName, Mode, remoteInstalls } from './remote';
 
 export interface Health { ok: boolean; pid: number; version: string }
 export interface Bundled { version: string; router: string; wrapper: string }
@@ -130,17 +130,16 @@ function sameBytes(a: string, b: string): boolean {
   }
 }
 
-/** Remote mode's install. There is no local router to ask for its version, so the
- *  installed files are compared with the bundled ones and replaced only when they
- *  differ: a running agent or wrapper is never touched for nothing, which on Windows
- *  is what keeps the moved-aside copies from piling up. True when anything changed. */
-export function installBinariesIfChanged(b: Bundled): boolean {
+/** Remote mode's install (`remoteInstalls`): the bundled agent only where none is installed,
+ *  since the agent keeps itself at its router's build from then on, and the wrapper when its
+ *  bytes differ. A running wrapper is never touched for nothing, which on Windows is what
+ *  keeps the moved-aside copies from piling up. True when anything changed. */
+export function installForRemote(b: Bundled): boolean {
   if (!fs.existsSync(b.router)) { throw new Error(`this build of the extension carries no router binary (${b.router})`); }
   sweepAside();
-  let changed = false;
-  if (!sameBytes(b.router, routerPath())) { installOne(b.router, routerPath()); changed = true; }
-  if (fs.existsSync(b.wrapper) && !sameBytes(b.wrapper, wrapperPath())) { installOne(b.wrapper, wrapperPath()); changed = true; }
-  return changed;
+  const copies = remoteInstalls(b, { router: routerPath(), wrapper: wrapperPath() }, fs.existsSync, sameBytes);
+  for (const [from, to] of copies) { installOne(from, to); }
+  return copies.length > 0;
 }
 
 function run(exe: string, args: string[], env: NodeJS.ProcessEnv): Promise<string> {

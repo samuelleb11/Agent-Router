@@ -221,6 +221,21 @@ pub fn hold_store(_dir: &std::path::Path) {}
 pub struct Stopping(tokio::sync::watch::Receiver<Option<&'static str>>);
 
 impl Stopping {
+    /// This signal, or `also` if it comes first, said as `why`: another way a process may be
+    /// asked to stop (a machine agent's worker, when its keeper closes the pipe).
+    pub fn or(self, why: &'static str, also: impl std::future::Future<Output = ()> + Send + 'static) -> Stopping {
+        let (tx, rx) = tokio::sync::watch::channel(None);
+        let mut first = self;
+        tokio::spawn(async move {
+            let why = tokio::select! {
+                w = first.wait() => w,
+                () = also => why,
+            };
+            let _ = tx.send(Some(why));
+        });
+        Stopping(rx)
+    }
+
     /// Resolves once the process is asked to stop, with what asked.
     pub async fn wait(&mut self) -> &'static str {
         // Copied out at once: the borrow `wait_for` hands back must not live across

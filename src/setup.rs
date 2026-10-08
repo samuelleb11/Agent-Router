@@ -315,12 +315,19 @@ fn revert_key(path: &Path, key: &str) -> Result<Reverted> {
     Ok(outcome)
 }
 
+/// Where the installed binary lives: what the login items run, and what a machine agent's
+/// keeper starts its worker from (`agent::keep`).
+pub fn installed_binary() -> Result<PathBuf> {
+    Ok(data_dir()?.join("bin").join(if cfg!(windows) { "agent-router.exe" } else { "agent-router" }))
+}
+
 /// Copy the running binary somewhere stable, so rebuilding the repo never swaps the
 /// file out from under the installed service.
 pub fn install_binary() -> Result<PathBuf> {
-    let dir = data_dir()?.join("bin");
-    std::fs::create_dir_all(&dir)?;
-    let dest = dir.join(if cfg!(windows) { "agent-router.exe" } else { "agent-router" });
+    let dest = installed_binary()?;
+    if let Some(dir) = dest.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
     let current = std::env::current_exe()?;
     if current != dest {
         let tmp = dest.with_extension("new");
@@ -334,7 +341,7 @@ pub fn install_binary() -> Result<PathBuf> {
 /// but it will let it be renamed: the running copy moves aside, under the name the
 /// extension gives it (`vscode/src/router.ts`, `replace`), and goes at a later install
 /// once nothing runs it. Elsewhere this is a plain rename.
-fn replace(fresh: &Path, to: &Path) -> Result<()> {
+pub(crate) fn replace(fresh: &Path, to: &Path) -> Result<()> {
     if let (true, Some(dir)) = (cfg!(windows), to.parent()) {
         sweep_aside(dir);
     }
@@ -794,7 +801,10 @@ pub mod agent_service {
         format!("gui/{}", unsafe { libc::getuid() })
     }
 
-    pub fn install(exe: &Path) -> Result<PathBuf> {
+    /// Write the login item and load it. With a keeper running it is not restarted: the
+    /// keeper hands over to the new build itself (`agent::keep`), and a restart would take the
+    /// machine offline for nothing. An agent from before keepers is restarted once.
+    pub fn install(exe: &Path, keeper_running: bool) -> Result<PathBuf> {
         let dir = data_dir()?;
         std::fs::create_dir_all(dir.join("logs"))?;
         let logs = dir.join("logs").join("agent.log");
@@ -829,8 +839,13 @@ pub mod agent_service {
         let path = plist_path()?;
         write_atomic(&path, &plist)?;
         let target = format!("{}/{AGENT_LABEL}", domain());
-        let _ = launchctl(&["bootout", &target]);
-        launchctl(&["bootstrap", &domain(), &path.to_string_lossy()])?;
+        if keeper_running {
+            // Loaded if it is not; launchd refuses a second load of a loaded job, harmlessly.
+            let _ = launchctl(&["bootstrap", &domain(), &path.to_string_lossy()]);
+        } else {
+            let _ = launchctl(&["bootout", &target]);
+            launchctl(&["bootstrap", &domain(), &path.to_string_lossy()])?;
+        }
         let _ = launchctl(&["enable", &target]);
         Ok(path)
     }
@@ -871,7 +886,9 @@ pub mod agent_service {
         Ok(dir.join("Agent Router agent.vbs"))
     }
 
-    pub fn install(exe: &Path) -> Result<PathBuf> {
+    /// Write the Startup script, and run it now unless a keeper already runs: a keeper hands
+    /// over to the new build itself (`agent::keep`).
+    pub fn install(exe: &Path, keeper_running: bool) -> Result<PathBuf> {
         let exe = exe.display().to_string().replace('"', "");
         // Run(command, 0 = hidden, False = do not wait). A doubled quote is a quote in VBScript.
         let script = format!(
@@ -887,10 +904,12 @@ pub mod agent_service {
             .collect();
         write_atomic(&path, utf16)?;
         // Started now as well, as launchd does on macOS.
-        std::process::Command::new("wscript.exe")
-            .arg(&path)
-            .spawn()
-            .with_context(|| format!("starting {}", path.display()))?;
+        if !keeper_running {
+            std::process::Command::new("wscript.exe")
+                .arg(&path)
+                .spawn()
+                .with_context(|| format!("starting {}", path.display()))?;
+        }
         Ok(path)
     }
 
@@ -948,7 +967,11 @@ pub mod agent_service {
         Ok(home_dir()?.join(".config").join("systemd").join("user").join(UNIT))
     }
 
-    pub fn install(exe: &Path) -> Result<PathBuf> {
+    /// Write the unit and enable it. With a keeper running it is not restarted: the keeper
+    /// hands over to the new build itself (`agent::keep`). Otherwise it is restarted, which
+    /// starts a stopped unit and replaces an agent from before keepers; `enable --now` did
+    /// nothing to a unit already running, which kept the old build until the next login.
+    pub fn install(exe: &Path, keeper_running: bool) -> Result<PathBuf> {
         let logs = data_dir()?.join("logs");
         std::fs::create_dir_all(&logs)?;
         let path = unit_file()?;
@@ -962,7 +985,10 @@ pub mod agent_service {
                 "systemd user services are not running here; start the agent with `agent-router agent`"
             ));
         }
-        super::service::run("systemctl", &["--user", "enable", "--now", UNIT])?;
+        super::service::run("systemctl", &["--user", "enable", UNIT])?;
+        if !keeper_running {
+            super::service::run("systemctl", &["--user", "restart", UNIT])?;
+        }
         Ok(path)
     }
 
@@ -1004,7 +1030,7 @@ mod agent_unit_tests {
 pub mod agent_service {
     use super::*;
 
-    pub fn install(_exe: &Path) -> Result<PathBuf> {
+    pub fn install(_exe: &Path, _keeper_running: bool) -> Result<PathBuf> {
         Err(anyhow!("the agent's login item is built for macOS, Linux and Windows; start it with `agent-router agent`"))
     }
 

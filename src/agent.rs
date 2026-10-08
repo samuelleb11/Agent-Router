@@ -42,15 +42,19 @@ agent-router agent — connect this machine's Claude Code sessions to a hosted r
 USAGE:
   agent-router agent install --server <url> [--project <dir>] [--label <name>]
                                      [--no-service] [--no-config] [--no-library]
+                                     [--no-auto-update]
                                      check the password, save it, point Claude Code at
                                      the server, and start the agent at login.
                                      --no-library: never place the hosted router's
                                      Library in ~/.claude (remembered; --library undoes it)
+                                     --no-auto-update: never fetch the router's agent
+                                     build (remembered; --auto-update undoes it)
   agent-router agent uninstall       undo exactly what install changed
   agent-router agent status          what is installed, and whether it runs
   agent-router agent [--server <url>] [--label <name>] [--data-dir <dir>]
-                                     run the agent
-  agent-router agent --ensure        run only if no agent from this build runs here
+                                     run the agent: a keeper that runs its worker, and
+                                     hands over to a new build without going offline
+  agent-router agent --ensure        run only if no agent's keeper runs here
 
 The password comes from AGENT_ROUTER_PASSWORD, from standard input, or from a prompt;
 `install` saves it, owner-only, where the agent reads it from then on.
@@ -62,6 +66,8 @@ struct RunArgs {
     label: Option<String>,
     data_dir: Option<PathBuf>,
     ensure: bool,
+    /// The keeper's worker (`--worker`): the tunnel, with no lock of its own.
+    worker: bool,
 }
 
 fn parse(args: &[String]) -> Result<RunArgs, String> {
@@ -87,6 +93,7 @@ fn parse(args: &[String]) -> Result<RunArgs, String> {
             "--label" => out.label = Some(value()?),
             "--data-dir" => out.data_dir = Some(PathBuf::from(value()?)),
             "--ensure" if inline.is_none() => out.ensure = true,
+            "--worker" if inline.is_none() => out.worker = true,
             other => return Err(format!("unknown option {other:?}")),
         }
     }
@@ -139,6 +146,14 @@ struct Saved {
     /// router's Library in `~/.claude`. Absent, it does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     library: Option<bool>,
+    /// `false` when installed with `--no-auto-update`: the keeper never fetches its router's
+    /// agent build. Absent, it does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    update: Option<bool>,
+    /// The router build the keeper last checked its own binary against, so each router
+    /// build costs one download at most (`update_from`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    checked_build: Option<String>,
 }
 
 /// What `agent install` saved that the Library's commands need (`library::cli`).
@@ -168,16 +183,20 @@ fn saved_path() -> Result<PathBuf> {
 }
 
 fn load_saved() -> Saved {
-    saved_path()
-        .ok()
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .and_then(|raw| serde_json::from_str(&raw).ok())
-        .unwrap_or_default()
+    saved_path().map(|p| load_saved_at(&p)).unwrap_or_default()
+}
+
+fn load_saved_at(path: &Path) -> Saved {
+    std::fs::read_to_string(path).ok().and_then(|raw| serde_json::from_str(&raw).ok()).unwrap_or_default()
+}
+
+fn store_saved(saved: &Saved) -> Result<()> {
+    store_saved_at(&saved_path()?, saved)
 }
 
 /// Written whole and owner-only: it holds the router password.
-fn store_saved(saved: &Saved) -> Result<()> {
-    let path = saved_path()?;
+fn store_saved_at(path: &Path, saved: &Saved) -> Result<()> {
+    let path = path.to_path_buf();
     let tmp = path.with_extension("json.tmp");
     let json = serde_json::to_vec_pretty(saved)?;
     {
@@ -380,39 +399,101 @@ async fn still_waiting(axum::extract::Query(q): axum::extract::Query<StillQuery>
     Json(json!({ "waiting": waiting }))
 }
 
-/// The one agent a machine runs: a lock held for the life of the process, naming the
-/// holder so a newer build can ask it to make way.
+/// The one agent a machine runs: `agent.lock`, held for the life of its keeper (`keep`). Who
+/// holds it is in `agent.pid` beside it, since Windows refuses to read a file another process
+/// holds locked. An agent from before keepers wrote itself into `agent.lock` instead, and a
+/// keeper leaves that file empty, which is how the two are told apart (`holder`).
 enum Lock {
     Held(#[allow(dead_code)] std::fs::File),
-    Busy { pid: i32, build: String },
+    Busy(Holder),
 }
 
-fn lock(dir: &Path) -> Result<Lock> {
+/// Who holds `agent.lock`.
+#[derive(Debug, PartialEq)]
+struct Holder {
+    pid: i32,
+    build: String,
+    /// A keeper hands over to a new build by itself; an agent from before keepers has to be
+    /// asked to make way.
+    keeper: bool,
+}
+
+fn open_lock(dir: &Path) -> Result<std::fs::File> {
     let path = dir.join("agent.lock");
-    let mut file = std::fs::OpenOptions::new()
+    std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .read(true)
         .write(true)
         .open(&path)
-        .with_context(|| format!("opening {}", path.display()))?;
+        .with_context(|| format!("opening {}", path.display()))
+}
+
+/// Take the lock as this machine's keeper.
+fn lock(dir: &Path) -> Result<Lock> {
+    let file = open_lock(dir)?;
     match file.try_lock() {
         Ok(()) => {
-            use std::io::{Seek, Write};
             file.set_len(0)?;
-            file.seek(std::io::SeekFrom::Start(0))?;
-            writeln!(file, "{} {}", std::process::id(), env!("AGENT_ROUTER_BUILD"))?;
-            file.flush()?;
+            let pid = dir.join("agent.pid");
+            let tmp = dir.join("agent.pid.tmp");
+            std::fs::write(&tmp, format!("{} {} keeper\n", std::process::id(), env!("AGENT_ROUTER_BUILD")))?;
+            std::fs::rename(&tmp, &pid)?;
             Ok(Lock::Held(file))
         }
-        Err(std::fs::TryLockError::WouldBlock) => {
-            let raw = std::fs::read_to_string(&path).unwrap_or_default();
-            let mut parts = raw.split_whitespace();
-            let pid = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
-            let build = parts.next().unwrap_or_default().to_string();
-            Ok(Lock::Busy { pid, build })
-        }
+        Err(std::fs::TryLockError::WouldBlock) => Ok(Lock::Busy(holder(dir))),
         Err(std::fs::TryLockError::Error(e)) => Err(e.into()),
+    }
+}
+
+/// Who holds the lock, if anyone, without taking it.
+fn peek(dir: &Path) -> Result<Option<Holder>> {
+    let file = open_lock(dir)?;
+    match file.try_lock() {
+        Ok(()) => Ok(None),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(Some(holder(dir))),
+        Err(std::fs::TryLockError::Error(e)) => Err(e.into()),
+    }
+}
+
+/// Who holds `agent.lock`, which is busy. An agent from before keepers wrote itself into the
+/// lock file, which a keeper leaves empty; on Windows the lock file cannot be read while it
+/// is held, and such an agent wrote no `agent.pid`, so it is named by nothing.
+fn holder(dir: &Path) -> Holder {
+    let parse = |raw: &str| {
+        let mut parts = raw.split_whitespace();
+        let pid = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+        let build = parts.next().unwrap_or_default().to_string();
+        let keeper = parts.next() == Some("keeper");
+        Holder { pid, build, keeper }
+    };
+    let legacy = std::fs::read_to_string(dir.join("agent.lock")).unwrap_or_default();
+    if !legacy.trim().is_empty() {
+        return Holder { keeper: false, ..parse(&legacy) };
+    }
+    match std::fs::read_to_string(dir.join("agent.pid")) {
+        Ok(raw) => parse(&raw),
+        Err(_) => Holder { pid: 0, build: String::new(), keeper: false },
+    }
+}
+
+/// What `agent --ensure` does when the lock is busy.
+#[derive(Debug, PartialEq)]
+enum Busy {
+    /// A keeper runs: it hands over to a new build by itself.
+    LeaveAlone,
+    /// An agent from before keepers, named: asked to stop, and this keeper takes its place.
+    Replace(i32),
+    /// One from before keepers that cannot be named (Windows): replaced at the next logon,
+    /// when the Startup script starts a keeper first.
+    AtNextLogon,
+}
+
+fn on_busy(holder: &Holder) -> Busy {
+    match holder {
+        Holder { keeper: true, .. } => Busy::LeaveAlone,
+        Holder { pid, .. } if *pid > 0 => Busy::Replace(*pid),
+        _ => Busy::AtNextLogon,
     }
 }
 
@@ -450,39 +531,501 @@ fn ask_to_stop(pid: i32) -> Result<()> {
 }
 
 async fn run(args: RunArgs) -> Result<()> {
+    // Logs go to standard error: a worker's standard output is what it tells its keeper.
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_env("AGENT_ROUTER_LOG").unwrap_or_else(|_| "agent_router=info".into()),
         )
         .with_target(false)
+        .with_writer(std::io::stderr)
         .init();
     rustls::crypto::ring::default_provider().install_default().ok();
-    let mut stopping = crate::lifecycle::listen_for_shutdown();
+    let stopping = crate::lifecycle::listen_for_shutdown();
 
     let dir = crate::config::settle_data_dir(args.data_dir.as_deref())?;
+    if args.worker {
+        return work(args, dir, stopping).await;
+    }
     let _held = match lock(&dir)? {
         Lock::Held(file) => file,
-        Lock::Busy { pid, build } if args.ensure && build == env!("AGENT_ROUTER_BUILD") => {
-            println!("agent-router agent already running (pid {pid}); nothing to do");
-            return Ok(());
+        Lock::Busy(holder) if !args.ensure => bail!("an agent is already running here (pid {})", holder.pid),
+        Lock::Busy(holder) => match on_busy(&holder) {
+            Busy::LeaveAlone => {
+                println!("an agent keeper is already running here (pid {}); it keeps the agent at its build itself", holder.pid);
+                return Ok(());
+            }
+            Busy::AtNextLogon => {
+                println!("an agent from an older build is running here; a keeper takes its place at the next logon");
+                return Ok(());
+            }
+            Busy::Replace(pid) => {
+                tracing::info!(pid, "an agent from before keepers is running; asking it to make way");
+                ask_to_stop(pid)?;
+                let deadline = Instant::now() + Duration::from_secs(15);
+                loop {
+                    if let Lock::Held(file) = lock(&dir)? {
+                        break file;
+                    }
+                    if Instant::now() > deadline {
+                        bail!("the running agent (pid {pid}) did not stop");
+                    }
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+            }
+        },
+    };
+    keep(&dir, &args, stopping).await
+}
+
+/// How long a new worker has to say its tunnel is up before a handover is given up.
+const READY_WAIT: Duration = Duration::from_secs(30);
+/// How long a worker told to stop has before it is killed.
+const STOP_GRACE: Duration = Duration::from_secs(5);
+/// How often the keeper looks at its binary for a new build.
+const WATCH_EVERY: Duration = Duration::from_secs(5);
+/// A build that would not take over is tried again after this, in case what stopped it was
+/// the router being away rather than the build.
+const RETRY_REFUSED: Duration = Duration::from_secs(10 * 60);
+/// The fallback for checking the router's build, besides at start and at every reconnect.
+const UPDATE_EVERY: Duration = Duration::from_secs(60 * 60);
+
+/// What a worker tells its keeper, one line on its standard output each.
+#[derive(Debug, PartialEq)]
+enum Said {
+    /// Its tunnel is up for the first time, as this build.
+    Ready(String),
+    /// Its tunnel is up again.
+    Connected,
+}
+
+/// One worker the keeper started.
+struct Worker {
+    child: tokio::process::Child,
+    /// Never written to: closing it tells the worker to stop, and it closes by itself when
+    /// the keeper goes away, whatever stops it.
+    stdin: Option<tokio::process::ChildStdin>,
+    said: mpsc::UnboundedReceiver<Said>,
+    /// The sha256 of the binary it was started from.
+    digest: [u8; 32],
+    build: Option<String>,
+}
+
+impl Worker {
+    fn start(program: &Path, args: &[String], digest: [u8; 32]) -> Result<Worker> {
+        let mut command = tokio::process::Command::new(program);
+        command
+            .args(args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::inherit())
+            .kill_on_drop(true);
+        #[cfg(windows)]
+        {
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            command.creation_flags(CREATE_NO_WINDOW);
         }
-        Lock::Busy { pid, .. } if args.ensure => {
-            tracing::info!(pid, "an agent from another build is running; asking it to make way");
-            ask_to_stop(pid)?;
-            let deadline = Instant::now() + Duration::from_secs(15);
+        let mut child = command.spawn().with_context(|| format!("starting {}", program.display()))?;
+        let stdin = child.stdin.take();
+        let stdout = child.stdout.take().ok_or_else(|| anyhow!("the worker has no standard output"))?;
+        let (tx, said) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            use tokio::io::AsyncBufReadExt;
+            let mut lines = tokio::io::BufReader::new(stdout).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                let said = match line.trim().split_once(' ') {
+                    Some(("ready", build)) => Said::Ready(build.to_string()),
+                    None if line.trim() == "connected" => Said::Connected,
+                    _ => continue,
+                };
+                if tx.send(said).is_err() {
+                    break;
+                }
+            }
+        });
+        Ok(Worker { child, stdin, said, digest, build: None })
+    }
+
+    /// Wait for it to say its tunnel is up.
+    async fn ready(&mut self, within: Duration) -> Result<String> {
+        let up = async {
             loop {
-                if let Lock::Held(file) = lock(&dir)? {
-                    break file;
+                tokio::select! {
+                    said = self.said.recv() => match said {
+                        Some(Said::Ready(build)) => return Ok(build),
+                        Some(Said::Connected) => continue,
+                        None => bail!("it exited ({}) before its tunnel was up", self.child.wait().await?),
+                    },
+                    status = self.child.wait() => bail!("it exited ({}) before its tunnel was up", status?),
                 }
-                if Instant::now() > deadline {
-                    bail!("the running agent (pid {pid}) did not stop");
+            }
+        };
+        let build = tokio::time::timeout(within, up)
+            .await
+            .map_err(|_| anyhow!("its tunnel was not up within {} s", within.as_secs()))??;
+        self.build = Some(build.clone());
+        Ok(build)
+    }
+
+    /// Close its pipe and give it `grace` to go; then kill it.
+    async fn stop(mut self, grace: Duration) {
+        drop(self.stdin.take());
+        if tokio::time::timeout(grace, self.child.wait()).await.is_err() {
+            let _ = self.child.kill().await;
+        }
+    }
+}
+
+/// Start a worker from `program`, wait until its tunnel is up, and only then stop `current`.
+/// The router routes to a machine's newest tunnel the moment it connects, and the old one's
+/// closing neither unregisters it nor marks the machine offline (`machines::Machines::serve`),
+/// so the machine never goes offline; what the old one was relaying at that moment fails and
+/// is asked again. A worker that is not up in time is stopped, and `current` carries on.
+/// The worker running afterwards, and whether the new one took over.
+async fn hand_over(current: Worker, program: &Path, args: &[String], digest: [u8; 32], within: Duration) -> (Worker, Result<()>) {
+    let mut next = match Worker::start(program, args, digest) {
+        Ok(w) => w,
+        Err(e) => return (current, Err(e)),
+    };
+    match next.ready(within).await {
+        Ok(_) => {
+            current.stop(STOP_GRACE).await;
+            (next, Ok(()))
+        }
+        Err(e) => {
+            next.stop(Duration::ZERO).await;
+            (current, Err(e))
+        }
+    }
+}
+
+/// The binary the keeper starts its workers from, as last looked at: its size and time, and
+/// its digest, read again only when those change.
+struct Seen {
+    stamp: Option<(u64, std::time::SystemTime)>,
+    digest: [u8; 32],
+}
+
+impl Seen {
+    fn of(path: &Path) -> Seen {
+        Seen { stamp: stamp(path), digest: digest_of(path).unwrap_or_default() }
+    }
+
+    /// Its digest, when the file is not what it was.
+    fn changed(&mut self, path: &Path) -> Option<[u8; 32]> {
+        let now = stamp(path);
+        if now == self.stamp {
+            return None;
+        }
+        self.stamp = now;
+        let digest = digest_of(path).ok()?;
+        (digest != self.digest).then(|| {
+            self.digest = digest;
+            digest
+        })
+    }
+}
+
+fn stamp(path: &Path) -> Option<(u64, std::time::SystemTime)> {
+    let meta = std::fs::metadata(path).ok()?;
+    Some((meta.len(), meta.modified().ok()?))
+}
+
+fn digest_of(path: &Path) -> Result<[u8; 32]> {
+    use sha2::Digest;
+    Ok(sha2::Sha256::digest(std::fs::read(path)?).into())
+}
+
+/// The keeper: what the login item and the editor start. It holds `agent.lock`, runs no
+/// tunnel itself, and keeps one worker running (`work`), started from the installed binary as
+/// it is now. When that binary changes — the installer, or `update_from` — it hands over to a
+/// worker of the new build before the old one stops (`hand_over`), so neither the router nor
+/// the login item sees the agent go. The keeper itself stays on its build until it is next
+/// started; it does nothing but this.
+async fn keep(dir: &Path, args: &RunArgs, mut stopping: crate::lifecycle::Stopping) -> Result<()> {
+    let saved_at = dir.join("agent.json");
+    let mut saved = load_saved_at(&saved_at);
+    if saved.machine.is_none() {
+        saved.machine = Some(new_machine_id());
+        store_saved_at(&saved_at, &saved)?;
+    }
+    let installed = crate::setup::installed_binary()?;
+    let own = std::env::current_exe()?;
+    // Only the installed agent updates itself: one run from a build directory runs its own
+    // binary and is left alone.
+    let from_bin = same_file(&own, &installed);
+    let program = if from_bin { installed.clone() } else { own };
+    let worker_args = worker_args(args);
+    tracing::info!(build = env!("AGENT_ROUTER_BUILD"), program = %program.display(), "agent keeper starting");
+
+    let updates = may_update(&saved, from_bin)
+        .then(|| {
+            let server = args.server.clone().or_else(|| saved.server.clone())?;
+            let password = std::env::var("AGENT_ROUTER_PASSWORD").ok().filter(|p| !p.is_empty()).or_else(|| saved.password.clone())?;
+            let router = crate::library::sync::Router::new(&server, &password).ok()?;
+            Some(Updater { router: Arc::new(router), dir: dir.to_path_buf(), installed: installed.clone(), busy: Default::default() })
+        })
+        .flatten();
+    if let Some(u) = &updates {
+        u.check_soon();
+    }
+
+    let mut seen = Seen::of(&program);
+    let mut current = Worker::start(&program, &worker_args, seen.digest)?;
+    let mut refused: Option<([u8; 32], Instant)> = None;
+    let mut backoff = Duration::from_secs(1);
+    let mut watch = tokio::time::interval(WATCH_EVERY);
+    let mut hourly = tokio::time::interval_at(tokio::time::Instant::now() + UPDATE_EVERY, UPDATE_EVERY);
+    loop {
+        tokio::select! {
+            why = stopping.wait() => {
+                tracing::info!("{why} received; agent keeper stopping");
+                current.stop(STOP_GRACE).await;
+                return Ok(());
+            }
+            status = current.child.wait() => {
+                let how = status.map(|s| s.to_string()).unwrap_or_else(|e| e.to_string());
+                tracing::warn!("the agent's worker exited ({how}); starting it again in {} s", backoff.as_secs());
+                tokio::select! {
+                    _ = tokio::time::sleep(backoff) => {}
+                    why = stopping.wait() => {
+                        tracing::info!("{why} received; agent keeper stopping");
+                        return Ok(());
+                    }
                 }
-                tokio::time::sleep(Duration::from_millis(200)).await;
+                backoff = (backoff * 2).min(Duration::from_secs(60));
+                seen = Seen::of(&program);
+                match Worker::start(&program, &worker_args, seen.digest) {
+                    Ok(w) => current = w,
+                    Err(e) => tracing::warn!("{e:#}"),
+                }
+            }
+            Some(said) = current.said.recv() => match said {
+                Said::Ready(build) => {
+                    backoff = Duration::from_secs(1);
+                    current.build = Some(build);
+                }
+                Said::Connected => {
+                    if let Some(u) = &updates {
+                        u.check_soon();
+                    }
+                }
+            },
+            _ = watch.tick() => {
+                let Some(digest) = seen.changed(&program) else { continue };
+                if digest == current.digest {
+                    continue;
+                }
+                if refused.is_some_and(|(d, at)| d == digest && at.elapsed() < RETRY_REFUSED) {
+                    continue;
+                }
+                let from = current.build.clone().unwrap_or_else(|| "an unknown build".into());
+                let (running, took) = hand_over(current, &program, &worker_args, digest, READY_WAIT).await;
+                current = running;
+                match took {
+                    Ok(()) => {
+                        tracing::info!("handed over from {from} to {}", current.build.as_deref().unwrap_or("an unknown build"));
+                        refused = None;
+                    }
+                    Err(e) => {
+                        tracing::warn!("a new agent build did not take over ({e:#}); {from} carries on");
+                        refused = Some((digest, Instant::now()));
+                        // Looked at again once the wait is over, as if it had just changed.
+                        seen.stamp = None;
+                        seen.digest = current.digest;
+                    }
+                }
+            }
+            _ = hourly.tick() => {
+                if let Some(u) = &updates {
+                    u.check_soon();
+                }
             }
         }
-        Lock::Busy { pid, .. } => bail!("an agent is already running here (pid {pid})"),
-    };
+    }
+}
 
+/// What the keeper starts its worker with: `agent --worker`, and what it was itself told.
+fn worker_args(args: &RunArgs) -> Vec<String> {
+    let mut out = vec!["agent".to_string(), "--worker".to_string()];
+    if let Some(server) = &args.server {
+        out.extend(["--server".to_string(), server.clone()]);
+    }
+    if let Some(label) = &args.label {
+        out.extend(["--label".to_string(), label.clone()]);
+    }
+    if let Some(dir) = &args.data_dir {
+        out.extend(["--data-dir".to_string(), dir.display().to_string()]);
+    }
+    out
+}
+
+fn same_file(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
+/// Whether this keeper fetches its router's build: not on a machine installed with
+/// `--no-auto-update`, and not when it runs from anywhere but the installed binary.
+fn may_update(saved: &Saved, from_bin: bool) -> bool {
+    from_bin && saved.update != Some(false)
+}
+
+/// The platform the router's installer names, whose agent it hands out
+/// (`downloads::PLATFORMS`): Windows on Arm runs the x64 build.
+fn platform() -> &'static str {
+    if cfg!(windows) {
+        "win32-x64"
+    } else if cfg!(target_os = "macos") {
+        if cfg!(target_arch = "aarch64") { "darwin-arm64" } else { "darwin-x64" }
+    } else if cfg!(target_arch = "aarch64") {
+        "linux-arm64"
+    } else {
+        "linux-x64"
+    }
+}
+
+/// The keeper's self-update, one check at a time, off its loop.
+struct Updater {
+    router: Arc<crate::library::sync::Router>,
+    dir: PathBuf,
+    installed: PathBuf,
+    busy: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Updater {
+    fn check_soon(&self) {
+        use std::sync::atomic::Ordering;
+        if self.busy.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let (router, dir, installed, busy) = (self.router.clone(), self.dir.clone(), self.installed.clone(), self.busy.clone());
+        tokio::spawn(async move {
+            match update_from(&router, &dir, &installed, try_run).await {
+                Ok(Some(build)) => tracing::info!("fetched the router's agent, {build}, into {}; handing over to it", installed.display()),
+                Ok(None) => {}
+                Err(e) => tracing::warn!("could not check the router's agent build: {e:#}"),
+            }
+            busy.store(false, Ordering::SeqCst);
+        });
+    }
+}
+
+/// Once per router build: fetch the router's agent for this platform, and when it differs
+/// from the installed one, put it in place (`install_if_different`). Only what every router
+/// already serves is asked for: its build (`/_router/health`) and the agent its installer
+/// hands out (`/agent/<platform>/agent-router`). The new build, when there is one.
+async fn update_from(
+    router: &crate::library::sync::Router,
+    dir: &Path,
+    installed: &Path,
+    try_run: fn(&Path) -> Result<String>,
+) -> Result<Option<String>> {
+    let (status, _, body) = router.send(axum::http::Method::GET, "/_router/health", Vec::new(), Bytes::new()).await?;
+    if !status.is_success() {
+        bail!("the router answered {status} for its health");
+    }
+    let health: Value = serde_json::from_slice(&body).context("the router's health is not JSON")?;
+    let build = health.get("build").and_then(Value::as_str).ok_or_else(|| anyhow!("the router did not say its build"))?.to_string();
+    let saved_at = dir.join("agent.json");
+    if load_saved_at(&saved_at).checked_build.as_deref() == Some(build.as_str()) {
+        return Ok(None);
+    }
+    let name = if cfg!(windows) { "agent-router.exe" } else { "agent-router" };
+    let path = format!("/agent/{}/{name}", platform());
+    let (status, _, binary) = router.send(axum::http::Method::GET, &path, Vec::new(), Bytes::new()).await?;
+    if !status.is_success() {
+        bail!("the router answered {status} for {path}");
+    }
+    let installed = installed.to_path_buf();
+    let outcome = tokio::task::spawn_blocking(move || install_if_different(&installed, &binary, try_run)).await??;
+    let mut saved = load_saved_at(&saved_at);
+    saved.checked_build = Some(build);
+    store_saved_at(&saved_at, &saved)?;
+    Ok(outcome)
+}
+
+/// Put `bytes` in place of the installed binary, unless they are the same: written beside it,
+/// run once (`try_run`), then renamed over it (`setup::replace`), never written over a binary
+/// in place. A download that will not run here is never installed. The new build, if any.
+fn install_if_different(installed: &Path, bytes: &[u8], try_run: fn(&Path) -> Result<String>) -> Result<Option<String>> {
+    use sha2::Digest;
+    let new: [u8; 32] = sha2::Sha256::digest(bytes).into();
+    if digest_of(installed).ok() == Some(new) {
+        return Ok(None);
+    }
+    let name = installed.file_name().and_then(|n| n.to_str()).unwrap_or("agent-router");
+    let fresh = installed.with_file_name(format!("{name}.new-{}", std::process::id()));
+    std::fs::write(&fresh, bytes).with_context(|| format!("writing {}", fresh.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fresh, std::fs::Permissions::from_mode(0o755))?;
+    }
+    let build = match try_run(&fresh) {
+        Ok(build) => build,
+        Err(e) => {
+            let _ = std::fs::remove_file(&fresh);
+            return Err(e.context("the router's agent does not run here"));
+        }
+    };
+    crate::setup::replace(&fresh, installed)?;
+    Ok(Some(build))
+}
+
+/// Run a binary with `--build`: it must answer within ten seconds, exit 0, and say a build.
+/// This catches a binary for another architecture, or one macOS will not start.
+fn try_run(path: &Path) -> Result<String> {
+    let mut child = std::process::Command::new(path)
+        .arg("--build")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .with_context(|| format!("starting {}", path.display()))?;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("{} did not answer within 10 s", path.display());
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let mut out = String::new();
+    if let Some(mut stdout) = child.stdout.take() {
+        use std::io::Read;
+        stdout.read_to_string(&mut out)?;
+    }
+    let build = out.trim().to_string();
+    if !status.success() || build.is_empty() {
+        bail!("{} answered {status} with no build", path.display());
+    }
+    Ok(build)
+}
+
+/// The keeper's worker: today's agent, the tunnel and everything it serves, with no lock of
+/// its own. It stops when asked, and when its standard input closes: that is how its keeper
+/// tells it to make way, and what happens when the keeper goes away, whatever stopped it. It
+/// says `ready <build>` on its standard output once its tunnel is first up, and `connected`
+/// at each reconnect after (`Said`).
+async fn work(args: RunArgs, dir: PathBuf, stopping: crate::lifecycle::Stopping) -> Result<()> {
+    // Read on a thread of its own, which nothing waits for at exit.
+    let (closed, eof) = tokio::sync::oneshot::channel::<()>();
+    std::thread::spawn(move || {
+        use std::io::Read;
+        let mut buf = [0u8; 64];
+        let mut stdin = std::io::stdin();
+        while matches!(stdin.read(&mut buf), Ok(n) if n > 0) {}
+        let _ = closed.send(());
+    });
+    let mut stopping = stopping.or("the keeper closed its pipe", async move {
+        let _ = eof.await;
+    });
     let mut saved = load_saved();
     if saved.machine.is_none() {
         saved.machine = Some(new_machine_id());
@@ -561,6 +1104,22 @@ async fn run(args: RunArgs) -> Result<()> {
         }));
     }
 
+    // Said to the keeper: the first time the tunnel is up, so it can stop the worker this one
+    // replaces; every time after, so it can check its router's build.
+    {
+        let mut up = connected.subscribe();
+        tokio::spawn(async move {
+            let mut first = true;
+            while up.changed().await.is_ok() {
+                if std::mem::take(&mut first) {
+                    println!("ready {}", env!("AGENT_ROUTER_BUILD"));
+                } else {
+                    println!("connected");
+                }
+            }
+        });
+    }
+
     let router = routes(library);
     let mut backoff = Duration::from_secs(1);
     loop {
@@ -602,6 +1161,9 @@ struct InstallArgs {
     /// `Some(false)` from `--no-library`, `Some(true)` from `--library`: otherwise left as
     /// it was saved.
     library: Option<bool>,
+    /// `Some(false)` from `--no-auto-update`, `Some(true)` from `--auto-update`: otherwise
+    /// left as it was saved.
+    auto_update: Option<bool>,
 }
 
 fn parse_install(args: &[String]) -> Result<InstallArgs, String> {
@@ -631,6 +1193,8 @@ fn parse_install(args: &[String]) -> Result<InstallArgs, String> {
             "--no-config" if inline.is_none() => out.no_config = true,
             "--no-library" if inline.is_none() => out.library = Some(false),
             "--library" if inline.is_none() => out.library = Some(true),
+            "--no-auto-update" if inline.is_none() => out.auto_update = Some(false),
+            "--auto-update" if inline.is_none() => out.auto_update = Some(true),
             other => return Err(format!("unknown option {other:?}")),
         }
     }
@@ -752,9 +1316,13 @@ async fn install(args: &[String]) -> Result<()> {
     if let Some(on) = args.library {
         saved.library = (!on).then_some(false);
     }
+    if let Some(on) = args.auto_update {
+        saved.update = (!on).then_some(false);
+    }
     store_saved(&saved)?;
     println!("saved     {} (owner-only)", saved_path()?.display());
     println!("library   {}", library_words(saved.library));
+    println!("updates   {}", update_words(saved.update));
 
     // A machine that ran the router itself still has its login item, which starts
     // `bin/agent-router` — the path `install_binary` is about to give the agent — so at the
@@ -786,11 +1354,17 @@ async fn install(args: &[String]) -> Result<()> {
     } else {
         // The settings are already written: a login item that cannot be registered here
         // is said, not a failure of the whole install.
-        let registered = crate::setup::install_binary().and_then(|exe| crate::setup::agent_service::install(&exe));
+        // A keeper already running hands over to the binary just put in place by itself, with
+        // the machine never offline; anything older is restarted as a keeper.
+        let keeper = crate::config::data_dir().ok().and_then(|dir| peek(&dir).ok().flatten()).filter(|h| h.keeper);
+        let registered = crate::setup::install_binary().and_then(|exe| crate::setup::agent_service::install(&exe, keeper.is_some()));
         match registered {
             Ok(path) => {
                 println!("service   registered: {}", path.display());
-                println!("          the agent starts now, and at every login");
+                match &keeper {
+                    Some(k) => println!("          the running agent (pid {}) hands over to this build without going offline", k.pid),
+                    None => println!("          the agent starts now, and at every login"),
+                }
                 // A user's systemd stops with their last session unless it lingers, and a
                 // machine reached over SSH is often left with none.
                 #[cfg(target_os = "linux")]
@@ -838,8 +1412,10 @@ fn uninstall(args: &[String]) -> Result<()> {
     // launchd stops what it started; anything else still running (the editor's, or one
     // started by hand) is asked to stop through its lock.
     let dir = crate::config::data_dir()?;
-    if let Lock::Busy { pid, .. } = lock(&dir)? {
-        let _ = ask_to_stop(pid);
+    // A keeper stops its worker on its way out; on Windows, where it is ended outright, the
+    // worker sees its pipe close and goes too.
+    if let Some(holder) = peek(&dir)? {
+        let _ = ask_to_stop(holder.pid);
     }
     println!("service   unregistered; the agent has stopped");
     let mut saved = load_saved();
@@ -862,9 +1438,11 @@ fn status(args: &[String]) -> Result<()> {
     println!("machine   {}", saved.machine.as_deref().unwrap_or("no id yet"));
     println!("label     {}", saved.label.clone().unwrap_or_else(host_name));
     println!("library   {}", library_words(saved.library));
-    match lock(&dir)? {
-        Lock::Busy { pid, build } => println!("running   yes (pid {pid}, {build})"),
-        Lock::Held(_) => println!("running   no"),
+    println!("updates   {}", update_words(saved.update));
+    match peek(&dir)? {
+        Some(Holder { pid, build, keeper: true }) => println!("running   yes: a keeper (pid {pid}, {build}) and its worker"),
+        Some(Holder { pid, build, .. }) => println!("running   yes (pid {pid}, {build}), from before keepers"),
+        None => println!("running   no"),
     }
     println!(
         "service   {}",
@@ -874,6 +1452,13 @@ fn status(args: &[String]) -> Result<()> {
         println!("config    {} ({})", m.settings_path, m.scope);
     }
     Ok(())
+}
+
+fn update_words(update: Option<bool>) -> &'static str {
+    match update {
+        Some(false) => "not fetched (--no-auto-update): the agent keeps its build until the installer runs again",
+        _ => "the router's build, fetched once per router build and handed over to without going offline",
+    }
 }
 
 fn library_words(library: Option<bool>) -> &'static str {
@@ -1085,6 +1670,264 @@ async fn answer(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("ar-agent-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A stand-in worker: says it is up, writes when it starts and when it goes, and goes
+    /// when its pipe closes, as `work` does.
+    #[cfg(unix)]
+    fn stand_in(n: u32, log: &Path) -> Vec<String> {
+        let log = log.display();
+        vec!["-c".into(), format!("echo up-{n} >> '{log}'; echo ready tree:{n}; cat >/dev/null; echo down-{n} >> '{log}'")]
+    }
+
+    #[cfg(unix)]
+    fn lines(log: &Path) -> Vec<String> {
+        std::fs::read_to_string(log).unwrap_or_default().lines().map(str::to_owned).collect()
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_keeper_hands_over_before_the_old_worker_stops() {
+        let dir = scratch("handover");
+        let log = dir.join("log");
+        let sh = Path::new("/bin/sh");
+        let mut one = Worker::start(sh, &stand_in(1, &log), [1; 32]).unwrap();
+        assert_eq!(one.ready(Duration::from_secs(10)).await.unwrap(), "tree:1");
+        let (two, took) = hand_over(one, sh, &stand_in(2, &log), [2; 32], Duration::from_secs(10)).await;
+        took.unwrap();
+        assert_eq!((two.build.as_deref(), two.digest), (Some("tree:2"), [2; 32]));
+        assert_eq!(lines(&log), ["up-1", "up-2", "down-1"], "the old worker went only once the new one was up");
+        two.stop(Duration::from_secs(5)).await;
+        assert_eq!(lines(&log).last().map(String::as_str), Some("down-2"), "closing its pipe is enough");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_worker_that_never_becomes_ready_changes_nothing() {
+        let dir = scratch("refused");
+        let log = dir.join("log");
+        let sh = Path::new("/bin/sh");
+        let mut one = Worker::start(sh, &stand_in(1, &log), [1; 32]).unwrap();
+        one.ready(Duration::from_secs(10)).await.unwrap();
+        let never = vec!["-c".to_string(), format!("echo up-2 >> '{}'; exec sleep 30", log.display())];
+        let (mut one, took) = hand_over(one, sh, &never, [2; 32], Duration::from_millis(500)).await;
+        let why = took.expect_err("a worker that never said ready took over");
+        assert!(why.to_string().contains("not up within"), "{why:#}");
+        assert_eq!(one.digest, [1; 32]);
+        assert!(one.child.try_wait().unwrap().is_none(), "the old worker carries on");
+        assert_eq!(lines(&log), ["up-1", "up-2"], "and was never told to go");
+        one.stop(Duration::from_secs(5)).await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_keeper_is_left_alone_and_a_legacy_agent_is_named() {
+        let dir = scratch("lock");
+        let held = lock(&dir).unwrap();
+        assert!(matches!(held, Lock::Held(_)));
+        let me = Holder { pid: std::process::id() as i32, build: env!("AGENT_ROUTER_BUILD").into(), keeper: true };
+        match lock(&dir).unwrap() {
+            Lock::Busy(h) => assert_eq!(h, me),
+            Lock::Held(_) => panic!("the lock was taken twice"),
+        }
+        assert_eq!(peek(&dir).unwrap(), Some(me));
+        assert_eq!(on_busy(&peek(&dir).unwrap().unwrap()), Busy::LeaveAlone, "a keeper hands over by itself");
+        drop(held);
+        assert_eq!(peek(&dir).unwrap(), None);
+
+        // An agent from before keepers wrote itself into the lock file; a stale agent.pid
+        // beside it does not name it a keeper.
+        std::fs::write(dir.join("agent.lock"), "4242 tree:old\n").unwrap();
+        let legacy = open_lock(&dir).unwrap();
+        legacy.try_lock().unwrap();
+        let h = peek(&dir).unwrap().unwrap();
+        assert_eq!(h, Holder { pid: 4242, build: "tree:old".into(), keeper: false });
+        assert_eq!(on_busy(&h), Busy::Replace(4242));
+        assert_eq!(on_busy(&Holder { pid: 0, build: String::new(), keeper: false }), Busy::AtNextLogon, "Windows cannot name it");
+        drop(legacy);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The router side of a handover, as the router already behaves: the newer tunnel for a
+    /// machine is the one it routes to, and the older one's closing neither unregisters it nor
+    /// marks the machine offline.
+    #[tokio::test]
+    async fn the_router_sees_no_offline_across_a_handover() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+        let lab = crate::api_refusals::Lab::hosted("handover").await;
+        let password = lab.password.unwrap();
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = lab.app.clone().into_make_service_with_connect_info::<std::net::SocketAddr>();
+        tokio::spawn(async move { axum::serve(listener, app).await });
+
+        let tunnel = |answer: &'static str| async move {
+            let routes = Router::new().route("/api/live/sessions", get(move || async move { Json(json!([{ "session_id": answer }])) }));
+            let mut request = format!("ws://{addr}{}", tunnel::PATH).into_client_request().unwrap();
+            request.headers_mut().insert(axum::http::header::AUTHORIZATION, format!("Bearer {password}").parse().unwrap());
+            let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+            let (socket, _) = tokio_tungstenite::client_async(request, tcp).await.unwrap();
+            let hello = Hello {
+                machine: "one-machine".into(),
+                label: "handover".into(),
+                platform: std::env::consts::OS.into(),
+                version: "test".into(),
+                build: answer.into(),
+            };
+            tokio::spawn(async move {
+                let _ = serve(socket, &hello, routes).await;
+            })
+            .abort_handle()
+        };
+        let listed = || async {
+            let mut req = axum::http::Request::get("/api/live/sessions")
+                .header(axum::http::header::HOST, "127.0.0.1")
+                .header(axum::http::header::AUTHORIZATION, format!("Bearer {password}"))
+                .body(Body::empty())
+                .unwrap();
+            req.extensions_mut().insert(axum::extract::ConnectInfo(std::net::SocketAddr::from(([127, 0, 0, 1], 50_000))));
+            let res = lab.app.clone().oneshot(req).await.unwrap();
+            let body = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+            let rows: Value = serde_json::from_slice(&body).unwrap();
+            rows.as_array().unwrap().iter().filter_map(|r| r["session_id"].as_str().map(str::to_owned)).collect::<Vec<_>>()
+        };
+        let online = || lab.state.machines.seen().iter().any(|m| m.online);
+
+        let old = tunnel("old").await;
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !online() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the old worker comes online");
+        assert_eq!(listed().await, ["old"]);
+
+        // From the moment the new worker connects until after the old one has gone, the
+        // machine is never seen offline.
+        let dropped = Arc::new(AtomicBool::new(false));
+        let watching = Arc::new(AtomicBool::new(true));
+        let watcher = {
+            let (dropped, watching, state) = (dropped.clone(), watching.clone(), lab.state.clone());
+            tokio::spawn(async move {
+                while watching.load(Ordering::SeqCst) {
+                    if !state.machines.seen().iter().any(|m| m.online) {
+                        dropped.store(true, Ordering::SeqCst);
+                    }
+                    tokio::time::sleep(Duration::from_millis(2)).await;
+                }
+            })
+        };
+        let new = tunnel("new").await;
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while listed().await != ["new"] {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the router routes to the newer tunnel");
+        old.abort();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        watching.store(false, Ordering::SeqCst);
+        watcher.await.unwrap();
+        assert!(!dropped.load(Ordering::SeqCst), "the machine was seen offline during the handover");
+        assert!(online());
+        assert_eq!(listed().await, ["new"], "still the newer tunnel once the older one has gone");
+        new.abort();
+    }
+
+    #[tokio::test]
+    async fn a_router_build_already_checked_downloads_nothing() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        rustls::crypto::ring::default_provider().install_default().ok();
+        let dir = scratch("checked");
+        let installed = dir.join("agent-router");
+        std::fs::write(&installed, b"the same build").unwrap();
+        let downloads = Arc::new(AtomicUsize::new(0));
+        let name = if cfg!(windows) { "agent-router.exe" } else { "agent-router" };
+        let app = {
+            let downloads = downloads.clone();
+            Router::new()
+                .route("/_router/health", get(|| async { Json(json!({ "ok": true, "build": "tree:r1" })) }))
+                .route(
+                    &format!("/agent/{}/{name}", platform()),
+                    get(move || {
+                        let downloads = downloads.clone();
+                        async move {
+                            downloads.fetch_add(1, Ordering::SeqCst);
+                            b"the same build".to_vec()
+                        }
+                    }),
+                )
+        };
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await });
+        let router = crate::library::sync::Router::new(&format!("http://{addr}"), "pw").unwrap();
+        fn never(_: &Path) -> Result<String> {
+            panic!("an unchanged binary is never run")
+        }
+
+        assert_eq!(update_from(&router, &dir, &installed, never).await.unwrap(), None);
+        assert_eq!(downloads.load(Ordering::SeqCst), 1, "a router build not checked yet is fetched once");
+        assert_eq!(load_saved_at(&dir.join("agent.json")).checked_build.as_deref(), Some("tree:r1"));
+        assert_eq!(update_from(&router, &dir, &installed, never).await.unwrap(), None);
+        assert_eq!(downloads.load(Ordering::SeqCst), 1, "and never again for the same router build");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_download_that_will_not_run_is_never_installed() {
+        let dir = scratch("broken");
+        let installed = dir.join("agent-router");
+        std::fs::write(&installed, b"the running build").unwrap();
+        let err = install_if_different(&installed, b"#!/bin/sh\nexit 3\n", try_run).unwrap_err();
+        assert!(format!("{err:#}").contains("does not run here"), "{err:#}");
+        assert_eq!(std::fs::read(&installed).unwrap(), b"the running build");
+        let left: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(left, ["agent-router"], "nothing is left beside it");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_new_build_is_installed_by_rename() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let dir = scratch("renamed");
+        let installed = dir.join("agent-router");
+        std::fs::write(&installed, b"the running build").unwrap();
+        let before = std::fs::metadata(&installed).unwrap().ino();
+        let new = b"#!/bin/sh\necho tree:new\n";
+        assert_eq!(install_if_different(&installed, new, try_run).unwrap().as_deref(), Some("tree:new"));
+        assert_eq!(std::fs::read(&installed).unwrap(), new);
+        let meta = std::fs::metadata(&installed).unwrap();
+        assert_ne!(meta.ino(), before, "renamed into place, never written over a running binary");
+        assert_eq!(meta.permissions().mode() & 0o777, 0o755);
+        assert_eq!(install_if_different(&installed, new, try_run).unwrap(), None, "the same bytes again change nothing");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_machine_that_opted_out_never_updates() {
+        let out = Saved { update: Some(false), ..Default::default() };
+        assert!(!may_update(&out, true));
+        assert!(may_update(&Saved::default(), true));
+        assert!(!may_update(&Saved::default(), false), "only the installed agent updates itself");
+        assert_eq!(parse_install(&["--server".into(), "https://r.example.com".into(), "--no-auto-update".into()]).unwrap().auto_update, Some(false));
+        let json = serde_json::to_value(&out).unwrap();
+        assert_eq!(json["update"], false, "remembered in agent.json");
+    }
 
     #[test]
     fn a_server_url_gives_the_socket_to_dial() {

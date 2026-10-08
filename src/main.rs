@@ -146,6 +146,12 @@ async fn main() -> anyhow::Result<()> {
             println!("agent-router {}", env!("CARGO_PKG_VERSION"));
             return Ok(());
         }
+        // The build alone, `tree:` and the compiled tree: what a machine agent runs a new
+        // binary with before it trusts it (`agent::try_run`).
+        Some("--build") => {
+            println!("{}", env!("AGENT_ROUTER_BUILD"));
+            return Ok(());
+        }
         Some("--if-not-running") => {
             // Something already serving means our job is done. Used by the shell
             // profile autostart, which runs on every new shell.

@@ -93,8 +93,9 @@ The `/live` page shows both, with the router's address in them, until a machine 
 
 ```
 agent-router agent --server <url> [--label <name>] [--data-dir <dir>]
-agent-router agent --ensure            start only if no agent from this build runs
+agent-router agent --ensure            start only if no agent's keeper runs here
 agent-router agent install --server <url> [--project <dir>] [--no-service] [--no-config]
+                                       [--no-library] [--no-auto-update]
 agent-router agent uninstall
 agent-router agent status
 ```
@@ -124,9 +125,14 @@ survives a rename. The label defaults to the host name.
 `uninstall` reverts all of it but the retired login item, which stays retired: the
 local `agent-router install` registers it again.
 
-**Single instance.** `<data-dir>/agent.lock` holds the running agent's pid and build.
-`--ensure` exits if an agent of this same build holds it. Any other build is asked to
-stop, then replaced.
+**Single instance.** `<data-dir>/agent.lock` is held by the agent's keeper, and
+`<data-dir>/agent.pid` says who holds it: its pid, its build and `keeper`. The lock file
+itself stays empty, because Windows refuses to read a file another process holds locked.
+`--ensure` exits when a keeper holds the lock, whatever its build, since a keeper keeps its
+agent at the right build itself (see [Upgrading an agent](#upgrading-an-agent)). An agent
+from before keepers wrote its pid and build into `agent.lock`; it is asked to stop, then
+replaced. On Windows such an agent cannot be named, and a keeper takes its place at the
+next logon.
 
 **What it runs:**
 - **Request routes.** Only these answer tunneled requests:
@@ -144,6 +150,64 @@ stop, then replaced.
 - **Clock.** It derives activity on its own clock. Rows carry `as_of_ms` and the router
   never re-derives them, because a few seconds of clock skew would misread turn
   boundaries.
+
+### Upgrading an agent
+
+A new build takes over in place, on the machine alone: the router and its rollout are not
+involved, and the machine never shows offline.
+
+**The keeper and its worker.** What the login item and the editor start (`agent`,
+`agent --ensure`) is the keeper. It holds the lock, runs no tunnel, and keeps one worker
+running: `<data-dir>/bin/agent-router agent --worker`, started from the installed binary
+as it is at that moment. The worker is the agent described above: the tunnel and
+everything it serves.
+- The worker's standard input is a pipe the keeper never writes to. The worker stops when
+  that pipe closes, which is how the keeper tells it to go, and what happens when the
+  keeper goes away, whatever stopped it.
+- On its standard output the worker says `ready <build>` once its tunnel is first up, and
+  `connected` at each reconnect after. Its logs go to standard error, into `agent.log`.
+- A worker that exits on its own is started again, waiting from 1 s up to 60 s.
+
+**The handover.** Every 5 s the keeper looks at `bin/agent-router` (its size and time,
+then its sha256 when those change). When it is a new build:
+1. The keeper starts a second worker from it.
+2. It waits up to 30 s for that worker's `ready`. The router routes to a machine's newest
+   tunnel the moment it connects, and the older one's closing neither unregisters it nor
+   marks the machine offline (`machines::Machines::serve`).
+3. It closes the first worker's pipe, and kills it after 5 s.
+4. It logs `handed over from <build> to <build>`.
+
+What the first worker was relaying at that instant fails with "the machine reconnected",
+and a stream someone is following reconnects. A worker that is not up in time is stopped,
+and the first one carries on; that build is tried again after ten minutes, in case what
+stopped it was the router being away. Two workers may overlap for a moment: the Library
+sync holds its own lock, and a places report says the same thing twice.
+
+The keeper itself stays on its build until it is next started (a login, a reboot, or the
+installer replacing an agent from before keepers). It does nothing but this.
+
+**Self-update.** At start, at each worker reconnect (a router deploy replaces the pod, so
+every worker reconnects), and hourly, the keeper reads `/_router/health`'s build. Once per
+router build:
+1. It fetches `/agent/<platform>/agent-router`, which the router already serves for its
+   installer.
+2. When its sha256 differs from `bin/`'s, it writes it beside as `agent-router.new-<pid>`,
+   runs it once with `--build` (it must exit 0 within 10 s and say a build, which catches a
+   wrong architecture or a binary macOS will not start), and renames it over `bin/`'s,
+   never writing over a binary in place.
+3. It records the router build in `agent.json` (`checked_build`).
+
+The handover then takes it from there. Only the installed agent updates itself: a keeper
+not running from `bin/` (one run from a build directory) never does, and neither does a
+machine installed with `--no-auto-update`, which writes `"update": false` into `agent.json`
+(`--auto-update` undoes it).
+
+**The installer and the editor.** Re-running the installer puts the new binary in `bin/`
+by rename; with a keeper running, the login item is rewritten but not restarted, and the
+keeper hands over. An agent from before keepers is restarted once (launchd `bootout` and
+`bootstrap`, systemd `restart`, the Windows Startup script). In remote mode the VS Code
+extension installs its bundled agent only where none is installed, so it never copies an
+older build over one the keeper keeps current.
 
 ## The tunnel
 

@@ -270,6 +270,22 @@ export function exeName(name: string, platform: NodeJS.Platform = process.platfo
   return platform === 'win32' ? `${name}.exe` : name;
 }
 
+/** Which bundled programs remote mode puts in place, as [bundled, installed] pairs. The agent
+ *  only where none is installed: once there, its keeper keeps it at its router's build
+ *  (docs/hosting-machine-agent.md, "Upgrading an agent"), and a bundled build copied over it
+ *  would undo that. The wrapper whenever its bytes differ, as before. */
+export function remoteInstalls(
+  bundled: { router: string; wrapper: string },
+  installed: { router: string; wrapper: string },
+  exists: (p: string) => boolean,
+  same: (a: string, b: string) => boolean,
+): Array<[string, string]> {
+  const out: Array<[string, string]> = [];
+  if (!exists(installed.router)) { out.push([bundled.router, installed.router]); }
+  if (exists(bundled.wrapper) && !same(bundled.wrapper, installed.wrapper)) { out.push([bundled.wrapper, installed.wrapper]); }
+  return out;
+}
+
 /** `agent-router agent install --server <url> [--no-service] [--no-config]`. */
 export function agentInstallArgs(server: string, o: { service: boolean; config: boolean }): string[] {
   return ['agent', 'install', '--server', server, ...(o.service ? [] : ['--no-service']), ...(o.config ? [] : ['--no-config'])];

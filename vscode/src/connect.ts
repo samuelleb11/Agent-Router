@@ -96,7 +96,7 @@ async function setUpMachine(context: vscode.ExtensionContext, log: vscode.Output
   const service = choice === 'Start at Login';
   const config = settings().get<boolean>('configureClaudeCode', true);
   try {
-    router.installBinariesIfChanged(router.bundled(context));
+    router.installForRemote(router.bundled(context));
   } catch (e) {
     log.appendLine(`could not install the agent: ${(e as Error).message}`);
     return { kind: 'failed', sentence: (e as Error).message };
@@ -279,13 +279,14 @@ export async function remove(context: vscode.ExtensionContext, log: vscode.Outpu
 }
 
 /** Agent Router: Start or Update the Router, should it be run in remote mode: install
- *  the bundled build if it differs, and ask the agent to start. */
+ *  the bundled agent where none is, and ask the agent to start. Updating an installed
+ *  agent is its keeper's (docs/hosting-machine-agent.md, "Upgrading an agent"). */
 export async function ensure(context: vscode.ExtensionContext, log: vscode.OutputChannel): Promise<void> {
   const m = router.mode();
   if (m.kind !== 'remote') { await connect(context, log); return; }
   const host = remote.hostOf(m.server);
   try {
-    router.installBinariesIfChanged(router.bundled(context));
+    router.installForRemote(router.bundled(context));
   } catch (e) {
     showFailure(`The agent could not be installed: ${sentence((e as Error).message)}`, log);
     return;
@@ -322,7 +323,7 @@ export async function adopt(context: vscode.ExtensionContext, log: vscode.Output
   log.appendLine(`connected to ${a.server}, taken over from ${agent.savedPath()}`);
   try {
     const b = router.bundled(context);
-    if (router.installBinariesIfChanged(b)) { log.appendLine(`installed ${b.version || 'the bundled build'} into ${router.binDir()}`); }
+    if (router.installForRemote(b)) { log.appendLine(`installed ${b.version || 'the bundled build'} into ${router.binDir()}`); }
   } catch (e) {
     log.appendLine(`could not install the agent: ${(e as Error).message}`);
   }
@@ -340,14 +341,14 @@ export async function adopt(context: vscode.ExtensionContext, log: vscode.Output
   return a.server;
 }
 
-/** What a window does when it opens in remote mode: install the bundled build if it
- *  differs from the one in place, then start the agent, or offer the set-up once. */
+/** What a window does when it opens in remote mode: install the bundled agent where none
+ *  is, then start the agent, or offer the set-up once. */
 export async function startUp(context: vscode.ExtensionContext, log: vscode.OutputChannel, server: string): Promise<void> {
   const host = remote.hostOf(server);
   log.appendLine(`remote mode: ${server}`);
   try {
     const b = router.bundled(context);
-    if (router.installBinariesIfChanged(b)) { log.appendLine(`installed ${b.version || 'the bundled build'} into ${router.binDir()}`); }
+    if (router.installForRemote(b)) { log.appendLine(`installed ${b.version || 'the bundled build'} into ${router.binDir()}`); }
   } catch (e) {
     log.appendLine(`could not install the agent: ${(e as Error).message}`);
     return;

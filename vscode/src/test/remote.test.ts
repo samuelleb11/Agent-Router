@@ -352,3 +352,20 @@ test('fetch errors in words', () => {
   const other = Object.assign(new TypeError('fetch failed'), { cause: { code: 'EWHATEVER', message: 'something odd' } });
   assert.equal(remote.describeFetchError(other, 10_000), 'something odd');
 });
+
+test('in remote mode the bundled agent never replaces an installed one', () => {
+  const bundled = { router: '/ext/bin/agent-router', wrapper: '/ext/bin/claude-wrapper' };
+  const installed = { router: '/home/u/.agent-router/bin/agent-router', wrapper: '/home/u/.agent-router/bin/claude-wrapper' };
+  const everywhere = new Set([bundled.router, bundled.wrapper, installed.router, installed.wrapper]);
+  const has = (set: Set<string>) => (p: string) => set.has(p);
+  // An installed agent stays, whatever its bytes: its keeper keeps it at its router's build.
+  assert.deepEqual(remote.remoteInstalls(bundled, installed, has(everywhere), () => false), [[bundled.wrapper, installed.wrapper]]);
+  // None installed yet: both go in.
+  const fresh = new Set([bundled.router, bundled.wrapper]);
+  assert.deepEqual(remote.remoteInstalls(bundled, installed, has(fresh), () => false), [
+    [bundled.router, installed.router],
+    [bundled.wrapper, installed.wrapper],
+  ]);
+  // A wrapper already the same is left alone.
+  assert.deepEqual(remote.remoteInstalls(bundled, installed, has(everywhere), () => true), []);
+});
