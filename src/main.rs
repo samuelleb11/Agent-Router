@@ -410,8 +410,15 @@ async fn serve_here(args: config::ServeArgs) -> anyhow::Result<()> {
     if !server {
         tokio::spawn(shim::watch(db_path.clone(), state.push.clone()));
     }
-    // The Library's sources, polled for a moved ref; a hosted router alone keeps a Library.
+    // The Library, which a hosted router alone keeps: its first item, the router's own skill,
+    // as this build has it, and its sources, polled for a moved ref.
     if server {
+        match library::builtin::publish(&db_path) {
+            Ok(library::store::Published::New(v)) => tracing::info!(version = v.number, "the Library holds this build's agent-router skill"),
+            Ok(library::store::Published::Refused(why)) => tracing::warn!("the router's own skill was not published: {why}"),
+            Ok(library::store::Published::Unchanged(_)) => {}
+            Err(e) => tracing::warn!("the router's own skill was not published: {e:#}"),
+        }
         tokio::spawn(library::sources::poll(state.clone()));
     }
     if wide.is_some() {
