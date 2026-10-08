@@ -46,6 +46,10 @@ export interface ItemRow {
   readonly newest: Brief | null;
   readonly pending: number;
   readonly versions: number;
+  /// Uses in the last 30 days, and the last use ever; absent from a router that counts none
+  /// (LB-C15, LB-C17).
+  readonly uses_30d?: number;
+  readonly last_used_at?: number | null;
 }
 
 export interface FileRow {
@@ -306,3 +310,68 @@ export function bodyOf(text: string): string {
   const end = lines.findIndex((line, i) => i > 0 && line.trimEnd() === '---');
   return end < 0 ? text : lines.slice(end + 1).join('\n').replace(/^\n+/, '');
 }
+
+// ---------- usage ----------
+
+/// One machine's share of an item's uses: `id` is null for sessions no machine has listed.
+export interface ByMachine {
+  readonly id: string | null;
+  readonly label: string | null;
+  readonly uses: number;
+}
+
+/// One project's share: the session's working directory, null while it is not known.
+export interface ByProject {
+  readonly project: string | null;
+  readonly uses: number;
+}
+
+/// One item's use as `GET /api/library/usage` tells it (src/library/usage.rs, `ItemUsage`).
+export interface ItemUsage {
+  readonly kind: Kind;
+  readonly name: string;
+  readonly uses_30d: number;
+  readonly last_used_at: number | null;
+  /// A count per day, oldest first, one for each of the report's `days`.
+  readonly daily: readonly number[];
+  readonly machines: readonly ByMachine[];
+  readonly projects: readonly ByProject[];
+}
+
+/// What one Library skill's entry in the skill listing adds to every turn.
+export interface Entry {
+  readonly name: string;
+  readonly chars: number;
+  readonly tokens: number;
+}
+
+/// The Library's share of the newest skill listing the router carried.
+export interface Listing {
+  readonly at: number;
+  readonly chars: number;
+  readonly tokens: number;
+  readonly items: readonly Entry[];
+}
+
+export interface Usage {
+  /// Where each day begins, in the viewer's days, oldest first.
+  readonly days: readonly number[];
+  readonly listing: Listing | null;
+  readonly items: readonly ItemUsage[];
+}
+
+/// How often an item was used, in the list (LB-C15).
+export function usedWords(uses: number): string {
+  if (uses <= 0) return 'not used in 30 days';
+  return uses === 1 ? 'used once in 30 days' : `used ${uses.toLocaleString()} times in 30 days`;
+}
+
+/// What the Library's skills add to every turn, or that it is not measured yet (LB-C14).
+export function listingWords(listing: Listing | null): string {
+  if (listing === null) return 'What the Library’s skills add to every turn is not measured yet: no turn the router has carried lists one of them.';
+  return `The Library’s skills add about ${listing.tokens.toLocaleString()} tokens to every turn.`;
+}
+
+/// Where a share of uses ran, in words (LB-C16).
+export const MACHINE_NOT_KNOWN = 'a machine not known';
+export const machineWords = (m: ByMachine): string => m.label ?? m.id ?? MACHINE_NOT_KNOWN;

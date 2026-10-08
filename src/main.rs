@@ -448,7 +448,7 @@ async fn serve_here(args: config::ServeArgs) -> anyhow::Result<()> {
             departing = Some(pid);
         }
     }
-    spawn_store_housekeeping(db_path.clone(), move || {
+    spawn_store_housekeeping(db_path.clone(), false, move || {
         departing.is_none_or(|pid| lifecycle::has_exited_within(pid, Duration::from_secs(60)))
     });
 
@@ -586,7 +586,7 @@ async fn serve_hosted(
     // The previous pod may still be draining on this same store: what must not run beside
     // it waits for the store's lock, which that pod holds until it exits.
     let data_dir = config::data_dir()?;
-    spawn_store_housekeeping(state.config.db_path.clone(), move || {
+    spawn_store_housekeeping(state.config.db_path.clone(), true, move || {
         lifecycle::hold_store(&data_dir);
         true
     });
@@ -651,7 +651,10 @@ fn log_hosted_start(config: &config::Config) {
 /// the very table this drops — see `db::migrate_bodies_if_needed`. `alone` is that wait:
 /// false when the outgoing router outlasted it. Off the startup path either way: it is
 /// housekeeping, and the port is already being served.
-fn spawn_store_housekeeping(db_path: std::path::PathBuf, alone: impl FnOnce() -> bool + Send + 'static) {
+///
+/// A hosted router then finds the Library's uses in what it stored before it counted them
+/// (`library::usage::rebuild`), from the same index.
+fn spawn_store_housekeeping(db_path: std::path::PathBuf, hosted: bool, alone: impl FnOnce() -> bool + Send + 'static) {
     tokio::task::spawn_blocking(move || {
         if !alone() {
             tracing::warn!("previous router still running; leaving the bodies where they are");
@@ -671,6 +674,11 @@ fn spawn_store_housekeeping(db_path: std::path::PathBuf, alone: impl FnOnce() ->
         // would mark the rows still sitting in the main file as already seen.
         if let Err(err) = db::backfill_blocks(&db_path) {
             tracing::warn!(%err, "could not finish indexing the bodies captured before the index");
+        }
+        if hosted {
+            if let Err(err) = library::usage::rebuild(&db_path) {
+                tracing::warn!(%err, "could not finish finding the Library's uses in the stored conversations");
+            }
         }
     });
 }

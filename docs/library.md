@@ -362,15 +362,43 @@ on the machines can say that.
 - a subagent launched by name (`subagent_type`);
 - a command or skill a person typed (`<command-name>`).
 
-Each is counted once: from the response that made the call, not from every later request
-that repeats it in history. A name that is not a Library item is not counted as one.
+Each is counted once, not again from every later request that repeats it in history. The
+count comes from where the search index first places a block: one spot in a session, which
+the requests repeating it do not place again (`library::usage`, `db::write_blocks`). So a use
+is taken from the request that first carries the call, a second or two after the response
+that made it. Counting as requests are recorded and rebuilding from the index find the same
+uses.
+
+A typed command counts only when it opens the turn, as Claude Code sends one. A summary or a
+file that mentions the tag further in is not a use. A typed name counts for the skill of that
+name when the Library holds one, and for the command otherwise. A skill the model calls is
+not also counted as typed: Claude Code follows a `Skill` call with the skill's text, and
+with no command tag.
+
+Every name an item could have is kept, so a name counts before its item joins. Whether it
+counts against an item is decided when usage is read. A name that is not a Library item is
+not counted as one.
+
+**Machines.** A hosted router knows which machine ran a session only from the machines'
+session lists, which it holds in memory. Each read of usage keeps what it knows in
+`library_session_machines`, so a use stays placed after a restart. A session no machine has
+listed counts under "a machine not known".
 
 **The listing's cost.** Every turn carries the list of skills with their descriptions.
 The router measures each Library item's entry and the Library's total, as an estimate of
 tokens added to every turn. A long description shows as a cost, not just as text.
 
+The listing is a user text block: a `<system-reminder>`, the head "The following skills are
+available for use with the Skill tool:", a blank line, then a `- name: description` line per
+skill. A description may run on to further lines. The router measures the newest such
+block it has carried. `src/library/fixtures/skill-listing.txt` pins the form. It was copied
+from a request Claude Code sent on 2026-10-07, with only Claude Code's own skills kept.
+Commands and subagents are not in that listing, so it costs them nothing.
+
 **History from before the Library.** Usage is rebuilt from the bodies the router already
-stores. A skill uploaded today shows the weeks it was already used.
+stores: their blocks, in the search index. A skill uploaded today shows the weeks it was
+already used. A hosted router runs the rebuild once at start, after the router before it has
+let go of the store. It resumes from `settings`' `library.uses_after`.
 
 **In the console:**
 - each item's use over time;
@@ -495,9 +523,6 @@ worktree:
 
 - Whether Claude Code picks up a new subagent in `~/.claude/agents` in a running session.
   Skills are documented as live; commands are now skills.
-- Where Claude Code puts the skill listing in a request, and in what exact form. It is
-  read today as a system reminder of `- name: description` lines. The usage slice must pin
-  the form it parses with a fixture taken from a real request.
 - Whether github.com can reach the hosted router's public URL, for GitHub webhooks. GitLab
   on the same network can.
 - Whether a GitLab token with `read_repository` alone can download a path-filtered archive.

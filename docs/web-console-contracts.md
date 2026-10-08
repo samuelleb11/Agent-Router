@@ -3191,6 +3191,41 @@ stands. Built 2026-10-08 as AGEN-0051, against the router of commits `8f940d0` t
 - **LB-C12** An online machine offers "Sync its Library now", which tells that machine alone and
   shows its answer beside it. *Source:* `POST /api/library/sync` with `{machine}`.
 
+### Library usage
+
+The router counts how the Library is used from the traffic it already carries
+([the Library](library.md), "Usage"; AGEN-0053):
+- a skill the model calls;
+- a subagent it launches by name;
+- a command, or a skill, a person types.
+
+Each use counts once, from the request that first carries it, never again from the requests
+that repeat it in their history. A name counts before its item joins the Library, so an
+item's history starts before it does. Built 2026-10-08 as AGEN-0053.
+
+- **LB-C14** "Items" opens with what the Library's skills add to every turn: "The Library’s
+  skills add about <n> tokens to every turn", and each skill's share as a bar. This is measured
+  from the newest skill listing the router has carried; Claude Code sends that listing with
+  every turn. Until a turn listing one of them has been carried, the screen says it is not
+  measured yet. *Why:* every skill's description is paid for on every turn, used or not.
+  *Source:* `GET /api/library/usage`'s `listing` (`src/library/usage.rs`, `listing`).
+- **LB-C15** Each item in the list says how often it was used in the last 30 days: "used once in
+  30 days" or "used <n> times in 30 days". One not used in 30 days is marked "not used in 30
+  days". *Why:* the item nobody uses is the one to archive. *Source:* `GET /api/library` rows'
+  `uses_30d`.
+- **LB-C16** An opened item shows its use over the last 30 days as a bar per day, and its uses
+  split by machine and by project, each as a bar list.
+  - A session no machine has listed counts under "a machine not known".
+  - A session whose project is not known counts under "(unresolved)".
+  - An item not used in that time says so instead of drawing empty bars.
+
+  *Source:* `GET /api/library/usage?tz=` (each item's `daily`, `machines`, `projects`), with
+  the viewer's days.
+- **LB-C17** Usage that cannot be read is never read as no use. The heading and the item's chart
+  say usage could not be read, in the router's words, rather than "not used" or zero. A list
+  row from a router that tells no usage says nothing about use. *Regression:* no; it is LB-C13's
+  rule for usage.
+
 ## Settings
 
 What Settings must do: pages under `/settings`, one per section, keeping every rule today's

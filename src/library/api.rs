@@ -21,7 +21,7 @@ use serde_json::{json, Value};
 
 use super::bundle::{self, Bundle, BUNDLE_MAX};
 use super::store::{self, Provenance, Published, State as Standing, Unmade, Version};
-use super::Kind;
+use super::{usage, Kind};
 use crate::proxy::AppState;
 use crate::refusal::{failed, refuse};
 
@@ -59,13 +59,14 @@ fn fail(why: impl std::fmt::Display) -> Refusal {
     failed(why).into()
 }
 
-/// `GET /api/library`: every item, archived ones included, each with its live version and
-/// how many wait for approval.
+/// `GET /api/library`: every item, archived ones included, each with its live version, how
+/// many wait for approval, and how often it was used (`library::usage`).
 pub async fn list(State(state): State<Arc<AppState>>) -> Answer {
-    let items = read(&state, store::items).await?;
+    let (items, used) = read(&state, |conn| Ok((store::items(conn)?, usage::totals(conn, crate::db::now_ms())?))).await?;
     let rows: Vec<Value> = items
         .iter()
         .map(|item| {
+            let used = used.get(&(item.kind, item.name.clone())).copied().unwrap_or_default();
             json!({
                 "kind": item.kind,
                 "name": item.name,
@@ -77,6 +78,8 @@ pub async fn list(State(state): State<Arc<AppState>>) -> Answer {
                 "newest": item.versions.first().map(brief),
                 "pending": item.versions.iter().filter(|v| v.state == Standing::Pending).count(),
                 "versions": item.versions.len(),
+                "uses_30d": used.uses_30d,
+                "last_used_at": used.last_used_at,
             })
         })
         .collect();
@@ -381,7 +384,7 @@ fn too_large() -> Refusal {
 }
 
 /// Run `f` on one of the warm read-only connections, off the async threads.
-async fn read<T: Send + 'static>(
+pub(super) async fn read<T: Send + 'static>(
     state: &Arc<AppState>,
     f: impl FnOnce(&Connection) -> anyhow::Result<T> + Send + 'static,
 ) -> Result<T, Refusal> {
@@ -396,7 +399,7 @@ async fn read<T: Send + 'static>(
 }
 
 /// Run `f` on a connection of its own that may write, off the async threads.
-async fn write<T: Send + 'static>(
+pub(super) async fn write<T: Send + 'static>(
     state: &Arc<AppState>,
     f: impl FnOnce(&Connection) -> anyhow::Result<T> + Send + 'static,
 ) -> Result<T, Refusal> {

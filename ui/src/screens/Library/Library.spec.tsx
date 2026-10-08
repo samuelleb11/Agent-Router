@@ -1,10 +1,11 @@
 // New for agent-router: the Library screen as a reader meets it (docs/web-console-contracts.md, "Library"),
 // against the router's answers: on a hosted router every item at a glance, the item opened by its address
 // with its file, its files and its versions, the decisions on each, adding a version, and telling the
-// machines to sync; on a local router the sentence that says why there is nothing here.
+// machines to sync, and how each item is used and what the Library's skills add to every turn; on a local
+// router the sentence that says why there is nothing here.
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { EMPTY, NOT_HERE, type ItemDetail, type ItemRow, type Provenance, type State, type Version } from '~/model/library';
+import { EMPTY, NOT_HERE, listingWords, type ItemDetail, type ItemRow, type ItemUsage, type Provenance, type State, type Usage, type Version } from '~/model/library';
 import { HOSTED, LOCAL, ok, stubRouter, type Answer } from '~/screens/Settings/testing';
 import { json, press, refusal, renderScreen, unreachable } from '~/test-utils';
 import Library from './index';
@@ -36,13 +37,57 @@ const row = (kind: ItemRow['kind'], name: string, extra: Partial<ItemRow> = {}):
   ...extra,
 });
 
-/// In the router's own order: a subagent, a skill, a command, a skill.
+/// In the router's own order: a subagent, a skill, a command, a skill. The command comes as a router
+/// that counts no usage sends it.
 const ROWS: ItemRow[] = [
-  row('subagent', 'reviewer', { live: null, newest: brief(1, 'pending'), pending: 1 }),
-  row('skill', 'vault', { source: 'source:skills', live: brief(2, 'live') }),
+  row('subagent', 'reviewer', { live: null, newest: brief(1, 'pending'), pending: 1, uses_30d: 0, last_used_at: null }),
+  row('skill', 'vault', { source: 'source:skills', live: brief(2, 'live'), uses_30d: 12, last_used_at: NOW - HOUR }),
   row('command', 'ship', { archived_at: NOW - HOUR }),
-  row('skill', 'agent-router', { source: 'router' }),
+  row('skill', 'agent-router', { source: 'router', uses_30d: 1, last_used_at: NOW - 3 * HOUR }),
 ];
+
+const DAY = 24 * HOUR;
+/// The 30 days a usage report tells, oldest first.
+const DAYS = Array.from({ length: 30 }, (_, i) => NOW - (29 - i) * DAY);
+const daily = (counts: Record<number, number>) => DAYS.map((_, i) => counts[i] ?? 0);
+const used = (name: string, extra: Partial<ItemUsage> = {}): ItemUsage => ({
+  kind: 'skill',
+  name,
+  uses_30d: 0,
+  last_used_at: null,
+  daily: daily({}),
+  machines: [],
+  projects: [],
+  ...extra,
+});
+const USAGE: Usage = {
+  days: DAYS,
+  listing: {
+    at: NOW - HOUR,
+    chars: 1600,
+    tokens: 400,
+    items: [
+      { name: 'agent-router', chars: 400, tokens: 100 },
+      { name: 'vault', chars: 1200, tokens: 300 },
+    ],
+  },
+  items: [
+    used('bench', {
+      uses_30d: 5,
+      last_used_at: NOW - 2 * HOUR,
+      daily: daily({ 27: 2, 29: 3 }),
+      machines: [
+        { id: '5f0c2a8e0000', label: 'studio', uses: 4 },
+        { id: null, label: null, uses: 1 },
+      ],
+      projects: [
+        { project: '/work/app', uses: 3 },
+        { project: null, uses: 2 },
+      ],
+    }),
+    used('vault', { uses_30d: 12, last_used_at: NOW - HOUR }),
+  ],
+};
 
 const version = (number: number, state: State, provenance: Provenance): Version => ({
   ...brief(number, state, provenance),
@@ -79,6 +124,7 @@ function hosted(more: Record<string, Answer> = {}) {
   return stubRouter({
     '/api/auth': ok(HOSTED),
     '/api/library': ok({ items: ROWS }),
+    '/api/library/usage': ok(USAGE),
     '/api/library/items/skill/bench': ok(BENCH),
     [`${FILES}/3/files/SKILL.md`]: text(SKILL_3),
     [`${FILES}/4/files/SKILL.md`]: text(SKILL_4),
@@ -340,5 +386,72 @@ describe('the Library on a hosted router', () => {
       'laptop: offline — it syncs when it connects again',
       'win-box: failed — win-box did not answer in time',
     ]);
+  });
+});
+
+describe('how the Library is used', () => {
+  it('LB-C14: Items opens with what the Library’s skills add to every turn, each skill’s share a bar; before any turn listed one, it says it is not measured yet', async () => {
+    hosted();
+    const first = show();
+    expect(await screen.findByText('The Library’s skills add about 400 tokens to every turn.')).toBeInTheDocument();
+    const shares = screen.getByRole('list', { name: 'What each skill adds to every turn' });
+    expect(within(shares).getAllByRole('listitem').map((li) => li.textContent)).toEqual([
+      expect.stringContaining('vault'),
+      expect.stringContaining('agent-router'),
+    ]);
+    expect(within(shares).getByText('about 300 tokens')).toBeInTheDocument();
+    first.unmount();
+    vi.unstubAllGlobals();
+
+    hosted({ '/api/library/usage': ok({ ...USAGE, listing: null }) });
+    show();
+    expect(await screen.findByText(listingWords(null))).toBeInTheDocument();
+    expect(screen.queryByRole('list', { name: 'What each skill adds to every turn' })).not.toBeInTheDocument();
+  });
+
+  it('LB-C15: each item says how often it was used in 30 days, and one not used is marked', async () => {
+    hosted();
+    show();
+    await waitFor(() => item('skill/vault'));
+    const usedOf = (key: string) => item(key).querySelector<HTMLElement>('[data-used]');
+    expect(usedOf('skill/vault')?.textContent).toBe('used 12 times in 30 days');
+    expect(usedOf('skill/agent-router')?.textContent).toBe('used once in 30 days');
+    expect(usedOf('subagent/reviewer')?.textContent).toBe('not used in 30 days');
+    expect(usedOf('subagent/reviewer')?.className).not.toBe('');
+    expect(usedOf('skill/vault')?.className).toBe('');
+  });
+
+  it('LB-C16: an opened item draws its uses as a bar per day, in the viewer’s days, and splits them by machine and by project, naming what is not known; one not used says so', async () => {
+    const stub = hosted();
+    const first = show('/library?item=skill/bench');
+    const panel = await opened();
+    expect(await within(panel).findByText('used 5 times in 30 days, last 2 h ago')).toBeInTheDocument();
+    const use = panel.querySelector<HTMLElement>('[data-use=""]')!;
+    expect([...use.querySelectorAll<SVGElement>('rect[data-bucket]')].map((r) => r.dataset['bucket'])).toEqual(['27', '29']);
+    const names = (label: string) => within(within(use).getByRole('list', { name: label })).getAllByRole('listitem').map((li) => li.textContent ?? '');
+    expect(names('Uses by machine')).toEqual([expect.stringContaining('studio'), expect.stringContaining('a machine not known')]);
+    expect(names('Uses by project')).toEqual([expect.stringContaining('app'), expect.stringContaining('(unresolved)')]);
+    expect(stub.gets('/api/library/usage')[0]!.query.get('tz')).toBe(String(-new Date(NOW).getTimezoneOffset()));
+    first.unmount();
+    vi.unstubAllGlobals();
+
+    hosted({ '/api/library/usage': ok({ ...USAGE, items: [used('bench', { last_used_at: NOW - 40 * DAY })] }) });
+    show('/library?item=skill/bench');
+    const quiet = await opened();
+    expect(await within(quiet).findByText(/^Not used in the last 30 days; last used /)).toBeInTheDocument();
+    expect(quiet.querySelector('rect[data-bucket]')).toBeNull();
+  });
+
+  it('LB-C17: usage that cannot be read is never read as no use, and a row from a router that counts none says nothing of use', async () => {
+    hosted({ '/api/library/usage': unreachable });
+    show('/library?item=skill/bench');
+    const panel = await opened();
+    expect(await screen.findByText(/^The Library’s usage could not be read: /)).toBeInTheDocument();
+    expect(await within(panel).findByText(/^Its usage could not be read: /)).toBeInTheDocument();
+    expect(screen.queryByText(/Not used in the last 30 days/)).not.toBeInTheDocument();
+    expect(screen.queryByText(listingWords(null))).not.toBeInTheDocument();
+    // The list's own counts still read, and the command's router counted none.
+    await waitFor(() => expect(item('skill/vault').querySelector('[data-used]')?.textContent).toBe('used 12 times in 30 days'));
+    expect(item('command/ship').querySelector('[data-used]')).toBeNull();
   });
 });

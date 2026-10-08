@@ -5,13 +5,14 @@
 import { deleteJson, getJson, getText, postBytes, postJson, putJson } from '~/data/http';
 import { Refused } from '~/lib/errors';
 import type { ForgeRow, Imported, SourceRow, TokenRow } from '~/model/forges';
-import type { ItemDetail, ItemRow, Kind, Told, Version } from '~/model/library';
+import type { ItemDetail, ItemRow, Kind, Told, Usage, Version } from '~/model/library';
 
 export const libraryKeys = {
   all: ['library'] as const,
   list: ['library', 'list'] as const,
   item: (kind: string, name: string) => ['library', 'item', kind, name] as const,
   file: (kind: string, name: string, version: number, path: string) => ['library', 'file', kind, name, version, path] as const,
+  usage: ['library', 'usage'] as const,
 };
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -23,6 +24,17 @@ export async function readLibrary(signal?: AbortSignal): Promise<ItemRow[]> {
   const body = await getJson<unknown>('/api/library', { signal });
   if (!isRecord(body) || !Array.isArray(body['items'])) throw new Refused(200, 'The router answered something that is not the Library.');
   return body['items'].filter(isRecord) as unknown as ItemRow[];
+}
+
+/// `GET /api/library/usage`: every item's use over 30 days, in the viewer's days, and what the
+/// Library's skills add to every turn. A reply without its items is a failed read, never "not
+/// used" (LB-C17).
+export async function readUsage(signal?: AbortSignal, tz = -new Date().getTimezoneOffset()): Promise<Usage> {
+  const body = await getJson<unknown>(`/api/library/usage?tz=${tz}`, { signal });
+  if (!isRecord(body) || !Array.isArray(body['items']) || !Array.isArray(body['days'])) {
+    throw new Refused(200, 'The router answered something that is not the Library’s usage.');
+  }
+  return body as unknown as Usage;
 }
 
 /// `GET /api/library/items/{kind}/{name}`: one item, its versions and its files.

@@ -69,6 +69,39 @@
   font-style: italic;
 }
 
+// An item nobody used in 30 days: the one to consider archiving (LB-C15).
+.unused {
+  color: $support-warning;
+}
+
+.cost {
+  display: grid;
+  gap: $spacing-03;
+  margin-block-end: $spacing-05;
+  max-width: 60rem;
+}
+
+.costLine {
+  @include type-style('body-02');
+}
+
+.use {
+  display: grid;
+  gap: $spacing-04;
+  max-width: 60rem;
+}
+
+.splits {
+  display: grid;
+  gap: $spacing-05;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr));
+}
+
+.h4 {
+  @include type-style('heading-01');
+  margin-block-end: $spacing-03;
+}
+
 .said {
   @include type-style('body-01');
   margin-block: $spacing-04;

@@ -133,6 +133,30 @@ CREATE TABLE IF NOT EXISTS library_machines (
   at_ms   INTEGER NOT NULL,
   heard   TEXT NOT NULL
 );
+
+-- Each use of a skill, a command or a subagent the router has carried (`library::usage`), by
+-- name, whether the Library holds an item of that name yet or not: an item's history starts
+-- before it joined. Keyed as the search index places a block, so the requests that repeat a
+-- conversation's history add no use; `block_id` is a block of `bodies_db`.
+CREATE TABLE IF NOT EXISTS library_uses (
+  block_id   INTEGER NOT NULL,
+  session_id TEXT NOT NULL,
+  ordinal    INTEGER NOT NULL,
+  how        TEXT NOT NULL CHECK (how IN ('called', 'launched', 'typed')),
+  name       TEXT NOT NULL,
+  at         INTEGER NOT NULL,
+  PRIMARY KEY (block_id, session_id, ordinal)
+);
+CREATE INDEX IF NOT EXISTS library_uses_name ON library_uses(name, at);
+
+-- Which machine each session ran on, as the machines listed them. The router holds that in
+-- memory; kept here, a use stays placed after a restart.
+CREATE TABLE IF NOT EXISTS library_session_machines (
+  session_id TEXT PRIMARY KEY,
+  machine    TEXT NOT NULL,
+  label      TEXT,
+  at_ms      INTEGER NOT NULL
+);
 "#;
 
 /// A connection that may write: one of its own, waiting on other writers as the store's do.
@@ -769,8 +793,11 @@ mod tests {
                 "library_hook_deliveries",
                 "library_items",
                 "library_machines",
+                "library_session_machines",
                 "library_sources",
                 "library_tokens",
+                "library_uses",
+                "library_uses_name",
                 "library_versions",
                 "library_versions_fixed",
                 "library_versions_one_live"

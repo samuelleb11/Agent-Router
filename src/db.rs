@@ -183,7 +183,7 @@ pub fn bodies_path(main: &Path) -> PathBuf {
 /// The row loses its `REFERENCES requests(id) ON DELETE CASCADE`: a foreign key cannot
 /// span two database files. Nothing deletes a request today, so there is no cascade to
 /// lose — but anything that starts deleting them has to clear both files.
-fn attach_bodies(conn: &Connection, main: &Path) -> Result<()> {
+pub(crate) fn attach_bodies(conn: &Connection, main: &Path) -> Result<()> {
     let side = bodies_path(main);
     conn.execute(
         "ATTACH DATABASE ?1 AS bodies_db",
@@ -573,8 +573,11 @@ impl Db {
         // The conversation, split into blocks and stored once each. Skipped when the
         // request carries no session: a block with nowhere to have been is not findable
         // and not worth a row.
+        // The uses of the Library's items are taken from the same placing: a block placed
+        // here for the first time is a use the requests repeating it will not count again.
         if let (Some(shape), Some(session_id)) = (&ev.shape, ev.session_id.as_deref()) {
-            write_blocks(&tx, &mut self.seen_blocks, &shape.blocks, session_id, row_id, ev.started_at_ms)?;
+            let placed = write_blocks(&tx, &mut self.seen_blocks, &shape.blocks, session_id, row_id, ev.started_at_ms)?;
+            crate::library::usage::note(&tx, &shape.blocks, &placed, session_id, ev.started_at_ms)?;
         }
 
         // Only the response. The request body used to be kept here capped at
@@ -601,7 +604,8 @@ impl Db {
     }
 }
 
-/// Write a request's blocks and the places they sat.
+/// Write a request's blocks and the places they sat, and answer the blocks placed for the
+/// first time: each one's index in `blocks`, and its id.
 ///
 /// Shared by the live capture path and the backfill so the two cannot drift on what a
 /// block is or how a repeat is refused. Neither correctness nor completeness rests on
@@ -614,11 +618,12 @@ fn write_blocks(
     session_id: &str,
     request_row_id: i64,
     at: i64,
-) -> Result<()> {
+) -> Result<Vec<(usize, i64)>> {
     if seen.len() > SEEN_BLOCKS_MAX {
         seen.clear();
     }
-    for b in blocks {
+    let mut placed = Vec::new();
+    for (index, b) in blocks.iter().enumerate() {
         if !seen.insert(site_key(session_id, b.ordinal, &b.hash)) {
             continue; // this exact block, at this spot, is already in
         }
@@ -638,14 +643,17 @@ fn write_blocks(
                 |r| r.get(0),
             )?
         };
-        tx.execute(
+        let sited = tx.execute(
             "INSERT INTO bodies_db.block_sites
                  (block_id, session_id, ordinal, role, request_id, at)
              VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT DO NOTHING",
             params![block_id, session_id, b.ordinal, b.role, request_row_id, at],
         )?;
+        if sited == 1 {
+            placed.push((index, block_id));
+        }
     }
-    Ok(())
+    Ok(placed)
 }
 
 /// How far the backfill has read. Kept in `settings` so it survives a restart and can

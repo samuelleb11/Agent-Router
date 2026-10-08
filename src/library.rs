@@ -10,6 +10,8 @@
 //!   and [`push`] how it tells those agents to sync now, through their own tunnels.
 //! - [`builtin`] is the first item, Agent Router's own skill, published from the build.
 //! - [`sources`] imports from repositories on [`forge`]s, by a poller and on demand.
+//! - [`usage`] counts what the items are used for, from the traffic the router carries, and
+//!   what the listing of its skills adds to every turn.
 //! - [`sync`] is the agent's half: keeping a machine's `~/.claude` in step with them, and
 //!   [`cli`] is `agent-router library` on that machine.
 
@@ -24,6 +26,7 @@ pub mod sources;
 pub mod store;
 pub mod sync;
 pub mod tokens;
+pub mod usage;
 
 use std::fmt;
 
