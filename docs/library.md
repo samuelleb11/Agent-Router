@@ -178,6 +178,21 @@ Northstar's own skill would come in this way, from its repository's `plugin/skil
   password.
 - **Polling stays** as the reconciler, for a webhook that never arrived.
 
+**Setting a hook up.** `POST /api/library/sources/{key}/secret` makes a new secret, which
+stops the old one, and answers it once with the hook's URL. Give both to the forge: GitLab's
+"Secret token", or GitHub's "Secret" with content type `application/json`.
+
+**What a hook is answered:**
+- `202` when it imports;
+- `200` for a ping, a push to another ref, an event that is not a push, or a delivery seen
+  already;
+- `401` when it does not prove itself;
+- `403` when the source has no secret yet;
+- `404` for an unknown source;
+- `413` for a body over 1 MiB.
+
+Delivery ids are kept for a week, in the store, so a restart does not forget them.
+
 ### Agents publishing
 
 - **From a connected machine:** `agent-router library publish <dir>`.

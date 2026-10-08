@@ -84,6 +84,8 @@ CREATE TABLE IF NOT EXISTS library_forge_tokens (
 -- A repository, a ref and a path in it that items are imported from (`library::sources`).
 -- `live` is the owner's trust: 1, its new versions go live; 0, they wait for approval.
 -- `head` is the commit last imported, which the poller compares the ref's head with.
+-- `hook_secret` is what its forge's webhook proves itself with, kept as the forge needs
+-- it checked (`library::hooks`); no read ever carries it.
 CREATE TABLE IF NOT EXISTS library_sources (
   key         TEXT PRIMARY KEY,
   forge       TEXT NOT NULL REFERENCES library_forges(key),
@@ -95,7 +97,16 @@ CREATE TABLE IF NOT EXISTS library_sources (
   checked_at  INTEGER,
   imported_at INTEGER,
   last_result TEXT,
+  hook_secret TEXT,
   created_at  INTEGER NOT NULL
+);
+
+-- The webhook deliveries already taken (`library::hooks`), a week of them, so a forge
+-- sending one again imports nothing.
+CREATE TABLE IF NOT EXISTS library_hook_deliveries (
+  id     TEXT PRIMARY KEY,
+  source TEXT NOT NULL,
+  at_ms  INTEGER NOT NULL
 );
 
 -- Publish tokens (`library::tokens`): kept as the sha256 of the value, which is shown once,
@@ -755,6 +766,7 @@ mod tests {
                 "library_blobs_fixed",
                 "library_forge_tokens",
                 "library_forges",
+                "library_hook_deliveries",
                 "library_items",
                 "library_machines",
                 "library_sources",

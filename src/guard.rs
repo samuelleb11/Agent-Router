@@ -202,7 +202,10 @@ pub async fn layer(
     // (`downloads`).
     let asks = !peer.ip().is_loopback() || state.config.server;
     let path = req.uri().path();
-    let open = path == "/_router/health" || (state.config.server && crate::downloads::is_open(path));
+    // A forge's webhook cannot hold the password either; it proves itself with its source's
+    // secret instead (`library::hooks`).
+    let open = path == "/_router/health"
+        || (state.config.server && (crate::downloads::is_open(path) || crate::library::hooks::is_open(path)));
     if asks && !open {
         // A Library publish token, on the one route it may use and on a hosted router alone:
         // publishing a version. Anywhere else it is no password (`library::tokens`).

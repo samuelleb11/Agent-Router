@@ -18,6 +18,7 @@ pub mod builtin;
 pub mod bundle;
 pub mod cli;
 pub mod forge;
+pub mod hooks;
 pub mod push;
 pub mod sources;
 pub mod store;

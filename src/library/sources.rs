@@ -58,6 +58,8 @@ pub struct SourceRow {
     pub checked_at: Option<i64>,
     pub imported_at: Option<i64>,
     pub last_result: Option<Value>,
+    /// Whether its forge's webhook has a secret to prove itself with (`library::hooks`).
+    pub hook: bool,
     pub created_at: i64,
 }
 
@@ -164,7 +166,8 @@ pub fn delete_forge(conn: &Connection, key: &str) -> anyhow::Result<Result<(), U
     Ok(if conn.execute("DELETE FROM library_forges WHERE key = ?1", [key])? == 1 { Ok(()) } else { Err(Unmade::Missing) })
 }
 
-const SOURCE_COLUMNS: &str = "key, forge, repository, ref, path, live, head, checked_at, imported_at, last_result, created_at";
+const SOURCE_COLUMNS: &str =
+    "key, forge, repository, ref, path, live, head, checked_at, imported_at, last_result, created_at, hook_secret IS NOT NULL";
 
 fn source_row(r: &rusqlite::Row) -> rusqlite::Result<SourceRow> {
     let result: Option<String> = r.get(9)?;
@@ -180,6 +183,7 @@ fn source_row(r: &rusqlite::Row) -> rusqlite::Result<SourceRow> {
         imported_at: r.get(8)?,
         last_result: result.and_then(|r| serde_json::from_str(&r).ok()),
         created_at: r.get(10)?,
+        hook: r.get(11)?,
     })
 }
 
@@ -620,7 +624,7 @@ pub async fn import_now(State(state): State<Arc<AppState>>, Params(key): Params<
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::net::SocketAddr;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
@@ -638,28 +642,28 @@ mod tests {
     /// A forge on loopback that answers as GitLab (`/api/v4`) and as a GitHub Enterprise
     /// server (`/api/v3`), over one repository whose files and head the test changes.
     #[derive(Default)]
-    struct Stub {
+    pub(crate) struct Stub {
         commit: Mutex<String>,
         files: Mutex<Vec<(String, String)>>,
         /// The token it takes; none: a public repository.
         token: Option<String>,
         /// It answers 403 to everything: a token that may not read.
         scoped: bool,
-        archives: AtomicUsize,
+        pub(crate) archives: AtomicUsize,
         /// Each request's credential, and its agent.
         seen: Mutex<Vec<(String, Option<String>, Option<String>)>>,
         port: Mutex<u16>,
     }
 
     impl Stub {
-        fn new(commit: &str, files: &[(&str, &str)]) -> Arc<Stub> {
+        pub(crate) fn new(commit: &str, files: &[(&str, &str)]) -> Arc<Stub> {
             let stub = Stub::default();
             *stub.commit.lock().unwrap() = commit.into();
             *stub.files.lock().unwrap() = files.iter().map(|(p, t)| (p.to_string(), t.to_string())).collect();
             Arc::new(stub)
         }
 
-        fn change(&self, commit: &str, path: &str, text: &str) {
+        pub(crate) fn change(&self, commit: &str, path: &str, text: &str) {
             *self.commit.lock().unwrap() = commit.into();
             let mut files = self.files.lock().unwrap();
             files.retain(|(p, _)| p != path);
@@ -699,7 +703,7 @@ mod tests {
         }
     }
 
-    async fn serve_stub(stub: Arc<Stub>) -> String {
+    pub(crate) async fn serve_stub(stub: Arc<Stub>) -> String {
         type S = State<Arc<Stub>>;
         async fn gl_commit(State(s): S, uri: axum::http::Uri, h: HeaderMap) -> Response {
             if let Err(status) = s.allowed(&uri.to_string(), &h) {
@@ -763,7 +767,7 @@ mod tests {
 
     use std::collections::HashMap;
 
-    async fn ask(lab: &Lab, method: &str, path: &str, body: Value) -> (StatusCode, Value, String) {
+    pub(crate) async fn ask(lab: &Lab, method: &str, path: &str, body: Value) -> (StatusCode, Value, String) {
         let mut req = Request::builder()
             .method(method)
             .uri(path)
@@ -780,12 +784,12 @@ mod tests {
         (status, serde_json::from_str(&text).unwrap_or(Value::Null), text)
     }
 
-    async fn put_ok(lab: &Lab, path: &str, body: Value) {
+    pub(crate) async fn put_ok(lab: &Lab, path: &str, body: Value) {
         let (status, answer, _) = ask(lab, "PUT", path, body).await;
         assert_eq!(status, StatusCode::OK, "{path}: {answer}");
     }
 
-    async fn import(lab: &Lab, key: &str) -> Value {
+    pub(crate) async fn import(lab: &Lab, key: &str) -> Value {
         let (status, answer, _) = ask(lab, "POST", &format!("/api/library/sources/{key}/import"), Value::Null).await;
         assert_eq!(status, StatusCode::OK, "{answer}");
         answer["imported"].clone()
@@ -800,12 +804,12 @@ mod tests {
             .collect()
     }
 
-    fn skill_md(name: &str, description: &str) -> String {
+    pub(crate) fn skill_md(name: &str, description: &str) -> String {
         format!("---\nname: {name}\ndescription: {description}\n---\n")
     }
 
     /// A repository with a library of items under `library/`, and one skill outside it.
-    fn repository() -> Vec<(&'static str, String)> {
+    pub(crate) fn repository() -> Vec<(&'static str, String)> {
         vec![
             ("library/skills/bench/SKILL.md", skill_md("bench", "Drives the bench.")),
             ("library/skills/bench/scripts/run.sh", "echo hi\n".into()),
@@ -817,13 +821,13 @@ mod tests {
         ]
     }
 
-    async fn gitlab(lab: &Lab, stub: &Arc<Stub>, token: Option<&str>) -> String {
+    pub(crate) async fn gitlab(lab: &Lab, stub: &Arc<Stub>, token: Option<&str>) -> String {
         let base = serve_stub(stub.clone()).await;
         put_ok(lab, "/api/library/forges/home", json!({ "kind": "gitlab", "base_url": base, "token": token })).await;
         base
     }
 
-    fn stub_of(commit: &str, files: Vec<(&'static str, String)>) -> Arc<Stub> {
+    pub(crate) fn stub_of(commit: &str, files: Vec<(&'static str, String)>) -> Arc<Stub> {
         let refs: Vec<(&str, &str)> = files.iter().map(|(p, t)| (*p, t.as_str())).collect();
         Stub::new(commit, &refs)
     }

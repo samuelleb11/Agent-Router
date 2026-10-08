@@ -74,9 +74,10 @@ const DOCUMENT: [&str; 5] = ["/", "/live", "/machines", "/settings", "/settings/
 
 /// Top-level names the router answers itself. A file the build puts at its root under one of
 /// them is not routed, rather than shadowing the router: `v1` is Claude Code's, `api` and
-/// `_router` the API's, and the rest are the console's own addresses.
-const RESERVED: [&str; 9] =
-    ["api", "v1", "_router", "live", "machines", "settings", "assets", "index.html", "favicon.svg"];
+/// `_router` the API's, `hooks` the forges' (`library::hooks`), and the rest are the
+/// console's own addresses.
+const RESERVED: [&str; 10] =
+    ["api", "v1", "_router", "hooks", "live", "machines", "settings", "assets", "index.html", "favicon.svg"];
 
 const HTML: &str = "text/html; charset=utf-8";
 const IMMUTABLE: &str = "public, max-age=31536000, immutable";
