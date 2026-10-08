@@ -350,6 +350,8 @@ function projects(f: Filter): ProjectRow[] {
   return [...by]
     .map(([project, rs]) => ({
       project,
+      repository: null,
+      directories: project ? [{ cwd: project, machine: null, remotes: [] }] : [],
       sessions: new Set(rs.map((r) => r.session_id)).size,
       requests: rs.length,
       prompt_tokens: sum(rs, (r) => r.prompt_tokens),
@@ -374,6 +376,9 @@ function sessions(f: Filter): SessionRow[] {
     return {
       id: s.id,
       project: s.project,
+      cwd: s.project,
+      repository: null,
+      machine: null,
       git_branch: s.branch,
       entrypoint: s.entrypoint,
       started_at: s.started,

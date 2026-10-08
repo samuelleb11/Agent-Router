@@ -94,6 +94,8 @@ export function summary(over: Partial<Summary> = {}): Summary {
 
 export const project = (path: string | null, prompt_tokens: number, over: Partial<ProjectRow> = {}): ProjectRow => ({
   project: path,
+  repository: null,
+  directories: path ? [{ cwd: path, machine: null, remotes: [] }] : [],
   sessions: 1,
   requests: 200,
   prompt_tokens,
@@ -113,6 +115,9 @@ export const PROJECTS: ProjectRow[] = [project('/code/agent-router', 9_000_000),
 export const session = (id: string, over: Partial<SessionRow> = {}): SessionRow => ({
   id,
   project: '/code/agent-router',
+  cwd: '/code/agent-router',
+  repository: null,
+  machine: null,
   git_branch: 'dev',
   entrypoint: 'claude-vscode, claude-cli',
   started_at: NOW - 3 * HOUR,
@@ -131,7 +136,7 @@ export const session = (id: string, over: Partial<SessionRow> = {}): SessionRow 
   ...over,
 });
 
-export const SESSIONS: SessionRow[] = [session(S1), session(S2, { project: '/code/northstar', git_branch: 'main', entrypoint: 'claude-cli', prompt_tokens: 3_400_000 })];
+export const SESSIONS: SessionRow[] = [session(S1), session(S2, { project: '/code/northstar', cwd: '/code/northstar', git_branch: 'main', entrypoint: 'claude-cli', prompt_tokens: 3_400_000 })];
 
 export const TOOLS: Tools = {
   produced: [

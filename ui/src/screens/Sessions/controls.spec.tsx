@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { notice, type Ask } from '~/model/session';
 import { press } from '~/test-utils';
 import { FakeEventSource } from './fakes';
-import { A, B, C, drain, held, hang, json, renderSessions, streamOf, stubRouter, working } from './kit';
+import { A, B, C, defaults, drain, held, hang, json, renderSessions, session, SESSIONS, streamOf, stubRouter, working } from './kit';
 import { COMPOSING, walk } from './logic';
 import { NoticeLine } from './Notice';
 import { useNotice } from './useNotice';
@@ -271,6 +271,23 @@ describe('the facts strip and its switchers', () => {
     await opened();
     await waitFor(() => expect(facts().getByText('opus-4-1')).toBeInTheDocument());
     expect(facts().queryByText(/^project ·/)).toBeNull();
+  });
+
+  it('SE-C232: a session’s live totals are asked by its project key, the repository else the directory', async () => {
+    const repository = 'gitlab.example.com/acme/agent-router';
+    const rows = () => [session(A, { cwd: '/Users/sample/code/agent-router-lane-2', repository }), ...SESSIONS().slice(1)];
+    const router = stubRouter(undefined, defaults(rows));
+    const first = renderSessions(`/live?session=${A}`);
+    await opened();
+    expect(await facts().findByText('project · 2 sessions · 1.2M tokens · 13 turns · $4.68')).toBeInTheDocument();
+    // Never the directory, which is one worktree of the repository: the repository counts them all.
+    expect(router.gets('/api/live/project').map((g) => [...g.query])).toEqual([[['project', repository]]]);
+    first.unmount();
+    // A session whose directory names no repository is asked by its directory, as before.
+    renderSessions(`/live?session=${C}`);
+    await opened(C);
+    await waitFor(() => expect(router.gets('/api/live/project')).toHaveLength(2));
+    expect([...router.gets('/api/live/project')[1]!.query]).toEqual([['project', '/Users/sample/code/northstar']]);
   });
 
   it('SE-C133: totals are read once each time a session opens, never pushed with every event', async () => {

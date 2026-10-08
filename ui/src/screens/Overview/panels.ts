@@ -17,7 +17,7 @@ import type { BarRow } from '~/components/BarList';
 import type { Part } from '~/components/ShareBar';
 import type { Concept } from '~/lib/concepts';
 import { FAMILY_COLOUR } from '~/lib/concepts';
-import type { ProjectRow } from '~/data/router';
+import type { ProjectDirectory, ProjectRow } from '~/data/router';
 import type { AccountSplitRow, ContextRow, ModelRow, SessionRow, ThreadRow, ToolCallRow, ToolOutputRow, Totals } from '~/data/overview';
 import { DASH, ago, client, compact, count, duration, family, id8, pct, plural, projectName, shortModel, tod, usd, UNRESOLVED, type Family } from '~/model/format';
 import { SESSION_CAP, type Scope } from '~/model/scope';
@@ -235,9 +235,34 @@ export function familiesOf(csv: string | null | undefined): { readonly family: F
   return out.slice(0, 4);
 }
 
-/// A project's key: its path, "(unresolved)" when it has none, which the router selects exactly
-/// those sessions for (OV-C136).
+/// A project's key: its repository, else its directory, "(unresolved)" when it has neither, which
+/// the router selects exactly those sessions for (OV-C136, OV-C214).
 export const projectKeyOf = (p: Pick<ProjectRow, 'project'>): string => p.project ?? UNRESOLVED;
+
+/// Where a project's sessions ran: its repository when it has one, and every directory, each said
+/// "studio · /Users/sample/code/ui-kit-web", the path alone where no machine is named, as on a local
+/// router (OV-C214).
+export interface ProjectPlaces {
+  readonly repository: string | null;
+  readonly directories: readonly { readonly machine: string | null; readonly path: string; readonly label: string }[];
+}
+
+/// A directory's machine by its label, trimmed; a blank one names none (SE-C220).
+const placeOf = (d: ProjectDirectory): ProjectPlaces['directories'][number] => {
+  const machine = d.machine?.label?.trim() || null;
+  return { machine, path: d.cwd, label: machine ? `${machine} · ${d.cwd}` : d.cwd };
+};
+
+/// The scoped project's places, from the first list that holds its row by its key: the rail's, over
+/// all time, then the snapshot's, narrowed by the range. Null with no project scoped, with its row
+/// in neither list, or with nothing to say — an unresolved project has no directory (OV-C214).
+export function projectPlaces(key: string | null, ...lists: readonly (readonly ProjectRow[] | null | undefined)[]): ProjectPlaces | null {
+  if (!key) return null;
+  const row = lists.map((l) => l?.find((p) => projectKeyOf(p) === key)).find((p) => p !== undefined);
+  if (!row) return null;
+  const directories = row.directories.map(placeOf);
+  return row.repository || directories.length ? { repository: row.repository, directories } : null;
+}
 
 /// A project row: the project's icon, its folder's name and path, a bar of prompt tokens with the
 /// subagent share over its end, and "N sessions · req · out · % cached · cost · <last seen>"

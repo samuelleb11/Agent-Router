@@ -63,6 +63,8 @@ export interface LiveSession {
   readonly session_id: string;
   readonly cwd: string | null;
   readonly project: string;
+  /// The repository its directory is a checkout of, canonically; absent when it has none (SE-C231).
+  readonly repository?: string | null;
   readonly git_branch: string | null;
   /// Claude Code's own name for the session, falling back to what was first asked.
   readonly title: string | null;

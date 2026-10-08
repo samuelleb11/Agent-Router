@@ -26,7 +26,8 @@ export const settingsPath = (slug: SectionSlug): string => `/settings/${slug}`;
 /// live view, and every bookmark, the VS Code extension, the menubar app and the iPhone open
 /// those. `/machines` is new, a hosted router's machines and how to connect one (MA-C1), and so is
 /// `/library`, its Library of skills, commands and subagents (LB-C1). A
-/// project opens the Overview scoped to it, keyed by its working directory.
+/// project opens the Overview scoped to it, keyed by its project key: its repository, else its
+/// working directory (OV-C214).
 export const routes = {
   overview: '/',
   sessions: '/live',

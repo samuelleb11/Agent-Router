@@ -189,6 +189,51 @@
   overflow-wrap: anywhere;
 }
 
+// ---------------------------------------------------------------- the scoped project's places
+
+/// Where the scoped project ran, under the scope bar: its repository and each directory on its
+/// machine, as facts that wrap rather than widen the page at 360 px (OV-C214).
+.places {
+  display: flex;
+  flex-wrap: wrap;
+  gap: $spacing-02 $spacing-06;
+  min-inline-size: 0;
+  margin: 0;
+  @include type-style('helper-text-01');
+  color: var(--cds-text-secondary);
+}
+
+.place {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 $spacing-03;
+  min-inline-size: 0;
+}
+
+.place dt {
+  color: var(--cds-text-primary);
+}
+
+.place dd {
+  min-inline-size: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.placeList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 $spacing-05;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.placeList li {
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
+}
+
 // ---------------------------------------------------------------- search
 
 .searchBar {

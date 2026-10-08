@@ -17,7 +17,7 @@ import { useQuery } from '@tanstack/react-query';
 import { keys } from '~/app/query';
 import { getJson } from '~/data/http';
 import { useRead, type Read } from '~/data/held';
-import type { ProjectRow } from '~/data/router';
+import type { MachineRef, ProjectRow } from '~/data/router';
 import { POLL_MS } from '~/lib/freshness';
 import type { Forecast } from '~/model/forecast';
 import { sinceMs, type Scope } from '~/model/scope';
@@ -179,7 +179,13 @@ export interface Summary {
 /// One row of `GET /api/sessions`: the 200 most recently seen sessions in scope, and no more.
 export interface SessionRow {
   readonly id: string;
+  /// The session's project key: its repository, else its directory, else null (`ProjectRow`).
   readonly project: string | null;
+  /// The directory it ran in, the repository that is a checkout of, and the machine it ran on (null
+  /// on a local router).
+  readonly cwd: string | null;
+  readonly repository: string | null;
+  readonly machine: MachineRef | null;
   readonly git_branch: string | null;
   readonly entrypoint: string | null;
   readonly started_at: number | null;

@@ -1,6 +1,6 @@
 {
   "about": [
-    "The session list as the web console groups it (byMachine and listView in ui/src/model/session.ts), the reference for both phones: docs/session-liveness.md, 'Client presentation policy'; SE-C17 to SE-C19, SE-C23, SE-C24, SE-C29, SE-C32, SE-C33, SE-C43, SE-C219, SE-C220 and SE-C222 in docs/web-console-contracts.md. A hosted router's sessions from more than one machine are headed per machine as the phones head them (SessionGroups.byMachine), as decided on 2026-10-05.",
+    "The session list as the web console groups it (byMachine and listView in ui/src/model/session.ts), the reference for both phones: docs/session-liveness.md, 'Client presentation policy'; SE-C17 to SE-C19, SE-C23, SE-C24, SE-C29, SE-C32, SE-C33, SE-C43, SE-C219, SE-C220, SE-C222 and SE-C231 in docs/web-console-contracts.md. A hosted router's sessions from more than one machine are headed per machine as the phones head them (SessionGroups.byMachine), as decided on 2026-10-05. A project is named by the last segment of the row's `repository` when it names one, so a repository's worktrees and clones are one project, else of its `cwd`, else by the router's `project` (SE-C23, SE-C231).",
     "Read by ui/src/model/shared-fixtures.spec.ts, ios/AgentRouter/Tests/SharedFixtureTests.swift and android/app/src/test/java/ca/whnet/agentrouter/SharedFixtureTest.kt. Each groups `sessions` as its own client does, maps the result to the shape below and compares it with `expected`.",
     "`expected` is generated from the web's model, never written by hand: edit a case's name, now, sessions or pending, then in ui/ run `UPDATE_SHARED_FIXTURES=1 pnpm exec vitest run src/model/shared-fixtures.spec.ts`.",
     "`pending` marks a case the clients disagree on where a phone would lose information by matching the web. Every suite skips it, by name, until it is decided; `expected` still records what the web does.",
@@ -196,6 +196,23 @@
           {"project": "-Users-sample-code-scratch", "tone": "idle", "halo": false, "sessions": ["no-cwd"]},
           {"project": "agent-router", "tone": "idle", "halo": false, "sessions": ["slash", "plain"]},
           {"project": "win-app", "tone": "idle", "halo": false, "sessions": ["windows"]}
+        ],
+        "older": [],
+        "archived": []
+      }
+    },
+    {
+      "name": "the worktrees and clones of one repository are one project, named by the repository's last segment (SE-C231)",
+      "now": 1791201600000,
+      "sessions": [
+        {"session_id": "clone", "cwd": "/Users/sample/code/ui-kit-web", "repository": "gitlab.example.com/acme/ui-kit-web", "project": "-Users-sample-code-ui-kit-web", "git_branch": "main", "title": "Session clone", "created_ms": 1791197520000, "last_activity_ms": 1791201120000, "active": false, "state": "idle", "archived": false, "wrapped": true, "bytes": 48213, "activity": "idle", "open": true, "detail": "Waiting for you", "since_ms": 1791201120000, "tone": "idle", "source": "registry", "as_of_ms": 1791201180000},
+        {"session_id": "lane-2", "cwd": "/Users/sample/code/ui-kit-web-lane-2", "repository": "gitlab.example.com/acme/ui-kit-web", "project": "-Users-sample-code-ui-kit-web-lane-2", "git_branch": "lane-2", "title": "Session lane-2", "created_ms": 1791197570000, "last_activity_ms": 1791201170000, "active": true, "state": "working", "archived": false, "wrapped": true, "bytes": 48213, "activity": "generating", "open": true, "detail": "Thinking", "since_ms": 1791201170000, "tone": "busy", "source": "registry", "as_of_ms": 1791201180000},
+        {"session_id": "no-repo", "cwd": "/Users/sample/code/ui-kit-web-lane-3", "project": "-Users-sample-code-ui-kit-web-lane-3", "git_branch": "lane-3", "title": "Session no-repo", "created_ms": 1791197460000, "last_activity_ms": 1791201060000, "active": false, "state": "idle", "archived": false, "wrapped": true, "bytes": 48213, "activity": "idle", "open": true, "detail": "Waiting for you", "since_ms": 1791201060000, "tone": "idle", "source": "registry", "as_of_ms": 1791201180000}
+      ],
+      "expected": {
+        "recent": [
+          {"project": "ui-kit-web", "tone": "busy", "halo": true, "sessions": ["lane-2", "clone"]},
+          {"project": "ui-kit-web-lane-3", "tone": "idle", "halo": false, "sessions": ["no-repo"]}
         ],
         "older": [],
         "archived": []

@@ -15,12 +15,41 @@ export interface Health {
   readonly build: string;
 }
 
-/// One row of `GET /api/projects` (src/api.rs, `projects_inner`): a project is a working
-/// directory Claude Code ran in, with what went through the router from it. The rows come
-/// ordered by prompt tokens, most first.
+/// A machine a hosted router heard from, by its id and its label; a blank label names none (SE-C220).
+export interface MachineRef {
+  readonly id: string;
+  readonly label: string | null;
+}
+
+/// A git remote of a project's directory: its name, its URL as configured, and the repository it
+/// spells, canonically (Northstar ADR 0028), null when the URL is not one the router can read.
+export interface ProjectRemote {
+  readonly name: string;
+  readonly url: string;
+  readonly repository: string | null;
+}
+
+/// A directory a project's sessions ran in, on the machine that ran them: null on a local router,
+/// which has only its own (OV-C214).
+export interface ProjectDirectory {
+  readonly cwd: string;
+  readonly machine: MachineRef | null;
+  readonly remotes: readonly ProjectRemote[];
+}
+
+/// One row of `GET /api/projects` (src/api.rs, `projects_inner`): a project is the repository
+/// Claude Code ran in, every worktree and clone of it together, else the working directory when
+/// that has no git remote, with what went through the router from it. The rows come ordered by
+/// prompt tokens, most first.
 export interface ProjectRow {
-  /// The working directory. Null when the session's directory was never resolved.
+  /// The project's key, which every scoped read takes as `project=`: the repository when its
+  /// sessions ran in a git checkout with a remote, else the working directory; null when the
+  /// session's directory was never resolved, which the console keys "(unresolved)" (OV-C136).
   readonly project: string | null;
+  /// The canonical repository (`gitlab.example.com/acme/ui-kit-web`), null when there is none.
+  readonly repository: string | null;
+  /// Every directory the project's sessions ran in, each on its machine (OV-C214).
+  readonly directories: readonly ProjectDirectory[];
   readonly sessions: number;
   readonly requests: number;
   readonly prompt_tokens: number;

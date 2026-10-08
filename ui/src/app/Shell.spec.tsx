@@ -18,6 +18,8 @@ const HEALTH = { ok: true, pid: 4242, version: '0.9.0', build: 'f00dfeed' };
 
 const row = (project: string | null, prompt_tokens: number): ProjectRow => ({
   project,
+  repository: null,
+  directories: project ? [{ cwd: project, machine: null, remotes: [] }] : [],
   sessions: 3,
   requests: 40,
   prompt_tokens,

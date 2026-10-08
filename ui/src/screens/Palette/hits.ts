@@ -181,9 +181,10 @@ export function sessionName(s: Pick<LiveSession, 'session_id' | 'title'>): strin
 }
 
 /// The project a session belongs to, as the Sessions list names it: the last segment of its
-/// directory, else the router's own name for it (SE-C23).
-function sessionProject(s: Pick<LiveSession, 'cwd' | 'project'>): string {
-  return s.cwd ? projectName(s.cwd) : s.project || UNRESOLVED;
+/// repository when it names one (SE-C231), else of its directory, else the router's own name for it
+/// (SE-C23).
+function sessionProject(s: Pick<LiveSession, 'cwd' | 'project' | 'repository'>): string {
+  return s.repository ? projectName(s.repository) : s.cwd ? projectName(s.cwd) : s.project || UNRESOLVED;
 }
 
 /// Where a session opens: the Sessions screen, at `?session=<id>` (SE-C189). With `at`, at one

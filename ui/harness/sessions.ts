@@ -336,7 +336,7 @@ export function sessionsRead(path: string, query: URLSearchParams, router: Harne
   if (path === '/api/live/sessions' && only()) return json(rows);
   if (path === '/api/live/options' && only()) return json(OPTIONS);
   if (path === '/api/live/stats' && only('session') && listed) return json(STATS[id] ?? { model: 'claude-sonnet-4-5', total: 120_000, output: 4_000, cache_read: 90_000, turns: 3, cost: 0.42 });
-  if (path === '/api/live/project' && only('cwd')) return json(query.get('cwd') === AR ? PROJECT : { sessions: 1, total: 120_000, turns: 3, cost: 0.42 });
+  if (path === '/api/live/project' && only('project')) return json(query.get('project') === AR ? PROJECT : { sessions: 1, total: 120_000, turns: 3, cost: 0.42 });
   if (path === '/api/live/prompt' && only('session') && listed) return json(id === SHOWCASE ? PROMPT : { pending: false, count: 0 });
   return null;
 }

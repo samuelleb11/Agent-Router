@@ -11,6 +11,8 @@
 // - a row is drawn from whatever keys it has: one without a session id or a last activity no
 //   longer throws or reads "NaN" (SE-C22), and a row with no `cwd` is grouped under the router's
 //   `project` (SE-C23), which the page's `base` never reached;
+// - a project is its repository where the router names one, so a repository's worktrees and clones
+//   on one machine are one project (SE-C231), and its totals are asked by that key (SE-C232);
 // - the archived shelf is newest first (SE-C32);
 // - a status with no `detail` still says something: its state's word (SE-C63);
 // - the router's own `error` event and a refused stream are said as such and never retried as a
@@ -61,7 +63,13 @@ export interface WaitingOn {
 export interface SessionRow extends Said {
   readonly session_id: string;
   readonly cwd?: string | null;
+  /// The ~/.claude/projects slug the router found the transcript under.
   readonly project?: string | null;
+  /// The repository the session's directory is a checkout of: the canonical spelling of its git
+  /// `origin` remote, else its first remote — host lowercased, then the path, with no scheme, user,
+  /// port, `.git` or trailing slash (`gitlab.example.com/acme/ui-kit-web`). Absent when the
+  /// directory has no remote or is not a git checkout, and from an older machine agent (SE-C231).
+  readonly repository?: string | null;
   readonly title?: string | null;
   readonly git_branch?: string | null;
   readonly created_ms?: number | null;
@@ -216,9 +224,18 @@ export function isCurrent(r: SessionRow, now: number): boolean {
 /// sessions, whose `cwd` is `C:\…` (SE-C222).
 const lastSegment = (p: string | null | undefined): string => (p ?? '').split(/[\\/]/).filter(Boolean).pop() ?? '';
 
-/// A session's project: the last segment of its `cwd`, else the router's `project` (SE-C23).
-export function projectOf(r: Pick<SessionRow, 'cwd' | 'project'>): string {
-  return lastSegment(r.cwd) || r.project || DASH;
+/// A session's project: the last segment of its `repository` when the row names one, so a
+/// repository's worktrees and clones are one project (SE-C231); else the last segment of its `cwd`,
+/// else the router's `project` (SE-C23).
+export function projectOf(r: Pick<SessionRow, 'cwd' | 'project' | 'repository'>): string {
+  return lastSegment(r.repository) || lastSegment(r.cwd) || r.project || DASH;
+}
+
+/// A session's project key, which the router's per-project reads take as `project=`: its
+/// `repository` when the row names one, else its `cwd`, each exactly as the router sent it; null
+/// when the row names neither (SE-C232).
+export function liveProjectKey(r: Pick<SessionRow, 'cwd' | 'repository'>): string | null {
+  return r.repository || r.cwd || null;
 }
 
 /// The machine a hosted router heard a session from, by its label, trimmed; null when the row names
@@ -1170,7 +1187,7 @@ export const composerShown = (view: LiveView): boolean => !!view.session && !vie
 
 /// The heading: the screen's name on the list, the project with a session open, "Find" in Find
 /// (SE-C196).
-export function headingOf(view: LiveView, open: Pick<SessionRow, 'cwd' | 'project'> | null): string {
+export function headingOf(view: LiveView, open: Pick<SessionRow, 'cwd' | 'project' | 'repository'> | null): string {
   if (view.find) return 'Find';
   return view.session && open ? projectOf(open) : 'Live sessions';
 }

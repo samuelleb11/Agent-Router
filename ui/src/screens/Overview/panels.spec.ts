@@ -2,6 +2,9 @@
 // New for agent-router: the share bars' and lists' contracts (docs/web-console-contracts.md, "Read and
 // context", "Models and threads" and "Lists"), on what each panel is handed, with no DOM.
 import { describe, expect, it } from 'vitest';
+import { snapshotPaths } from '~/data/overview';
+import { projectKey } from '~/data/projects';
+import { routes } from '~/lib/routes';
 import { UNSCOPED, type Scope } from '~/model/scope';
 import {
   accountRows,
@@ -12,6 +15,7 @@ import {
   emptyWords,
   modelRows,
   projectKeyOf,
+  projectPlaces,
   projectRows,
   readPanel,
   sessionRows,
@@ -140,6 +144,41 @@ describe('the lists', () => {
     const rows = projectRows([project(null, 1_000)], NOW);
     expect(rows[0]).toMatchObject({ key: '(unresolved)', name: '(unresolved)', path: undefined });
     expect(projectKeyOf({ project: null })).toBe('(unresolved)');
+  });
+
+  it('OV-C214: a project is scoped by its project key and shows its directories with their machines', () => {
+    const repository = 'gitlab.example.com/acme/ui-kit-web';
+    const remote = { name: 'origin', url: 'git@gitlab.example.com:acme/ui-kit-web.git', repository };
+    const row = project(repository, 9_000_000, {
+      repository,
+      directories: [
+        { cwd: '/Users/sample/code/ui-kit-web', machine: { id: 'm-studio', label: 'studio' }, remotes: [remote] },
+        { cwd: '/Users/sample/code/ui-kit-web-lane-2', machine: { id: 'm-studio', label: 'studio' }, remotes: [remote] },
+        { cwd: 'C:\\Users\\sample\\ui-kit-web', machine: { id: 'm-win', label: ' ' }, remotes: [remote] },
+      ],
+    });
+    // Keyed, listed, linked and read by its key, the repository, and named by its last segment.
+    expect([projectKeyOf(row), projectKey(row)]).toEqual([repository, repository]);
+    expect(projectRows([row], NOW)[0]).toMatchObject({ key: repository, name: 'ui-kit-web', path: repository });
+    expect(new URL(routes.project(projectKey(row)), 'http://console.test').searchParams.get('project')).toBe(repository);
+    const paths = snapshotPaths(scoped({ project: repository }), null, 0);
+    for (const read of [paths.summary, paths.sessions, paths.tools, paths.requests]) expect(new URL(read, 'http://console.test').searchParams.get('project')).toBe(repository);
+    // Where it ran: the repository, then each directory on its machine; a blank label names none.
+    expect(projectPlaces(repository, [row])).toEqual({
+      repository,
+      directories: [
+        { machine: 'studio', path: '/Users/sample/code/ui-kit-web', label: 'studio · /Users/sample/code/ui-kit-web' },
+        { machine: 'studio', path: '/Users/sample/code/ui-kit-web-lane-2', label: 'studio · /Users/sample/code/ui-kit-web-lane-2' },
+        { machine: null, path: 'C:\\Users\\sample\\ui-kit-web', label: 'C:\\Users\\sample\\ui-kit-web' },
+      ],
+    });
+    // A local router's project with no remote is its directory, which is said as the path alone.
+    expect(projectPlaces('/code/agent-router', [], [project('/code/agent-router', 1)])).toEqual({
+      repository: null,
+      directories: [{ machine: null, path: '/code/agent-router', label: '/code/agent-router' }],
+    });
+    // Nothing scoped, a row in neither list, and an unresolved project with nowhere to say: nothing.
+    expect([projectPlaces(null, [row]), projectPlaces('gitlab.example.com/acme/other', [row]), projectPlaces('(unresolved)', [project(null, 1)])]).toEqual([null, null, null]);
   });
 
   it('OV-C137: a session row: its first eight characters in monospace, its chips, the subagent share and its figures', () => {

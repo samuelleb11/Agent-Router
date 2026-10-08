@@ -440,6 +440,35 @@ describe('the lists', () => {
     expect(where()).toBe('/?project=%28unresolved%29&range=all');
   });
 
+  it('OV-C214: a scoped project says its repository and every directory on its machine under the scope bar, and an unscoped page says neither', async () => {
+    const repository = 'gitlab.example.com/acme/ui-kit-web';
+    const ui = project(repository, 12_000_000, {
+      repository,
+      directories: [
+        { cwd: '/Users/sample/code/ui-kit-web', machine: { id: 'm-studio', label: 'studio' }, remotes: [] },
+        { cwd: '/home/sample/ui-kit-web-lane-2', machine: { id: 'm-linux', label: 'linux-box' }, remotes: [] },
+        { cwd: '/Users/sample/code/ui-kit-web-lane-3', machine: null, remotes: [] },
+      ],
+    });
+    const r = router((path) => (path === '/api/projects' ? ok([ui, ...PROJECTS]) : undefined));
+    show();
+    await loaded();
+    expect(screen.queryByLabelText('Where this project ran')).toBeNull();
+    fireEvent.click(within(panel('Projects')).getByRole('button', { name: 'ui-kit-web' }));
+    await waitFor(() => expect(r.calls('/api/summary').some((c) => c.query.get('project') === repository)).toBe(true));
+    const places = await screen.findByLabelText('Where this project ran');
+    expect(within(places).getAllByRole('term').map((t) => t.textContent)).toEqual(['Repository', '3 directories']);
+    expect(within(places).getAllByRole('definition')[0]).toHaveTextContent(repository);
+    expect(within(places).getAllByRole('listitem').map((li) => li.textContent)).toEqual([
+      'studio · /Users/sample/code/ui-kit-web',
+      'linux-box · /home/sample/ui-kit-web-lane-2',
+      '/Users/sample/code/ui-kit-web-lane-3',
+    ]);
+    // Visible as facts, with nothing to open; the scope bar still comes first.
+    expect(places.querySelector('button, [aria-expanded]')).toBeNull();
+    expect(screen.getByRole('region', { name: 'Scope' }).compareDocumentPosition(places) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it('OV-C139: a long list shows a first page and a visible "Show more"; Sessions holds up to 200', async () => {
     const many = Array.from({ length: 45 }, (_, i) => session(`${String(i).padStart(8, '0')}-0000-4000-8000-000000000000`));
     router((path) => (path === '/api/sessions' ? ok(many) : undefined));

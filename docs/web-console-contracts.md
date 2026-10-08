@@ -52,7 +52,9 @@ Counts at writing:
 
 Since then AGEN-0023 has added SE-C219 to SE-C225, for a hosted router's machines, so Sessions
 holds 225. On 2026-10-07 the Machines screen added a section of its own, MA-C1 to MA-C7, and the
-same day Sessions tabbed a hosted router's machines, SE-C226 to SE-C230, so it holds 230.
+same day Sessions tabbed a hosted router's machines, SE-C226 to SE-C230, so it holds 230. On
+2026-10-08 a project became its repository, so a repository's worktrees and clones are one project:
+SE-C231 and SE-C232 in Sessions, which holds 232, and OV-C214 in the Overview, which holds 214.
 
 ## Shell
 
@@ -706,13 +708,13 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
   *Why:* "The same block can appear at several places", and a list keyed on duplicates drops rows.
   *Regression:* no. *Source:* `assets/index.html:2637-2649`,
   `ios/AgentRouter/Sources/API/SearchModels.swift:37-39`. *Phones:* `testSearchResultsDecode`.
-- **OV-C52** A hit or session whose project is unknown still renders, and names its project as the
-  lists do, "(unresolved)". *Why:* the join behind it is a LEFT JOIN, so a request whose transcript
-  never arrived has no project, and "(unresolved)" is the dashboard's label for that
-  (`src/api.rs:67-68`). *Regression:* no. *Source:* `assets/index.html:715`,
-  `assets/index.html:2628`, `assets/index.html:2642`. *Phones:*
-  `testSearchToleratesMissingProjectAndLabel`. *Today:* broken — the phone prints "—" where the page
-  prints "(unresolved)".
+- **OV-C52** A hit or session whose project is unknown — the router knows neither its repository nor
+  its directory (OV-C214) — still renders, and names its project as the lists do, "(unresolved)".
+  *Why:* the join behind it is a LEFT JOIN, so a request whose transcript never arrived has no
+  project, and "(unresolved)" is the dashboard's label for that (`src/api.rs:67-68`). *Regression:*
+  no. *Source:* `assets/index.html:715`, `assets/index.html:2628`, `assets/index.html:2642`.
+  *Phones:* `testSearchToleratesMissingProjectAndLabel`. *Today:* broken — the phone prints "—"
+  where the page prints "(unresolved)".
 - **OV-C53** The search's session rows mark the session the page is scoped to as soon as it changes.
   *Why:* a pressed row that is not the scope misleads. *Regression:* no. *Source:*
   `assets/index.html:2614-2629`. *Today:* broken — the mark is set only when a search runs, so
@@ -1127,16 +1129,35 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
 - **OV-C134** An account row shows the account icon, its label and router id, an "active" tag while
   it serves, a bar of prompt tokens, and "N sessions · N req · out · <last seen>". *Why:* the facts
   that tell two accounts apart. *Regression:* no. *Source:* `assets/index.html:1684-1694`.
-- **OV-C135** A project row: the project icon in the project colour, the folder's name, its path,
-  one swatch per model family it used (four at most), a bar of prompt tokens with the subagent share
-  laid over its end and labelled "N% subagents", and "N sessions · req · out · % cached · cost ·
-  errors · <last seen>". *Why:* a project's size, mix and recency in one row. *Regression:* no.
-  *Source:* `assets/index.html:1700`, `assets/index.html:1709-1719`.
-- **OV-C136** A project with no recorded path is listed as "(unresolved)" and scopes like any other,
-  the router selecting exactly those sessions for it. *Why:* "no real working directory is spelt
-  that way, so it selects them rather than nothing" (`src/api.rs:67-68`). *Regression:* no.
-  *Source:* `assets/index.html:715`, `assets/index.html:1060-1062`, `assets/index.html:1709`,
-  `src/api.rs:64-72`.
+- **OV-C135** A project row: the project icon in the project colour, its name, its key — the
+  repository, else the directory (OV-C214) — one swatch per model family it used (four at most), a
+  bar of prompt tokens with the subagent share laid over its end and labelled "N% subagents", and "N
+  sessions · req · out · % cached · cost · errors · <last seen>". *Why:* a project's size, mix and
+  recency in one row. *Regression:* no. *Source:* `assets/index.html:1700`,
+  `assets/index.html:1709-1719`.
+- **OV-C136** A project with no recorded path — neither a repository nor a directory (OV-C214) — is
+  listed as "(unresolved)" and scopes like any other, the router selecting exactly those sessions
+  for it. *Why:* "no real working directory is spelt that way, so it selects them rather than
+  nothing" (`src/api.rs:67-68`). *Regression:* no. *Source:* `assets/index.html:715`,
+  `assets/index.html:1060-1062`, `assets/index.html:1709`, `src/api.rs:64-72`.
+- **OV-C214** A project is its repository where its sessions ran in a git checkout with a remote —
+  every worktree and clone of it, on every machine, one project — else its directory, else
+  "(unresolved)" (OV-C136). The repository is the canonical spelling of the directory's `origin`
+  remote, else its first remote (Northstar ADR 0028: host lowercased, then the path, with no scheme,
+  user, port, trailing `.git` or trailing slash, as `gitlab.example.com/acme/ui-kit-web`). `GET
+  /api/projects` keys each row by it, `project`, beside `repository` and `directories`; every scoped
+  read takes the key as `project=`, as the rail's link and the scope do (`/?project=<key>`), and the
+  project is named by its last segment (OV-C186). With a project scoped, a line under the scope bar
+  says where it ran, as facts with nothing to open: its repository when it has one, then every
+  directory its sessions ran in, each "<machine> · <path>", the path alone where no machine is named
+  — a local router's, or a blank label (SE-C220) — wrapping rather than widening the page. The row
+  is the rail's, read over all time, else the snapshot's, so a project quiet in the range still says
+  where it ran. *Why:* the router named a project by its directory, so one repository was a Mac
+  clone, a Linux clone and lane worktrees — several projects, each with part of its totals. Once the
+  key is the repository, the directories are no longer in it and have to be said; facts at a glance
+  rather than a table or a disclosure, the owner's standing preference. *Regression:* no. *Source:*
+  `src/api.rs` (`projects_inner`); `ui/src/screens/Overview/panels.ts` (`projectPlaces`),
+  `ui/src/screens/Overview/ProjectPlaces.tsx`.
 - **OV-C137** A session row: the session icon in the session colour, the first eight characters in
   monospace, chips for its git branch, its project (only when no project is scoped), the client it
   was launched from and its model families, a bar with the subagent share laid over it, and "N req ·
@@ -1387,10 +1408,11 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
   *Regression:* no. *Source:* `assets/index.html:719`,
   `ios/AgentRouter/Sources/Views/Format.swift:95-105`. *Phones:* `testRangesAndFormats`. *Today:*
   broken — the page says "15 min" where the phone says "15 minutes". *Decided:* the phones' spelling, on 2026-10-05 (decision K in the plan).
-- **OV-C186** A project is named by the last part of its path, "(unresolved)" when it has none, with
-  the whole path available beside it; a session by the first eight characters of its id, the whole
-  id available. *Why:* short enough for a row, exact one press away. *Regression:* no. *Source:*
-  `assets/index.html:715-716`. *Phones:* `testListsDecode`, `testSearchResultsDecode`.
+- **OV-C186** A project is named by the last part of its key — its repository, else its path
+  (OV-C214) — "(unresolved)" when it has none, with the whole key available beside it; a session by
+  the first eight characters of its id, the whole id available. *Why:* short enough for a row, exact
+  one press away. *Regression:* no. *Source:* `assets/index.html:715-716`. *Phones:*
+  `testListsDecode`, `testSearchResultsDecode`.
 - **OV-C187** The client a session ran in is named "VS Code" when its entrypoint mentions
   claude-vscode, else "CLI" when it mentions claude-cli, else not named, with the full entrypoint
   available. *Why:* the VS Code extension launches the CLI, so the VS Code mark is tested first.
@@ -1727,11 +1749,12 @@ defect.
 ### List
 
 - **SE-C23** The list groups sessions by project, the project being the last segment of the
-  session's `cwd`, split on `/` and `\` alike (SE-C222), else the router's `project`. On a hosted
-  router that lists more than one machine, it groups them by machine first, and by project within
-  each machine (SE-C219). *Why:* the list is mostly "which of my projects is moving". *Regression:*
-  no. *Source:* `assets/live.html:139, 479, 675-683`. *Phones:* iOS
-  `testSessionsGroupLikeTheWebView`; Android `sessions group like the web view`.
+  session's `repository` when the router names one (SE-C231), else of its `cwd`, split on `/` and
+  `\` alike (SE-C222), else the router's `project`. On a hosted router that lists more than one
+  machine, it groups them by machine first, and by project within each machine (SE-C219). *Why:* the
+  list is mostly "which of my projects is moving". *Regression:* no. *Source:*
+  `assets/live.html:139, 479, 675-683`. *Phones:* iOS `testSessionsGroupLikeTheWebView`; Android
+  `sessions group like the web view`.
 - **SE-C24** Projects are in alphabetical order, so a project keeps its place instead of jumping to
   the top whenever one of its sessions moves; on a list headed per machine, each machine's projects
   are in that order under its heading (SE-C219). Within a project, sessions are newest first by
@@ -1740,6 +1763,22 @@ defect.
   touched last leads, is stale. *Regression:* yes — bbe0780. *Source:*
   `assets/live.html:684-688`. *Phones:* iOS `testSessionsGroupLikeTheWebView`; Android
   `sessions group like the web view`.
+- **SE-C231** A session's project is its repository when the router names one. A row's `repository`
+  is the canonical spelling of its directory's git `origin` remote, else its first remote (Northstar
+  ADR 0028: host lowercased, then the path, with no scheme, user, port, trailing `.git` or trailing
+  slash, as `gitlab.example.com/acme/ui-kit-web`), and the project is named by its last segment. So
+  a repository's worktrees and clones on one machine — `ui-kit-web` and `ui-kit-web-lane-2` — are
+  one project under one heading, its sessions newest first among them (SE-C24), and the open
+  session's tabs hold them together (SE-C44, SE-C221); the heading, the open session's heading and
+  the palette name it alike. A row with no `repository` — a directory with no remote, not a git
+  checkout, or a machine whose agent is older — is named exactly as before (SE-C23). One repository
+  on two machines is still two projects, one under each machine (SE-C219). *Why:* the router named a
+  project by its directory, so one repository was several projects — a Mac clone, a Linux clone and
+  lane worktrees — and one piece of work was scattered across headings. *Regression:* no. *Source:*
+  `ui/src/model/session.ts` (`projectOf`); `fixtures/live/session-groups.json`, the case "the
+  worktrees and clones of one repository are one project, named by the repository's last segment
+  (SE-C231)". *Phones:* both name a live session by the same rule and read the same case: iOS
+  `SharedFixtureTests`, Android `SharedFixtureTest`.
 - **SE-C25** Each project heading shows its dot (SE-C18), its name, how many sessions it holds and
   the age of its newest session. *Why:* whether a project is moving is answered without opening
   it. *Regression:* no. *Source:* `assets/live.html:140-145, 689-697`.
@@ -2373,6 +2412,13 @@ defect.
   strip, and only when the project has more than one session. *Why:* it answers a different
   question: what is this costing me overall. *Regression:* no. *Source:*
   `assets/live.html:308-309, 1187-1190, 1200-1204`.
+- **SE-C232** The project's own total (SE-C132) is asked by the session's project key, `GET
+  /api/live/project?project=<key>`: its `repository` when the row names one, else its `cwd`, each
+  exactly as the router sent it, and not asked at all for a row that names neither. *Why:* a project
+  is its repository (SE-C231), so asked by the directory the total counted one worktree of it; the
+  router took `?project=` in place of `?cwd=` on 2026-10-08. *Regression:* no. *Source:*
+  `ui/src/data/live.ts` (`readProject`), `ui/src/model/session.ts` (`liveProjectKey`),
+  `src/live.rs`.
 - **SE-C133** Totals are read once each time a session opens, never pushed with every event. *Why:*
   they need a scan of the whole file, and the numbers do not move fast enough to be worth
   streaming. *Regression:* no. *Source:* `assets/live.html:1180-1181`.
@@ -2722,17 +2768,17 @@ platform, build, online, since); neither phone reads it, and the console's Machi
   no. *Source:* `android/app/src/main/java/ca/whnet/agentrouter/ui/SessionScreen.kt:133-142,
   164-186` (its siblings, and the machine's tag);
   `ios/AgentRouter/Sources/Views/SessionView.swift:33-48, 198-206`. *Phones:* no phone test pins the tag; both draw it.
-- **SE-C222** A project's name is the last segment of its directory, split on `/` and `\` alike,
-  wherever the console names one from a path: a project's heading, the open session's heading, the
-  rail, and the palette's sessions, projects and search hits. *Why:* a hosted router hears from
-  Windows machines, whose directories are `C:\…`; split on `/` alone, such a session or project is
-  named by its whole path. The page's `base` split on both from `60cf5f8`; the console's rail and
-  palette split on `/` alone until this rule. *Regression:* no. *Source:* `assets/live.html:480` at
-  `60cf5f8`; `ui/src/data/projects.ts`. *Phones:* both name a live session by its directory split
-  on both (`LiveSession.projectName`), and `session-groups.json` holds a Windows `cwd`; since
-  2026-10-05 their dashboards, usage lists and search hits do too, by one rule each
-  (`ProjectPath`), with the console's edge cases: iOS `WindowsProjectNameTests`, Android
-  `WindowsProjectNameTest`.
+- **SE-C222** A project's name is the last segment of its directory — or of its repository, where it
+  has one (SE-C231, OV-C214) — split on `/` and `\` alike, wherever the console names one from a
+  path: a project's heading, the open session's heading, the rail, and the palette's sessions,
+  projects and search hits. *Why:* a hosted router hears from Windows machines, whose directories
+  are `C:\…`; split on `/` alone, such a session or project is named by its whole path. The page's
+  `base` split on both from `60cf5f8`; the console's rail and palette split on `/` alone until this
+  rule. *Regression:* no. *Source:* `assets/live.html:480` at `60cf5f8`; `ui/src/data/projects.ts`.
+  *Phones:* both name a live session by its directory split on both (`LiveSession.projectName`), and
+  `session-groups.json` holds a Windows `cwd`; since 2026-10-05 their dashboards, usage lists and
+  search hits do too, by one rule each (`ProjectPath`), with the console's edge cases: iOS
+  `WindowsProjectNameTests`, Android `WindowsProjectNameTest`.
 - **SE-C223** A per-session request that a hosted router answers 503, naming the machine — "the
   machine running this session (<label>) is offline" — means that machine is offline: it comes
   back later, and the session has not ended. While the stream is refused so, the header says the

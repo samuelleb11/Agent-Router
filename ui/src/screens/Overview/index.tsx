@@ -28,6 +28,7 @@ import { Quota } from './Quota';
 import { Reading } from './Reading';
 import { Requests, REQUESTS_ID } from './Requests';
 import { filtering, REQUEST_PAGE } from './requestList';
+import { ProjectPlaces } from './ProjectPlaces';
 import { ScopeBar } from './ScopeBar';
 import { SearchPanel } from './Search';
 import styles from './Overview.module.scss';
@@ -182,6 +183,7 @@ export default function Overview() {
         }
       />
       <ScopeBar scope={scope} snapshot={snapshot} now={now} onScope={setScope} />
+      <ProjectPlaces scope={scope} snapshot={snapshot} />
       <SearchPanel scope={scope} onScope={setScope} now={now} />
       {snapshot ? (
         <>

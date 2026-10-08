@@ -17,7 +17,7 @@ export const liveKeys = {
   hosted: ['live', 'hosted'] as const,
   shim: ['live', 'shim'] as const,
   stats: (session: string) => ['live', 'stats', session] as const,
-  project: (cwd: string) => ['live', 'project', cwd] as const,
+  project: (key: string) => ['live', 'project', key] as const,
   prompt: (session: string) => ['live', 'prompt', session] as const,
   find: (q: string, scope: string, session: string | null) => ['live', 'find', q, scope, session ?? ''] as const,
 };
@@ -85,8 +85,9 @@ export const readShim = (signal?: AbortSignal) => getJson<Shim>('/api/setup/shim
 /// `GET /api/live/stats?session=`: read once each time a session opens (SE-C133).
 export const readStats = (session: string, signal?: AbortSignal) => getJson<Stats>(`/api/live/stats?session=${enc(session)}`, { signal });
 
-/// `GET /api/live/project?cwd=`: the project's own total (SE-C132).
-export const readProject = (cwd: string, signal?: AbortSignal) => getJson<ProjectTotals>(`/api/live/project?cwd=${enc(cwd)}`, { signal });
+/// `GET /api/live/project?project=`: the project's own total (SE-C132), asked by the session's project
+/// key, its repository else its directory (`liveProjectKey`, SE-C232).
+export const readProject = (key: string, signal?: AbortSignal) => getJson<ProjectTotals>(`/api/live/project?project=${enc(key)}`, { signal });
 
 /// `GET /api/live/prompt?session=`: what the session is blocked on now, if anything (SE-C120).
 export const readPrompt = (session: string, signal?: AbortSignal) => getJson<Prompt>(`/api/live/prompt?session=${enc(session)}`, { signal });

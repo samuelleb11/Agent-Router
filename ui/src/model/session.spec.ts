@@ -22,6 +22,7 @@ import {
   feedStatus,
   feedTick,
   feedUnavailable,
+  headingOf,
   hitTarget,
   isCurrent,
   listHeader,
@@ -84,6 +85,43 @@ describe('the session list', () => {
     expect(view.recent.map((g) => [g.key, g.rows.map((r) => r.id)])).toEqual([
       ['alpha', ['a-2', 'a-1']],
       ['beta', ['b-1']],
+    ]);
+  });
+
+  it("SE-C231: worktrees and clones of one repository are one project, named by the repository's last segment, and a row that names no repository keeps its directory's", () => {
+    const repository = 'gitlab.example.com/acme/ui-kit-web';
+    const rows: SessionRow[] = [
+      { session_id: 'clone', cwd: '/Users/sample/code/ui-kit-web', repository, created_ms: 1, last_activity_ms: NOW - 60e3, active: true },
+      { session_id: 'lane-2', cwd: '/Users/sample/code/ui-kit-web-lane-2', repository, created_ms: 2, last_activity_ms: NOW - 1e3, active: true },
+      { session_id: 'lane-3', cwd: '/Users/sample/code/ui-kit-web-lane-3', created_ms: 3, last_activity_ms: NOW, active: true },
+    ];
+    const view = listView(rows, NOW);
+    // One heading for the repository's two directories, sessions newest first in it (SE-C24); the
+    // row with no repository is grouped by its directory, as every row was before.
+    expect(view.recent.map((g) => [g.key, g.rows.map((r) => r.id)])).toEqual([
+      ['ui-kit-web', ['lane-2', 'clone']],
+      ['ui-kit-web-lane-3', ['lane-3']],
+    ]);
+    expect(rowOf(view, 'lane-2')?.name).toBe('ui-kit-web');
+    expect(headingOf({ session: 'lane-2', find: null }, rows[1]!)).toBe('ui-kit-web');
+    // The open session's tabs are its project's: the clone's and the worktree's together.
+    expect(tabsFor(rows[0]!, rows, null, NOW).map((t) => t.id)).toEqual(['clone', 'lane-2']);
+    // An empty or absent repository is none: the directory names the project, else the router's slug.
+    expect([projectOf({ cwd: '/code/a', repository: '' }), projectOf({ cwd: '/code/a', repository: null }), projectOf({ project: 'p9', repository })]).toEqual(['a', 'a', 'ui-kit-web']);
+    // One repository on two machines is still two projects, one under each machine (SE-C219).
+    const two = byMachine(
+      rows.map((r, i) => ({ ...r, machine: { id: `m-${i % 2}`, label: i % 2 ? 'Laptop' : 'studio' } })),
+      NOW,
+    );
+    expect(two.map((p) => [p.heading, p.recent.map((g) => [g.key, g.rows.map((r) => r.id)])])).toEqual([
+      ['Laptop', [['ui-kit-web', ['lane-2']]]],
+      [
+        'studio',
+        [
+          ['ui-kit-web', ['clone']],
+          ['ui-kit-web-lane-3', ['lane-3']],
+        ],
+      ],
     ]);
   });
 
@@ -225,7 +263,7 @@ describe('a hosted router’s machines', () => {
     // The palette: a session to jump to, a project, and a hit from the router's search.
     const ctx: Context = {
       step: null,
-      projects: { state: 'read', value: [{ project: windows, sessions: 1, requests: 1, prompt_tokens: 1, cost: 0, output_tokens: 0, cache_read_tokens: 0, subagent_tokens: 0, errors: 0, models: null, first_seen: NOW, last_seen: NOW }] },
+      projects: { state: 'read', value: [{ project: windows, repository: null, directories: [{ cwd: windows, machine: null, remotes: [] }], sessions: 1, requests: 1, prompt_tokens: 1, cost: 0, output_tokens: 0, cache_read_tokens: 0, subagent_tokens: 0, errors: 0, models: null, first_seen: NOW, last_seen: NOW }] },
       sessions: { state: 'read', value: [{ session_id: 'w-1', cwd: windows, project: 'C--Users-sample-code-win-app', git_branch: null, title: 'On Windows', last_activity_ms: NOW, archived: false, wrapped: true }] },
       accounts: { state: 'read', value: [] },
       options: { state: 'read', value: null },

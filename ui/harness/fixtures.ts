@@ -9,6 +9,8 @@ const AT = Date.UTC(2026, 9, 5, 9, 0, 0);
 
 const project = (path: string | null, prompt_tokens: number, sessions: number, models: string): ProjectRow => ({
   project: path,
+  repository: null,
+  directories: path ? [{ cwd: path, machine: null, remotes: [] }] : [],
   sessions,
   requests: sessions * 37,
   prompt_tokens,

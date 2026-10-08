@@ -9,7 +9,7 @@ import { Information } from '@carbon/icons-react';
 import { FormModal } from '~/components/FormModal';
 import { liveKeys, postLive, readOptions, readProject, readStats, type Stats } from '~/data/live';
 import { refusalText } from '~/lib/errors';
-import { notice, OTHER_MODEL, switcherOptions, switchNotice, type LiveOptions, type SessionRow } from '~/model/session';
+import { liveProjectKey, notice, OTHER_MODEL, switcherOptions, switchNotice, type LiveOptions, type SessionRow } from '~/model/session';
 import { failed, projectFacts, sessionFacts } from './logic';
 import { NoticeLine } from './Notice';
 import { useNotice } from './useNotice';
@@ -31,8 +31,10 @@ const BYPASS = 'bypassPermissions';
 export function Facts({ session, row }: { session: string; row: SessionRow | null }) {
   const once = { staleTime: 0, refetchOnWindowFocus: false, refetchOnReconnect: false, retry: false } as const;
   const stats = useQuery({ queryKey: liveKeys.stats(session), queryFn: ({ signal }) => readStats(session, signal), ...once });
-  const cwd = row?.cwd ?? null;
-  const project = useQuery({ queryKey: liveKeys.project(cwd ?? ''), queryFn: ({ signal }) => readProject(cwd ?? '', signal), enabled: !!cwd, ...once });
+  // The project's total is asked by its key: the repository, so every worktree and clone of it
+  // counts, else the directory (SE-C232).
+  const key = row ? liveProjectKey(row) : null;
+  const project = useQuery({ queryKey: liveKeys.project(key ?? ''), queryFn: ({ signal }) => readProject(key ?? '', signal), enabled: !!key, ...once });
   const options = useQuery({ queryKey: liveKeys.options, queryFn: ({ signal }) => readOptions(signal), staleTime: Infinity, retry: false });
   const [said, say] = useNotice();
   const total = projectFacts(project.data);
