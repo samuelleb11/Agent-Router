@@ -128,6 +128,12 @@
   overflow-wrap: anywhere;
 }
 
+// A forge's check that came back well (ST-C107).
+.good {
+  color: var(--ar-ok);
+  overflow-wrap: anywhere;
+}
+
 .warn {
   color: var(--ar-warn);
 }

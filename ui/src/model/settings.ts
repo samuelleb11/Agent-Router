@@ -35,13 +35,14 @@ export const isHosted = (auth: Auth | null | undefined): boolean => auth?.mode =
 /// Whether the router has said which kind it is.
 const known = (auth: Auth | null | undefined): auth is Auth => auth != null;
 
-export type Page = 'accounts' | 'claude-code' | 'network' | 'password' | 'notifications' | 'router';
+export type Page = 'accounts' | 'claude-code' | 'network' | 'password' | 'notifications' | 'router' | 'forges' | 'library';
 
 /// The Settings pages offered. A hosted router has no Claude Code page and no Network page
-/// (OV-C204, ST-C53, ST-C72); nor does a router that has not said yet what it is (ST-C101).
+/// (OV-C204, ST-C53, ST-C72), and it alone has the Library's Forges and Library pages (ST-C104);
+/// a router that has not said yet what it is has none of these (ST-C101).
 export function settingsPages(auth: Auth | null | undefined): Page[] {
-  const local = known(auth) && !isHosted(auth);
-  return local ? ['accounts', 'claude-code', 'network', 'password', 'notifications', 'router'] : ['accounts', 'password', 'notifications', 'router'];
+  if (known(auth) && isHosted(auth)) return ['accounts', 'password', 'notifications', 'router', 'forges', 'library'];
+  return known(auth) ? ['accounts', 'claude-code', 'network', 'password', 'notifications', 'router'] : ['accounts', 'password', 'notifications', 'router'];
 }
 
 /// Whether the setup and the wrapper's state are read at all: never on a hosted router, which

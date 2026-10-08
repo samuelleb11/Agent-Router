@@ -14,6 +14,9 @@ import NetworkPage from './Network';
 import NotificationsPage from './Notifications';
 import PasswordPage from './Password';
 import RouterPage from './Router';
+import ForgesPage from './Forges';
+import LibraryPage from './Library';
+import { NOT_HERE } from '~/model/library';
 import { ReadFailed, Reading } from './parts';
 import { NO_MACHINE } from './rules';
 
@@ -24,6 +27,8 @@ const PAGES: Readonly<Record<SectionSlug, ComponentType>> = {
   password: PasswordPage,
   notifications: NotificationsPage,
   router: RouterPage,
+  forges: ForgesPage,
+  library: LibraryPage,
 };
 
 const isSection = (s: string): s is SectionSlug => SECTIONS.some((x) => x.slug === s);
@@ -43,6 +48,14 @@ export default function SettingsSection() {
       return (
         <Page.Section title={label}>
           <InlineNotification kind="info" lowContrast hideCloseButton title={`${label} is not on this router`} subtitle={NO_MACHINE} />
+        </Page.Section>
+      );
+    }
+    // A local router keeps no Library, so its two pages say why (ST-C104).
+    if (auth.value !== null) {
+      return (
+        <Page.Section title={label}>
+          <InlineNotification kind="info" lowContrast hideCloseButton title={`${label} is not on this router`} subtitle={NOT_HERE} />
         </Page.Section>
       );
     }

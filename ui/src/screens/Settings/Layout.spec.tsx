@@ -173,12 +173,12 @@ describe('Settings, as the router allows', () => {
     expect(await screen.findByRole('switch', { name: 'Start at login' })).toBeInTheDocument();
   });
 
-  it('ST-C103, ST-C53, ST-C72: on a hosted router Claude Code and Network are not offered; a bookmarked address says why in the router’s sentence, and nothing of theirs is read', async () => {
+  it('ST-C103, ST-C53, ST-C72, ST-C104: on a hosted router Claude Code and Network are not offered, and Forges and Library are; a bookmarked address says why in the router’s sentence, and nothing of theirs is read', async () => {
     answer(HOSTED);
     real('/settings/network');
     expect(await screen.findByText(NO_MACHINE)).toBeInTheDocument();
     expect(screen.getByText('Network is not on this router')).toBeInTheDocument();
-    expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual(['Accounts', 'Password', 'Notifications', 'Router']);
+    expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual(['Accounts', 'Password', 'Notifications', 'Router', 'Forges', 'Library']);
     expect(screen.queryByRole('tab', { selected: true })).toBeNull();
     vi.unstubAllGlobals();
     document.body.innerHTML = '';

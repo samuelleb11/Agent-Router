@@ -42,6 +42,16 @@ export function postJson<T>(path: string, body: unknown, options: ReadOptions = 
   );
 }
 
+/// PUT a JSON body to the router, by `postJson`'s rules.
+export function putJson<T>(path: string, body: unknown, options: ReadOptions = {}): Promise<T> {
+  return request<T>(path, { method: 'PUT', headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body: JSON.stringify(body) }, options);
+}
+
+/// DELETE at the router, by `postJson`'s rules.
+export function deleteJson<T>(path: string, options: ReadOptions = {}): Promise<T> {
+  return request<T>(path, { method: 'DELETE', headers: { Accept: 'application/json' } }, options);
+}
+
 /// POST bytes to the router — a Library upload, `Content-Type` naming what they are — and read the
 /// JSON answer by `getJson`'s rules.
 export function postBytes<T>(path: string, body: Blob, contentType: string, options: ReadOptions = {}): Promise<T> {

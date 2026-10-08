@@ -3788,6 +3788,74 @@ disclosure, and each explanation next to the field it concerns.
   local one as it always did". *Source:* `assets/index.html:620-621`,
   `assets/index.html:2286-2287`.
 
+
+### Forges and the Library
+
+Settings for the Library on a hosted router ([the Library](library.md)): where it imports from,
+how a forge's webhook proves itself, the publish tokens, and whether publishes from machines go
+live. Built 2026-10-08 as AGEN-0052, against the router of commits `be4d25f` to `15f3dda`.
+
+- **ST-C104** On a hosted router Settings has Forges and Library, after Router. A local router
+  has neither tab, and their addresses say the Library is a hosted router's. *Source:*
+  `ui/src/model/settings.ts` (`settingsPages`), `ui/src/screens/Settings/Section.tsx`.
+- **ST-C105** Forges lists each forge: its key, its kind (GitLab, GitHub), its address, whether a
+  token is kept, and how many sources use it. It never shows a token. *Source:* `GET
+  /api/library/forges`, which carries none.
+- **ST-C106** Adding or changing a forge takes:
+  - a key;
+  - GitLab or GitHub;
+  - an address;
+  - a token, typed in a password field.
+
+  On a change, a token left empty keeps the kept one, and "Remove the token" keeps none. The
+  router's refusal shows beside the form in its words: an address in plain http, an address
+  another forge has.
+- **ST-C107** "Check" asks the forge and says what came back, as a heading over the router's
+  own words. It is one of:
+  - it answered;
+  - it refused the token;
+  - the token may not read this;
+  - no such repository;
+  - it could not be reached;
+  - something unexpected.
+- **ST-C108** "Remove" asks once more in a danger dialog (ST-C18). A forge a source uses is
+  refused in the router's words, inside the dialog.
+- **ST-C109** Library → Sources lists each source:
+  - its forge, repository, ref and path ("the whole repository" when none);
+  - whether its new versions go live or wait for approval;
+  - what its last import came to, and when, or the forge's refusal, or "Never imported yet";
+  - whether its webhook has a secret. The secret itself is never shown.
+- **ST-C110** Adding a source takes:
+  - a key;
+  - a forge, chosen from the forges;
+  - a repository;
+  - a ref (`main` to start with);
+  - a path;
+  - whether its new versions go live, off by default.
+
+  With no forge yet, it says to add one first.
+- **ST-C111** "Import now" imports at once, and says what came of it: how many items are new,
+  unchanged, refused and failed, at which commit, and which ones the repository no longer
+  holds. The forge's refusal shows in its words.
+- **ST-C112** A webhook secret is made on request. It is shown once, with the hook's URL, each
+  with a copy button, and with how to give them to the forge. The words say any secret made
+  before no longer works.
+- **ST-C113** Publish tokens are listed by name: what each may publish, whether what it
+  publishes goes live, when it was made, when last used, and when revoked. A value is never
+  listed.
+- **ST-C114** Making a token takes:
+  - a name;
+  - the kinds it may publish;
+  - the items it alone may publish;
+  - whether what it publishes goes live.
+
+  Its value is shown once, with a copy button and the words that it is not shown again.
+  "Revoke" asks once more in a danger dialog.
+- **ST-C115** "Publishes from machines go live" is one switch. It is off (waiting for approval)
+  until the owner turns it on, and the change is saved as it is made.
+- **ST-C116** A failed read of the forges, the sources or the tokens is said in the router's
+  words, never drawn as an empty list (SH-C22).
+
 ### A hosted router
 
 - **ST-C100** Settings decides what to offer from `/api/auth`'s `mode`: `server` is a hosted

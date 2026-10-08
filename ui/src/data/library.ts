@@ -2,8 +2,9 @@
 // push.rs), typed by hand because the router has no OpenAPI spec. Everything goes through ~/data/http,
 // the one fetch layer, so a refusal and a timeout read here as on every other screen (SH-C23).
 
-import { getJson, getText, postBytes, postJson } from '~/data/http';
+import { deleteJson, getJson, getText, postBytes, postJson, putJson } from '~/data/http';
 import { Refused } from '~/lib/errors';
+import type { ForgeRow, Imported, SourceRow, TokenRow } from '~/model/forges';
 import type { ItemDetail, ItemRow, Kind, Told, Version } from '~/model/library';
 
 export const libraryKeys = {
@@ -49,3 +50,40 @@ export const archive = (kind: string, name: string) => postJson<{ ok: true }>(`$
 /// the router may take a while to answer for a slow machine.
 export const syncNow = (machine?: string) =>
   postJson<{ machines: Told[] }>('/api/library/sync', machine ? { machine } : {}, { timeoutMs: 130_000 });
+
+// ---------- Settings: forges, sources, tokens, machine publishes ----------
+
+
+export const settingKeys = {
+  forges: ['library', 'forges'] as const,
+  sources: ['library', 'sources'] as const,
+  tokens: ['library', 'tokens'] as const,
+  settings: ['library', 'settings'] as const,
+};
+
+export const readForges = (signal?: AbortSignal) => getJson<{ forges: ForgeRow[] }>('/api/library/forges', { signal }).then((b) => b.forges);
+/// `token`: absent keeps the kept one, `null` removes it, a string replaces it.
+export const putForge = (key: string, body: { kind: string; base_url: string; token?: string | null }) =>
+  putJson<{ ok: true }>(`/api/library/forges/${encodeURIComponent(key)}`, body);
+export const deleteForge = (key: string) => deleteJson<{ ok: true }>(`/api/library/forges/${encodeURIComponent(key)}`);
+export const checkForge = (key: string) =>
+  postJson<{ result: string; words: string }>(`/api/library/forges/${encodeURIComponent(key)}/check`, {}, { timeoutMs: 70_000 });
+
+export const readSources = (signal?: AbortSignal) => getJson<{ sources: SourceRow[] }>('/api/library/sources', { signal }).then((b) => b.sources);
+export const putSource = (key: string, body: { forge: string; repository: string; ref: string; path: string; live: boolean }) =>
+  putJson<{ ok: true }>(`/api/library/sources/${encodeURIComponent(key)}`, body);
+export const deleteSource = (key: string) => deleteJson<{ ok: true }>(`/api/library/sources/${encodeURIComponent(key)}`);
+/// An import fetches a repository's archive: a big one on a slow forge gets two minutes.
+export const importSource = (key: string) =>
+  postJson<{ imported: Imported }>(`/api/library/sources/${encodeURIComponent(key)}/import`, {}, { timeoutMs: 130_000 });
+export const newSecret = (key: string) =>
+  postJson<{ secret: string; path: string; url: string | null }>(`/api/library/sources/${encodeURIComponent(key)}/secret`, {});
+
+export const readTokens = (signal?: AbortSignal) => getJson<{ tokens: TokenRow[] }>('/api/library/tokens', { signal }).then((b) => b.tokens);
+export const createToken = (body: { name: string; kinds: string[]; items: string[]; live: boolean }) =>
+  postJson<{ id: string; name: string; token: string }>('/api/library/tokens', body);
+export const revokeToken = (id: string) => deleteJson<{ ok: true }>(`/api/library/tokens/${encodeURIComponent(id)}`);
+
+export const readLibrarySettings = (signal?: AbortSignal) => getJson<{ machine_publishes: 'live' | 'approval' }>('/api/library/settings', { signal });
+export const setMachinePublishes = (live: boolean) =>
+  putJson<{ machine_publishes: string }>('/api/library/settings', { machine_publishes: live ? 'live' : 'approval' });
