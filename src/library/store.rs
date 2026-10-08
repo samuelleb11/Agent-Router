@@ -98,6 +98,20 @@ CREATE TABLE IF NOT EXISTS library_sources (
   created_at  INTEGER NOT NULL
 );
 
+-- Publish tokens (`library::tokens`): kept as the sha256 of the value, which is shown once,
+-- when made. A revoked token keeps its row, so what it published still names it.
+CREATE TABLE IF NOT EXISTS library_tokens (
+  id           TEXT PRIMARY KEY,
+  name         TEXT NOT NULL UNIQUE,
+  hash         TEXT NOT NULL UNIQUE,
+  kinds        TEXT NOT NULL,
+  items        TEXT NOT NULL,
+  live         INTEGER NOT NULL DEFAULT 0,
+  created_at   INTEGER NOT NULL,
+  last_used_at INTEGER,
+  revoked_at   INTEGER
+);
+
 -- What each machine last said about the Library: its last sync's report, or that it takes
 -- no part, or that its agent predates the Library. Kept here because machines themselves
 -- are known only in memory, and a router restarted would otherwise know nothing of them.
@@ -744,6 +758,7 @@ mod tests {
                 "library_items",
                 "library_machines",
                 "library_sources",
+                "library_tokens",
                 "library_versions",
                 "library_versions_fixed",
                 "library_versions_one_live"

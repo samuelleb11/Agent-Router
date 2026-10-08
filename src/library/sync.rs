@@ -620,6 +620,26 @@ impl Router {
         Ok(())
     }
 
+    /// Publish a version from this machine (`agent-router library publish`), signed with the
+    /// machine's id and name and, when there is one, the Claude Code session that ran it.
+    /// The router's answer, `{ok, unchanged, version}`.
+    pub async fn publish(&self, bundle: &Bundle, machine: &str, label: &str, session: Option<&str>) -> Result<serde_json::Value> {
+        let mut headers = vec![
+            (header::HeaderName::from_static(super::api::MACHINE), machine.to_string()),
+            (header::HeaderName::from_static(super::api::LABEL), label.to_string()),
+            (header::CONTENT_TYPE, "application/x-tar".to_string()),
+        ];
+        if let Some(session) = session {
+            headers.push((header::HeaderName::from_static(super::api::SESSION), session.to_string()));
+        }
+        let path = format!("/api/library/items/{}/{}/versions", bundle.kind(), bundle.name());
+        let (status, _, body) = self.send(Method::POST, &path, headers, Bytes::from(bundle.pack())).await?;
+        if !status.is_success() {
+            bail!("{} refused it ({status}): {}", self.server, words(&body));
+        }
+        Ok(serde_json::from_slice(&body)?)
+    }
+
     pub async fn blob(&self, digest: &str) -> Result<Vec<u8>> {
         let (status, _, body) = self.get(&format!("/api/library/blobs/{digest}"), None).await?;
         if status != StatusCode::OK {

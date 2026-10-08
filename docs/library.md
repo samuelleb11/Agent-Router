@@ -197,6 +197,24 @@ Northstar's own skill would come in this way, from its repository's `plugin/skil
   Today the only credential is the router password, and handing that to a pipeline would
   hand over everything.
 
+**How it is built:**
+- **What the command sends.** `agent-router library publish <dir | file.md> [--kind …]
+  [--name …]` names the item:
+  - a directory is a skill named after the directory;
+  - a file is a command or a subagent, by the `commands/` or `agents/` directory it sits in.
+
+  It sends the canonical tar with `X-Agent-Router-Machine`, `X-Agent-Router-Label` and, from
+  a Claude Code session, `X-Claude-Code-Session`.
+- **Tokens.** A token is `arl_` and 40 hex characters. The guard looks a bearer with that
+  prefix up only on `POST /api/library/items/{kind}/{name}/versions`. Anywhere else it is a
+  wrong password, and the guard answers 401.
+- **Scope.** Named items, when any are given; otherwise kinds, when any are given; otherwise
+  anything. A publish outside the scope is a 403 naming both.
+- **Revoking** keeps the token's row, so what it published still names it. Its last use is
+  shown.
+- **Machine publishes** are one setting, `GET/PUT /api/library/settings`
+  `{machine_publishes: "approval" | "live"}`. It defaults to `approval`.
+
 ### The router's own skill
 
 `skills/agent-router/` in this repository is built into the binary. At start a hosted router
@@ -400,6 +418,7 @@ All routes need the password unless marked otherwise.
 | `GET/PUT/DELETE /api/library/forges[/{key}]`, `POST …/{key}/check` | Forges |
 | `GET/PUT/DELETE /api/library/sources[/{key}]`, `POST …/{key}/import`, `POST …/{key}/secret` | Sources, Import now, and a new webhook secret |
 | `GET/POST/DELETE /api/library/tokens[/{id}]` | Publish tokens |
+| `GET/PUT /api/library/settings` | Whether publishes from machines go live |
 | `GET /api/library/usage` | Use per item by day, machine and project, and the listing's cost |
 | `POST /hooks/library/{source}` | **Open**: the forge's webhook, proved by the source's secret |
 

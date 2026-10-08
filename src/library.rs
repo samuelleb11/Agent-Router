@@ -20,6 +20,7 @@ pub mod push;
 pub mod sources;
 pub mod store;
 pub mod sync;
+pub mod tokens;
 
 use std::fmt;
 

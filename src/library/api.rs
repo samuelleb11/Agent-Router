@@ -153,17 +153,52 @@ pub async fn file(
         .into_response())
 }
 
-/// `POST /api/library/items/{kind}/{name}/versions`: an upload from the console — a
-/// `.tar.gz`, a `.zip`, a `.tar` or one Markdown file (`Bundle::from_upload`). It goes live at
-/// once, and content that is the item's newest version already is made live rather than
-/// stored twice. A body over [`UPLOAD_MAX`] is refused before it is read whole.
+/// Who is publishing, which decides the version's provenance and whether it goes live.
+enum Publisher {
+    /// The console, with the password: live at once.
+    Console,
+    /// A connected machine, with the password it holds and its own id
+    /// (`agent-router library publish`): live only if the owner trusts machine publishes.
+    Machine { machine: String, label: Option<String>, session: Option<String> },
+    /// A publish token, within its scope: live as the token says.
+    Token(super::tokens::PublishToken),
+}
+
+/// The headers `agent-router library publish` names its machine and session with.
+pub const MACHINE: &str = "x-agent-router-machine";
+pub const LABEL: &str = "x-agent-router-label";
+pub const SESSION: &str = "x-claude-code-session";
+
+/// `POST /api/library/items/{kind}/{name}/versions`: publish a version — a `.tar.gz`, a
+/// `.zip`, a `.tar` or one Markdown file (`Bundle::from_upload`) — from the console, from a
+/// connected machine (`agent-router library publish`), or with a publish token, which the
+/// guard lets through on this route alone. A console upload goes live at once, and content
+/// that is the item's newest version already is made live rather than stored twice; a
+/// machine's or a token's goes live only as the owner trusts it. A body over [`UPLOAD_MAX`]
+/// is refused before it is read whole.
 pub async fn publish(
     State(state): State<Arc<AppState>>,
     Path((kind, name)): Path<(String, String)>,
+    token: Option<axum::Extension<super::tokens::PublishToken>>,
     headers: HeaderMap,
     body: Body,
 ) -> Answer {
     let kind = kind_of(&kind)?;
+    let text = |h: &str| headers.get(h).and_then(|v| v.to_str().ok()).map(str::trim).filter(|v| !v.is_empty()).map(str::to_string);
+    let publisher = match (token, text(MACHINE)) {
+        (Some(axum::Extension(token)), _) => {
+            if !token.allows(kind, &name) {
+                return Err(refuse(
+                    StatusCode::FORBIDDEN,
+                    format!("the token {} may publish {}, and not the {kind} {name}", token.name, token.scope()),
+                )
+                .into());
+            }
+            Publisher::Token(token)
+        }
+        (None, Some(machine)) => Publisher::Machine { machine, label: text(LABEL), session: text(SESSION) },
+        (None, None) => Publisher::Console,
+    };
     let declared = headers.get(header::CONTENT_LENGTH).and_then(|v| v.to_str().ok()?.parse::<u64>().ok());
     if declared.is_some_and(|n| n > UPLOAD_MAX as u64) {
         return Err(too_large());
@@ -177,21 +212,39 @@ pub async fn publish(
         }
     })?;
     let bundle = Bundle::from_upload(kind, &name, &upload).map_err(|why| Refusal::from(refuse(StatusCode::UNPROCESSABLE_ENTITY, why.0)))?;
+    let (provenance, live) = match &publisher {
+        Publisher::Console => (Provenance::Upload, true),
+        Publisher::Machine { machine, label, session } => (
+            Provenance::Machine { machine: machine.clone(), label: label.clone(), session: session.clone() },
+            super::tokens::machine_publishes_live(&state.config.db_path),
+        ),
+        Publisher::Token(token) => (Provenance::Token { token: token.name.clone() }, token.live),
+    };
+    let console = matches!(publisher, Publisher::Console);
+    let token_id = match &publisher {
+        Publisher::Token(token) => Some(token.id.clone()),
+        _ => None,
+    };
     let published = write(&state, move |conn| {
         let now = crate::db::now_ms();
-        Ok(match store::publish(conn, &bundle, &Provenance::Upload, true, now)? {
+        if let Some(id) = &token_id {
+            super::tokens::used(conn, id, now)?;
+        }
+        Ok(match store::publish(conn, &bundle, &provenance, live, now)? {
             Published::New(v) => Ok((true, v)),
-            Published::Unchanged(v) if v.state == Standing::Live => Ok((false, v)),
+            Published::Unchanged(v) if !console || v.state == Standing::Live => Ok((false, v)),
             Published::Unchanged(v) => {
-                let live = store::make_live(conn, kind, bundle.name(), v.number, now)?;
-                Ok((false, live.map_err(|unmade| anyhow::anyhow!("version {} did not go live: {unmade:?}", v.number))?))
+                let made = store::make_live(conn, kind, bundle.name(), v.number, now)?;
+                Ok((false, made.map_err(|unmade| anyhow::anyhow!("version {} did not go live: {unmade:?}", v.number))?))
             }
             Published::Refused(why) => Err(why),
         })
     })
     .await?;
     let (new, version) = published.map_err(|why| Refusal::from(refuse(StatusCode::CONFLICT, why)))?;
-    super::push::push(&state);
+    if version.state == Standing::Live {
+        super::push::push(&state);
+    }
     let status = if new { StatusCode::CREATED } else { StatusCode::OK };
     Ok((status, Json(json!({ "ok": true, "unchanged": !new, "version": version }))).into_response())
 }

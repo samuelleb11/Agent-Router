@@ -146,6 +146,9 @@ pub(crate) struct Connection {
     pub server: String,
     pub password: String,
     pub library: Option<bool>,
+    /// This machine's id and name, which a publish from here signs with.
+    pub machine: Option<String>,
+    pub label: String,
 }
 
 pub(crate) fn connection() -> Result<Connection> {
@@ -156,7 +159,8 @@ pub(crate) fn connection() -> Result<Connection> {
         .filter(|p| !p.is_empty())
         .or(saved.password)
         .ok_or_else(|| anyhow!("no password saved: run `agent-router agent install --server <url>` again"))?;
-    Ok(Connection { server, password, library: saved.library })
+    let label = saved.label.unwrap_or_else(host_name);
+    Ok(Connection { server, password, library: saved.library, machine: saved.machine, label })
 }
 
 fn saved_path() -> Result<PathBuf> {

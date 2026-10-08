@@ -179,7 +179,7 @@ fn same_authority(origin: &str, host: &str) -> bool {
 pub async fn layer(
     State(state): State<Arc<AppState>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    req: Request,
+    mut req: Request,
     next: Next,
 ) -> Response {
     if let Err(why) = check_peer(peer) {
@@ -204,6 +204,16 @@ pub async fn layer(
     let path = req.uri().path();
     let open = path == "/_router/health" || (state.config.server && crate::downloads::is_open(path));
     if asks && !open {
+        // A Library publish token, on the one route it may use and on a hosted router alone:
+        // publishing a version. Anywhere else it is no password (`library::tokens`).
+        let token = match state.config.server {
+            true => crate::library::tokens::presented(&state, req.method(), req.uri().path(), req.headers()).await,
+            false => None,
+        };
+        if let Some(token) = token {
+            req.extensions_mut().insert(token);
+            return next.run(req).await;
+        }
         match state.auth.check(req.headers()).await {
             Verdict::Ok => {}
             Verdict::NoPassword => {

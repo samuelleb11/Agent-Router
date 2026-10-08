@@ -82,6 +82,9 @@ pub fn routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
             put(crate::library::sources::put_source_api).delete(crate::library::sources::delete_source_api),
         )
         .route("/api/library/sources/{key}/import", post(crate::library::sources::import_now))
+        .route("/api/library/tokens", get(crate::library::tokens::list).post(crate::library::tokens::create))
+        .route("/api/library/tokens/{id}", axum::routing::delete(crate::library::tokens::revoke))
+        .route("/api/library/settings", get(crate::library::tokens::settings).put(crate::library::tokens::set_settings))
         .route("/api/library/items/{kind}/{name}", get(crate::library::api::item))
         .route("/api/library/items/{kind}/{name}/archive", post(crate::library::api::archive))
         .route("/api/library/items/{kind}/{name}/versions", post(crate::library::api::publish))
