@@ -30,7 +30,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::api::{read, write, Refusal};
+use super::api::{read, Refusal};
 use super::Kind;
 use crate::analyze::Block;
 use crate::proxy::AppState;
@@ -326,7 +326,7 @@ pub fn report(conn: &Connection, now: i64, tz: i64) -> Result<Report> {
         .map(|k| (k.clone(), Tally { daily: vec![0; DAYS as usize], machines: BTreeMap::new(), projects: BTreeMap::new() }))
         .collect();
     let mut stmt = conn.prepare(
-        "SELECT u.name, u.how, u.session_id, u.at, s.cwd FROM library_uses u
+        "SELECT u.name, u.how, u.session_id, u.at, s.project FROM library_uses u
            LEFT JOIN sessions s ON s.id = u.session_id
           WHERE u.at >= ?1 AND u.name IN (SELECT name FROM library_items)",
     )?;
@@ -376,29 +376,15 @@ pub fn report(conn: &Connection, now: i64, tz: i64) -> Result<Report> {
     Ok(Report { days, listing: listing(conn, &skills)?, items })
 }
 
-/// Where each session ran, as the machines listed them: session -> (machine, its label).
+/// Where each session ran, as the machines listed it (`places`): session -> (machine, its
+/// label).
 fn places(conn: &Connection) -> Result<HashMap<String, (String, Option<String>)>> {
-    let mut stmt = conn.prepare("SELECT session_id, machine, label FROM library_session_machines")?;
+    let mut stmt = conn.prepare(
+        "SELECT s.id, s.machine, m.label FROM sessions s LEFT JOIN machines m ON m.id = s.machine
+          WHERE s.machine IS NOT NULL AND s.machine <> ''",
+    )?;
     let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, (r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?))))?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
-}
-
-/// Keep where sessions ran, as the machines have listed them since the router started, so a
-/// use stays placed after a restart: the map behind it lives in memory.
-pub fn keep_places(conn: &Connection, placed: &[(String, String, Option<String>)], now: i64) -> Result<()> {
-    let tx = conn.unchecked_transaction()?;
-    {
-        let mut stmt = tx.prepare(
-            "INSERT INTO library_session_machines (session_id, machine, label, at_ms) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(session_id) DO UPDATE SET machine = excluded.machine, label = excluded.label, at_ms = excluded.at_ms
-              WHERE machine IS NOT excluded.machine OR label IS NOT excluded.label",
-        )?;
-        for (session, machine, label) in placed {
-            stmt.execute(params![session, machine, label, now])?;
-        }
-    }
-    tx.commit()?;
-    Ok(())
 }
 
 /// How Claude Code heads its skill listing, within a `<system-reminder>`.
@@ -483,10 +469,6 @@ pub struct Asked {
 /// `GET /api/library/usage`: every item's use over the last 30 days, by day, machine and
 /// project, and what the Library's skills add to every turn.
 pub async fn usage(State(state): State<Arc<AppState>>, Query(asked): Query<Asked>) -> Result<Response, Refusal> {
-    let placed = state.machines.places();
-    if !placed.is_empty() {
-        write(&state, move |conn| keep_places(conn, &placed, crate::db::now_ms())).await?;
-    }
     let tz = asked.tz.unwrap_or(0);
     let report = read(&state, move |conn| report(conn, crate::db::now_ms(), tz)).await?;
     Ok(Json(report).into_response())
@@ -563,12 +545,18 @@ mod tests {
             self.db.record(&ev).unwrap();
         }
 
-        /// A session's working directory, and the machine that listed it.
+        /// A session's working directory, and the machine that listed it, as its report says.
         fn place(&self, session: &str, cwd: &str, machine: &str, label: &str) {
             let conn = self.reader();
             conn.execute("INSERT INTO sessions (id, cwd, started_at, last_seen_at) VALUES (?1, ?2, ?3, ?3)", params![session, cwd, AT])
                 .unwrap();
-            keep_places(&conn, &[(session.into(), machine.into(), Some(label.into()))], AT).unwrap();
+            let report = crate::places::Report {
+                machine: machine.into(),
+                label: Some(label.into()),
+                sessions: vec![crate::places::Listed { session: session.into(), cwd: Some(cwd.into()) }],
+                ..Default::default()
+            };
+            crate::places::record(&conn, &report, AT).unwrap();
         }
 
         fn hold(&self, kind: Kind, name: &str, at: i64) {

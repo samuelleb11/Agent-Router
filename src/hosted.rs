@@ -62,6 +62,9 @@ pub fn routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
         .route("/api/live/aside", post(crate::machines::api::by_body))
         .route("/api/live/archive", post(crate::machines::api::archive))
         .route("/api/machines", get(crate::machines::api::machines))
+        // Where each machine's sessions run and the repositories its directories are
+        // checkouts of, reported by its agent every minute (`places`).
+        .route("/api/machines/places", post(crate::places::reported))
         .route(crate::tunnel::PATH, get(crate::machines::api::connect))
         // The Library: what the console reads and writes, and what every machine's agent
         // syncs from (`library::api`, docs/library.md).

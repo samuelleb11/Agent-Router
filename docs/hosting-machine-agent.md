@@ -180,12 +180,13 @@ answers it 404.
 
 | Route | Hosted router with agents |
 | --- | --- |
-| `GET /api/live/sessions` | Every connected agent's list, merged and filtered by the shelf. Each row gains `machine: {id, label}`. Old phones ignore the key. |
+| `GET /api/live/sessions` | Every connected agent's list, merged and filtered by the shelf. Each row gains `machine: {id, label}`, and carries `repository` from its agent where the session's directory has a git remote. Old phones ignore both keys. |
 | `GET /api/live/stream`, `/stats`, `/prompt` | Tunneled to the session's machine. A stream is relayed byte for byte. |
 | `POST /api/live/send`, `/interrupt`, `/answer`, `/model`, `/effort`, `/mode`, `/aside` | Tunneled to the session's machine. |
-| `GET /api/live/project` | Every agent's answer for that working directory, summed. |
+| `GET /api/live/project?project=<key>` | Every agent's answer for that project, summed: the sessions whose repository is the key, else whose directory is. One repository's clones and worktrees on every machine add up. |
 | `POST /api/live/archive` | On the router: the shelf. |
 | `GET /api/push/pending` | The waiting keys of connected agents, plus the announced keys of machines that are offline. |
+| `POST /api/machines/places` | Each agent's report, at every connection and every minute: the sessions it lists, the directory each is in, and each directory's git remotes, credentials taken out (`src/places.rs`). It places the sessions on that machine and gives each its repository, which is its project (`sessions.project`). `scripts/backfill-repositories.py` posts the same report for past sessions, by hand. |
 | `GET /api/machines` | New: every machine seen, with label, platform, build, online, and since when, and `library`: where its Library stands ([library.md](library.md#each-machines-state)). |
 | `POST /api/library/sync` | Tells every connected agent, or `{machine}`, to sync the Library now, through its tunnel. |
 

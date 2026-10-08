@@ -379,9 +379,10 @@ Every name an item could have is kept, so a name counts before its item joins. W
 counts against an item is decided when usage is read. A name that is not a Library item is
 not counted as one.
 
-**Machines.** A hosted router knows which machine ran a session only from the machines'
-session lists, which it holds in memory. Each read of usage keeps what it knows in
-`library_session_machines`, so a use stays placed after a restart. A session no machine has
+**Machines.** A session's machine is the one that listed it, which the store keeps in
+`sessions.machine`: every machine's agent reports the sessions it lists every minute
+(`src/places.rs`), so a use stays placed after a restart. A use's project is the session's
+project, its repository else its directory (`sessions.project`). A session no machine has
 listed counts under "a machine not known".
 
 **The listing's cost.** Every turn carries the list of skills with their descriptions.

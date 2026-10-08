@@ -58,6 +58,26 @@ CREATE TABLE IF NOT EXISTS sessions (
   label        TEXT
 );
 
+-- Where a machine has a checkout, and the repository its remotes name (`places`,
+-- `repository`). `machine` is '' for a local router's own machine; `remotes` is JSON
+-- [{name, url, repository}], every URL without its credentials.
+CREATE TABLE IF NOT EXISTS directories (
+  machine    TEXT NOT NULL,
+  cwd        TEXT NOT NULL,
+  remotes    TEXT NOT NULL,
+  repository TEXT,
+  changed_at INTEGER NOT NULL,
+  PRIMARY KEY (machine, cwd)
+);
+
+-- The machines that have reported their places, by the id their agent keeps.
+CREATE TABLE IF NOT EXISTS machines (
+  id           TEXT PRIMARY KEY,
+  label        TEXT,
+  platform     TEXT,
+  last_seen_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS requests (
   id                INTEGER PRIMARY KEY AUTOINCREMENT,
   request_id        TEXT UNIQUE,
@@ -362,6 +382,12 @@ impl Db {
         // Lightweight forward migration so an existing store upgrades in place.
         ensure_column(&conn, "requests", "agent_id", "TEXT")?;
         ensure_column(&conn, "requests", "account_email", "TEXT")?;
+        // The machine that listed a session and the repository it worked in (`places`), and
+        // the key every read takes a project by: its repository, else its directory.
+        ensure_column(&conn, "sessions", "machine", "TEXT")?;
+        ensure_column(&conn, "sessions", "repository", "TEXT")?;
+        ensure_column(&conn, "sessions", "project", "TEXT GENERATED ALWAYS AS (coalesce(repository, cwd)) VIRTUAL")?;
+        conn.execute_batch("CREATE INDEX IF NOT EXISTS sessions_project ON sessions(project)")?;
         // Every phone registered before there was a second push service was an iPhone,
         // which is exactly what the default backfills.
         ensure_column(&conn, "push_devices", "platform", "TEXT NOT NULL DEFAULT 'apns'")?;
@@ -836,8 +862,9 @@ fn site_key(session_id: &str, ordinal: i64, hash: &[u8; 32]) -> u64 {
 }
 
 /// Add a column if the table predates it. Cheap, idempotent, no migration table.
+/// `table_xinfo`, because `table_info` leaves out a generated column.
 fn ensure_column(conn: &Connection, table: &str, column: &str, ty: &str) -> Result<()> {
-    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let mut stmt = conn.prepare(&format!("PRAGMA table_xinfo({table})"))?;
     let existing: Vec<String> = stmt
         .query_map([], |row| row.get::<_, String>(1))?
         .collect::<std::result::Result<_, _>>()?;

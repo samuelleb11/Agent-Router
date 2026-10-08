@@ -28,14 +28,18 @@ pub struct Filter {
     /// Lower bound on `requests.started_at`, in ms since the epoch. A time range the
     /// dashboard applies to everything on the page at once.
     pub since: Option<i64>,
+    /// Upper bound on `requests.started_at`, exclusive, beside `since`: what a session cost
+    /// between two instants (Northstar's ADR 0028 asks it of the summary).
+    pub until: Option<i64>,
     /// The viewer's UTC offset in minutes (JavaScript's `-getTimezoneOffset()`), so
     /// day-sized timeline buckets start at the viewer's midnight rather than UTC's.
     pub tz: Option<i64>,
 }
 
-/// Whether the session joined as `s` is in the project bound as parameter `?n`.
-/// `(unresolved)` is the label the dashboard gives sessions with no project; no real
-/// working directory is spelt that way, so it selects them rather than nothing.
+/// Whether the session joined as `s` is in the project bound as parameter `?n`. A project
+/// is `s.project`: the repository the session worked in, else its working directory
+/// (`places`). `(unresolved)` is the label the dashboard gives sessions with no project; no
+/// repository or directory is spelt that way, so it selects them rather than nothing.
 ///
 /// The one project test: `SCOPE` is built from it, and so is every read that cannot take
 /// the whole of `SCOPE` because its other bounds are not a request's (tool results, search).
@@ -44,23 +48,24 @@ pub struct Filter {
 /// summary counted the sessions they should have shown.
 macro_rules! in_project {
     ($n:literal) => {
-        concat!("(?", $n, " IS NULL OR s.cwd = ?", $n, " OR (?", $n, " = '(unresolved)' AND s.cwd IS NULL))")
+        concat!("(?", $n, " IS NULL OR s.project = ?", $n, " OR (?", $n, " = '(unresolved)' AND s.project IS NULL))")
     };
 }
 
 /// The scope predicate every read shares. Requests are joined to their session as
 /// `s` (LEFT, so a request whose transcript has not appeared yet still counts) and
-/// the parameters are always bound in this order: project, session, since, account.
+/// the parameters are always bound in this order: project, session, since, account, until.
 const SCOPE: &str = concat!(
     in_project!(1),
     "
                      AND (?2 IS NULL OR r.session_id = ?2)
                      AND (?3 IS NULL OR r.started_at >= ?3)
-                     AND (?4 IS NULL OR r.account_id = ?4)"
+                     AND (?4 IS NULL OR r.account_id = ?4)
+                     AND (?5 IS NULL OR r.started_at < ?5)"
 );
 
-fn scope_params(f: &Filter) -> [&dyn rusqlite::ToSql; 4] {
-    [&f.project, &f.session, &f.since, &f.account]
+fn scope_params(f: &Filter) -> [&dyn rusqlite::ToSql; 5] {
+    [&f.project, &f.session, &f.since, &f.account, &f.until]
 }
 
 /// A percentile of a request column within the scope, by ORDER BY + OFFSET. SQLite
@@ -249,8 +254,8 @@ impl Memo {
 /// Everything that changes an answer, and nothing that does not.
 fn memo_key(name: &str, f: &Filter) -> String {
     format!(
-        "{name}|{:?}|{:?}|{:?}|{:?}|{:?}",
-        f.project, f.session, f.since, f.account, f.tz
+        "{name}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
+        f.project, f.session, f.since, f.account, f.tz, f.until
     )
 }
 
@@ -327,7 +332,7 @@ fn summary_of(conn: &Connection, f: &Filter) -> anyhow::Result<Value> {
                     coalesce(sum(CASE WHEN r.status >= 400 OR r.error IS NOT NULL THEN 1 ELSE 0 END),0) AS errors,
                     coalesce(sum(CASE WHEN coalesce(r.is_sidechain,0) = 1 THEN 1 ELSE 0 END),0) AS subagent_requests,
                     count(DISTINCT r.session_id) AS sessions,
-                    count(DISTINCT s.cwd) AS projects,
+                    count(DISTINCT s.project) AS projects,
                     min(r.started_at) AS first_seen,
                     max(r.started_at) AS last_seen,
                     coalesce(sum(CASE WHEN s.id IS NULL THEN 1 ELSE 0 END),0) AS unattributed
@@ -453,8 +458,9 @@ fn summary_of(conn: &Connection, f: &Filter) -> anyhow::Result<Value> {
          LEFT JOIN request_cost c ON c.request_id = r.id
          LEFT JOIN accounts a ON a.id = r.account_id
          WHERE (?1 IS NULL OR r.started_at >= ?1)
+           AND (?2 IS NULL OR r.started_at < ?2)
          GROUP BY r.account_id ORDER BY prompt_tokens DESC",
-        &[&f.since],
+        &[&f.since, &f.until],
     )?;
     let stop_reasons = rows(
         conn,
@@ -496,12 +502,16 @@ fn summary_of(conn: &Connection, f: &Filter) -> anyhow::Result<Value> {
     let range = match (lo, hi) {
         (Some(lo), Some(hi)) => {
             let start = f.since.map_or(lo, |s| s.min(lo));
-            let end = if f.since.is_some() { now.max(hi) } else { hi };
+            let end = match f.until {
+                Some(until) => until.max(start.saturating_add(1)),
+                None if f.since.is_some() => now.max(hi),
+                None => hi,
+            };
             Some((start, end))
         }
         // No requests in the window: still hand back the window, so the chart can
         // show an empty range rather than nothing at all.
-        _ => f.since.map(|s| (s, now.max(s.saturating_add(1)))),
+        _ => f.since.map(|s| (s, f.until.unwrap_or(now).max(s.saturating_add(1)))),
     };
     let (timeline, quota_history, bucket) = match range {
         Some((start, end)) => {
@@ -509,7 +519,7 @@ fn summary_of(conn: &Connection, f: &Filter) -> anyhow::Result<Value> {
             let timeline = rows(
                 conn,
                 &format!(
-                    "SELECT ((r.started_at + ?5) / ?6) * ?6 - ?5 AS t, r.model,
+                    "SELECT ((r.started_at + ?6) / ?7) * ?7 - ?6 AS t, r.model,
                             count(*) AS requests,
                             coalesce(sum(u.prompt_tokens),0) AS prompt_tokens,
                     coalesce(sum(c.cost),0) AS cost,
@@ -524,7 +534,7 @@ fn summary_of(conn: &Connection, f: &Filter) -> anyhow::Result<Value> {
                      WHERE {SCOPE}
                      GROUP BY t, r.model ORDER BY t, r.model"
                 ),
-                &[&f.project, &f.session, &f.since, &f.account, &tz_ms, &bucket],
+                &[&f.project, &f.session, &f.since, &f.account, &f.until, &tz_ms, &bucket],
             )?;
             // Quota history is the active account's, over the same buckets so the
             // two charts share an axis. The worst reading in a bucket is the one
@@ -566,9 +576,18 @@ pub async fn projects(State(state): State<Arc<AppState>>, Query(f): Query<Filter
 
 fn projects_inner(state: &AppState, f: &Filter) -> anyhow::Result<Value> {
     let conn = open(state)?;
-    Ok(rows(
-        &conn,
-        "SELECT s.cwd AS project,
+    projects_of(&conn, f)
+}
+
+/// Every project, with what it spent in the range and where it ran: each directory its
+/// sessions started in, the machine that listed them, and the directory's git remotes. A
+/// project is its repository on every machine, else a directory (`places`), and Northstar
+/// binds its own projects to these by those remotes (its ADR 0028).
+fn projects_of(conn: &Connection, f: &Filter) -> anyhow::Result<Value> {
+    let mut projects = rows(
+        conn,
+        "SELECT s.project AS project,
+                max(s.repository)    AS repository,
                 count(DISTINCT s.id) AS sessions,
                 count(*)             AS requests,
                 coalesce(sum(u.prompt_tokens),0) AS prompt_tokens,
@@ -586,9 +605,44 @@ fn projects_inner(state: &AppState, f: &Filter) -> anyhow::Result<Value> {
          JOIN sessions s   ON s.id = r.session_id
          WHERE (?1 IS NULL OR r.started_at >= ?1)
            AND (?2 IS NULL OR r.account_id = ?2)
-         GROUP BY s.cwd ORDER BY prompt_tokens DESC",
-        &[&f.since, &f.account],
-    )?)
+           AND (?3 IS NULL OR r.started_at < ?3)
+         GROUP BY s.project ORDER BY prompt_tokens DESC",
+        &[&f.since, &f.account, &f.until],
+    )?;
+
+    // Where each project ran. A directory no machine has listed is named once, and only
+    // where no machine has listed it either: it is the same directory, placed or not yet.
+    let mut stmt = conn.prepare_cached(
+        "SELECT DISTINCT s.project, s.cwd, s.machine, m.label, d.remotes
+           FROM sessions s
+           LEFT JOIN directories d ON d.machine = s.machine AND d.cwd = s.cwd
+           LEFT JOIN machines m ON m.id = s.machine
+          WHERE s.cwd IS NOT NULL
+          ORDER BY s.project, m.label, s.cwd",
+    )?;
+    type Place = (Option<String>, String, Option<String>, Option<String>, Option<String>);
+    let places: Vec<Place> =
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?.collect::<Result<_, _>>()?;
+    let mut by_project: std::collections::HashMap<Option<String>, Vec<Value>> = Default::default();
+    for (project, cwd, machine, label, remotes) in &places {
+        let placed = |m: &Option<String>| m.as_deref().is_some_and(|m| !m.is_empty());
+        if !placed(machine) && places.iter().any(|(p, c, m, _, _)| p == project && c == cwd && placed(m)) {
+            continue;
+        }
+        let machine = match machine.as_deref().filter(|m| !m.is_empty()) {
+            Some(id) => json!({ "id": id, "label": label }),
+            None => Value::Null,
+        };
+        let remotes = remotes.as_deref().and_then(|r| serde_json::from_str::<Value>(r).ok()).unwrap_or_else(|| json!([]));
+        by_project.entry(project.clone()).or_default().push(json!({ "cwd": cwd, "machine": machine, "remotes": remotes }));
+    }
+    if let Value::Array(list) = &mut projects {
+        for p in list.iter_mut() {
+            let key = p.get("project").and_then(Value::as_str).map(str::to_owned);
+            p["directories"] = Value::Array(by_project.remove(&key).unwrap_or_default());
+        }
+    }
+    Ok(projects)
 }
 
 /// The session navigator: narrowed by project and time range, never by session.
@@ -611,8 +665,8 @@ fn sessions_inner(state: &AppState, f: &Filter) -> anyhow::Result<Value> {
 /// a session is picked, so that place in the scope is bound empty.
 fn sessions_of(conn: &Connection, f: &Filter) -> anyhow::Result<Value> {
     let sql = format!(
-        "SELECT s.id, s.cwd AS project, s.git_branch, s.entrypoint,
-                s.started_at, s.last_seen_at,
+        "SELECT s.id, s.project, s.cwd, s.repository, s.machine AS machine_id, m.label AS machine_label,
+                s.git_branch, s.entrypoint, s.started_at, s.last_seen_at,
                 count(*) AS requests,
                 coalesce(sum(u.prompt_tokens),0) AS prompt_tokens,
                 coalesce(sum(c.cost),0) AS cost,
@@ -628,11 +682,25 @@ fn sessions_of(conn: &Connection, f: &Filter) -> anyhow::Result<Value> {
          LEFT JOIN usage u    ON u.request_id = r.id
          LEFT JOIN request_cost c ON c.request_id = r.id
          JOIN sessions s   ON s.id = r.session_id
+         LEFT JOIN machines m ON m.id = s.machine
          WHERE {SCOPE}
          GROUP BY s.id ORDER BY s.last_seen_at DESC LIMIT 200"
     );
     let every_session: Option<String> = None;
-    rows(conn, &sql, &[&f.project, &every_session, &f.since, &f.account])
+    let mut listed = rows(conn, &sql, &[&f.project, &every_session, &f.since, &f.account, &f.until])?;
+    // The machine that listed it, as the live rows name one: absent on a local router.
+    if let Value::Array(list) = &mut listed {
+        for row in list.iter_mut().filter_map(Value::as_object_mut) {
+            let id = row.remove("machine_id");
+            let label = row.remove("machine_label").unwrap_or(Value::Null);
+            let machine = match id {
+                Some(Value::String(id)) if !id.is_empty() => json!({ "id": id, "label": label }),
+                _ => Value::Null,
+            };
+            row.insert("machine".into(), machine);
+        }
+    }
+    Ok(listed)
 }
 
 /// What to look for, and where. Separate from `Filter` because none of the page-wide
@@ -706,7 +774,7 @@ fn hits_for(
     let sql = format!(
         "SELECT b.id AS block_id, b.kind, b.chars,
                 st.session_id, st.role, st.ordinal, st.request_id, st.at,
-                s.cwd AS project, s.label AS session_label,
+                s.project AS project, s.label AS session_label,
                 snippet(blocks_fts, 0, '\u{2039}', '\u{203a}', ' \u{2026} ', 18) AS snippet,
                 bm25(blocks_fts) AS rank
          FROM bodies_db.blocks_fts
@@ -727,7 +795,7 @@ fn hits_for(
 /// The same matches rolled up per session — "which conversations talk about this".
 fn sessions_for(conn: &Connection, expr: &str, f: &SearchQuery) -> anyhow::Result<Value> {
     let sql = format!(
-        "SELECT st.session_id, s.cwd AS project, s.label AS session_label,
+        "SELECT st.session_id, s.project AS project, s.label AS session_label,
                 s.git_branch, s.started_at,
                 count(DISTINCT b.id) AS blocks,
                 count(*) AS hits,
@@ -768,8 +836,13 @@ pub async fn requests(State(state): State<Arc<AppState>>, Query(f): Query<Filter
 
 fn requests_inner(state: &AppState, f: &Filter) -> anyhow::Result<Value> {
     let conn = open(state)?;
+    requests_of(&conn, f)
+}
+
+/// The 300 most recent requests in scope, from whichever connection it is handed.
+fn requests_of(conn: &Connection, f: &Filter) -> anyhow::Result<Value> {
     let sql = format!(
-        "SELECT r.id, r.request_id, r.session_id, s.cwd AS project, r.model, r.status,
+        "SELECT r.id, r.request_id, r.session_id, s.project AS project, r.model, r.status,
                 r.ttfb_ms, r.duration_ms, r.stop_reason, r.is_sidechain, r.agent_id,
                 r.started_at, substr(r.error, 1, 200) AS error,
                 u.prompt_tokens, u.input_tokens, u.output_tokens, u.thinking_tokens,
@@ -788,7 +861,7 @@ fn requests_inner(state: &AppState, f: &Filter) -> anyhow::Result<Value> {
          WHERE {SCOPE}
          ORDER BY r.started_at DESC LIMIT 300"
     );
-    Ok(rows(&conn, &sql, &scope_params(f))?)
+    Ok(rows(conn, &sql, &scope_params(f))?)
 }
 
 pub async fn tools(State(state): State<Arc<AppState>>, Query(f): Query<Filter>) -> ApiResult {
@@ -828,6 +901,7 @@ fn tools_of(conn: &Connection, f: &Filter) -> anyhow::Result<Value> {
                AND (?2 IS NULL OR tc.session_id = ?2)
                AND (?3 IS NULL OR tc.seen_at >= ?3)
                AND (?4 IS NULL OR r.account_id = ?4)
+               AND (?5 IS NULL OR tc.seen_at < ?5)
              GROUP BY tc.name ORDER BY est_tokens DESC",
             project = in_project!(1),
         ),
@@ -1761,8 +1835,156 @@ mod tests {
             session: session.map(str::to_owned),
             account: account.map(str::to_owned),
             since,
+            until: None,
             tz: None,
         }
+    }
+
+    /// How many requests the request list shows in a scope.
+    fn requests_of_scope(conn: &Connection, f: &Filter) -> usize {
+        requests_of(conn, f).unwrap().as_array().unwrap().len()
+    }
+
+    /// One session and its requests, one a second apart from `at`.
+    fn seed(store: &Store, id: &str, cwd: &str, at: i64, requests: i64) {
+        store
+            .conn
+            .execute(
+                "INSERT INTO sessions (id, cwd, started_at, last_seen_at) VALUES (?1, ?2, ?3, ?3)",
+                params![id, cwd, at],
+            )
+            .unwrap();
+        for n in 0..requests {
+            store
+                .conn
+                .execute(
+                    "INSERT INTO requests (request_id, session_id, account_id, method, path, started_at)
+                     VALUES (?1, ?2, 'work', 'POST', '/v1/messages', ?3)",
+                    params![format!("{id}-{n}"), id, at + n * 1_000],
+                )
+                .unwrap();
+        }
+    }
+
+    /// A clone on a Mac and a worktree on a Linux host are one project, its key the
+    /// repository: one row of the project list, carrying each directory with the machine that
+    /// listed it and its remotes, and the key every scoped read takes. A session no machine
+    /// has listed keeps its directory, and a directory with no remote is its own project.
+    #[test]
+    fn one_repository_on_two_machines_is_one_project() {
+        use crate::places::{record, Directory, Listed, Report};
+        use crate::repository::Remote;
+        const T0: i64 = 1_700_000_000_000;
+        let store = store("repository");
+        seed(&store, "mac-1", "/Volumes/x/ui-kit-web", T0, 3);
+        seed(&store, "lin-1", "/home/u/ui-kit-web-lane-2", T0 + 10_000, 2);
+        seed(&store, "lin-2", "/home/u/scratch", T0 + 20_000, 1);
+        seed(&store, "old", "/Volumes/x/ui-kit-web", T0 - 100_000, 1);
+        let origin = |url: &str| vec![Remote { name: "origin".into(), url: url.into() }];
+        let report = |machine: &str, label: &str, listed: &[(&str, &str)], dirs: Vec<Directory>| Report {
+            machine: machine.into(),
+            label: Some(label.into()),
+            platform: None,
+            sessions: listed.iter().map(|(s, c)| Listed { session: (*s).into(), cwd: Some((*c).into()) }).collect(),
+            directories: dirs,
+        };
+        record(
+            &store.conn,
+            &report("mac", "SYSOPs-Mac-mini", &[("mac-1", "/Volumes/x/ui-kit-web")], vec![Directory {
+                cwd: "/Volumes/x/ui-kit-web".into(),
+                remotes: origin("https://gitlab.example.com/acme/ui-kit-web.git"),
+            }]),
+            T0,
+        )
+        .unwrap();
+        record(
+            &store.conn,
+            &report(
+                "lin",
+                "wh-vdesk03",
+                &[("lin-1", "/home/u/ui-kit-web-lane-2"), ("lin-2", "/home/u/scratch")],
+                vec![
+                    Directory { cwd: "/home/u/ui-kit-web-lane-2".into(), remotes: origin("git@gitlab.example.com:acme/ui-kit-web.git") },
+                    Directory { cwd: "/home/u/scratch".into(), remotes: vec![] },
+                ],
+            ),
+            T0,
+        )
+        .unwrap();
+
+        let conn = store.reads.get().unwrap();
+        let everything = scope(None, None, None, None);
+        let projects = projects_of(&conn, &everything).unwrap();
+        let project = |key: &str| projects.as_array().unwrap().iter().find(|p| p["project"] == key).cloned().unwrap();
+        let repo = "gitlab.example.com/acme/ui-kit-web";
+        let one = project(repo);
+        assert_eq!(one["repository"], repo);
+        assert_eq!(one["sessions"], 2, "the clone and the worktree");
+        assert_eq!(one["requests"], 5);
+        let places: Vec<(String, String, String)> = one["directories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| {
+                (d["machine"]["label"].as_str().unwrap().into(), d["cwd"].as_str().unwrap().into(), d["remotes"][0]["repository"].as_str().unwrap().into())
+            })
+            .collect();
+        assert_eq!(
+            places,
+            [
+                ("SYSOPs-Mac-mini".to_string(), "/Volumes/x/ui-kit-web".to_string(), repo.to_string()),
+                ("wh-vdesk03".to_string(), "/home/u/ui-kit-web-lane-2".to_string(), repo.to_string()),
+            ]
+        );
+        assert_eq!(project("/home/u/scratch")["repository"], Value::Null, "no remote: the directory is the project");
+        let unplaced = project("/Volumes/x/ui-kit-web");
+        assert_eq!(unplaced["sessions"], 1, "a session no machine listed keeps its directory");
+        assert_eq!(unplaced["directories"][0]["machine"], Value::Null);
+
+        let mine = scope(Some(repo), None, None, None);
+        assert_eq!(summary_of(&conn, &mine).unwrap()["totals"]["requests"], 5);
+        assert_eq!(summary_of(&conn, &everything).unwrap()["totals"]["projects"], 3);
+        let listed = sessions_of(&conn, &mine).unwrap();
+        let mut names: Vec<(String, String, String)> = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| (s["id"].as_str().unwrap().into(), s["cwd"].as_str().unwrap().into(), s["machine"]["label"].as_str().unwrap().into()))
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            [
+                ("lin-1".to_string(), "/home/u/ui-kit-web-lane-2".to_string(), "wh-vdesk03".to_string()),
+                ("mac-1".to_string(), "/Volumes/x/ui-kit-web".to_string(), "SYSOPs-Mac-mini".to_string()),
+            ]
+        );
+        assert!(listed.as_array().unwrap().iter().all(|s| s["project"] == repo && s["repository"] == repo));
+        let requests = requests_of_scope(&conn, &mine);
+        assert_eq!(requests, 5);
+        assert!(tools_of(&conn, &mine).is_ok());
+    }
+
+    /// `until` bounds what `since` begins: the summary and every read that takes the scope.
+    #[test]
+    fn until_bounds_every_scoped_read() {
+        const T0: i64 = 1_700_000_000_000;
+        let store = store("until");
+        seed(&store, "early", "/code/a", T0, 2);
+        seed(&store, "late", "/code/a", T0 + 100_000, 3);
+        let conn = store.reads.get().unwrap();
+        let mut window = scope(None, None, None, Some(T0));
+        window.until = Some(T0 + 100_000);
+        let summary = summary_of(&conn, &window).unwrap();
+        assert_eq!(summary["totals"]["requests"], 2, "the late session's requests are past the bound");
+        assert_eq!(summary["timeline"]["end"], T0 + 100_000, "and the timeline ends there");
+        let listed = sessions_of(&conn, &window).unwrap();
+        assert_eq!(listed.as_array().unwrap().iter().map(|s| s["id"].as_str().unwrap()).collect::<Vec<_>>(), ["early"]);
+        assert_eq!(projects_of(&conn, &window).unwrap()[0]["requests"], 2);
+        assert_eq!(requests_of_scope(&conn, &window), 2);
+        assert!(tools_of(&conn, &window).is_ok());
+        window.until = None;
+        assert_eq!(summary_of(&conn, &window).unwrap()["totals"]["requests"], 5);
     }
 
     /// The dashboard's "not yet attributed" row used to be the total less the rows of the

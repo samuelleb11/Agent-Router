@@ -398,19 +398,6 @@ impl Machines {
         locked(&self.online).get(id).cloned()
     }
 
-    /// Where each session listed so far ran: (session, machine, the machine's label).
-    pub fn places(&self) -> Vec<(String, String, Option<String>)> {
-        let sessions = locked(&self.sessions).clone();
-        let seen = locked(&self.seen);
-        sessions
-            .into_iter()
-            .map(|(session, machine)| {
-                let label = seen.get(&machine).map(|s| s.label.clone());
-                (session, machine, label)
-            })
-            .collect()
-    }
-
     /// Every machine seen since the router started, connected ones first.
     pub fn seen(&self) -> Vec<Seen> {
         let mut all: Vec<Seen> = locked(&self.seen).values().cloned().collect();

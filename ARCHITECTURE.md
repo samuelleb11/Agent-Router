@@ -22,7 +22,7 @@ the `Authorization` header.
 | Interception | **One endpoint**, `http://127.0.0.1:8787` | Every project points at the same URL. No path prefixes, no per-project routing, no CA cert, no MITM |
 | Opt-in | Per project, via `.claude/settings.local.json` | A project routes through the router only if it carries the file. Nothing global in `~/.claude` |
 | Identity | **`x-claude-code-session-id` request header** | Claude Code labels every request with its session UUID. Exact, synchronous, no inference and no CLI wrapper |
-| Project | Session UUID → `~/.claude/projects/<cwd-slug>/<uuid>.jsonl` | A filename lookup resolves session to working directory. No content parsing |
+| Project | The repository the session's directory is a checkout of, else the directory | One repository is one project on every machine and in every worktree: its `origin` remote, spelt as Northstar's ADR 0028 spells it (`src/repository.rs`), read by the machine itself (`src/places.rs`) |
 | Control surface | **Web UI only** | Accounts, login, the active-account switch and config are managed in the browser. No CLI beyond `agent-router serve` |
 | Credentials | Claude Code's own login flows; tokens in the macOS Keychain | Measured: `claude setup-token` and `claude auth login` emit nothing headlessly, even given a pty — they need a real terminal. So the router orchestrates around that one command rather than reimplementing an OAuth client against Anthropic's endpoints |
 | Account switch | Cached credential, dropped on switch | Takes effect on the next request, mid-session, with nothing restarted |
@@ -60,9 +60,16 @@ So the proxy alone knows: the session, the account it served with, latency, stat
 rate-limit headers, errors, the entrypoint (VSCode vs CLI), and the exact usage in the SSE
 stream. Session attribution needs no correlation at all.
 
-**Project** comes from one filename lookup: the session UUID names a file under
-`~/.claude/projects/<cwd-slug>/<uuid>.jsonl`, and its directory is the working directory.
-Resolved once per session and cached.
+**Project** is the repository a session works in, else its working directory
+(`sessions.project`). The working directory comes from the transcript where there is one
+(the session UUID names `~/.claude/projects/<cwd-slug>/<uuid>.jsonl`), else from the
+environment the request itself carries. The repository is read on the machine the checkout
+is on: every minute a machine reports the sessions it lists, their directories and each
+directory's git remotes (`src/places.rs`; on a hosted router the machine agent posts it to
+`/api/machines/places`). A repository is spelt one way, as Northstar's ADR 0028 spells it:
+the host lowercased, then the path, without scheme, user, port, `.git` or trailing slashes
+(`src/repository.rs`). A clone on one machine, a clone on another and the worktrees beside
+either are then one project.
 
 Subagent traffic is separable from the wire too: Claude Code stamps `x-claude-code-agent-id`
 on Task-tool requests and omits it on the main thread. Measured on a single ordinary turn, a
@@ -203,7 +210,10 @@ cascade from `requests` no longer reaches them.
 ```
 accounts   (id, label, subject, expires_at, active, created_at)   -- tokens live in Keychain
 projects   (cwd, label, first_seen_at)                            -- discovered, not configured
-sessions   (id, cwd, git_branch, started_at, last_seen_at, label)
+sessions   (id, cwd, git_branch, started_at, last_seen_at, label,
+            machine, repository, project = coalesce(repository, cwd))
+directories (machine, cwd, remotes, repository, changed_at)       -- reported by each machine
+machines   (id, label, platform, last_seen_at)
 requests   (id, request_id, message_id, session_id, account_id, model, path,
             started_at, ended_at, status, latency_ms, streaming, stop_reason,
             is_sidechain, service_tier, error, rate_limit_remaining)

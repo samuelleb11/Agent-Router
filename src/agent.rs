@@ -546,6 +546,21 @@ async fn run(args: RunArgs) -> Result<()> {
         }));
     }
 
+    // Where this machine's sessions run, and the repositories its directories are checkouts
+    // of, at every connection and every minute between (`places`).
+    {
+        let router = Arc::new(crate::library::sync::Router::new(&server, &password)?);
+        let (machine, label) = (hello.machine.clone(), hello.label.clone());
+        tokio::spawn(crate::library::sync::keep_in_step(connected.subscribe(), crate::places::EVERY, move || {
+            let (router, machine, label) = (router.clone(), machine.clone(), label.clone());
+            async move {
+                if let Err(e) = crate::places::send(&router, &machine, &label).await {
+                    tracing::warn!("this machine's places could not be reported: {e:#}");
+                }
+            }
+        }));
+    }
+
     let router = routes(library);
     let mut backoff = Duration::from_secs(1);
     loop {

@@ -539,8 +539,8 @@ pub async fn run_once(places: Places, router: Arc<Router>, library: Option<bool>
     Ok(Some(report))
 }
 
-/// The hosted router, as the agent reaches it for the Library: over HTTPS with the password
-/// it already holds, apart from the tunnel.
+/// The hosted router, as the agent reaches it for the Library and for its places (`places`):
+/// over HTTPS with the password it already holds, apart from the tunnel.
 pub struct Router {
     server: String,
     auth: HeaderValue,
@@ -566,7 +566,7 @@ impl Router {
         self.send(Method::GET, path, headers, Bytes::new()).await
     }
 
-    async fn send(
+    pub(crate) async fn send(
         &self,
         method: Method,
         path: &str,

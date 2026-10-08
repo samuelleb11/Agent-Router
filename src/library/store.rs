@@ -149,14 +149,8 @@ CREATE TABLE IF NOT EXISTS library_uses (
 );
 CREATE INDEX IF NOT EXISTS library_uses_name ON library_uses(name, at);
 
--- Which machine each session ran on, as the machines listed them. The router holds that in
--- memory; kept here, a use stays placed after a restart.
-CREATE TABLE IF NOT EXISTS library_session_machines (
-  session_id TEXT PRIMARY KEY,
-  machine    TEXT NOT NULL,
-  label      TEXT,
-  at_ms      INTEGER NOT NULL
-);
+-- Which machine each session ran on is the store's own now (`sessions.machine`, `places`).
+DROP TABLE IF EXISTS library_session_machines;
 "#;
 
 /// A connection that may write: one of its own, waiting on other writers as the store's do.
@@ -793,7 +787,6 @@ mod tests {
                 "library_hook_deliveries",
                 "library_items",
                 "library_machines",
-                "library_session_machines",
                 "library_sources",
                 "library_tokens",
                 "library_uses",

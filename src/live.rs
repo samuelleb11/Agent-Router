@@ -173,6 +173,11 @@ pub struct LiveSession {
     pub cwd: Option<String>,
     pub project: String,
     pub git_branch: Option<String>,
+    /// The repository the session's directory is a checkout of, spelt as Northstar spells it
+    /// (`repository`): its project, the same on every machine. Absent when the directory has
+    /// no remote, which leaves the directory as its project.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repository: Option<String>,
     /// Claude Code's own name for the session, falling back to what was first asked.
     pub title: Option<String>,
     /// When the session began. Ordering by this keeps a list of sessions still: order
@@ -328,6 +333,7 @@ fn list_row(
         cwd: o.seen.head.cwd.clone(),
         project,
         git_branch: o.seen.head.git_branch.clone(),
+        repository: o.seen.head.cwd.as_deref().and_then(|cwd| crate::repository::key_of(&crate::repository::remotes_cached(cwd))),
         title: o.seen.fold.title.clone().or_else(|| o.seen.head.title.clone()),
         created_ms: o.seen.head.created_ms,
         last_activity_ms: last,
@@ -1421,70 +1427,81 @@ fn db_path() -> PathBuf {
 
 #[derive(Deserialize)]
 pub struct ProjectQuery {
-    /// The working directory the sessions share.
-    pub cwd: String,
+    /// The project's key: the repository its sessions work in, else their directory
+    /// (`project_of`).
+    pub project: String,
 }
 
-/// Everything a project has spent, summed over the sessions on screen.
+/// A listed session's project: the repository its directory is a checkout of, else the
+/// directory. The key the router's own reads take a project by (`sessions.project`).
+pub fn project_of(s: &LiveSession) -> Option<&str> {
+    s.repository.as_deref().or(s.cwd.as_deref())
+}
+
+/// Everything a project has spent, summed over the sessions on screen: on this machine, and
+/// on a hosted router over every machine's (`machines::api::project`), so one repository's
+/// clones and worktrees add up wherever they are.
 ///
 /// Archived and long-dead sessions are left out deliberately: the number is meant to
 /// answer "what is this project costing me now", and a year of finished sessions
 /// answers a different question.
 pub async fn project_stats(Query(q): Query<ProjectQuery>) -> Response {
-    let cwd = q.cwd.clone();
     let out = tokio::task::spawn_blocking(move || {
-        let archived = archived_set();
-        let mut total = Stats::default();
-        let mut spend = 0.0f64;
-        let mut sessions = 0i64;
-        let mut models: std::collections::BTreeSet<String> = Default::default();
-
-        for s in discover() {
-            if s.cwd.as_deref() != Some(cwd.as_str()) {
-                continue;
-            }
-            if is_shelved(&archived, &s.session_id, s.last_activity_ms) {
-                continue;
-            }
-            let Some(path) = transcript_path(&s.session_id) else {
-                continue;
-            };
-            let st = scan_stats(&path);
-            if let Some(m) = st.model.clone() {
-                models.insert(m);
-            }
-            total.input += st.input;
-            total.output += st.output;
-            total.cache_read += st.cache_read;
-            total.cache_write += st.cache_write;
-            total.cache_write_5m += st.cache_write_5m;
-            total.cache_write_1h += st.cache_write_1h;
-            total.turns += st.turns;
-            // Summed per session rather than over the total, because a project can mix
-            // models and each session's tokens must meet its own rates.
-            if let Some(c) = st.cost {
-                spend += c;
-            }
-            sessions += 1;
-        }
-        total.total = total.input + total.output + total.cache_read + total.cache_write;
-        (total, spend, sessions, models.into_iter().collect::<Vec<_>>())
+        let reg = crate::registry::snapshot();
+        project_stats_in(&Roots::system(), &reg, &archived_set(), &q.project, now_ms())
     })
     .await;
-
     match out {
-        Ok((total, spend, sessions, models)) => Json(serde_json::json!({
-            "sessions": sessions,
-            "models": models,
-            "total": total.total,
-            "output": total.output,
-            "cache_read": total.cache_read,
-            "turns": total.turns,
-            "cost": spend,
-        }))
-        .into_response(),
+        Ok(totals) => Json(totals).into_response(),
         Err(e) => bad(axum::http::StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
     }
+}
+
+/// `project_stats` over the sessions these roots list.
+fn project_stats_in(roots: &Roots, reg: &Snapshot, archived: &HashMap<String, i64>, project: &str, now: i64) -> Value {
+    let mut total = Stats::default();
+    let mut spend = 0.0f64;
+    let mut sessions = 0i64;
+    let mut models: std::collections::BTreeSet<String> = Default::default();
+
+    for s in discover_in(roots, reg, archived, now) {
+        if project_of(&s) != Some(project) {
+            continue;
+        }
+        if is_shelved(archived, &s.session_id, s.last_activity_ms) {
+            continue;
+        }
+        let Some(path) = transcript_path_in(&roots.projects, &s.session_id) else {
+            continue;
+        };
+        let st = scan_stats(&path);
+        if let Some(m) = st.model.clone() {
+            models.insert(m);
+        }
+        total.input += st.input;
+        total.output += st.output;
+        total.cache_read += st.cache_read;
+        total.cache_write += st.cache_write;
+        total.cache_write_5m += st.cache_write_5m;
+        total.cache_write_1h += st.cache_write_1h;
+        total.turns += st.turns;
+        // Summed per session rather than over the total, because a project can mix
+        // models and each session's tokens must meet its own rates.
+        if let Some(c) = st.cost {
+            spend += c;
+        }
+        sessions += 1;
+    }
+    total.total = total.input + total.output + total.cache_read + total.cache_write;
+    serde_json::json!({
+        "sessions": sessions,
+        "models": models.into_iter().collect::<Vec<_>>(),
+        "total": total.total,
+        "output": total.output,
+        "cache_read": total.cache_read,
+        "turns": total.turns,
+        "cost": spend,
+    })
 }
 
 #[derive(Deserialize)]
@@ -3024,6 +3041,69 @@ mod tests {
         for r in &rows {
             assert_legacy_row(&serde_json::to_value(r).unwrap());
         }
+    }
+
+    /// A git checkout under the lab, its remotes as given: a clone, a worktree beside it, or
+    /// a directory that is no checkout at all when there are none.
+    fn checkout(root: &Path, name: &str, remotes: &[(&str, &str)]) -> String {
+        let dir = root.join(name);
+        fs::create_dir_all(&dir).unwrap();
+        if !remotes.is_empty() {
+            let git = |args: &[&str]| {
+                let ok = std::process::Command::new("git").arg("-C").arg(&dir).args(args).output().unwrap().status.success();
+                assert!(ok, "git {args:?}");
+            };
+            git(&["init", "-q"]);
+            for (name, url) in remotes {
+                git(&["remote", "add", name, url]);
+            }
+        }
+        dir.to_string_lossy().into_owned()
+    }
+
+    /// A session's first line, as Claude Code writes it: where it runs.
+    fn typed_in(ts: i64, text: &str, cwd: &str) -> Value {
+        let mut line = typed(ts, text);
+        line["cwd"] = json!(cwd);
+        line
+    }
+
+    #[test]
+    fn a_listed_session_names_its_repository() {
+        let lab = Lab::new("repo");
+        let now = now_ms();
+        let root = lab.roots.projects.parent().unwrap().join("code");
+        let clone = checkout(&root, "ui-kit-web", &[("upstream", "git@gitlab.example.com:acme/ui-kit.git"), ("origin", "https://oauth2:tok@GitLab.Example.com/acme/ui-kit-web.git")]);
+        let plain = checkout(&root, "scratch", &[]);
+        lab.write("s-clone", &[typed_in(now - 2_000, "hi", &clone), reply(now - 1_000, "hello")]);
+        lab.write("s-plain", &[typed_in(now - 2_000, "hi", &plain), reply(now - 1_000, "hello")]);
+        let rows = discover_in(&lab.roots, &registry(vec![], now), &HashMap::new(), now);
+        let row = |id: &str| rows.iter().find(|r| r.session_id == id).unwrap();
+        assert_eq!(row("s-clone").repository.as_deref(), Some("gitlab.example.com/acme/ui-kit-web"), "origin's, spelt one way");
+        assert_eq!(row("s-plain").repository, None);
+        let v = serde_json::to_value(row("s-plain")).unwrap();
+        assert!(v.get("repository").is_none(), "absent rather than null, for the phones that decode strictly: {v}");
+        assert_legacy_row(&serde_json::to_value(row("s-clone")).unwrap());
+    }
+
+    #[test]
+    fn project_totals_are_a_repositorys() {
+        let lab = Lab::new("totals");
+        let now = now_ms();
+        let root = lab.roots.projects.parent().unwrap().join("code");
+        let url = [("origin", "https://gitlab.example.com/acme/ui-kit-web.git")];
+        let clone = checkout(&root, "ui-kit-web", &url);
+        let lane = checkout(&root, "ui-kit-web-lane-2", &url);
+        let other = checkout(&root, "other", &[("origin", "https://gitlab.example.com/acme/other.git")]);
+        let plain = checkout(&root, "scratch", &[]);
+        for (id, cwd) in [("s-clone", &clone), ("s-lane", &lane), ("s-other", &other), ("s-plain", &plain)] {
+            lab.write(id, &[typed_in(now - 2_000, "hi", cwd), reply(now - 1_000, "hello")]);
+        }
+        let reg = registry(vec![], now);
+        let sessions = |key: &str| project_stats_in(&lab.roots, &reg, &HashMap::new(), key, now)["sessions"].as_i64().unwrap();
+        assert_eq!(sessions("gitlab.example.com/acme/ui-kit-web"), 2, "the clone and the worktree are one project");
+        assert_eq!(sessions(&clone), 0, "a directory with a repository is not its own project");
+        assert_eq!(sessions(&plain), 1, "a directory with none is");
     }
 
     /// What an installed iPhone requires of every row, or its whole list goes blank.

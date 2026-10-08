@@ -32,6 +32,7 @@ mod live;
 mod machines;
 mod network;
 mod peer;
+mod places;
 mod pricing;
 mod login;
 mod notify;
@@ -39,6 +40,7 @@ mod proxy;
 mod quota;
 mod refusal;
 mod registry;
+mod repository;
 mod setup;
 mod shim;
 mod transcript;
@@ -451,6 +453,9 @@ async fn serve_here(args: config::ServeArgs) -> anyhow::Result<()> {
     spawn_store_housekeeping(db_path.clone(), false, move || {
         departing.is_none_or(|pid| lifecycle::has_exited_within(pid, Duration::from_secs(60)))
     });
+    // This machine's places, every minute, as an agent reports its own to a hosted router:
+    // which repository each session works in.
+    tokio::spawn(places::keep_here(db_path.clone()));
 
     // The wider listener, when there is to be one, serves this same app from a second
     // socket. Started last, once loopback is about to be accepted on and the incumbent

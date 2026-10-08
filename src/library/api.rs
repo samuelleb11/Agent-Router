@@ -399,7 +399,7 @@ pub(super) async fn read<T: Send + 'static>(
 }
 
 /// Run `f` on a connection of its own that may write, off the async threads.
-pub(super) async fn write<T: Send + 'static>(
+async fn write<T: Send + 'static>(
     state: &Arc<AppState>,
     f: impl FnOnce(&Connection) -> anyhow::Result<T> + Send + 'static,
 ) -> Result<T, Refusal> {
