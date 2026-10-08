@@ -414,10 +414,17 @@ final class LiveFeed {
         guard let client else { return }
         if options == nil { options = try? await client.get("/api/live/options") }
         stats = try? await client.get("/api/live/stats?session=\(session.sessionId)")
-        if let cwd = session.cwd,
-           let q = cwd.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
-            project = try? await client.get("/api/live/project?cwd=\(q)")
+        if let path = Self.projectTotalsPath(session) {
+            project = try? await client.get(path)
         }
+    }
+
+    /// `GET /api/live/project?project=`: the totals of the session's project, asked for by its
+    /// key — the repository when the row names one, else the working directory — so a
+    /// repository's clones and worktrees are counted together. Nil when the row has neither.
+    nonisolated static func projectTotalsPath(_ session: LiveSession) -> String? {
+        guard let key = session.projectKey else { return nil }
+        return "/api/live/project?project=" + RouterClient.queryValue(key)
     }
 
     static func describe(_ error: Error) -> String {

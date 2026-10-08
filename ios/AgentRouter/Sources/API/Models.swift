@@ -372,14 +372,29 @@ struct LiveSession: Decodable, Sendable, Identifiable, Hashable {
     /// The machine the session runs on, from a hosted router that merges several machines'
     /// lists. A local router never sends it.
     let machine: SessionMachine?
+    /// The git repository the working directory belongs to: the canonical spelling of its
+    /// `origin` remote, else of its first, such as `gitlab.example.com/acme/ui-kit-web`. Absent
+    /// when the directory has no remote, and from a machine whose agent predates it.
+    let repository: String?
 
     var id: String { sessionId }
     var shortId: String { String(sessionId.prefix(8)) }
-    /// The last segment of the working directory, a Windows path's included, else the
-    /// router's own name for the project (SE-C23).
+    /// The repository's last segment when the row names one, so a repository's clones and
+    /// worktrees on one machine are one project; else the last segment of the working
+    /// directory, a Windows path's included; else the router's own name for the project
+    /// (SE-C231, SE-C23). The web console's `projectOf` and the Android app's name it alike.
     var projectName: String {
+        if let last = ProjectPath.segment(repository) { return last }
         if let last = ProjectPath.segment(cwd) { return last }
         return project.isEmpty ? "—" : project
+    }
+    /// What the router keys this session's project by, and what `project=` asks it for: the
+    /// repository when the row names one, else the working directory. Nil with neither. The
+    /// web console's `liveProjectKey` (SE-C232).
+    var projectKey: String? {
+        if let repository, !repository.isEmpty { return repository }
+        if let cwd, !cwd.isEmpty { return cwd }
+        return nil
     }
     /// What to call the machine the session runs on: its label, or the start of its id when
     /// the label is blank. Nil from a local router, which names no machine.
@@ -422,7 +437,7 @@ struct LiveSession: Decodable, Sendable, Identifiable, Hashable {
         case activity, detail, background, tone, source
         case isOpen = "open", sinceMs = "since_ms", endedMs = "ended_ms", endedHow = "ended_how"
         case midTurn = "mid_turn", waitingOn = "waiting_on", asOfMs = "as_of_ms"
-        case machine
+        case machine, repository
     }
 }
 
@@ -467,6 +482,7 @@ extension LiveSession {
         source = c.lenient(String.self, .source)
         asOfMs = c.lenient(Int.self, .asOfMs)
         machine = c.lenient(SessionMachine.self, .machine)
+        repository = c.lenient(String.self, .repository)
     }
 }
 
@@ -967,8 +983,9 @@ struct Summary: Decodable, Sendable {
 }
 
 struct ProjectRow: Decodable, Sendable, Identifiable, Hashable {
-    /// The sessions' working directory, or nil for those that never recorded one: the router
-    /// groups them all into one row (src/api.rs, `projects_inner`).
+    /// The project's key: its sessions' repository, else their working directory from a router
+    /// or machine that knows no repository, or nil for the sessions that never recorded a
+    /// directory: the router groups them all into one row (src/api.rs, `projects_inner`).
     let project: String?
     let sessions: Double
     let requests: Double
@@ -981,22 +998,81 @@ struct ProjectRow: Decodable, Sendable, Identifiable, Hashable {
     let models: String?
     let firstSeen: Int?
     let lastSeen: Int?
-    /// The row's key, and what narrows the page to it: its path, or for the row without one the
-    /// router's `(unresolved)`, which no real path can be (`ProjectPath.unresolved`).
+    /// The repository the row is, when it is one. Absent from an older router.
+    let repository: String?
+    /// Where the project's sessions ran: each directory, the machine it is on, and its remotes.
+    /// Absent from an older router.
+    let directories: [ProjectDirectory]?
+    /// The row's key, and what narrows the page to it: its repository or path, or for the row
+    /// without one the router's `(unresolved)`, which no real key can be
+    /// (`ProjectPath.unresolved`).
     var id: String { project ?? ProjectPath.unresolved }
-    /// The project by name, a Windows machine's included, and "—" for the row without a
-    /// directory (`ProjectPath`).
+    /// The project by name — a repository's last segment, a Windows machine's directory's
+    /// included — and "—" for the row without a directory (`ProjectPath`).
     var name: String { ProjectPath.name(project) }
     enum CodingKeys: String, CodingKey {
-        case project, sessions, requests, cost, errors, models
+        case project, sessions, requests, cost, errors, models, repository, directories
         case promptTokens = "prompt_tokens", outputTokens = "output_tokens", cacheReadTokens = "cache_read_tokens"
         case subagentTokens = "subagent_tokens", firstSeen = "first_seen", lastSeen = "last_seen"
     }
 }
 
+extension ProjectRow {
+    /// Written out so that the keys added for repositories are read leniently (`lenient`): an
+    /// unexpected shape in them must not fail the list.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        project = try c.decodeIfPresent(String.self, forKey: .project)
+        sessions = try c.decode(Double.self, forKey: .sessions)
+        requests = try c.decode(Double.self, forKey: .requests)
+        promptTokens = try c.decode(Double.self, forKey: .promptTokens)
+        cost = try c.decode(Double.self, forKey: .cost)
+        outputTokens = try c.decode(Double.self, forKey: .outputTokens)
+        cacheReadTokens = try c.decode(Double.self, forKey: .cacheReadTokens)
+        subagentTokens = try c.decode(Double.self, forKey: .subagentTokens)
+        errors = try c.decode(Double.self, forKey: .errors)
+        models = try c.decodeIfPresent(String.self, forKey: .models)
+        firstSeen = try c.decodeIfPresent(Int.self, forKey: .firstSeen)
+        lastSeen = try c.decodeIfPresent(Int.self, forKey: .lastSeen)
+        repository = c.lenient(String.self, .repository)
+        directories = c.lenient([ProjectDirectory].self, .directories)
+    }
+}
+
+/// One directory a project's sessions ran in (`directories` of `GET /api/projects`).
+struct ProjectDirectory: Decodable, Sendable, Hashable {
+    let cwd: String
+    /// The machine the directory is on; nil from a local router.
+    let machine: MachineRef?
+    let remotes: [GitRemote]
+
+    enum CodingKeys: String, CodingKey { case cwd, machine, remotes }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        cwd = try c.decode(String.self, forKey: .cwd)
+        machine = c.lenient(MachineRef.self, .machine)
+        remotes = c.lenient([GitRemote].self, .remotes) ?? []
+    }
+}
+
+/// A git remote of a project's directory, and the repository its URL spells, when it does.
+struct GitRemote: Decodable, Sendable, Hashable {
+    let name: String
+    let url: String
+    let repository: String?
+}
+
+/// A machine as the usage lists name it: its agent's id, and its label when it has one.
+struct MachineRef: Decodable, Sendable, Hashable {
+    let id: String
+    let label: String?
+}
+
 /// A session as the proxy saw it — distinct from `LiveSession`, which is a transcript.
 struct ProxySessionRow: Decodable, Sendable, Identifiable, Hashable {
     let id: String
+    /// The project's key: the repository, else the directory (`ProjectRow.project`).
     let project: String?
     let gitBranch: String?
     let entrypoint: String?
@@ -1011,6 +1087,11 @@ struct ProxySessionRow: Decodable, Sendable, Identifiable, Hashable {
     let errors: Double
     let subagents: Double
     let models: String?
+    /// Where the session ran, the repository it belongs to, and the machine: each absent from
+    /// an older router.
+    let cwd: String?
+    let repository: String?
+    let machine: MachineRef?
     var shortId: String { String(id.prefix(8)) }
     var projectName: String { ProjectPath.name(project) }
     /// `claude-cli/2.1.269 (external, claude-vscode, …)` → `vscode`; the CLI otherwise.
@@ -1020,9 +1101,35 @@ struct ProxySessionRow: Decodable, Sendable, Identifiable, Hashable {
     }
     enum CodingKeys: String, CodingKey {
         case id, project, entrypoint, requests, cost, errors, subagents, models
+        case cwd, repository, machine
         case gitBranch = "git_branch", startedAt = "started_at", lastSeenAt = "last_seen_at"
         case promptTokens = "prompt_tokens", outputTokens = "output_tokens"
         case cacheReadTokens = "cache_read_tokens", subagentTokens = "subagent_tokens"
+    }
+}
+
+extension ProxySessionRow {
+    /// Written out so that the keys added for repositories are read leniently (`lenient`).
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        project = try c.decodeIfPresent(String.self, forKey: .project)
+        gitBranch = try c.decodeIfPresent(String.self, forKey: .gitBranch)
+        entrypoint = try c.decodeIfPresent(String.self, forKey: .entrypoint)
+        startedAt = try c.decode(Int.self, forKey: .startedAt)
+        lastSeenAt = try c.decode(Int.self, forKey: .lastSeenAt)
+        requests = try c.decode(Double.self, forKey: .requests)
+        promptTokens = try c.decode(Double.self, forKey: .promptTokens)
+        cost = try c.decode(Double.self, forKey: .cost)
+        outputTokens = try c.decode(Double.self, forKey: .outputTokens)
+        cacheReadTokens = try c.decode(Double.self, forKey: .cacheReadTokens)
+        subagentTokens = try c.decode(Double.self, forKey: .subagentTokens)
+        errors = try c.decode(Double.self, forKey: .errors)
+        subagents = try c.decode(Double.self, forKey: .subagents)
+        models = try c.decodeIfPresent(String.self, forKey: .models)
+        cwd = c.lenient(String.self, .cwd)
+        repository = c.lenient(String.self, .repository)
+        machine = c.lenient(MachineRef.self, .machine)
     }
 }
 

@@ -88,6 +88,16 @@ struct RouterClient: Sendable {
         return try await get(path + (c.percentEncodedQuery.map { "?\($0)" } ?? ""))
     }
 
+    /// A query value encoded as the web console's `encodeURIComponent` encodes it: everything
+    /// but ASCII letters, digits and `-_.!~*'()`, so a `/`, `&`, `+` or `#` in a path or a
+    /// repository reaches the router as written.
+    static func queryValue(_ value: String) -> String {
+        value.addingPercentEncoding(withAllowedCharacters: componentAllowed) ?? value
+    }
+
+    private static let componentAllowed = CharacterSet(
+        charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.!~*'()")
+
     func post<T: Decodable, B: Encodable & Sendable>(_ path: String, _ body: B) async throws -> T {
         try await send(request(path, method: "POST", body: try JSONEncoder().encode(body)))
     }
