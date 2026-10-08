@@ -331,12 +331,15 @@ pub fn analyze_request(body: &[u8]) -> Option<RequestShape> {
 /// the directory (` - Primary working directory: <path>`, or `Working directory: <path>`
 /// from older builds) and its git status the branch (`Current branch: <name>`).
 ///
-/// Looked for only where Claude Code puts them — the `system` field, then the first
-/// user message, where newer builds carry the same blocks — and only as whole lines of
-/// those exact shapes. Anywhere later in a conversation the same words are quoted text:
-/// a tool result, a file being edited, this very comment. The format is Claude Code's
-/// and undocumented, so a miss is a session with no project, as it was before; a
-/// transcript, where there is one, still decides.
+/// Looked for only where Claude Code puts them — the `system` field, then the opening
+/// turn, the messages before the model's first reply: newer builds carry the same blocks
+/// in the first user message, and since 2.1.292 the environment in a message of its own
+/// with the `system` role — and only as whole lines of those exact shapes. Anywhere later
+/// in a conversation the same words are quoted text: a tool result, a file being edited,
+/// this very comment. A later `system` message, "# Environment update", says the
+/// directory moved ("<new> (was <old>)"), which is not where the session started. The
+/// format is Claude Code's and undocumented, so a miss is a session with no project, as
+/// it was before; a transcript, where there is one, still decides.
 fn environment_of(v: &Value) -> (Option<String>, Option<String>) {
     let mut texts: Vec<&str> = Vec::new();
     match v.get("system") {
@@ -344,9 +347,14 @@ fn environment_of(v: &Value) -> (Option<String>, Option<String>) {
         Some(Value::Array(parts)) => texts.extend(parts.iter().filter_map(|p| p.get("text").and_then(Value::as_str))),
         _ => {}
     }
-    let first = v.get("messages").and_then(Value::as_array).and_then(|m| m.first());
-    if let Some(first) = first.filter(|m| m.get("role").and_then(Value::as_str) == Some("user")) {
-        match first.get("content") {
+    let opening = v
+        .get("messages")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .take_while(|m| m.get("role").and_then(Value::as_str) != Some("assistant"));
+    for m in opening {
+        match m.get("content") {
             Some(Value::String(t)) => texts.push(t),
             Some(Value::Array(blocks)) => texts.extend(
                 blocks
@@ -357,19 +365,21 @@ fn environment_of(v: &Value) -> (Option<String>, Option<String>) {
             _ => {}
         }
     }
+    environment_in(&texts)
+}
 
-    let lines = || texts.iter().flat_map(|t| t.lines()).map(str::trim_start);
+/// The lines themselves, in texts already known to be the opening's: a request's, or
+/// the opening blocks the store kept of a session recorded before they were read
+/// (`db::backfill_session_cwds`).
+pub fn environment_in(texts: &[&str]) -> (Option<String>, Option<String>) {
+    // A note that the directory changed is not where it started, in either shape.
+    let lines = || texts.iter().flat_map(|t| t.lines()).map(str::trim_start).filter(|l| !l.contains(" (was "));
     let primary = lines().find_map(|l| {
         let l = l.strip_prefix("- ").unwrap_or(l);
         l.strip_prefix("Primary working directory: ").and_then(as_path)
     });
-    // The older line, only when the newer one is not there. A note that the directory
-    // changed reads "Working directory: <new> (was <old>)", and is not where it started.
-    let cwd = primary.or_else(|| {
-        lines()
-            .filter(|l| !l.contains(" (was "))
-            .find_map(|l| l.strip_prefix("Working directory: ").and_then(as_path))
-    });
+    // The older line, only when the newer one is not there.
+    let cwd = primary.or_else(|| lines().find_map(|l| l.strip_prefix("Working directory: ").and_then(as_path)));
     let branch = lines().find_map(|l| {
         let name = l.strip_prefix("Current branch: ")?.trim();
         (!name.is_empty() && name.len() <= 255 && !name.contains(char::is_whitespace)).then(|| name.to_string())
@@ -628,6 +638,39 @@ mod tests {
         assert_eq!(env_of(windows).0.as_deref(), Some("C:\\Users\\u\\proj"));
         let older = json!({ "system": "<env>\nWorking directory: /home/u/p\nIs directory a git repo: Yes\n</env>", "messages": [] });
         assert_eq!(env_of(older).0.as_deref(), Some("/home/u/p"));
+    }
+
+    /// Claude Code 2.1.292 sends the environment as a message of its own with the
+    /// `system` role, after the first user message; a later one says the directory moved.
+    #[test]
+    fn a_system_message_in_the_opening_turn_says_where_the_session_runs() {
+        let env = "# Environment\nYou have been invoked in the following environment: \n \
+                   - Primary working directory: /home/u/code/project\n - Is a git repository: true\n";
+        let moved = "# Environment update\n - Primary working directory: /home/u/code/project/sub (was /home/u/code/project)";
+        let opening = json!({
+            "system": "You are Claude Code.",
+            "messages": [
+                { "role": "user", "content": [
+                    { "type": "text", "text": "<system-reminder>gitStatus: ...\n\nCurrent branch: dev\n</system-reminder>" },
+                    { "type": "text", "text": "fix the tests" },
+                ]},
+                { "role": "system", "content": [{ "type": "text", "text": env }] },
+                { "role": "assistant", "content": "On it." },
+                { "role": "system", "content": moved },
+            ],
+        });
+        assert_eq!(env_of(opening), (Some("/home/u/code/project".into()), Some("dev".into())));
+
+        let only_later = json!({
+            "system": "You are Claude Code.",
+            "messages": [
+                { "role": "user", "content": "hello" },
+                { "role": "assistant", "content": "Hi." },
+                { "role": "system", "content": env },
+            ],
+        });
+        assert_eq!(env_of(only_later), (None, None), "after the first reply it is not the opening");
+        assert_eq!(environment_in(&[moved]), (None, None), "a move is not where it started");
     }
 
     /// The same words anywhere else are text about a directory, not this session's.

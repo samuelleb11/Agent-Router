@@ -675,6 +675,9 @@ fn spawn_store_housekeeping(db_path: std::path::PathBuf, hosted: bool, alone: im
         if let Err(err) = db::backfill_blocks(&db_path) {
             tracing::warn!(%err, "could not finish indexing the bodies captured before the index");
         }
+        if let Err(err) = db::backfill_session_cwds(&db_path) {
+            tracing::warn!(%err, "could not give a directory to the sessions recorded without one");
+        }
         if hosted {
             if let Err(err) = library::usage::rebuild(&db_path) {
                 tracing::warn!(%err, "could not finish finding the Library's uses in the stored conversations");

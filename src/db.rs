@@ -759,6 +759,67 @@ pub fn backfill_blocks(path: &Path) -> Result<()> {
     Ok(())
 }
 
+const SESSION_CWDS_KEY: &str = "session_cwds_from_opening";
+
+/// Put right the directory of the sessions recorded before the router read Claude Code
+/// 2.1.292's environment, which arrives in a `system` message of its own
+/// (`analyze::environment_of`). Until then such a session had none, or whatever a request
+/// that is not one of its turns quoted (`capture::speaks_for_its_session`). Their opening
+/// blocks are in the index, uncapped, so the directory is read from there with the same
+/// rules: from the main thread's requests, before the first reply. Once: from this build
+/// on, every turn writes what its opening says. Runs after `backfill_blocks`, whose blocks
+/// these are.
+pub fn backfill_session_cwds(path: &Path) -> Result<usize> {
+    let conn = Connection::open(path)?;
+    conn.busy_timeout(std::time::Duration::from_secs(30))?;
+    attach_bodies(&conn, path)?;
+    let done = conn.query_row("SELECT 1 FROM settings WHERE key = ?1", [SESSION_CWDS_KEY], |_| Ok(())).is_ok();
+    if done {
+        return Ok(0);
+    }
+
+    // The `system` blocks of each session's opening turn, in order: in the messages
+    // (ordinal 0 and up), placed by the main thread, and before its first reply.
+    let rows: Vec<(String, String)> = {
+        let mut stmt = conn.prepare(
+            "SELECT s.id, b.text
+               FROM main.sessions s
+               JOIN bodies_db.block_sites bs ON bs.session_id = s.id AND bs.role = 'system' AND bs.ordinal >= 0
+               JOIN main.requests r ON r.id = bs.request_id AND r.agent_id IS NULL
+               JOIN bodies_db.blocks b ON b.id = bs.block_id
+              WHERE bs.ordinal < coalesce((SELECT min(a.ordinal)
+                                             FROM bodies_db.block_sites a
+                                             JOIN main.requests ra ON ra.id = a.request_id AND ra.agent_id IS NULL
+                                            WHERE a.session_id = s.id AND a.role = 'assistant'), 9223372036854775807)
+              ORDER BY s.id, bs.ordinal",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<std::result::Result<_, _>>()?;
+        rows
+    };
+    let mut changed = 0;
+    for opening in rows.chunk_by(|a, b| a.0 == b.0) {
+        let session = &opening[0].0;
+        let texts: Vec<&str> = opening.iter().map(|(_, t)| t.as_str()).collect();
+        let Some(cwd) = crate::analyze::environment_in(&texts).0 else { continue };
+        conn.execute(
+            "INSERT INTO projects (cwd, first_seen_at)
+             SELECT ?1, started_at FROM sessions WHERE id = ?2
+             ON CONFLICT(cwd) DO NOTHING",
+            params![cwd, session],
+        )?;
+        changed += conn.execute("UPDATE sessions SET cwd = ?1 WHERE id = ?2 AND cwd IS NOT ?1", params![cwd, session])?;
+    }
+    conn.execute(
+        "INSERT INTO settings (key, value, updated_at) VALUES (?1, ?2, ?3)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+        params![SESSION_CWDS_KEY, changed.to_string(), now_ms()],
+    )?;
+    if changed > 0 {
+        tracing::info!(sessions = changed, "put right the directory of the sessions recorded before their environment was read");
+    }
+    Ok(changed)
+}
+
 fn current_block_count(conn: &Connection) -> Result<i64> {
     Ok(conn.query_row("SELECT count(*) FROM bodies_db.blocks", [], |r| r.get(0))?)
 }
@@ -938,6 +999,71 @@ mod tests {
         db.record(&ev).unwrap();
         assert_eq!(count(&db, "SELECT count(*) FROM bodies_db.blocks"), 2);
         assert_eq!(count(&db, "SELECT count(*) FROM bodies_db.block_sites"), 3);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A session recorded before its `system`-message environment was read gets the
+    /// directory its main thread's opening names: in place of none, and in place of a
+    /// quoted one. One told only after the first reply, a subagent's own opening, and a
+    /// session from an older build are no evidence, and it is done once.
+    #[test]
+    fn sessions_recorded_without_a_directory_get_it_from_their_opening() {
+        let dir = std::env::temp_dir().join(format!("ar-cwds-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("store.db");
+        let mut db = Db::open(&path).unwrap();
+        crate::pricing::ensure_table(&db.conn).unwrap();
+
+        let env = |p: &str| format!("# Environment\nYou have been invoked in the following environment: \n - Primary working directory: {p}\n");
+        let opening = |p: &str| serde_json::json!([
+            { "role": "user", "content": "fix it" },
+            { "role": "system", "content": [{ "type": "text", "text": env(p) }] },
+            { "role": "assistant", "content": "On it." },
+        ]);
+        let quoted = "/Users/u/code/project\\n - Is a git repository: true\\n\";";
+        // (session, stored directory, subagent, messages)
+        let requests = [
+            ("missed", None, None, opening("/home/u/code/p")),
+            ("quoted", Some(quoted), None, opening("/home/u/code/q")),
+            ("too-late", None, None, serde_json::json!([
+                { "role": "user", "content": "hello" },
+                { "role": "assistant", "content": "Hi." },
+                { "role": "system", "content": env("/home/u/elsewhere") },
+            ])),
+            ("forked", None, None, opening("/home/u/code/r")),
+            ("forked", None, Some("a1"), opening("/home/u/code/r/.claude/worktrees/a1")),
+            ("older", Some("/kept/as/is"), None, serde_json::json!([{ "role": "user", "content": "hi" }])),
+        ];
+        for (n, (session, cwd, agent, messages)) in requests.iter().enumerate() {
+            db.touch_session(session, *cwd, None, None).unwrap();
+            let mut ev = an_event("claude-opus-5");
+            ev.request_id = Some(format!("req-{n}"));
+            ev.session_id = Some(session.to_string());
+            ev.agent_id = agent.map(str::to_owned);
+            ev.shape = crate::analyze::analyze_request(serde_json::json!({ "messages": messages }).to_string().as_bytes());
+            db.record(&ev).unwrap();
+        }
+
+        assert_eq!(backfill_session_cwds(&path).unwrap(), 3);
+        let cwd = |id: &str| -> Option<String> {
+            db.conn.query_row("SELECT cwd FROM sessions WHERE id = ?1", [id], |r| r.get(0)).unwrap()
+        };
+        assert_eq!(cwd("missed").as_deref(), Some("/home/u/code/p"));
+        assert_eq!(cwd("quoted").as_deref(), Some("/home/u/code/q"));
+        assert_eq!(cwd("too-late"), None);
+        assert_eq!(cwd("forked").as_deref(), Some("/home/u/code/r"), "the main thread's, not the subagent's");
+        assert_eq!(cwd("older").as_deref(), Some("/kept/as/is"));
+        let listed: i64 = db
+            .conn
+            .query_row("SELECT count(*) FROM projects WHERE cwd = '/home/u/code/p'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(listed, 1, "and its project is listed");
+
+        db.conn.execute("UPDATE sessions SET cwd = NULL WHERE id = 'missed'", []).unwrap();
+        assert_eq!(backfill_session_cwds(&path).unwrap(), 0, "once");
+        assert_eq!(cwd("missed"), None);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

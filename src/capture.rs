@@ -297,6 +297,17 @@ impl Drop for Tee {
     }
 }
 
+/// Whether a request's own environment says where its session runs: only a turn of the
+/// main thread does. A subagent's (`x-claude-code-agent-id`) may run in a worktree of its
+/// own. A request that offers the model no tools is not a turn of the conversation at
+/// all, though it carries the session's id — a title, a summary, the auto-mode
+/// classifier — and what it carries is the conversation quoted back, where any line can
+/// look like an environment: a session editing this very parser once had its project
+/// set to one of the parser's test strings that way.
+fn speaks_for_its_session(agent_id: Option<&str>, shape: &RequestShape) -> bool {
+    agent_id.is_none() && shape.tools_defined > 0
+}
+
 /// Start the capture task and return the sender the proxy tees into.
 pub fn spawn(db_path: PathBuf) -> (mpsc::Sender<CaptureEvent>, tokio::task::JoinHandle<()>) {
     // Bounded: a burst deeper than this is dropped rather than queued, so memory
@@ -325,7 +336,7 @@ pub fn spawn(db_path: PathBuf) -> (mpsc::Sender<CaptureEvent>, tokio::task::Join
                 } else {
                     resolver.resolve(session)
                 };
-                if let Some(shape) = &ev.shape {
+                if let Some(shape) = ev.shape.as_ref().filter(|s| speaks_for_its_session(ev.agent_id.as_deref(), s)) {
                     if info.cwd.is_none() {
                         info.cwd = shape.cwd.clone();
                     }
@@ -389,5 +400,35 @@ mod tests {
         let whole = StoredBody::streamed(vec![b'x'; 64], 64);
         assert!(!whole.truncated, "a body that fitted is not truncated");
         assert_eq!(whole.true_bytes, 64);
+    }
+
+    /// Only the main thread's turns say where the session runs: not a subagent's, and not
+    /// a request with no tools that quotes the conversation back.
+    #[test]
+    fn only_the_main_threads_turns_say_where_the_session_runs() {
+        let env = "# Environment\nYou have been invoked in the following environment: \n - Primary working directory: /home/u/code/p\n";
+        let turn = crate::analyze::analyze_request(
+            serde_json::json!({
+                "tools": [{ "name": "Bash", "input_schema": { "type": "object" } }],
+                "messages": [
+                    { "role": "user", "content": "fix it" },
+                    { "role": "system", "content": env },
+                ],
+            })
+            .to_string()
+            .as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(turn.cwd.as_deref(), Some("/home/u/code/p"));
+        assert!(speaks_for_its_session(None, &turn));
+        assert!(!speaks_for_its_session(Some("a2fc94267e771da5e"), &turn), "a subagent's");
+
+        let quoted = format!("Judge this action. The transcript so far:\n{env}\nsed -n 1,9p src/analyze.rs\n - Primary working directory: /in/a/test\\n\";");
+        let classifier = crate::analyze::analyze_request(
+            serde_json::json!({ "messages": [{ "role": "user", "content": quoted }] }).to_string().as_bytes(),
+        )
+        .unwrap();
+        assert!(classifier.cwd.is_some(), "it does look like an environment");
+        assert!(!speaks_for_its_session(None, &classifier), "but it offers no tools");
     }
 }
