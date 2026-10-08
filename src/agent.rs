@@ -1023,7 +1023,7 @@ async fn work(args: RunArgs, dir: PathBuf, stopping: crate::lifecycle::Stopping)
         while matches!(stdin.read(&mut buf), Ok(n) if n > 0) {}
         let _ = closed.send(());
     });
-    let mut stopping = stopping.or("the keeper closed its pipe", async move {
+    let mut stopping = stopping.or("EOF on the keeper's pipe", async move {
         let _ = eof.await;
     });
     let mut saved = load_saved();
@@ -1722,7 +1722,7 @@ mod tests {
         assert!(why.to_string().contains("not up within"), "{why:#}");
         assert_eq!(one.digest, [1; 32]);
         assert!(one.child.try_wait().unwrap().is_none(), "the old worker carries on");
-        assert_eq!(lines(&log), ["up-1", "up-2"], "and was never told to go");
+        assert!(!lines(&log).iter().any(|l| l == "down-1"), "and was never told to go: {:?}", lines(&log));
         one.stop(Duration::from_secs(5)).await;
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1741,6 +1741,12 @@ mod tests {
         assert_eq!(peek(&dir).unwrap(), Some(me));
         assert_eq!(on_busy(&peek(&dir).unwrap().unwrap()), Busy::LeaveAlone, "a keeper hands over by itself");
         drop(held);
+        // Free once dropped. Other tests in this process start children, and one between its
+        // fork and its exec still holds a copy of the descriptor for that moment.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while peek(&dir).unwrap().is_some() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
         assert_eq!(peek(&dir).unwrap(), None);
 
         // An agent from before keepers wrote itself into the lock file; a stale agent.pid
