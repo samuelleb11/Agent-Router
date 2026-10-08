@@ -338,8 +338,8 @@ describe('Shell — the rail', () => {
 
   /// A local router takes no machines, so the rail offers the screen only where there are some to
   /// connect, and not before the router has said which kind it is.
-  it('MA-C1: on a hosted router lists Machines right after Sessions, at both widths, marked on its screen; a local router, and one that has not said which kind it is, list no Machines', async () => {
-    const withMachines = [RAIL[0], RAIL[1], ['Machines', '/machines'], ...RAIL.slice(2)];
+  it('MA-C1, LB-C1: on a hosted router lists Machines right after Sessions, and the Library after it, at both widths, marked on its screen; a local router, and one that has not said which kind it is, list neither', async () => {
+    const withMachines = [RAIL[0], RAIL[1], ['Machines', '/machines'], ['Library', '/library'], ...RAIL.slice(2)];
     answer({ '/api/auth': () => json({ mode: 'server' }) });
     const hosted = show('/machines');
     const machines = await within(rail()).findByRole('link', { name: 'Machines' });

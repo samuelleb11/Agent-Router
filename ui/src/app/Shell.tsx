@@ -16,7 +16,7 @@ import {
   SkipToContent,
   Theme,
 } from '@carbon/react';
-import { Asleep, Awake, Dashboard, Screen, Search, Settings, Terminal } from '@carbon/icons-react';
+import { Asleep, Awake, Catalog, Dashboard, Screen, Search, Settings, Terminal } from '@carbon/icons-react';
 import { useLive } from '~/app/live';
 import { keys } from '~/app/query';
 import { useTheme } from '~/app/theme';
@@ -208,6 +208,12 @@ export function Shell() {
           {hosted && (
             <SideNavLink renderIcon={Screen} as={Link} to={routes.machines} {...current(under(routes.machines))}>
               Machines
+            </SideNavLink>
+          )}
+          {/* The Library, a hosted router's too, directly after Machines (LB-C1). */}
+          {hosted && (
+            <SideNavLink renderIcon={Catalog} as={Link} to={routes.library} {...current(under(routes.library))}>
+              Library
             </SideNavLink>
           )}
           {/* A list item, not Northstar's div: the only child a <ul> may have. */}

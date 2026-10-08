@@ -209,3 +209,52 @@ describe('Machines on a local router', () => {
     expect(screen.queryByRole('region', { name: 'Connect a machine' })).toBeNull();
   });
 });
+
+describe('Machines and the Library', () => {
+  const standing = (state: string, extra: Record<string, unknown> = {}) => ({ state, behind: 0, failed: 0, replaced: [], at_ms: NOW - HOUR, ...extra });
+
+  it('LB-C11: each machine says where its Library stands, marked when it wants something done, and a router that keeps none says nothing of it', async () => {
+    hosted(
+      ok([
+        machine('a1', 'studio', { library: standing('in_step') } as Partial<MachineRow>),
+        machine('b2', 'laptop', { library: standing('behind', { behind: 2 }) } as Partial<MachineRow>),
+        machine('c3', 'old-box', { library: standing('predates') } as Partial<MachineRow>),
+        machine('d4', 'quiet', { library: standing('opted_out') } as Partial<MachineRow>),
+        machine('e5', 'bench', { library: standing('replaced', { replaced: ['skill/bench'] }) } as Partial<MachineRow>),
+        machine('f6', 'win-box', { online: false, library: standing('failed', { failed: 1 }) } as Partial<MachineRow>),
+        machine('g7', 'new', { library: standing('not_yet') } as Partial<MachineRow>),
+        machine('h8', 'plain'),
+      ]),
+    );
+    show();
+    await waitFor(() => item('a1'));
+    const library = (id: string) => item(id).querySelector<HTMLElement>('[data-library]');
+    const words = (id: string) => library(id)?.textContent?.replace(/^, /, '');
+    expect(words('a1')).toBe('Library in step');
+    expect(library('a1')?.dataset['library']).toBe('well');
+    expect(words('b2')).toBe('Library behind on 2 items');
+    expect(library('b2')?.dataset['library']).toBe('needs');
+    expect(words('c3')).toBe('Its agent predates the Library — run the installer on it again');
+    expect(words('d4')).toBe('Takes no part in the Library');
+    expect(words('e5')).toBe('Library in step; it put back skill/bench over a copy changed there');
+    expect(words('f6')).toBe('Library: 1 item could not be placed');
+    expect(words('g7')).toBe('Nothing heard of its Library yet');
+    expect(library('h8')).toBeNull();
+  });
+
+  it('LB-C12: an online machine offers a sync of its Library alone, which is sent for it and says its answer; an offline one offers none', async () => {
+    const stub = hosted(
+      ok([
+        machine('a1', 'studio', { library: standing('behind', { behind: 1 }) } as Partial<MachineRow>),
+        machine('f6', 'win-box', { online: false, library: standing('in_step') } as Partial<MachineRow>),
+      ]),
+      { 'POST /api/library/sync': ok({ ok: true, machines: [{ machine: 'a1', label: 'studio', outcome: 'synced', report: { items: [{ outcome: 'placed' }] } }] }) },
+    );
+    show();
+    await waitFor(() => item('a1'));
+    expect(within(item('f6')).queryByRole('button', { name: 'Sync its Library now' })).toBeNull();
+    await press(within(item('a1')).getByRole('button', { name: 'Sync its Library now' }));
+    expect(await within(item('a1')).findByText('studio: synced, 1 changed')).toBeInTheDocument();
+    expect(stub.posts('/api/library/sync')).toEqual([{ machine: 'a1' }]);
+  });
+});

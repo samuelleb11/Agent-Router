@@ -67,6 +67,9 @@ export interface MachineRow {
   /// When it connected, while it is online, and when it went away once it is not. Epoch
   /// milliseconds, on the router's clock.
   readonly since_ms: number;
+  /// Where its Library stands (src/library/push.rs, `Standing`); absent from a router that
+  /// keeps none.
+  readonly library?: Standing;
 }
 
 /// A machine's build compared with the router's: quietly the same, or another, with what updates
@@ -87,6 +90,8 @@ export interface MachineItem {
   /// Whether it runs the router's own build, and the words for it; null until the router's build is
   /// known, or when the machine did not say its own (MA-C4).
   readonly build: { readonly same: boolean; readonly text: string } | null;
+  /// Where its Library stands, in words, and whether it is something to act on (LB-C11).
+  readonly library: { readonly text: string; readonly needs: boolean } | null;
 }
 
 const PLATFORMS: Readonly<Record<string, string>> = { macos: 'macOS', linux: 'Linux', windows: 'Windows' };
@@ -128,6 +133,7 @@ export function machineItems(rows: readonly MachineRow[], routerBuild: string | 
         online: m.online === true,
         presence: presence(m, now),
         build: routerBuild && build ? { same: build === routerBuild, text: build === routerBuild ? SAME_BUILD : OTHER_BUILD } : null,
+        library: m.library ? standingWords(m.library) : null,
       };
     })
     .sort((a, b) => Number(b.online) - Number(a.online) || machineOrder(a.label, b.label));
@@ -138,4 +144,35 @@ export function tally(items: readonly Pick<MachineItem, 'online'>[]): string {
   const online = items.filter((m) => m.online).length;
   const offline = items.length - online;
   return [online ? `${online} online` : '', offline ? `${offline} offline` : ''].filter(Boolean).join(' · ');
+}
+
+// ---------- the Library ----------
+
+/// Where a machine's Library stands, as `/api/machines` gives it (src/library/push.rs, `Standing`).
+export interface Standing {
+  readonly state: 'in_step' | 'behind' | 'failed' | 'replaced' | 'predates' | 'opted_out' | 'not_yet';
+  readonly behind: number;
+  readonly failed: number;
+  readonly replaced: readonly string[];
+  readonly at_ms: number | null;
+}
+
+/// A machine's Library in words, and whether it is something to act on (LB-C11).
+export function standingWords(s: Standing | null | undefined): { text: string; needs: boolean } {
+  switch (s?.state) {
+    case 'in_step':
+      return { text: 'Library in step', needs: false };
+    case 'behind':
+      return { text: `Library behind on ${s.behind} item${s.behind === 1 ? '' : 's'}`, needs: true };
+    case 'failed':
+      return { text: `Library: ${s.failed} item${s.failed === 1 ? '' : 's'} could not be placed`, needs: true };
+    case 'replaced':
+      return { text: `Library in step; it put back ${s.replaced.join(', ')} over a copy changed there`, needs: false };
+    case 'predates':
+      return { text: 'Its agent predates the Library — run the installer on it again', needs: true };
+    case 'opted_out':
+      return { text: 'Takes no part in the Library', needs: false };
+    default:
+      return { text: 'Nothing heard of its Library yet', needs: false };
+  }
 }

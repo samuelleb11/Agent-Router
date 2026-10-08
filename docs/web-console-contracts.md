@@ -3083,6 +3083,114 @@ router takes no machines. Line numbers are as of commit `48533db`.
   hosted router's Settings address does (ST-C103). *Regression:* no. *Source:* `src/hosted.rs:64`,
   `src/auth.rs:356`.
 
+## Library
+
+A hosted router keeps a Library of skills, commands and subagents, and every connected
+machine's agent keeps its `~/.claude` in step with it ([the Library](library.md), AGEN-0042).
+The Library screen, at `/library`, is where the owner adds a version, reads what each item
+holds and where each version came from, decides what waits for approval, rolls back, archives,
+and tells the machines to sync now. The Machines screen says where each machine's Library
+stands. Built 2026-10-08 as AGEN-0051, against the router of commits `8f940d0` to `15f3dda`.
+
+### Where it is
+
+- **LB-C1** The screen is at `/library` and names itself in the tab's title, "Library · Agent
+  Router" (SH-C7). On a hosted router the rail lists Library directly after Machines. A local
+  router's rail does not, and its screen says why: "The Library is a hosted router’s…"; nothing
+  is read and nothing is offered. The palette's "Go to" lists it on every router, as it lists
+  Machines. *Why:* a local router keeps no Library (`library::api::not_offered`). *Regression:*
+  no. *Source:* `ui/src/screens/Library`, `ui/src/app/Shell.tsx`, `ui/src/screens/Palette/hits.ts`.
+
+### The items
+
+- **LB-C2** Each item shows its kind, its name, what it says it is for, its live version ("v3
+  live", or "none live"), where its versions come from, how many wait for approval, and whether
+  it is archived. There are three places versions come from:
+  - "uploaded and published here";
+  - "imported by the source <key>";
+  - "comes with the router’s build".
+
+  *Why:* at a glance, which items want a decision. *Source:* `GET /api/library`
+  (`src/library/api.rs`, `list`).
+- **LB-C3** Items are listed by kind (skills, commands, subagents), then by name. An empty
+  Library says so, and says what adding one does: "The Library is empty. Add a skill…".
+  *Source:* `ui/src/model/library.ts` (`itemOrder`, `EMPTY`).
+- **LB-C13** A failed read is never an empty Library. The last good list is kept and marked
+  with its age, and a Library never read says it could not be read, in the router's words
+  (SH-C22). *Regression:* no; it is the rule every screen keeps (MA-C6).
+
+### An item
+
+- **LB-C4** An item opens at `/library?item=<kind>/<name>`. It shows:
+  - the file Claude Code reads (a skill's `SKILL.md`, or the command's or subagent's one
+    file) of its live version (or its newest, while none is live), without its frontmatter,
+    rendered as Markdown and never as HTML (SE-C90);
+  - its files, with their sizes and the executable mark. A file opens as text.
+
+  The router serves files as plain text under a sandbox policy, as a second line of defence.
+  *Source:* `src/library/api.rs` (`file`).
+- **LB-C5** Its versions, newest first, each show:
+  - its number and its state: "live", "waits for approval", "rejected" or "superseded";
+  - where it came from, in words: "uploaded from the console", "imported from <repository>
+    at <commit>, <path>", "published with the token <name>", "published from <machine> by a
+    Claude Code session" (with a link that opens that session), or "built into the router";
+  - when.
+
+  *Why:* the owner should see which session wrote a change. *Source:* `src/library/store.rs`
+  (`Provenance`).
+- **LB-C6** What can be done to each version:
+  - one that waits offers "Approve" and "Reject";
+  - a superseded one offers "Make live again", which is a rollback;
+  - a live one and a rejected one offer nothing.
+
+  Each act is sent once. What it did, or the router's refusal in its words, shows beside the
+  item, and the Library is read again. *Source:* `POST …/versions/{n}/live`, `…/reject`.
+- **LB-C7** "Compare with the live one" shows how a version's main file differs from the live
+  version's, line by line, added and removed lines marked. *Source:* `ui/src/model/library.ts`
+  (`diffLines`).
+- **LB-C8** "Archive" asks once more, "Take it off every machine", before it acts. An archived
+  item says so, and says it is on no machine until a version of it goes live again.
+  *Source:* `POST …/archive`.
+
+### Adding a version
+
+- **LB-C9** "Add to the Library" takes a kind, a name, and either a skill's folder or one file
+  (a .zip, a .tar.gz or one .md).
+  - **A folder** is packed in the browser into the tar the router reads, each file by its path
+    within the folder, with a machine's clutter (`.git`, `.venv`, `__pycache__`,
+    `node_modules`, `.DS_Store`, `._*`) left out, as the router leaves it out.
+  - **The name** is the folder's or the file's, unless one is typed, and a name the Library
+    cannot take is said before anything is sent.
+  - **What happened** is said: "Published the skill bench as version 3: live, and every
+    connected machine is told now", "Nothing new…", or the router's refusal in its words (a
+    credential, a missing `SKILL.md`, an item that comes from a repository).
+
+  *Source:* `ui/src/model/library.ts` (`packFolder`), `src/library/bundle.rs` (`from_upload`).
+- **LB-C10** "Sync every machine now" tells every machine and lists what each said:
+  - synced (and how many items changed);
+  - its agent predates the Library (run the installer again);
+  - it takes no part;
+  - it is offline (it syncs when it connects again);
+  - it failed, and why.
+
+  *Source:* `POST /api/library/sync` (`src/library/push.rs`).
+
+### On the Machines screen
+
+- **LB-C11** Each machine says where its Library stands:
+  - "Library in step";
+  - "Library behind on <n> items";
+  - "<n> items could not be placed";
+  - "in step; it put back <items> over a copy changed there";
+  - "Its agent predates the Library — run the installer on it again";
+  - "Takes no part in the Library";
+  - "Nothing heard of its Library yet".
+
+  What wants something done is marked. A machine offline when a version went live reads as
+  behind. *Source:* `/api/machines` rows' `library` (`src/library/push.rs`, `standing`).
+- **LB-C12** An online machine offers "Sync its Library now", which tells that machine alone and
+  shows its answer beside it. *Source:* `POST /api/library/sync` with `{machine}`.
+
 ## Settings
 
 What Settings must do: pages under `/settings`, one per section, keeping every rule today's

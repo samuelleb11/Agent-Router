@@ -532,6 +532,7 @@ describe('Palette: commands behind > (SH-C51)', () => {
       'Theme: dark',
       'Overview',
       'Machines',
+      'Library',
       'Settings: Accounts',
       'Settings: Router',
     ]) {

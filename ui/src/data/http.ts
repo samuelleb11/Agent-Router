@@ -42,6 +42,35 @@ export function postJson<T>(path: string, body: unknown, options: ReadOptions = 
   );
 }
 
+/// POST bytes to the router — a Library upload, `Content-Type` naming what they are — and read the
+/// JSON answer by `getJson`'s rules.
+export function postBytes<T>(path: string, body: Blob, contentType: string, options: ReadOptions = {}): Promise<T> {
+  return request<T>(path, { method: 'POST', headers: { Accept: 'application/json', 'Content-Type': contentType }, body }, options);
+}
+
+/// GET a file's text from the router, same-origin: a refusal in the router's words, no answer in
+/// time as `Unreachable`, as every read.
+export async function getText(path: string, { signal, timeoutMs = TIMEOUT_MS }: ReadOptions = {}): Promise<string> {
+  const timer = new AbortController();
+  const timeout = setTimeout(() => timer.abort(), timeoutMs);
+  const cancel = () => timer.abort();
+  signal?.addEventListener('abort', cancel, { once: true });
+  let response: Response;
+  try {
+    response = await fetch(path, { credentials: 'same-origin', signal: timer.signal });
+  } catch (err) {
+    if (signal?.aborted) throw err;
+    if (timer.signal.aborted) throw new Unreachable(`The router did not answer within ${timeoutMs / 1000} s.`);
+    throw new Unreachable();
+  } finally {
+    clearTimeout(timeout);
+    signal?.removeEventListener('abort', cancel);
+  }
+  const text = await response.text();
+  if (!response.ok) throw new Refused(response.status, wordsOf(text) || unexplained(response));
+  return text;
+}
+
 async function request<T>(path: string, init: RequestInit, { signal, timeoutMs = TIMEOUT_MS }: ReadOptions): Promise<T> {
   const timer = new AbortController();
   const timeout = setTimeout(() => timer.abort(), timeoutMs);

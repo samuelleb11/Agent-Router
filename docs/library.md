@@ -104,8 +104,8 @@ from the router's build. Every other item takes uploads and publishes.
 
 ### Upload
 
-The console takes a dropped folder, a `.zip` or a single `.md`, and the API takes the same
-body (a `.tar.gz`, a `.zip`, a `.tar` or one Markdown file).
+The console takes a chosen folder (packed in the browser into a tar), a `.zip`, a `.tar.gz` or
+a single `.md`, and the API takes the same body (a `.tar.gz`, a `.zip`, a `.tar` or one Markdown file).
 - **It goes live at once.**
 - **A wrapper is dropped.** A folder around everything, and macOS's `__MACOSX` and `._` files,
   are taken off.
@@ -392,7 +392,8 @@ stores. A skill uploaded today shows the weeks it was already used.
   - each version's provenance, linking to the repository commit or to the session that
     published it;
   - approve and reject, make live (which is also a rollback), archive, and Sync now.
-- **Upload.** Drop a folder, a zip or a Markdown file.
+- **Upload.** Choose a folder, a zip, a tar.gz or a Markdown file. A folder is packed in the
+  browser, leaving a machine's clutter out as the router does.
 - **Contracts.** They are a new **Library** section of
   [web-console-contracts.md](web-console-contracts.md), `LB-C1` onwards.
 

@@ -50,8 +50,11 @@ const dist = join(ui, 'dist');
 /// Northstar's console, for scale, loads 572 kB of script and 704 kB of stylesheet first. A
 /// screen arrives in a chunk of its own and is not counted; a change that grows what every page
 /// loads first is, and moves these numbers on purpose or not at all.
+/// 2026-10-08 (AGEN-0051): the script budget moves from 520 to 525 kB for the Library, a
+/// first-level screen whose rail entry, icon and palette entry every page carries. It took the
+/// first load from 518.5 to 521.1 kB; the screen itself is a chunk of its own.
 const BUDGET = {
-  script: { raw: 520_000, gzip: 165_000 },
+  script: { raw: 525_000, gzip: 165_000 },
   style: { raw: 720_000, gzip: 75_000 },
 };
 

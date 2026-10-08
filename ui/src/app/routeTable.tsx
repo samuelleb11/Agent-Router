@@ -9,6 +9,7 @@ import { ErrorScreen, NotFound } from '~/app/ErrorScreen';
 const Overview = lazy(() => import('~/screens/Overview'));
 const Sessions = lazy(() => import('~/screens/Sessions'));
 const Machines = lazy(() => import('~/screens/Machines'));
+const Library = lazy(() => import('~/screens/Library'));
 const SettingsLayout = lazy(() => import('~/screens/Settings').then((m) => ({ default: m.SettingsLayout })));
 const SettingsSection = lazy(() => import('~/screens/Settings').then((m) => ({ default: m.SettingsSection })));
 
@@ -33,6 +34,7 @@ export const routeTable: RouteObject[] = [
       { index: true, element: <Overview />, errorElement: <ErrorScreen /> },
       { path: 'live', element: <Sessions />, errorElement: <ErrorScreen /> },
       { path: 'machines', element: <Machines />, errorElement: <ErrorScreen /> },
+      { path: 'library', element: <Library />, errorElement: <ErrorScreen /> },
       {
         path: 'settings',
         element: <SettingsLayout />,

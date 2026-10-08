@@ -4,9 +4,9 @@
 // first, each with its platform, how long it has been online or offline, and whether it runs the
 // router's own build (MA-C3, MA-C4). A local router takes no machines, and the screen says so
 // (MA-C7).
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { ContainedList, ContainedListItem } from '@carbon/react';
+import { Button, ContainedList, ContainedListItem } from '@carbon/react';
 import { keys } from '~/app/query';
 import { EmptyState } from '~/components/EmptyState';
 import { InstallCommands } from '~/components/InstallCommands';
@@ -14,12 +14,14 @@ import { Page } from '~/components/Page';
 import { PageHeader } from '~/components/PageHeader';
 import { StatusDot } from '~/components/StatusDot';
 import { useRead } from '~/data/held';
+import { syncNow } from '~/data/library';
 import { machineKeys, readMachines } from '~/data/machines';
 import { readHealth } from '~/data/router';
 import { useAuth } from '~/data/settings';
 import { refusalText } from '~/lib/errors';
 import { POLL_MS, since } from '~/lib/freshness';
 import { AGENTLESS, CONNECT, ON_THIS_MACHINE, SEEN, machineItems, tally, type MachineItem } from '~/model/machine';
+import { toldWords } from '~/model/library';
 import { isHosted } from '~/model/settings';
 import styles from './Machines.module.scss';
 
@@ -100,8 +102,22 @@ function Hosted() {
 }
 
 /// One machine at a glance: its dot and its label, its platform, online or offline and for how
-/// long, and whether it runs the router's own build, quietly when it does (MA-C3, MA-C4).
+/// long, and whether it runs the router's own build, quietly when it does (MA-C3, MA-C4); where its
+/// Library stands, and, online, a sync of its Library now (LB-C11, LB-C12).
 function Machine({ m }: { m: MachineItem }) {
+  const [busy, setBusy] = useState(false);
+  const [told, setTold] = useState<string | null>(null);
+  const sync = async () => {
+    setBusy(true);
+    try {
+      const answer = await syncNow(m.id);
+      setTold(answer.machines.map(toldWords).join('; '));
+    } catch (err) {
+      setTold(refusalText(err));
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
     <ContainedListItem className={styles.machine} data-machine={m.id} data-online={m.online ? '' : undefined}>
       <div className={styles.body}>
@@ -124,6 +140,20 @@ function Machine({ m }: { m: MachineItem }) {
           <span className={styles.build} data-same={m.build.same ? '' : undefined}>
             <Said>, </Said>
             {m.build.text}
+          </span>
+        )}
+        {m.library && (
+          <span className={styles.library} data-library={m.library.needs ? 'needs' : 'well'}>
+            <Said>, </Said>
+            {m.library.text}
+          </span>
+        )}
+        {m.online && m.library && (
+          <span className={styles.sync}>
+            <Button kind="ghost" size="sm" disabled={busy} onClick={sync}>
+              {busy ? 'Telling it…' : 'Sync its Library now'}
+            </Button>
+            {told && <span role="status">{told}</span>}
           </span>
         )}
       </div>

@@ -69,10 +69,11 @@ fn fixture() -> Files {
 }
 
 /// Every address the console answers with a file or the document, in the fixture.
-const CONSOLE: [&str; 10] = [
+const CONSOLE: [&str; 11] = [
     "/",
     "/live",
     "/machines",
+    "/library",
     "/settings",
     "/settings/accounts",
     "/assets/index-Fx1a2B.js",

@@ -85,3 +85,18 @@
 .build:not([data-same]) {
   color: var(--ar-warn);
 }
+
+// Where its Library stands: quiet when well, marked when it wants something done (LB-C11).
+.library {
+  color: $text-secondary;
+  &[data-library='needs'] {
+    color: $support-warning;
+  }
+}
+
+.sync {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: $spacing-03;
+}
