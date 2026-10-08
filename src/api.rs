@@ -292,202 +292,302 @@ fn one(conn: &Connection, sql: &str, params: &[&dyn rusqlite::ToSql]) -> anyhow:
         .unwrap_or(Value::Null))
 }
 
+/// The parts of the summary a caller can name in `parts=`, in the order the answer gives
+/// them. `totals` brings `unattributed` with it: both come from one statement.
+const SUMMARY_PARTS: [&str; 11] = [
+    "totals",
+    "quota",
+    "account",
+    "context",
+    "models",
+    "threads",
+    "latency",
+    "stop_reasons",
+    "by_account",
+    "timeline",
+    "quota_history",
+];
+
+/// `GET /api/summary`'s own parameter, beside the scope every read shares.
+#[derive(Deserialize)]
+pub struct SummaryQuery {
+    /// The parts to answer, comma-separated. Absent means every part, which is what the
+    /// phones ask for; the console asks only for what it is showing.
+    pub parts: Option<String>,
+}
+
+/// The parts asked for, in the answer's order and each once, so two spellings of one list
+/// share a memo slot. Every part when none is named; a refusal that names a part the
+/// summary does not have, or a `parts=` that names none.
+fn summary_parts(asked: Option<&str>) -> Result<Vec<&'static str>, Box<Response>> {
+    let Some(asked) = asked else { return Ok(SUMMARY_PARTS.to_vec()) };
+    let names: Vec<&str> = asked.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
+    if names.is_empty() {
+        let why = format!("parts= names no part; the summary's parts are {}", SUMMARY_PARTS.join(", "));
+        return Err(Box::new(refuse(StatusCode::BAD_REQUEST, why)));
+    }
+    if let Some(unknown) = names.iter().find(|n| !SUMMARY_PARTS.contains(n)) {
+        let why = format!("{unknown:?} is not a part of the summary; its parts are {}", SUMMARY_PARTS.join(", "));
+        return Err(Box::new(refuse(StatusCode::BAD_REQUEST, why)));
+    }
+    Ok(SUMMARY_PARTS.into_iter().filter(|p| names.contains(p)).collect())
+}
+
+/// The summary's memo slot: its scope and the parts it answers.
+fn summary_key(f: &Filter, parts: &[&str]) -> String {
+    memo_key(&format!("summary[{}]", parts.join(",")), f)
+}
+
 /// Everything the dashboard shows above the lists, in one round trip, scoped by the
 /// same project / session / since filter as the lists so every figure on the page
 /// agrees with every other. Quota is the exception: it belongs to the account, not
 /// the project, so it always describes the active account.
-pub async fn summary(State(state): State<Arc<AppState>>, Query(mut f): Query<Filter>) -> ApiResult {
+///
+/// `parts=` narrows it to the parts named, and only their statements run: the console
+/// asks for what its open tab shows, not for everything every five seconds.
+pub async fn summary(
+    State(state): State<Arc<AppState>>,
+    Query(mut f): Query<Filter>,
+    Query(asked): Query<SummaryQuery>,
+) -> Response {
+    let parts = match summary_parts(asked.parts.as_deref()) {
+        Ok(parts) => parts,
+        Err(refused) => return *refused,
+    };
     // Clamp once, on the Filter itself, so every query below binds the same sane value:
     // the timeline does arithmetic on it, and i64::MAX would overflow (panic in debug).
     // Doing it before the key is built also keeps two spellings of "now" off separate
     // cache slots.
     f.since = f.since.map(|s| s.clamp(0, crate::db::now_ms()));
-    let key = memo_key("summary", &f);
-    Ok(Json(state.memo.get_or_fill(&key, || summary_inner(&state, &f))?))
+    let key = summary_key(&f, &parts);
+    match state.memo.get_or_fill(&key, || summary_inner(&state, &f, &parts)) {
+        Ok(value) => Json(value).into_response(),
+        Err(e) => ApiError(e).into_response(),
+    }
 }
 
-fn summary_inner(state: &AppState, f: &Filter) -> anyhow::Result<Value> {
+fn summary_inner(state: &AppState, f: &Filter, parts: &[&str]) -> anyhow::Result<Value> {
     let conn = open(state)?;
-    summary_of(&conn, f)
+    summary_parts_of(&conn, f, parts)
+}
+
+/// The whole summary, every part.
+#[cfg(test)]
+fn summary_of(conn: &Connection, f: &Filter) -> anyhow::Result<Value> {
+    summary_parts_of(conn, f, &SUMMARY_PARTS)
 }
 
 /// The summary itself, from whichever connection it is handed: the pool's in the router,
-/// a store built for the purpose in a test.
-fn summary_of(conn: &Connection, f: &Filter) -> anyhow::Result<Value> {
+/// a store built for the purpose in a test. Only the parts named are read and answered.
+fn summary_parts_of(conn: &Connection, f: &Filter, parts: &[&str]) -> anyhow::Result<Value> {
+    let want = |part: &str| parts.contains(&part);
+    let mut out = Map::new();
     let now = crate::db::now_ms();
     let p = scope_params(f);
-    let mut totals = one(
-        conn,
-        &format!(
-            "SELECT count(*) AS requests,
-                    coalesce(sum(u.prompt_tokens),0)   AS prompt_tokens,
-                    coalesce(sum(c.cost),0) AS cost,
-                    coalesce(sum(u.input_tokens),0)    AS input_tokens,
-                    coalesce(sum(u.output_tokens),0)   AS output_tokens,
-                    coalesce(sum(u.thinking_tokens),0) AS thinking_tokens,
-                    coalesce(sum(u.cache_read_tokens),0) AS cache_read_tokens,
-                    coalesce(sum(u.cache_creation_5m_tokens),0) AS cache_write_5m_tokens,
-                    coalesce(sum(u.cache_creation_1h_tokens),0) AS cache_write_1h_tokens,
-                    coalesce(sum(u.cache_creation_5m_tokens + u.cache_creation_1h_tokens),0) AS cache_write_tokens,
-                    coalesce(sum(CASE WHEN r.status >= 400 OR r.error IS NOT NULL THEN 1 ELSE 0 END),0) AS errors,
-                    coalesce(sum(CASE WHEN coalesce(r.is_sidechain,0) = 1 THEN 1 ELSE 0 END),0) AS subagent_requests,
-                    count(DISTINCT r.session_id) AS sessions,
-                    count(DISTINCT s.project) AS projects,
-                    min(r.started_at) AS first_seen,
-                    max(r.started_at) AS last_seen,
-                    coalesce(sum(CASE WHEN s.id IS NULL THEN 1 ELSE 0 END),0) AS unattributed
-             FROM requests r
-             LEFT JOIN usage u    ON u.request_id = r.id
-             LEFT JOIN request_cost c ON c.request_id = r.id
-             LEFT JOIN sessions s ON s.id = r.session_id
-             WHERE {SCOPE}"
-        ),
-        &p,
-    )?;
-    // The requests in the scope that no session holds: Claude Code sent no session id, or
-    // sent one the store has no session row for. Neither the Projects nor the Sessions
-    // list can show them — both join on the session — so the dashboard ends each list
-    // with a row counting them, and the lists never sum to less than the tiles.
-    //
-    // Counted here, because the page cannot count it. It used to take the total and
-    // subtract the rows it had been handed, which is only right while a list is whole,
-    // and `/api/sessions` hands back the 200 most recent sessions at most: past 200
-    // sessions in scope, every request of an older session was blamed on a transcript
-    // that had not appeared. Counted in the totals' own statement, so it comes from the
-    // same read as `requests` and can never claim more than the tiles count; then moved
-    // out beside them, because it is not a figure the tiles show but the row the lists
-    // end with. `shift_remove` keeps the other totals in their order.
-    let unattributed = totals
-        .as_object_mut()
-        .and_then(|t| t.shift_remove("unattributed"))
-        .unwrap_or(Value::Null);
-    let quota = one(
-        conn,
-        "SELECT rl_status, rl_5h_utilization, rl_7d_utilization, rl_5h_reset, rl_7d_reset,
-                started_at
-         FROM requests
-         WHERE rl_status IS NOT NULL
-           AND account_id = (SELECT id FROM accounts WHERE active = 1 LIMIT 1)
-         ORDER BY started_at DESC LIMIT 1",
-        &[],
-    )?;
-    let account = one(
-        conn,
-        "SELECT id, label, email, org_name, subscription_type
-         FROM accounts WHERE active = 1 LIMIT 1",
-        &[],
-    )?;
-    let context = rows(
-        conn,
-        &format!(
-            "SELECT c.component, sum(c.est_tokens) AS est_tokens, sum(c.char_count) AS chars,
-                    -- Priced as if each component were paid once as fresh input. It is
-                    -- a floor: whatever stays in the context is re-read every later
-                    -- turn, and this table cannot know how many turns that was.
-                    --
-                    -- Priced through `model_rate` rather than by matching the rate table
-                    -- against the model name here: this sums a row per component per
-                    -- request, so a match written inline runs tens of thousands of times
-                    -- for the handful of distinct models it can produce.
-                    coalesce(sum(c.est_tokens * p.input) / 1000000.0, 0) AS est_cost_once,
-                    count(DISTINCT c.request_id) AS requests
-             FROM context c
-             JOIN requests r       ON r.id = c.request_id
-             LEFT JOIN model_rate m ON m.model = r.model
-             LEFT JOIN pricing p    ON p.model = m.key
-             LEFT JOIN sessions s  ON s.id = r.session_id
-             WHERE {SCOPE}
-             GROUP BY c.component ORDER BY est_tokens DESC"
-        ),
-        &p,
-    )?;
-    let models = rows(
-        conn,
-        &format!(
-            "SELECT r.model, count(*) AS requests,
-                    coalesce(sum(u.prompt_tokens),0)   AS prompt_tokens,
-                    coalesce(sum(c.cost),0) AS cost,
-                    coalesce(sum(u.output_tokens),0)   AS output_tokens,
-                    coalesce(sum(u.thinking_tokens),0) AS thinking_tokens,
-                    coalesce(sum(u.cache_read_tokens),0) AS cache_read_tokens,
-                    coalesce(sum(CASE WHEN r.status >= 400 OR r.error IS NOT NULL THEN 1 ELSE 0 END),0) AS errors,
-                    coalesce(sum(CASE WHEN coalesce(r.is_sidechain,0) = 1 THEN 1 ELSE 0 END),0) AS subagent_requests
-             FROM requests r
-             LEFT JOIN usage u    ON u.request_id = r.id
-             LEFT JOIN request_cost c ON c.request_id = r.id
-             LEFT JOIN sessions s ON s.id = r.session_id
-             WHERE r.model IS NOT NULL AND {SCOPE}
-             GROUP BY r.model ORDER BY prompt_tokens DESC"
-        ),
-        &p,
-    )?;
-    // Rows captured before the agent_id migration have NULL there; the coalesce keeps
-    // them in the main-thread bucket instead of surfacing a third, nameless thread.
-    let threads = rows(
-        conn,
-        &format!(
-            "SELECT CASE WHEN coalesce(r.is_sidechain,0) = 1 THEN 'subagent' ELSE 'main' END AS thread,
+    if want("totals") {
+        let mut totals = one(
+            conn,
+            &format!(
+                "SELECT count(*) AS requests,
+                        coalesce(sum(u.prompt_tokens),0)   AS prompt_tokens,
+                        coalesce(sum(c.cost),0) AS cost,
+                        coalesce(sum(u.input_tokens),0)    AS input_tokens,
+                        coalesce(sum(u.output_tokens),0)   AS output_tokens,
+                        coalesce(sum(u.thinking_tokens),0) AS thinking_tokens,
+                        coalesce(sum(u.cache_read_tokens),0) AS cache_read_tokens,
+                        coalesce(sum(u.cache_creation_5m_tokens),0) AS cache_write_5m_tokens,
+                        coalesce(sum(u.cache_creation_1h_tokens),0) AS cache_write_1h_tokens,
+                        coalesce(sum(u.cache_creation_5m_tokens + u.cache_creation_1h_tokens),0) AS cache_write_tokens,
+                        coalesce(sum(CASE WHEN r.status >= 400 OR r.error IS NOT NULL THEN 1 ELSE 0 END),0) AS errors,
+                        coalesce(sum(CASE WHEN coalesce(r.is_sidechain,0) = 1 THEN 1 ELSE 0 END),0) AS subagent_requests,
+                        count(DISTINCT r.session_id) AS sessions,
+                        count(DISTINCT s.project) AS projects,
+                        min(r.started_at) AS first_seen,
+                        max(r.started_at) AS last_seen,
+                        coalesce(sum(CASE WHEN s.id IS NULL THEN 1 ELSE 0 END),0) AS unattributed
+                 FROM requests r
+                 LEFT JOIN usage u    ON u.request_id = r.id
+                 LEFT JOIN request_cost c ON c.request_id = r.id
+                 LEFT JOIN sessions s ON s.id = r.session_id
+                 WHERE {SCOPE}"
+            ),
+            &p,
+        )?;
+        // The requests in the scope that no session holds: Claude Code sent no session id, or
+        // sent one the store has no session row for. Neither the Projects nor the Sessions
+        // list can show them — both join on the session — so the dashboard ends each list
+        // with a row counting them, and the lists never sum to less than the tiles.
+        //
+        // Counted here, because the page cannot count it. It used to take the total and
+        // subtract the rows it had been handed, which is only right while a list is whole,
+        // and `/api/sessions` hands back the 200 most recent sessions at most: past 200
+        // sessions in scope, every request of an older session was blamed on a transcript
+        // that had not appeared. Counted in the totals' own statement, so it comes from the
+        // same read as `requests` and can never claim more than the tiles count; then moved
+        // out beside them, because it is not a figure the tiles show but the row the lists
+        // end with. `shift_remove` keeps the other totals in their order.
+        let unattributed = totals
+            .as_object_mut()
+            .and_then(|t| t.shift_remove("unattributed"))
+            .unwrap_or(Value::Null);
+        out.insert("totals".into(), totals);
+        out.insert("unattributed".into(), unattributed);
+    }
+    if want("quota") {
+        let quota = one(
+            conn,
+            "SELECT rl_status, rl_5h_utilization, rl_7d_utilization, rl_5h_reset, rl_7d_reset,
+                    started_at
+             FROM requests
+             WHERE rl_status IS NOT NULL
+               AND account_id = (SELECT id FROM accounts WHERE active = 1 LIMIT 1)
+             ORDER BY started_at DESC LIMIT 1",
+            &[],
+        )?;
+        out.insert("quota".into(), quota);
+    }
+    if want("account") {
+        let account = one(
+            conn,
+            "SELECT id, label, email, org_name, subscription_type
+             FROM accounts WHERE active = 1 LIMIT 1",
+            &[],
+        )?;
+        out.insert("account".into(), account);
+    }
+    if want("context") {
+        let context = rows(
+            conn,
+            &format!(
+                "SELECT c.component, sum(c.est_tokens) AS est_tokens, sum(c.char_count) AS chars,
+                        -- Priced as if each component were paid once as fresh input. It is
+                        -- a floor: whatever stays in the context is re-read every later
+                        -- turn, and this table cannot know how many turns that was.
+                        --
+                        -- Priced through `model_rate` rather than by matching the rate table
+                        -- against the model name here: this sums a row per component per
+                        -- request, so a match written inline runs tens of thousands of times
+                        -- for the handful of distinct models it can produce.
+                        coalesce(sum(c.est_tokens * p.input) / 1000000.0, 0) AS est_cost_once,
+                        count(DISTINCT c.request_id) AS requests
+                 FROM context c
+                 JOIN requests r       ON r.id = c.request_id
+                 LEFT JOIN model_rate m ON m.model = r.model
+                 LEFT JOIN pricing p    ON p.model = m.key
+                 LEFT JOIN sessions s  ON s.id = r.session_id
+                 WHERE {SCOPE}
+                 GROUP BY c.component ORDER BY est_tokens DESC"
+            ),
+            &p,
+        )?;
+        out.insert("context".into(), context);
+    }
+    if want("models") {
+        let models = rows(
+            conn,
+            &format!(
+                "SELECT r.model, count(*) AS requests,
+                        coalesce(sum(u.prompt_tokens),0)   AS prompt_tokens,
+                        coalesce(sum(c.cost),0) AS cost,
+                        coalesce(sum(u.output_tokens),0)   AS output_tokens,
+                        coalesce(sum(u.thinking_tokens),0) AS thinking_tokens,
+                        coalesce(sum(u.cache_read_tokens),0) AS cache_read_tokens,
+                        coalesce(sum(CASE WHEN r.status >= 400 OR r.error IS NOT NULL THEN 1 ELSE 0 END),0) AS errors,
+                        coalesce(sum(CASE WHEN coalesce(r.is_sidechain,0) = 1 THEN 1 ELSE 0 END),0) AS subagent_requests
+                 FROM requests r
+                 LEFT JOIN usage u    ON u.request_id = r.id
+                 LEFT JOIN request_cost c ON c.request_id = r.id
+                 LEFT JOIN sessions s ON s.id = r.session_id
+                 WHERE r.model IS NOT NULL AND {SCOPE}
+                 GROUP BY r.model ORDER BY prompt_tokens DESC"
+            ),
+            &p,
+        )?;
+        out.insert("models".into(), models);
+    }
+    if want("threads") {
+        // Rows captured before the agent_id migration have NULL there; the coalesce keeps
+        // them in the main-thread bucket instead of surfacing a third, nameless thread.
+        let threads = rows(
+            conn,
+            &format!(
+                "SELECT CASE WHEN coalesce(r.is_sidechain,0) = 1 THEN 'subagent' ELSE 'main' END AS thread,
+                        count(*) AS requests,
+                        coalesce(sum(u.prompt_tokens),0) AS prompt_tokens,
+                        coalesce(sum(c.cost),0) AS cost,
+                        coalesce(sum(u.output_tokens),0) AS output_tokens,
+                        coalesce(sum(u.cache_read_tokens),0) AS cache_read_tokens,
+                        count(DISTINCT r.agent_id) AS agents
+                 FROM requests r
+                 LEFT JOIN usage u    ON u.request_id = r.id
+                 LEFT JOIN request_cost c ON c.request_id = r.id
+                 LEFT JOIN sessions s ON s.id = r.session_id
+                 WHERE {SCOPE}
+                 GROUP BY coalesce(r.is_sidechain,0) ORDER BY coalesce(r.is_sidechain,0)"
+            ),
+            &p,
+        )?;
+        out.insert("threads".into(), threads);
+    }
+    if want("latency") {
+        let latency = one(
+            conn,
+            &format!(
+                "SELECT {} AS ttfb_p50, {} AS ttfb_p95, {} AS duration_p50, {} AS duration_p95,
+                        (SELECT max(r.duration_ms) FROM requests r
+                         LEFT JOIN sessions s ON s.id = r.session_id WHERE {SCOPE}) AS duration_max",
+                pctile("ttfb_ms", 50),
+                pctile("ttfb_ms", 95),
+                pctile("duration_ms", 50),
+                pctile("duration_ms", 95),
+            ),
+            &p,
+        )?;
+        out.insert("latency".into(), latency);
+    }
+    if want("stop_reasons") {
+        let stop_reasons = rows(
+            conn,
+            &format!(
+                "SELECT coalesce(r.stop_reason, '(none)') AS stop_reason, count(*) AS requests
+                 FROM requests r LEFT JOIN sessions s ON s.id = r.session_id
+                 WHERE {SCOPE}
+                 GROUP BY 1 ORDER BY 2 DESC"
+            ),
+            &p,
+        )?;
+        out.insert("stop_reasons".into(), stop_reasons);
+    }
+    if want("by_account") {
+        let by_account = rows(
+            conn,
+            "SELECT r.account_id AS id,
+                    coalesce(a.email, a.label, r.account_id) AS label,
+                    max(coalesce(a.active, 0)) AS active,
                     count(*) AS requests,
                     coalesce(sum(u.prompt_tokens),0) AS prompt_tokens,
-                    coalesce(sum(c.cost),0) AS cost,
+                        coalesce(sum(c.cost),0) AS cost,
                     coalesce(sum(u.output_tokens),0) AS output_tokens,
-                    coalesce(sum(u.cache_read_tokens),0) AS cache_read_tokens,
-                    count(DISTINCT r.agent_id) AS agents
+                    count(DISTINCT r.session_id) AS sessions,
+                    max(r.started_at) AS last_seen
              FROM requests r
              LEFT JOIN usage u    ON u.request_id = r.id
              LEFT JOIN request_cost c ON c.request_id = r.id
-             LEFT JOIN sessions s ON s.id = r.session_id
-             WHERE {SCOPE}
-             GROUP BY coalesce(r.is_sidechain,0) ORDER BY coalesce(r.is_sidechain,0)"
-        ),
-        &p,
-    )?;
-    let by_account = rows(
-        conn,
-        "SELECT r.account_id AS id,
-                coalesce(a.email, a.label, r.account_id) AS label,
-                max(coalesce(a.active, 0)) AS active,
-                count(*) AS requests,
-                coalesce(sum(u.prompt_tokens),0) AS prompt_tokens,
-                    coalesce(sum(c.cost),0) AS cost,
-                coalesce(sum(u.output_tokens),0) AS output_tokens,
-                count(DISTINCT r.session_id) AS sessions,
-                max(r.started_at) AS last_seen
-         FROM requests r
-         LEFT JOIN usage u    ON u.request_id = r.id
-         LEFT JOIN request_cost c ON c.request_id = r.id
-         LEFT JOIN accounts a ON a.id = r.account_id
-         WHERE (?1 IS NULL OR r.started_at >= ?1)
-           AND (?2 IS NULL OR r.started_at < ?2)
-         GROUP BY r.account_id ORDER BY prompt_tokens DESC",
-        &[&f.since, &f.until],
-    )?;
-    let stop_reasons = rows(
-        conn,
-        &format!(
-            "SELECT coalesce(r.stop_reason, '(none)') AS stop_reason, count(*) AS requests
-             FROM requests r LEFT JOIN sessions s ON s.id = r.session_id
-             WHERE {SCOPE}
-             GROUP BY 1 ORDER BY 2 DESC"
-        ),
-        &p,
-    )?;
-    let latency = one(
-        conn,
-        &format!(
-            "SELECT {} AS ttfb_p50, {} AS ttfb_p95, {} AS duration_p50, {} AS duration_p95,
-                    (SELECT max(r.duration_ms) FROM requests r
-                     LEFT JOIN sessions s ON s.id = r.session_id WHERE {SCOPE}) AS duration_max",
-            pctile("ttfb_ms", 50),
-            pctile("ttfb_ms", 95),
-            pctile("duration_ms", 50),
-            pctile("duration_ms", 95),
-        ),
-        &p,
-    )?;
+             LEFT JOIN accounts a ON a.id = r.account_id
+             WHERE (?1 IS NULL OR r.started_at >= ?1)
+               AND (?2 IS NULL OR r.started_at < ?2)
+             GROUP BY r.account_id ORDER BY prompt_tokens DESC",
+            &[&f.since, &f.until],
+        )?;
+        out.insert("by_account".into(), by_account);
+    }
+    if !want("timeline") && !want("quota_history") {
+        return Ok(Value::Object(out));
+    }
 
     // The timeline spans the requested range when one was given (so a quiet hour
-    // still shows as an hour of quiet), and the data's own span otherwise.
+    // still shows as an hour of quiet), and the data's own span otherwise. The quota
+    // history is drawn over the same buckets, so it takes the same span.
     let bounds = one(
         conn,
         &format!(
@@ -513,58 +613,69 @@ fn summary_of(conn: &Connection, f: &Filter) -> anyhow::Result<Value> {
         // show an empty range rather than nothing at all.
         _ => f.since.map(|s| (s, f.until.unwrap_or(now).max(s.saturating_add(1)))),
     };
+    let none = || Value::Array(vec![]);
     let (timeline, quota_history, bucket) = match range {
         Some((start, end)) => {
             let bucket = pick_bucket(end - start);
-            let timeline = rows(
-                conn,
-                &format!(
-                    "SELECT ((r.started_at + ?6) / ?7) * ?7 - ?6 AS t, r.model,
-                            count(*) AS requests,
-                            coalesce(sum(u.prompt_tokens),0) AS prompt_tokens,
-                    coalesce(sum(c.cost),0) AS cost,
-                            coalesce(sum(u.output_tokens),0) AS output_tokens,
-                            coalesce(sum(u.cache_read_tokens),0) AS cache_read_tokens,
-                            coalesce(sum(CASE WHEN coalesce(r.is_sidechain,0) = 1 THEN u.prompt_tokens ELSE 0 END),0) AS subagent_tokens,
-                            coalesce(sum(CASE WHEN r.status >= 400 OR r.error IS NOT NULL THEN 1 ELSE 0 END),0) AS errors
-                     FROM requests r
-                     LEFT JOIN usage u    ON u.request_id = r.id
-                     LEFT JOIN request_cost c ON c.request_id = r.id
-                     LEFT JOIN sessions s ON s.id = r.session_id
-                     WHERE {SCOPE}
-                     GROUP BY t, r.model ORDER BY t, r.model"
-                ),
-                &[&f.project, &f.session, &f.since, &f.account, &f.until, &tz_ms, &bucket],
-            )?;
+            let timeline = if want("timeline") {
+                rows(
+                    conn,
+                    &format!(
+                        "SELECT ((r.started_at + ?6) / ?7) * ?7 - ?6 AS t, r.model,
+                                count(*) AS requests,
+                                coalesce(sum(u.prompt_tokens),0) AS prompt_tokens,
+                        coalesce(sum(c.cost),0) AS cost,
+                                coalesce(sum(u.output_tokens),0) AS output_tokens,
+                                coalesce(sum(u.cache_read_tokens),0) AS cache_read_tokens,
+                                coalesce(sum(CASE WHEN coalesce(r.is_sidechain,0) = 1 THEN u.prompt_tokens ELSE 0 END),0) AS subagent_tokens,
+                                coalesce(sum(CASE WHEN r.status >= 400 OR r.error IS NOT NULL THEN 1 ELSE 0 END),0) AS errors
+                         FROM requests r
+                         LEFT JOIN usage u    ON u.request_id = r.id
+                         LEFT JOIN request_cost c ON c.request_id = r.id
+                         LEFT JOIN sessions s ON s.id = r.session_id
+                         WHERE {SCOPE}
+                         GROUP BY t, r.model ORDER BY t, r.model"
+                    ),
+                    &[&f.project, &f.session, &f.since, &f.account, &f.until, &tz_ms, &bucket],
+                )?
+            } else {
+                none()
+            };
             // Quota history is the active account's, over the same buckets so the
             // two charts share an axis. The worst reading in a bucket is the one
             // that matters for headroom.
-            let quota_history = rows(
-                conn,
-                "SELECT ((started_at + ?1) / ?2) * ?2 - ?1 AS t,
-                        max(rl_5h_utilization) AS rl_5h, max(rl_7d_utilization) AS rl_7d
-                 FROM requests
-                 WHERE rl_status IS NOT NULL
-                   AND started_at >= ?3 AND started_at <= ?4
-                   AND account_id = (SELECT id FROM accounts WHERE active = 1 LIMIT 1)
-                 GROUP BY t ORDER BY t",
-                &[&tz_ms, &bucket, &start, &end],
-            )?;
+            let quota_history = if want("quota_history") {
+                rows(
+                    conn,
+                    "SELECT ((started_at + ?1) / ?2) * ?2 - ?1 AS t,
+                            max(rl_5h_utilization) AS rl_5h, max(rl_7d_utilization) AS rl_7d
+                     FROM requests
+                     WHERE rl_status IS NOT NULL
+                       AND started_at >= ?3 AND started_at <= ?4
+                       AND account_id = (SELECT id FROM accounts WHERE active = 1 LIMIT 1)
+                     GROUP BY t ORDER BY t",
+                    &[&tz_ms, &bucket, &start, &end],
+                )?
+            } else {
+                none()
+            };
             (timeline, quota_history, bucket)
         }
-        None => (Value::Array(vec![]), Value::Array(vec![]), 0),
+        None => (none(), none(), 0),
     };
-    Ok(json!({
-        "totals": totals, "unattributed": unattributed,
-        "quota": quota, "account": account, "context": context,
-        "models": models, "threads": threads, "latency": latency,
-        "stop_reasons": stop_reasons, "by_account": by_account,
-        "timeline": {
-            "start": range.map(|r| r.0), "end": range.map(|r| r.1),
-            "bucket_ms": bucket, "rows": timeline,
-        },
-        "quota_history": quota_history,
-    }))
+    if want("timeline") {
+        out.insert(
+            "timeline".into(),
+            json!({
+                "start": range.map(|r| r.0), "end": range.map(|r| r.1),
+                "bucket_ms": bucket, "rows": timeline,
+            }),
+        );
+    }
+    if want("quota_history") {
+        out.insert("quota_history".into(), quota_history);
+    }
+    Ok(Value::Object(out))
 }
 
 /// The project navigator. Never narrowed by project or session (it is how you pick
@@ -1985,6 +2096,80 @@ mod tests {
         assert!(tools_of(&conn, &window).is_ok());
         window.until = None;
         assert_eq!(summary_of(&conn, &window).unwrap()["totals"]["requests"], 5);
+    }
+
+    /// The console asks the summary only for what its open tab shows: the parts named come
+    /// back and nothing else, each as the whole answer gives it, and a part not named is not
+    /// read at all — here its table is gone, and only the whole answer fails for it. Two
+    /// lists of parts are two memo slots; one list spelt two ways is one.
+    #[test]
+    fn the_summary_answers_only_the_parts_asked_for() {
+        let store = store("parts");
+        seed(&store, "one", "/code/a", 1_700_000_000_000, 3);
+        let conn = store.reads.get().unwrap();
+        let everything = scope(None, None, None, None);
+        let whole = summary_of(&conn, &everything).unwrap();
+        let asked = summary_parts(Some("timeline, totals,timeline")).ok().unwrap();
+        assert_eq!(asked, ["totals", "timeline"], "in the answer's order, each once");
+        let part = summary_parts_of(&conn, &everything, &asked).unwrap();
+        let keys: Vec<&str> = part.as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(keys, ["totals", "unattributed", "timeline"]);
+        for key in keys {
+            assert_eq!(part[key], whole[key], "{key}");
+        }
+        let history = summary_parts_of(&conn, &everything, &["quota_history"]).unwrap();
+        assert_eq!(history.as_object().unwrap().keys().collect::<Vec<_>>(), ["quota_history"]);
+
+        store.conn.execute_batch("DROP TABLE context").unwrap();
+        assert!(summary_of(&conn, &everything).is_err(), "the whole answer reads the context");
+        assert!(summary_parts_of(&conn, &everything, &asked).is_ok(), "this one never did");
+
+        let key = |parts: Option<&str>| summary_key(&everything, &summary_parts(parts).ok().unwrap());
+        assert_ne!(key(Some("totals")), key(Some("totals,models")));
+        assert_ne!(key(Some("totals")), key(None));
+        assert_eq!(key(Some("models,totals")), key(Some("totals, models,models")));
+    }
+
+    /// The phones ask with no `parts=` and decode every key as they always have; the iPhone
+    /// fails on any one of nine missing. Without parts the summary is whole.
+    #[test]
+    fn without_parts_the_summary_answers_whole() {
+        let store = store("whole");
+        seed(&store, "one", "/code/a", 1_700_000_000_000, 2);
+        let conn = store.reads.get().unwrap();
+        // Parsed the way the handler's two `Query`s parse what a phone sends.
+        let uri: axum::http::Uri = "/api/summary?since=0&tz=-240".parse().unwrap();
+        let asked = Query::<SummaryQuery>::try_from_uri(&uri).unwrap().0;
+        let f = Query::<Filter>::try_from_uri(&uri).unwrap().0;
+        let parts = summary_parts(asked.parts.as_deref()).ok().unwrap();
+        assert_eq!(parts, SUMMARY_PARTS);
+        let whole = summary_parts_of(&conn, &f, &parts).unwrap();
+        let keys: Vec<&str> = whole.as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(
+            keys,
+            [
+                "totals", "unattributed", "quota", "account", "context", "models", "threads",
+                "latency", "stop_reasons", "by_account", "timeline", "quota_history",
+            ]
+        );
+        assert_eq!(whole["totals"]["requests"], 2);
+    }
+
+    /// A part the summary does not have is refused in words that name it, and so is a
+    /// `parts=` that names none: answering less than was asked, and silently, would leave a
+    /// panel empty with nothing to say why.
+    #[tokio::test]
+    async fn an_unknown_summary_part_is_refused_by_name() {
+        for (asked, named) in [("totals,sessions", "\"sessions\""), (" , ", "names no part")] {
+            let refused = summary_parts(Some(asked)).err().unwrap();
+            assert_eq!(refused.status(), StatusCode::BAD_REQUEST, "{asked}");
+            let body = axum::body::to_bytes(refused.into_body(), usize::MAX).await.unwrap();
+            let body: Value = serde_json::from_slice(&body).unwrap();
+            let why = body["error"].as_str().unwrap();
+            assert!(why.contains(named), "{asked}: {why}");
+            assert!(why.contains("quota_history"), "and it lists the parts there are: {why}");
+            assert_eq!(body["ok"], false);
+        }
     }
 
     /// The dashboard's "not yet attributed" row used to be the total less the rows of the

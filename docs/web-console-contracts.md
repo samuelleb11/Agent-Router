@@ -55,6 +55,7 @@ holds 225. On 2026-10-07 the Machines screen added a section of its own, MA-C1 t
 same day Sessions tabbed a hosted router's machines, SE-C226 to SE-C230, so it holds 230. On
 2026-10-08 a project became its repository, so a repository's worktrees and clones are one project:
 SE-C231 and SE-C232 in Sessions, which holds 232, and OV-C214 in the Overview, which holds 214.
+The same day the summary learned to answer only the parts asked for, SV-C45, so Serving holds 45.
 
 ## Shell
 
@@ -4233,3 +4234,19 @@ URLs that must keep answering, development, and what a hosted router changes.
   hosted router says why its list is empty, and warns of no wrapper". *Source:*
   `assets/live.html:415-421`, `assets/live.html:624-655`, `src/hosted.rs:32-33`,
   `src/hosted.rs:126-128`, `scripts/check-live-ui.js:1095-1115`.
+
+### What the console reads
+
+- **SV-C45** `GET /api/summary` takes `parts=`, a comma-separated list of its parts — totals
+  (which brings `unattributed`), quota, account, context, models, threads, latency,
+  stop_reasons, by_account, timeline and quota_history — and runs and answers only those, in
+  the whole answer's order; one list spelt two ways shares a memo slot, and two lists are two.
+  Without `parts=` it answers every key as it always has, which is what both phones ask for. A
+  part it does not have, or a `parts=` that names none, is refused with a 400 whose words name
+  it and list the parts there are. *Why:* the Overview reads only what its open tab shows
+  (OV-C216), and every five seconds the whole summary ran about eleven statements over the
+  store for figures nobody was looking at; the iPhone decodes nine of the keys as required,
+  so the whole answer cannot change. *Regression:* no. *Source:* `src/api.rs:322-382`;
+  `ios/AgentRouter/Sources/API/Models.swift:827-841`,
+  `android/app/src/main/java/ca/whnet/agentrouter/api/UsageModels.kt:226`. *Phones:* they ask
+  without `parts=`, unchanged.
