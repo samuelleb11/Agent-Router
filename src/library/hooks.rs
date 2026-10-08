@@ -224,7 +224,9 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         };
-        tokio::time::timeout(Duration::from_secs(10), waited).await.expect("the push was imported");
+        // Wide: every look presents the password, whose check takes seconds in a debug build on
+        // a busy CI runner. The bound only keeps an import that never comes from hanging.
+        tokio::time::timeout(Duration::from_secs(60), waited).await.expect("the push was imported");
     }
 
     fn gitlab_push(secret: &str, delivery: &str) -> Vec<(&'static str, String)> {

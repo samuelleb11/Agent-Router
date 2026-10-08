@@ -311,7 +311,8 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         };
-        tokio::time::timeout(Duration::from_secs(10), waited).await.expect("it came to pass");
+        // Wide, for a busy CI runner: the bound only keeps what never comes from hanging.
+        tokio::time::timeout(Duration::from_secs(60), waited).await.expect("it came to pass");
     }
 
     /// A machine whose agent syncs when told, answering with `report`, and counting.

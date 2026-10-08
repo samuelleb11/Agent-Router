@@ -756,12 +756,15 @@ mod tests {
         let to = "/api/library/items/skill/bench/versions";
 
         // Declared too big: refused on the header, while its body is still arriving — this one
-        // never finishes.
+        // never finishes, so any answer at all is a refusal that did not wait for it. The bound
+        // only keeps a router that waits from hanging the suite: it is wide because the password
+        // check (600,000 rounds of PBKDF2) takes seconds in a debug build on a busy CI runner,
+        // where five seconds failed it.
         let endless = futures_util::stream::once(async { Ok::<_, std::io::Error>(bytes::Bytes::from(vec![b'x'; 64 * 1024])) })
             .chain(futures_util::stream::pending());
         let declared = (UPLOAD_MAX + 1).to_string();
         let answer = tokio::time::timeout(
-            Duration::from_secs(5),
+            Duration::from_secs(60),
             ask(&lab, "POST", to, &[(header::CONTENT_LENGTH, &declared)], Body::from_stream(endless), false),
         )
         .await
