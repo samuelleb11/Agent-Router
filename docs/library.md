@@ -142,6 +142,26 @@ repository, and a trust setting ("goes live" or "needs approval").
 - **Polling.** The poller asks each source for its ref's head every five minutes and
   imports only when the head moved. "Import now" does the same at once.
 
+**Rules that keep a token where it belongs:**
+- **https only.** A forge's base URL must be https; plain http is accepted on loopback alone.
+- **A moved forge loses its token.** Moving a forge's address drops its token unless a new one
+  is sent with it.
+- **GitHub's archive host never sees it.** GitHub's archives come from another host, which is
+  never shown the token.
+- **The router names itself.** Every request carries an `agent-router/<version>` user agent,
+  which GitHub asks for.
+
+**Size.** GitHub's tarball is always the whole repository: at most 64 MiB as it arrives and
+256 MiB unpacked, of which only the source's path is kept. A source in a bigger repository
+belongs on GitLab, which is asked for the path alone, or in a smaller repository.
+
+**Owning an item:**
+- **Taking over an upload.** An item uploaded or published here can be taken over by an
+  import only once it is archived.
+- **Removing a source.** Its items become anyone's to change.
+- **Items that left the repository** are listed as `gone` in the import's result and stay
+  where they are.
+
 Northstar's own skill would come in this way, from its repository's `plugin/skills/northstar`.
 
 ### Forge webhooks

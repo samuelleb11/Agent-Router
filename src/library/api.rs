@@ -177,18 +177,20 @@ pub async fn publish(
         }
     })?;
     let bundle = Bundle::from_upload(kind, &name, &upload).map_err(|why| Refusal::from(refuse(StatusCode::UNPROCESSABLE_ENTITY, why.0)))?;
-    let (new, version) = write(&state, move |conn| {
+    let published = write(&state, move |conn| {
         let now = crate::db::now_ms();
         Ok(match store::publish(conn, &bundle, &Provenance::Upload, true, now)? {
-            Published::New(v) => (true, v),
-            Published::Unchanged(v) if v.state == Standing::Live => (false, v),
+            Published::New(v) => Ok((true, v)),
+            Published::Unchanged(v) if v.state == Standing::Live => Ok((false, v)),
             Published::Unchanged(v) => {
                 let live = store::make_live(conn, kind, bundle.name(), v.number, now)?;
-                (false, live.map_err(|unmade| anyhow::anyhow!("version {} did not go live: {unmade:?}", v.number))?)
+                Ok((false, live.map_err(|unmade| anyhow::anyhow!("version {} did not go live: {unmade:?}", v.number))?))
             }
+            Published::Refused(why) => Err(why),
         })
     })
     .await?;
+    let (new, version) = published.map_err(|why| Refusal::from(refuse(StatusCode::CONFLICT, why)))?;
     super::push::push(&state);
     let status = if new { StatusCode::CREATED } else { StatusCode::OK };
     Ok((status, Json(json!({ "ok": true, "unchanged": !new, "version": version }))).into_response())

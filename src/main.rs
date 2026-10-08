@@ -410,6 +410,10 @@ async fn serve_here(args: config::ServeArgs) -> anyhow::Result<()> {
     if !server {
         tokio::spawn(shim::watch(db_path.clone(), state.push.clone()));
     }
+    // The Library's sources, polled for a moved ref; a hosted router alone keeps a Library.
+    if server {
+        tokio::spawn(library::sources::poll(state.clone()));
+    }
     if wide.is_some() {
         if state.auth.configured().await {
             tracing::info!("  callers from other machines must present the router password");

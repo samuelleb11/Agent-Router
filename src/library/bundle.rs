@@ -263,6 +263,13 @@ fn octal(field: &mut [u8], value: u64) {
 /// attributes, all but the long `path` one. A link of either kind, a device, or anything else
 /// that is not a file is refused: nothing a machine unpacks may point outside the item.
 pub fn read_tar(archive: &[u8]) -> Result<Vec<File>, Refused> {
+    read_tar_where(archive, |path| Some(path.to_string()))
+}
+
+/// The regular files of a tar archive that `keep` gives a path for, under that path. An entry
+/// `keep` passes over is skipped whatever it is — a link elsewhere in a repository's archive
+/// costs nothing — while one it keeps that is not a plain file is refused, as in [`read_tar`].
+pub fn read_tar_where(archive: &[u8], keep: impl Fn(&str) -> Option<String>) -> Result<Vec<File>, Refused> {
     let ended = || Refused("the archive ends in the middle of an entry".into());
     let mut files = Vec::new();
     let mut at = 0;
@@ -296,6 +303,10 @@ pub fn read_tar(archive: &[u8]) -> Result<Vec<File>, Refused> {
             None => header_path(header)?,
         };
         let path = path.trim_start_matches("./").to_string();
+        if header[156] == b'5' {
+            continue;
+        }
+        let Some(path) = keep(&path) else { continue };
         match header[156] {
             b'0' | b'7' | 0 => {
                 let executable = number(&header[100..108])? & 0o111 != 0;
@@ -313,14 +324,19 @@ pub fn read_tar(archive: &[u8]) -> Result<Vec<File>, Refused> {
 const UNPACKED_MAX: usize = 2 * BUNDLE_MAX;
 
 fn gunzip(upload: &[u8]) -> Result<Vec<u8>, Refused> {
+    gunzip_at_most(upload, UNPACKED_MAX)
+}
+
+/// A gzip stream unpacked, refused once it unpacks to more than `most`.
+pub fn gunzip_at_most(gz: &[u8], most: usize) -> Result<Vec<u8>, Refused> {
     use std::io::Read;
     let mut out = Vec::new();
-    flate2::read::GzDecoder::new(upload)
-        .take(UNPACKED_MAX as u64 + 1)
+    flate2::read::GzDecoder::new(gz)
+        .take(most as u64 + 1)
         .read_to_end(&mut out)
         .map_err(|e| Refused(format!("this .tar.gz cannot be read: {e}")))?;
-    if out.len() > UNPACKED_MAX {
-        return Err(Refused(format!("this archive unpacks to more than {}", mib(UNPACKED_MAX))));
+    if out.len() > most {
+        return Err(Refused(format!("this archive unpacks to more than {}", mib(most))));
     }
     Ok(out)
 }

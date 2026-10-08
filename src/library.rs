@@ -8,13 +8,16 @@
 //! - [`store`] keeps the items, their versions and the blobs, in the main store.
 //! - [`api`] is how a hosted router serves them, to the console and to the machines' agents,
 //!   and [`push`] how it tells those agents to sync now, through their own tunnels.
+//! - [`sources`] imports from repositories on [`forge`]s, by a poller and on demand.
 //! - [`sync`] is the agent's half: keeping a machine's `~/.claude` in step with them, and
 //!   [`cli`] is `agent-router library` on that machine.
 
 pub mod api;
 pub mod bundle;
 pub mod cli;
+pub mod forge;
 pub mod push;
+pub mod sources;
 pub mod store;
 pub mod sync;
 

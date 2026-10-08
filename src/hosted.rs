@@ -18,7 +18,7 @@ use std::sync::Arc;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use serde_json::{json, Value};
 
@@ -70,6 +70,18 @@ pub fn routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
         .route("/api/library/blobs/{digest}", get(crate::library::api::blob))
         .route("/api/library/sync", post(crate::library::push::sync_now))
         .route("/api/library/report", post(crate::library::push::report))
+        .route("/api/library/forges", get(crate::library::sources::list_forges))
+        .route(
+            "/api/library/forges/{key}",
+            put(crate::library::sources::put_forge_api).delete(crate::library::sources::delete_forge_api),
+        )
+        .route("/api/library/forges/{key}/check", post(crate::library::sources::check_forge))
+        .route("/api/library/sources", get(crate::library::sources::list_sources))
+        .route(
+            "/api/library/sources/{key}",
+            put(crate::library::sources::put_source_api).delete(crate::library::sources::delete_source_api),
+        )
+        .route("/api/library/sources/{key}/import", post(crate::library::sources::import_now))
         .route("/api/library/items/{kind}/{name}", get(crate::library::api::item))
         .route("/api/library/items/{kind}/{name}/archive", post(crate::library::api::archive))
         .route("/api/library/items/{kind}/{name}/versions", post(crate::library::api::publish))

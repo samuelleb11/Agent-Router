@@ -66,6 +66,38 @@ BEGIN
   SELECT RAISE(ABORT, 'a Library blob never changes');
 END;
 
+-- The forges the Library imports from (`library::forge`), and each one's token, kept apart
+-- so no read of a forge ever carries it. A forge's token is what the router presents there;
+-- a public GitHub repository needs none.
+CREATE TABLE IF NOT EXISTS library_forges (
+  key        TEXT PRIMARY KEY,
+  kind       TEXT NOT NULL CHECK (kind IN ('gitlab', 'github')),
+  base_url   TEXT NOT NULL UNIQUE,
+  created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS library_forge_tokens (
+  forge  TEXT PRIMARY KEY REFERENCES library_forges(key) ON DELETE CASCADE,
+  token  TEXT NOT NULL,
+  set_at INTEGER NOT NULL
+);
+
+-- A repository, a ref and a path in it that items are imported from (`library::sources`).
+-- `live` is the owner's trust: 1, its new versions go live; 0, they wait for approval.
+-- `head` is the commit last imported, which the poller compares the ref's head with.
+CREATE TABLE IF NOT EXISTS library_sources (
+  key         TEXT PRIMARY KEY,
+  forge       TEXT NOT NULL REFERENCES library_forges(key),
+  repository  TEXT NOT NULL,
+  ref         TEXT NOT NULL,
+  path        TEXT NOT NULL DEFAULT '',
+  live        INTEGER NOT NULL DEFAULT 0,
+  head        TEXT,
+  checked_at  INTEGER,
+  imported_at INTEGER,
+  last_result TEXT,
+  created_at  INTEGER NOT NULL
+);
+
 -- What each machine last said about the Library: its last sync's report, or that it takes
 -- no part, or that its agent predates the Library. Kept here because machines themselves
 -- are known only in memory, and a router restarted would otherwise know nothing of them.
@@ -98,8 +130,9 @@ pub fn ensure(conn: &Connection) -> rusqlite::Result<()> {
 pub enum Provenance {
     /// Sent from the console, or through the API with the password.
     Upload,
-    /// Imported from a forge: the forge's key, the repository, the commit and the path in it.
-    Forge { forge: String, repository: String, commit: String, path: String },
+    /// Imported by a source (`library::sources`): its key, its forge's, the repository, the
+    /// commit and the item's path in it.
+    Forge { source: String, forge: String, repository: String, commit: String, path: String },
     /// Published with a publish token, named here by the token's name.
     Token { token: String },
     /// Published from a connected machine, by the Claude Code session that ran the publish
@@ -234,6 +267,8 @@ pub enum Published {
     New(Version),
     /// Nothing: the content is the item's newest version already, which is answered.
     Unchanged(Version),
+    /// Nothing: the item takes versions from one place only, and this is not it. Why, in words.
+    Refused(String),
 }
 
 impl Published {
@@ -241,6 +276,7 @@ impl Published {
     pub fn version(&self) -> &Version {
         match self {
             Published::New(v) | Published::Unchanged(v) => v,
+            Published::Refused(why) => panic!("refused: {why}"),
         }
     }
 }
@@ -263,10 +299,15 @@ pub fn publish(conn: &Connection, bundle: &Bundle, provenance: &Provenance, live
     let digest = bundle::digest(&packed);
     let (kind, name) = (bundle.kind(), bundle.name());
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
-    tx.execute(
-        "INSERT OR IGNORE INTO library_items (kind, name, created_at) VALUES (?1, ?2, ?3)",
-        params![kind.as_str(), name, now],
-    )?;
+    let created = tx.execute(
+        "INSERT OR IGNORE INTO library_items (kind, name, source, created_at) VALUES (?1, ?2, ?3, ?4)",
+        params![kind.as_str(), name, owner(provenance), now],
+    )? == 1;
+    if !created {
+        if let Some(why) = not_from_here(&tx, kind, name, provenance)? {
+            return Ok(Published::Refused(why));
+        }
+    }
     let newest = tx
         .query_row(
             &format!("SELECT {COLUMNS} FROM library_versions WHERE kind = ?1 AND name = ?2 ORDER BY number DESC LIMIT 1"),
@@ -366,6 +407,56 @@ pub fn archive(conn: &Connection, kind: Kind, name: &str, now: i64) -> Result<Re
         params![kind.as_str(), name, now],
     )?;
     Ok(if found == 1 { Ok(()) } else { Err(Unmade::Missing) })
+}
+
+/// Where an item a publish creates takes its versions from from then on: the source that
+/// imported it, or the router's build. `None` for uploads and publishes, which share.
+fn owner(provenance: &Provenance) -> Option<String> {
+    match provenance {
+        Provenance::Forge { source, .. } => Some(format!("source:{source}")),
+        Provenance::Router { .. } => Some("router".to_string()),
+        Provenance::Upload | Provenance::Token { .. } | Provenance::Machine { .. } => None,
+    }
+}
+
+/// Why this publish may not add a version to an item that exists, if it may not. An item has
+/// one source of truth: one a repository imported changes in that repository, and the
+/// router's own changes with the router. One uploaded or published can be taken over by an
+/// import only once it is archived.
+fn not_from_here(tx: &Transaction, kind: Kind, name: &str, provenance: &Provenance) -> Result<Option<String>> {
+    let (has, archived): (Option<String>, bool) = tx.query_row(
+        "SELECT source, archived_at IS NOT NULL FROM library_items WHERE kind = ?1 AND name = ?2",
+        params![kind.as_str(), name],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    let wants = owner(provenance);
+    if has == wants {
+        return Ok(None);
+    }
+    if has.is_none() && archived {
+        tx.execute("UPDATE library_items SET source = ?3 WHERE kind = ?1 AND name = ?2", params![kind.as_str(), name, wants])?;
+        return Ok(None);
+    }
+    Ok(Some(match has.as_deref() {
+        Some("router") => format!(
+            "the {kind} {name} comes with the router's build: change skills/{name} in Agent Router's repository"
+        ),
+        Some(source) => {
+            let key = source.trim_start_matches("source:");
+            let from: Option<(String, String)> = tx
+                .query_row("SELECT repository, ref FROM library_sources WHERE key = ?1", [key], |r| Ok((r.get(0)?, r.get(1)?)))
+                .optional()?;
+            match from {
+                Some((repository, reference)) => {
+                    format!("the {kind} {name} comes from {repository} ({reference}): change it there, and the Library follows")
+                }
+                None => format!("the {kind} {name} comes from the Library source {key}: change it there"),
+            }
+        }
+        None => format!(
+            "the {kind} {name} exists already, uploaded or published here: archive it first for an import to take it over"
+        ),
+    }))
 }
 
 fn supersede(tx: &Transaction, kind: Kind, name: &str, now: i64) -> rusqlite::Result<usize> {
@@ -540,6 +631,7 @@ mod tests {
         let all = [
             Provenance::Upload,
             Provenance::Forge {
+                source: "skills".into(),
                 forge: "gitlab".into(),
                 repository: "tools/skills".into(),
                 commit: "0123abcd".into(),
@@ -553,18 +645,27 @@ mod tests {
             },
             Provenance::Router { build: "tree:0000000000000000000000000000000000000000".into() },
         ];
+        // Uploads, tokens and machines share an item; a source and the router each keep one
+        // of their own (`not_from_here`).
         for (n, from) in all.iter().enumerate() {
+            let name = match from {
+                Provenance::Forge { .. } => "imported",
+                Provenance::Router { .. } => "built-in",
+                _ => "bench",
+            };
             let live = n % 2 == 0;
-            let stored = publish(&db, &skill("bench", &format!("Version {n}.")), from, live, n as i64).unwrap();
+            let stored = publish(&db, &skill(name, &format!("Version {n}.")), from, live, n as i64).unwrap();
             assert_eq!(&stored.version().provenance, from);
             assert_eq!(stored.version().state, if live { State::Live } else { State::Pending });
         }
 
         let read = versions(&db, Kind::Skill, "bench").unwrap();
         let provenances: Vec<_> = read.iter().rev().map(|v| v.provenance.clone()).collect();
-        assert_eq!(provenances, all);
+        assert_eq!(provenances, [all[0].clone(), all[2].clone(), all[3].clone()]);
         let states: Vec<_> = read.iter().map(|v| v.state).collect();
-        assert_eq!(states, [State::Live, State::Pending, State::Superseded, State::Pending, State::Superseded]);
+        assert_eq!(states, [State::Pending, State::Live, State::Superseded]);
+        assert_eq!(versions(&db, Kind::Skill, "imported").unwrap()[0].provenance, all[1]);
+        assert_eq!(versions(&db, Kind::Skill, "built-in").unwrap()[0].provenance, all[4]);
 
         let json = serde_json::to_value(&all[3]).unwrap();
         assert_eq!((json["from"].as_str(), json["session"].as_str()), (Some("machine"), Some("d5f37e26-0000-4000-8000-000000000002")));
@@ -638,8 +739,11 @@ mod tests {
             [
                 "library_blobs",
                 "library_blobs_fixed",
+                "library_forge_tokens",
+                "library_forges",
                 "library_items",
                 "library_machines",
+                "library_sources",
                 "library_versions",
                 "library_versions_fixed",
                 "library_versions_one_live"
