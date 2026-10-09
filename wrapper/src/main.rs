@@ -1409,10 +1409,10 @@ mod tests {
 
     #[test]
     fn finds_the_session_id_in_an_init_message() {
-        let line = br#"{"type":"system","subtype":"init","session_id":"bdcd43d7-fbad-4309-9aa5-94fdc9927c96","tools":[]}"#;
+        let line = br#"{"type":"system","subtype":"init","session_id":"3c4d5e6f-0000-4000-8000-00000000000c","tools":[]}"#;
         assert_eq!(
             sniff_session_id(line).as_deref(),
-            Some("bdcd43d7-fbad-4309-9aa5-94fdc9927c96")
+            Some("3c4d5e6f-0000-4000-8000-00000000000c")
         );
     }
 

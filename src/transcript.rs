@@ -113,7 +113,7 @@ mod tests {
 
     #[test]
     fn accepts_real_session_ids() {
-        assert!(is_uuid_like("92807c6a-c3fd-46d6-a9a7-860f20d727c9"));
+        assert!(is_uuid_like("6f708192-0000-4000-8000-00000000000f"));
     }
 
     #[test]
@@ -121,10 +121,10 @@ mod tests {
         for s in [
             "../../../../etc/passwd",
             "..%2f..%2fetc",
-            "92807c6a-c3fd-46d6-a9a7-860f20d727c/",
+            "6f708192-0000-4000-8000-00000000000/",
             "",
             "not-a-uuid",
-            "92807c6ac3fd46d6a9a7860f20d727c9",
+            "6f70819200004000800000000000000f",
         ] {
             assert!(!is_uuid_like(s), "should reject {s:?}");
         }

@@ -208,7 +208,7 @@ def self_test():
     remotes = {"/code/x": [{"name": "origin", "url": "https://gitlab.example.com/acme/x.git"}]}
     planned = plan(Fake(), remotes_of=lambda d: remotes.get(d, []))
     assert [d for d, _, _ in planned] == ["/code/x"], planned
-    body = report({"machine": "mac", "label": "SYSOPs-Mac-mini"}, *planned[0])
+    body = report({"machine": "mac", "label": "Sample-Mac-mini"}, *planned[0])
     assert body["machine"] == "mac" and body["directories"] == [{"cwd": "/code/x", "remotes": remotes["/code/x"]}]
     assert len(body["sessions"]) == 447 and all(s["cwd"] == "/code/x" for s in body["sessions"])
     print("self-test: ok")

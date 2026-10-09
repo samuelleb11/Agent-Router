@@ -35,7 +35,7 @@ class WindowsProjectNameTest {
         assertEquals("agent-router", projects[0].name)
 
         val sessions = routerJson.decodeFromString<List<ProxySessionRow>>(
-            """[{"id":"2631369d-0980-4930-b3d1-3fd7396c4a20","project":"$wire","git_branch":"main",
+            """[{"id":"1a2b3c4d-0000-4000-8000-00000000000a","project":"$wire","git_branch":"main",
                  "entrypoint":"claude-cli/2.1.269 (external, claude-vscode)","started_at":1,
                  "last_seen_at":2,"requests":4,"prompt_tokens":1000,"cost":0.1}]""",
         )
@@ -46,11 +46,11 @@ class WindowsProjectNameTest {
     fun `a search hit names a Windows project by its last segment`() {
         val reply = routerJson.decodeFromString<SearchReply>(
             """{"query":"body_cap","expression":"body_cap",
-                "sessions":[{"session_id":"9fda36f0-d6e8-4623-93b6-5cae13e706c8","project":"$wire",
+                "sessions":[{"session_id":"2b3c4d5e-0000-4000-8000-00000000000b","project":"$wire",
                              "session_label":null,"git_branch":"dev","blocks":3,"hits":4,
                              "first_at":1790000000000,"last_at":1790000009000}],
                 "hits":[{"block_id":41,"kind":"tool_use","chars":120,
-                         "session_id":"9fda36f0-d6e8-4623-93b6-5cae13e706c8","role":"assistant",
+                         "session_id":"2b3c4d5e-0000-4000-8000-00000000000b","role":"assistant",
                          "ordinal":7,"request_id":48761,"at":1790000009000,"project":"$wire",
                          "session_label":null,"snippet":"why is ‹body_cap› 64 KB","rank":-8.04}]}""",
         )
@@ -103,7 +103,7 @@ class WindowsProjectNameTest {
     @Test
     fun `the live list and every other list agree on a project's name`() {
         for (path in listOf(windows, "$windows\\", """C:/Users/sample\code/agent-router""", "/Users/sample/code/agent-router")) {
-            val live = LiveSession(sessionId = "d6e4d7da", cwd = path, project = "C--Users-sample-code-agent-router")
+            val live = LiveSession(sessionId = "5e6f7081", cwd = path, project = "C--Users-sample-code-agent-router")
             assertEquals(path, "agent-router", live.projectName)
             for ((list, name) in lists) assertEquals("$list, for $path", live.projectName, name(path))
         }

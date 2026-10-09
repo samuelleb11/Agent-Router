@@ -12,7 +12,7 @@ import Library from './index';
 
 const NOW = Date.UTC(2026, 9, 8, 12, 0, 0);
 const HOUR = 3600e3;
-const SESSION = 'd5f37e26-c662-492c-b0af-8895c68d0ffe';
+const SESSION = '4d5e6f70-0000-4000-8000-00000000000d';
 
 const brief = (number: number, state: State, provenance: Provenance = { from: 'upload' }) => ({
   number,

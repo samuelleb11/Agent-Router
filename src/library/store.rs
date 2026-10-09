@@ -684,7 +684,7 @@ mod tests {
             Provenance::Machine {
                 machine: "5d0c9a1e-0000-4000-8000-000000000001".into(),
                 label: Some("bench-mac".into()),
-                session: Some("d5f37e26-0000-4000-8000-000000000002".into()),
+                session: Some("4d5e6f70-0000-4000-8000-000000000002".into()),
             },
             Provenance::Router { build: "tree:0000000000000000000000000000000000000000".into() },
         ];
@@ -711,7 +711,7 @@ mod tests {
         assert_eq!(versions(&db, Kind::Skill, "built-in").unwrap()[0].provenance, all[4]);
 
         let json = serde_json::to_value(&all[3]).unwrap();
-        assert_eq!((json["from"].as_str(), json["session"].as_str()), (Some("machine"), Some("d5f37e26-0000-4000-8000-000000000002")));
+        assert_eq!((json["from"].as_str(), json["session"].as_str()), (Some("machine"), Some("4d5e6f70-0000-4000-8000-000000000002")));
         let bare = serde_json::to_value(Provenance::Machine { machine: "m".into(), label: None, session: None }).unwrap();
         assert_eq!(bare, serde_json::json!({ "from": "machine", "machine": "m" }));
     }

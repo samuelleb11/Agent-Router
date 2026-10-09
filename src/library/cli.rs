@@ -191,7 +191,7 @@ mod tests {
 
         // What `publish` does once it has read agent.json: nothing is asked of anyone.
         let router = Router::new(&format!("http://{addr}"), lab.password.unwrap()).unwrap();
-        let session = "d5f37e26-c662-492c-b0af-8895c68d0ffe";
+        let session = "4d5e6f70-0000-4000-8000-00000000000d";
         let answer = publish_from_here(&router, &what, "machine-1", "bench mac", Some(session)).await.unwrap();
         assert_eq!(answer["version"]["number"], 1);
         assert_eq!(

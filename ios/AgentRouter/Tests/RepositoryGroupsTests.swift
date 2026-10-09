@@ -121,10 +121,10 @@ final class RepositoryGroupsTests: XCTestCase {
         XCTAssertEqual(rows[2].directories, [])
 
         let sessions = #"""
-        [{"id":"2631369d-0980-4930-b3d1-3fd7396c4a20","project":"gitlab.example.com/acme/ui-kit-web","cwd":"/Users/sample/code/ui-kit-web-lane-2",
+        [{"id":"1a2b3c4d-0000-4000-8000-00000000000a","project":"gitlab.example.com/acme/ui-kit-web","cwd":"/Users/sample/code/ui-kit-web-lane-2",
           "repository":"gitlab.example.com/acme/ui-kit-web","machine":{"id":"m-1","label":"mac"},"git_branch":"main","entrypoint":"claude-cli/2.1.269",
           "started_at":1,"last_seen_at":2,"requests":4,"prompt_tokens":1000,"cost":0.1,"output_tokens":10,"cache_read_tokens":900,"subagent_tokens":0,"errors":0,"subagents":0,"models":"claude-opus-5"},
-         {"id":"9fda36f0-d6e8-4623-93b6-5cae13e706c8","project":"/Users/sample/code/notes","git_branch":null,"entrypoint":null,
+         {"id":"2b3c4d5e-0000-4000-8000-00000000000b","project":"/Users/sample/code/notes","git_branch":null,"entrypoint":null,
           "started_at":1,"last_seen_at":2,"requests":4,"prompt_tokens":1000,"cost":0.1,"output_tokens":10,"cache_read_tokens":900,"subagent_tokens":0,"errors":0,"subagents":0,"models":null}]
         """#
         let proxied = try JSONDecoder().decode([ProxySessionRow].self, from: Data(sessions.utf8))

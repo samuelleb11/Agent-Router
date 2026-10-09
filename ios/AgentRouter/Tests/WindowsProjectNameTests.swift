@@ -24,17 +24,17 @@ final class WindowsProjectNameTests: XCTestCase {
     }
 
     private func proxySession(_ path: String?) throws -> ProxySessionRow {
-        try decode(ProxySessionRow.self, #"{"id":"2631369d-0980-4930-b3d1-3fd7396c4a20","project":\#(wire(path)),"git_branch":"main","entrypoint":"claude-cli/2.1.269 (external, claude-vscode)","started_at":1,"last_seen_at":2,"requests":4,"prompt_tokens":1000,"cost":0.1,"output_tokens":10,"cache_read_tokens":900,"subagent_tokens":0,"errors":0,"subagents":0,"models":"claude-opus-5"}"#)
+        try decode(ProxySessionRow.self, #"{"id":"1a2b3c4d-0000-4000-8000-00000000000a","project":\#(wire(path)),"git_branch":"main","entrypoint":"claude-cli/2.1.269 (external, claude-vscode)","started_at":1,"last_seen_at":2,"requests":4,"prompt_tokens":1000,"cost":0.1,"output_tokens":10,"cache_read_tokens":900,"subagent_tokens":0,"errors":0,"subagents":0,"models":"claude-opus-5"}"#)
     }
 
     private func search(_ path: String?) throws -> SearchResults {
         try decode(SearchResults.self, #"""
         {"query":"body_cap","expression":"body_cap",
-         "sessions":[{"session_id":"9fda36f0-d6e8-4623-93b6-5cae13e706c8","project":\#(wire(path)),
+         "sessions":[{"session_id":"2b3c4d5e-0000-4000-8000-00000000000b","project":\#(wire(path)),
                       "session_label":null,"git_branch":"dev","blocks":3,"hits":4,
                       "first_at":1790000000000,"last_at":1790000009000}],
          "hits":[{"block_id":41,"kind":"tool_use","chars":120,
-                  "session_id":"9fda36f0-d6e8-4623-93b6-5cae13e706c8","role":"assistant","ordinal":7,
+                  "session_id":"2b3c4d5e-0000-4000-8000-00000000000b","role":"assistant","ordinal":7,
                   "request_id":48761,"at":1790000009000,"project":\#(wire(path)),
                   "session_label":null,"snippet":"why is \#u{2039}body_cap\#u{203A} 64 KB","rank":-8.04}]}
         """#)
@@ -93,7 +93,7 @@ final class WindowsProjectNameTests: XCTestCase {
 
     func testTheLiveListAndEveryOtherListAgreeOnAProjectsName() throws {
         for path in [windows, windows + "\\", #"C:/Users/sample\code/agent-router"#, "/Users/sample/code/agent-router"] {
-            let live = try decode(LiveSession.self, #"{"session_id":"d6e4d7da","cwd":\#(wire(path)),"project":"C--Users-sample-code-agent-router","last_activity_ms":0,"active":false,"state":"idle","archived":false,"wrapped":true,"bytes":10}"#)
+            let live = try decode(LiveSession.self, #"{"session_id":"5e6f7081","cwd":\#(wire(path)),"project":"C--Users-sample-code-agent-router","last_activity_ms":0,"active":false,"state":"idle","archived":false,"wrapped":true,"bytes":10}"#)
             XCTAssertEqual(live.projectName, "agent-router", path)
             for (list, name) in lists {
                 XCTAssertEqual(try name(path), live.projectName, "\(list), for \(path)")

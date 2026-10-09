@@ -1375,8 +1375,8 @@ mod tests {
     use super::*;
     use crate::registry::RegStatus;
 
-    /// A real one of each, so the two are told apart on the shapes that actually occur.
-    const APNS: &str = "740f4707bebcf74f9b7c25d48e3358945f6aa01da5ddb387462c7eaf61bb78ad";
+    /// One of each kind, so the two are told apart on the shapes that actually occur.
+    const APNS: &str = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90";
     const FCM: &str = "cjE9vT2zRk6mQq1sLp0aBc:APA91bH-x_9Kd3fQz7YwVn2pRt5uXsA0bCdEfGhIjKlMnOpQrStUvWxYz01234567890abcdefghijklmnopqrstuvwxyzAB";
 
     #[test]

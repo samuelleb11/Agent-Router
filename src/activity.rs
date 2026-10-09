@@ -721,7 +721,7 @@ mod tests {
     fn rec(status: Option<&str>, t: Option<i64>) -> ProcRecord {
         ProcRecord {
             pid: 4352,
-            session_id: "d6e4d7da".into(),
+            session_id: "5e6f7081".into(),
             started_at_ms: Some(STARTED),
             status: status.map(|s| match s {
                 "busy" => RegStatus::Busy,

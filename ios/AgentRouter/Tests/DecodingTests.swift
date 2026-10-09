@@ -111,7 +111,7 @@ final class DecodingTests: XCTestCase {
     /// what older builds expect.
     func testASessionRowCarriesTheRoutersActivity() throws {
         let s = try row(#"""
-        {"session_id":"d6e4d7da-9d0e","cwd":"/code/agent-router","project":"-code-agent-router","git_branch":"dev",
+        {"session_id":"5e6f7081-0000","cwd":"/code/agent-router","project":"-code-agent-router","git_branch":"dev",
          "title":"Session liveness","created_ms":1790000000000,"last_activity_ms":1790000100000,"active":true,
          "state":"ask","archived":false,"wrapped":true,"bytes":123456,
          "activity":"waiting","open":true,"detail":"Bash wants to run","since_ms":1790000090000,
@@ -214,7 +214,7 @@ final class DecodingTests: XCTestCase {
     /// and its rows read exactly as before.
     func testASessionRowNamesItsMachineOnAHostedRouter() throws {
         let hosted = try row(#"""
-        {"session_id":"d6e4d7da-9d0e","cwd":"/code/agent-router","project":"-code-agent-router","git_branch":"dev",
+        {"session_id":"5e6f7081-0000","cwd":"/code/agent-router","project":"-code-agent-router","git_branch":"dev",
          "title":"Hosting","created_ms":1790000000000,"last_activity_ms":1790000100000,"active":true,"state":"working",
          "archived":false,"wrapped":true,"bytes":10,"activity":"generating","tone":"busy","as_of_ms":1790000120000,
          "machine":{"id":"5f0c2a8e-3b1d-4c6f-9e7a-2d4b6c8e0f13","label":"studio"}}

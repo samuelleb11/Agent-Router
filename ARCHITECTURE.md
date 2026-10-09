@@ -36,14 +36,14 @@ the `Authorization` header.
 from Claude Code 2.1.266:
 
 ```
-x-claude-code-session-id: 92807c6a-c3fd-46d6-a9a7-860f20d727c9
+x-claude-code-session-id: 6f708192-0000-4000-8000-00000000000f
 x-claude-code-agent-id:   a9f0d533f6…            (subagent traffic only; absent on the main thread)
 authorization:            sk-ant-oat01-…            (subscription OAuth)
 anthropic-beta:           oauth-2025-04-20,interleaved-thinking-2025-05-14,…
 user-agent:               claude-cli/2.1.266 (external, claude-vscode, agent-sdk/0.3.267)
 x-app:                    cli
 → response headers
-   request-id:                                 req_011Cetg5MiwC75RoJRMWEZa9
+   request-id:                                 req_011C…
    content-encoding:                           gzip
    anthropic-ratelimit-unified-status:         allowed
    anthropic-ratelimit-unified-5h-utilization: 0.04     5h-reset: 1789005000

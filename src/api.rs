@@ -2001,7 +2001,7 @@ mod tests {
         };
         record(
             &store.conn,
-            &report("mac", "SYSOPs-Mac-mini", &[("mac-1", "/Volumes/x/ui-kit-web")], vec![Directory {
+            &report("mac", "Sample-Mac-mini", &[("mac-1", "/Volumes/x/ui-kit-web")], vec![Directory {
                 cwd: "/Volumes/x/ui-kit-web".into(),
                 remotes: origin("https://gitlab.example.com/acme/ui-kit-web.git"),
             }]),
@@ -2043,7 +2043,7 @@ mod tests {
         assert_eq!(
             places,
             [
-                ("SYSOPs-Mac-mini".to_string(), "/Volumes/x/ui-kit-web".to_string(), repo.to_string()),
+                ("Sample-Mac-mini".to_string(), "/Volumes/x/ui-kit-web".to_string(), repo.to_string()),
                 ("wh-vdesk03".to_string(), "/home/u/ui-kit-web-lane-2".to_string(), repo.to_string()),
             ]
         );
@@ -2067,7 +2067,7 @@ mod tests {
             names,
             [
                 ("lin-1".to_string(), "/home/u/ui-kit-web-lane-2".to_string(), "wh-vdesk03".to_string()),
-                ("mac-1".to_string(), "/Volumes/x/ui-kit-web".to_string(), "SYSOPs-Mac-mini".to_string()),
+                ("mac-1".to_string(), "/Volumes/x/ui-kit-web".to_string(), "Sample-Mac-mini".to_string()),
             ]
         );
         assert!(listed.as_array().unwrap().iter().all(|s| s["project"] == repo && s["repository"] == repo));

@@ -121,7 +121,7 @@ data class LiveSession(
     val machine: SessionMachine? = null,
     /**
      * The git repository the working directory belongs to, as the router spells it: its
-     * `origin` remote, else its first, canonical — `gitlab.whnet.ca/whnet/apps/ui-kit-web`.
+     * `origin` remote, else its first, canonical — `gitlab.example.com/acme/ui-kit-web`.
      * Absent when the directory has no remote, or the machine's agent predates it.
      */
     val repository: String? = null,

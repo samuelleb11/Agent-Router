@@ -37,7 +37,7 @@ class MachineTest {
     @Test
     fun `a row from a hosted router names its machine`() {
         val s = row(
-            """{"session_id":"d6e4d7da-9d0e-47cb-86ca-37b4bc53b9c3","cwd":"/code/agent-router",
+            """{"session_id":"5e6f7081-0000-4000-8000-00000000000e","cwd":"/code/agent-router",
                 "project":"-code-agent-router","git_branch":"dev","title":"Machine agent","created_ms":1790000000000,
                 "last_activity_ms":1790000500000,"active":true,"state":"working","archived":false,"wrapped":true,
                 "bytes":123,"activity":"generating","tone":"busy","source":"registry","as_of_ms":1790000520000,

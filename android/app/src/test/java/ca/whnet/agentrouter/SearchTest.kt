@@ -13,17 +13,17 @@ class SearchTest {
     fun `the search reply decodes`() {
         val json = """
         {"query":"body_cap","expression":"body_cap",
-         "sessions":[{"session_id":"9fda36f0-d6e8-4623-93b6-5cae13e706c8","project":"/code/agent-router",
+         "sessions":[{"session_id":"2b3c4d5e-0000-4000-8000-00000000000b","project":"/code/agent-router",
                       "session_label":null,"git_branch":"dev","started_at":1790000000000,
                       "blocks":3,"hits":4,"first_at":1790000000000,"last_at":1790000009000}],
          "hits":[{"block_id":41,"kind":"tool_use","chars":120,
-                  "session_id":"9fda36f0-d6e8-4623-93b6-5cae13e706c8","role":"assistant","ordinal":7,
+                  "session_id":"2b3c4d5e-0000-4000-8000-00000000000b","role":"assistant","ordinal":7,
                   "request_id":48761,"at":1790000009000,"project":"/code/agent-router",
                   "session_label":null,"snippet":"why is ‹body_cap› 64 KB","rank":-8.04}]}
         """.trimIndent()
         val r = routerJson.decodeFromString<SearchReply>(json)
 
-        assertEquals("9fda36f0", r.sessions[0].shortId)
+        assertEquals("2b3c4d5e", r.sessions[0].shortId)
         assertEquals("agent-router", r.sessions[0].projectName)
         assertEquals(4L, r.sessions[0].hits)
 
@@ -31,7 +31,7 @@ class SearchTest {
         assertEquals("tool call", hit.kindName)
         // A block appears at every place it was replayed, so the block alone is not an
         // identity — and a LazyColumn given a duplicate key crashes rather than coping.
-        assertEquals("9fda36f0-d6e8-4623-93b6-5cae13e706c8-41-7", hit.key)
+        assertEquals("2b3c4d5e-0000-4000-8000-00000000000b-41-7", hit.key)
         assertEquals(-8.04, hit.rank, 0.001)
     }
 

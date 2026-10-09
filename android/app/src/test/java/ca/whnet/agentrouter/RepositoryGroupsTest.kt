@@ -101,9 +101,9 @@ class RepositoryGroupsTest {
         assertEquals(emptyList<Any>(), projects[1].directories)
 
         val sessions = decodeReply<List<ProxySessionRow>>(
-            """[{"id":"2631369d","project":"$repository","cwd":"/Users/sample/code/ui-kit-web-lane-2",
+            """[{"id":"1a2b3c4d","project":"$repository","cwd":"/Users/sample/code/ui-kit-web-lane-2",
                  "repository":"$repository","machine":{"id":"m1","label":"mac"},"started_at":1,"last_seen_at":2},
-                {"id":"9fda36f0","project":"/Users/sample/code/scratch","started_at":1,"last_seen_at":2}]""",
+                {"id":"2b3c4d5e","project":"/Users/sample/code/scratch","started_at":1,"last_seen_at":2}]""",
         )
         assertEquals(listOf("ui-kit-web", "scratch"), sessions.map { it.projectName })
         assertEquals("/Users/sample/code/ui-kit-web-lane-2", sessions[0].cwd)

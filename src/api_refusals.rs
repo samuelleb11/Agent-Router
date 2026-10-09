@@ -597,7 +597,7 @@ async fn live_body_refusal_is_in_words_on_a_machine_and_through_a_hosted_router(
 // in ~/.agent-router, and every id here is used by one test only.
 
 /// A device token of each kind, in the shapes that occur.
-const APNS: &str = "740f4707bebcf74f9b7c25d48e3358945f6aa01da5ddb387462c7eaf61bb78ad";
+const APNS: &str = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90";
 const FCM: &str = "cjE9vT2zRk6mQq1sLp0aBc:APA91bH-x_9Kd3fQz7YwVn2pRt5uXsA0bCdEfGhIjKlMnOpQrStUvWxYz01234567890abcdefghijklmnopqrstuvwxyzAB";
 
 /// Only the phones call these. A refusal was a 200 carrying `error` until it was not.

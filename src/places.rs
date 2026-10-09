@@ -304,7 +304,7 @@ mod tests {
         let router = crate::library::sync::Router::new(&format!("http://{addr}"), lab.password.unwrap()).unwrap();
         let report = Report {
             machine: "mac".into(),
-            label: Some("SYSOPs-Mac-mini".into()),
+            label: Some("Sample-Mac-mini".into()),
             platform: Some("macos".into()),
             sessions: vec![Listed { session: "s-1".into(), cwd: Some("/Users/u/code/ui-kit-web".into()) }],
             directories: vec![Directory {

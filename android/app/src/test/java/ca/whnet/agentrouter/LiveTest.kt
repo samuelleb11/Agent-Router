@@ -226,7 +226,7 @@ class LiveTest {
  */
 class SessionActivityTest {
 
-    private val id = "d6e4d7da-9d0e-47cb-86ca-37b4bc53b9c3"
+    private val id = "5e6f7081-0000-4000-8000-00000000000e"
 
     private fun status(json: String): LiveStatus = routerJson.decodeFromString(json)
 
