@@ -660,6 +660,87 @@ pub mod profile_autostart {
 #[cfg(target_os = "macos")]
 pub const SERVICE_LABEL: &str = "ca.whnet.agent-router";
 
+/// Load a login item into launchd from its plist, taking out first the job it replaces.
+///
+/// `bootout` answers before launchd has let go of a job that is still stopping, and a
+/// `bootstrap` of its label in that window is refused with "5: Input/output error". On
+/// 2026-10-09 that left a Mac's agent stopped and not loaded again: an agent that took 3 s to
+/// stop kept its label for 3.2 s after `bootout` returned. So the label is waited out first,
+/// for at most 30 s: launchd kills a job still running `ExitTimeOut` (20 s by default) after
+/// its SIGTERM.
+#[cfg(any(target_os = "macos", test))]
+fn launchd_reload(domain: &str, label: &str, plist: &Path, launchctl: impl Fn(&[&str]) -> Result<()>) -> Result<()> {
+    let target = format!("{domain}/{label}");
+    let _ = launchctl(&["bootout", &target]);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while launchctl(&["print", &target]).is_ok() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    launchctl(&["bootstrap", domain, &plist.to_string_lossy()])
+}
+
+#[cfg(test)]
+mod launchd_tests {
+    use std::cell::{Cell, RefCell};
+
+    use super::*;
+
+    /// launchd as measured on 2026-10-09: `bootout` answers at once, the job's label stays
+    /// while it stops (here, for `stops_in` more looks at it), and a `bootstrap` of a label
+    /// still there is refused.
+    struct Launchd {
+        there: Cell<bool>,
+        stopping: Cell<Option<u32>>,
+        stops_in: u32,
+        calls: RefCell<Vec<String>>,
+    }
+
+    impl Launchd {
+        fn new(there: bool, stops_in: u32) -> Launchd {
+            Launchd { there: Cell::new(there), stopping: Cell::new(None), stops_in, calls: RefCell::new(Vec::new()) }
+        }
+
+        fn launchctl(&self, args: &[&str]) -> Result<()> {
+            self.calls.borrow_mut().push(args[0].to_string());
+            match (args[0], self.there.get(), self.stopping.get()) {
+                ("bootout", true, _) => self.stopping.set(Some(self.stops_in)),
+                ("bootout", false, _) => return Err(anyhow!("Boot-out failed: 3: No such process")),
+                ("print", true, Some(0)) => {
+                    self.there.set(false);
+                    self.stopping.set(None);
+                    return Err(anyhow!("Could not find service"));
+                }
+                ("print", true, Some(n)) => self.stopping.set(Some(n - 1)),
+                ("print", true, None) => {}
+                ("print", false, _) => return Err(anyhow!("Could not find service")),
+                ("bootstrap", true, _) => return Err(anyhow!("Bootstrap failed: 5: Input/output error")),
+                ("bootstrap", false, _) => self.there.set(true),
+                (other, ..) => panic!("launchctl {other} was not expected"),
+            }
+            Ok(())
+        }
+
+        fn calls(&self) -> Vec<String> {
+            self.calls.borrow().clone()
+        }
+    }
+
+    #[test]
+    fn launchd_reload_waits_until_the_old_job_is_gone() {
+        let launchd = Launchd::new(true, 3);
+        launchd_reload("gui/501", "ca.whnet.agent-router.agent", Path::new("/p.plist"), |a| launchd.launchctl(a)).unwrap();
+        assert_eq!(launchd.calls(), ["bootout", "print", "print", "print", "print", "bootstrap"]);
+        assert!(launchd.there.get(), "the new job is loaded");
+    }
+
+    #[test]
+    fn launchd_reload_loads_at_once_what_was_not_loaded() {
+        let launchd = Launchd::new(false, 3);
+        launchd_reload("gui/501", "ca.whnet.agent-router.agent", Path::new("/p.plist"), |a| launchd.launchctl(a)).unwrap();
+        assert_eq!(launchd.calls(), ["bootout", "print", "bootstrap"]);
+    }
+}
+
 #[cfg(target_os = "macos")]
 pub mod service {
     use super::*;
@@ -725,8 +806,7 @@ pub mod service {
         let path = plist_path()?;
         write_atomic(&path, &plist)?;
         let domain = format!("gui/{}", uid());
-        let _ = run("launchctl", &["bootout", &format!("{domain}/{SERVICE_LABEL}")]);
-        run("launchctl", &["bootstrap", &domain, &path.to_string_lossy()])?;
+        launchd_reload(&domain, SERVICE_LABEL, &path, |args| run("launchctl", args))?;
         let _ = run("launchctl", &["enable", &format!("{domain}/{SERVICE_LABEL}")]);
         Ok(path)
     }
@@ -843,8 +923,7 @@ pub mod agent_service {
             // Loaded if it is not; launchd refuses a second load of a loaded job, harmlessly.
             let _ = launchctl(&["bootstrap", &domain(), &path.to_string_lossy()]);
         } else {
-            let _ = launchctl(&["bootout", &target]);
-            launchctl(&["bootstrap", &domain(), &path.to_string_lossy()])?;
+            launchd_reload(&domain(), AGENT_LABEL, &path, launchctl)?;
         }
         let _ = launchctl(&["enable", &target]);
         Ok(path)

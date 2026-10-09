@@ -75,6 +75,16 @@ install_with() { # <where> <its command>
 none=1
 code=$(command -v code || true)
 case $code in "$servers"/*) code= ;; esac
+# A Mac's `code` is on the PATH only once VS Code's "Shell Command: Install 'code' command in
+# PATH" has been run, but the app carries it all along.
+if [ -z "$code" ] && [ "$os" = darwin ]; then
+  for apps in "$HOME/Applications" /Applications; do
+    app="$apps/Visual Studio Code.app/Contents/Resources/app/bin/code"
+    [ -x "$app" ] || continue
+    code=$app
+    break
+  done
+fi
 if [ -n "$code" ]; then
   none=
   install_with "VS Code" "$code" || :
@@ -87,4 +97,4 @@ for cli in "$servers"/cli/servers/*/server/bin/code-server "$servers"/bin/*/bin/
     break
   fi
 done
-[ -z "$none" ] || say "Neither VS Code's \`code\` command nor a VS Code Server was found, so the extension was not installed. This machine's sessions can be followed; to type into the ones VS Code starts, $by_hand."
+[ -z "$none" ] || say "Neither VS Code nor a VS Code Server was found, so the extension was not installed. This machine's sessions can be followed; to type into the ones VS Code starts, $by_hand."

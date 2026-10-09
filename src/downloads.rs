@@ -219,9 +219,9 @@ mod tests {
     }
 
     /// A machine opened from another computer through Remote - SSH has no `code` command,
-    /// only the VS Code Server, and that is where Claude Code runs for such a window. The
-    /// script runs on a PATH of stand-ins alone, so no VS Code on the machine running the
-    /// test can be reached.
+    /// only the VS Code Server, and that is where Claude Code runs for such a window. A Mac's
+    /// VS Code has its `code` inside the app. The script runs on a PATH of stand-ins alone,
+    /// `uname` among them, so no VS Code on the machine running the test can be reached.
     #[cfg(unix)]
     #[test]
     fn the_shell_script_installs_the_extension_where_vs_code_runs() {
@@ -237,10 +237,11 @@ mod tests {
         };
         let bin = root.join("bin");
         std::fs::create_dir_all(&bin).unwrap();
-        for tool in ["uname", "mktemp", "chmod", "rm"] {
+        for tool in ["mktemp", "chmod", "rm"] {
             let real = ["/usr/bin", "/bin"].iter().map(|d| Path::new(d).join(tool)).find(|p| p.exists()).unwrap();
             std::os::unix::fs::symlink(real, bin.join(tool)).unwrap();
         }
+        let uname = |os: &str| stub(&bin.join("uname"), &format!("case $1 in -s) echo {os} ;; *) echo arm64 ;; esac"));
         // Every download is a program that succeeds, which serves as the agent too.
         stub(&bin.join("curl"), r#"while [ "$1" != -o ]; do shift; done; printf '#!/bin/sh\nexit 0\n' > "$2""#);
         let server = root.join("home/.vscode-server/cli/servers/Stable-0123/server/bin");
@@ -265,27 +266,39 @@ mod tests {
             assert!(out.status.success(), "{said}");
             (std::fs::read_to_string(&calls).unwrap_or_default(), said)
         };
-        let installed_once = |calls: &str| {
+        let installed_once = |calls: &str, by: &str| {
             let lines: Vec<&str> = calls.lines().collect();
             lines.len() == 1
-                && lines[0].starts_with("code-server --install-extension ")
+                && lines[0].starts_with(&format!("{by} --install-extension "))
                 && lines[0].ends_with("/agent-router.vsix --force")
         };
 
+        // On Linux, where no app is looked for.
+        uname("Linux");
+
         // Headless, over ssh: no `code` anywhere, only the server.
         let (got, said) = run(bin.display().to_string());
-        assert!(installed_once(&got), "{got}\n{said}");
+        assert!(installed_once(&got, "code-server"), "{got}\n{said}");
         assert!(said.contains("Reload the VS Code windows"), "{said}");
 
         // In the server's own terminal `code` is its shim: the server takes it, once.
         let (got, said) = run(format!("{}:{}", server.join("remote-cli").display(), bin.display()));
-        assert!(installed_once(&got), "{got}\n{said}");
+        assert!(installed_once(&got, "code-server"), "{got}\n{said}");
 
         // Neither: nothing is installed, and the script says how to do it by hand.
         std::fs::remove_dir_all(root.join("home/.vscode-server")).unwrap();
         let (got, said) = run(bin.display().to_string());
         assert_eq!(got, "", "{said}");
         assert!(said.contains("nor a VS Code Server was found"), "{said}");
+
+        // A Mac where VS Code's "Install 'code' command in PATH" was never run: the app's own
+        // `code` takes it, once. ~/Applications is looked in first, so a VS Code in the
+        // /Applications of a Mac running the test is never reached.
+        uname("Darwin");
+        let app = root.join("home/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code");
+        stub(&app, &format!("echo \"app $*\" >> '{}'", calls.display()));
+        let (got, said) = run(bin.display().to_string());
+        assert!(installed_once(&got, "app"), "{got}\n{said}");
 
         let _ = std::fs::remove_dir_all(&root);
     }
