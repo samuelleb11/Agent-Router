@@ -173,8 +173,8 @@ plan), nothing of either credential used:
 
 ### Still to measure
 
-These need a Kimi Code key and decide details of the items below. Each answer goes in a
-section of this document, dated, when it is measured:
+Measured since: see [What Kimi Code accepts](#what-kimi-code-accepts-measured-2026-10-10).
+What these were, for the record. Each answer went in a section of this document, dated:
 - whether the endpoint takes `x-api-key`, `Authorization: Bearer`, and both;
 - whether it refuses Claude Code's `anthropic-beta` values, and which;
 - whether it answers `/v1/messages/count_tokens` and `GET /v1/models`;
@@ -187,6 +187,84 @@ section of this document, dated, when it is measured:
   Claude Code's own recovery (drop the thinking blocks, retry) should then take over. If it
   does not, the router drops another provider's thinking blocks from the history it sends
   to Anthropic, and that is filed as its own item.
+
+## What Kimi Code accepts (measured 2026-10-10)
+
+With a Kimi Code console key on the owner's plan (Pro: K3 at 1M and HighSpeed included), from
+the vault item "Kimi Code probe key (agent-router)", against `https://api.kimi.ai/coding`,
+every request under Agent Router's own User-Agent. The bodies are kept in `fixtures/kimi/`.
+
+**Auth header.** `x-api-key`, `Authorization: Bearer`, and both together are each taken with
+200. The router sends `x-api-key`, as Kimi's Claude Code guide sets it; `/v1/usages` takes
+either.
+
+**Routes.**
+- `POST /v1/messages/count_tokens` answers `{"input_tokens": 14}`.
+- `GET /v1/models` lists the plan's four models in the Models API's shape, with Kimi's own
+  names and more fields than Anthropic's (`context_length`, `supports_reasoning`,
+  `think_efforts`): `kimi-for-coding` "K2.8 Preview" 1M, `kimi-for-coding-highspeed` "K2.7
+  Code Highspeed" 256K, `k3` "K3" 1M, `k3-256k` "K3-256k" 256K (`models.json`).
+- `GET /v1/usages` answers the router's User-Agent, in the newer shape: a count window
+  `limits[0]` (300 minutes, `"limit": "100"`) and the pools `limit_5h`,
+  `limit_month_total` and `limit_month_code`, each `{used_ratio, reset_time}`
+  (`usages.json`). After a dozen requests it still read `used_ratio: 0` and
+  `remaining: "100"`: its counters lag, or zero, as others have reported of it. A reading
+  of 0 is not proof of an unspent window.
+
+**Claude Code's request, unchanged.** Kimi Code takes exactly what Claude Code 2.1.267 sends
+for `k3` (read off the wire by a stand-in server on loopback): `POST /v1/messages?beta=true`
+with `anthropic-beta` `claude-code-20250219, context-1m-2025-08-07,
+interleaved-thinking-2025-05-14, thinking-token-count-2026-05-13,
+context-management-2025-06-27, prompt-caching-scope-2026-01-05,
+mid-conversation-system-2026-04-07, effort-2025-11-24`, `thinking: {type: "adaptive",
+display: "omitted"}`, `output_config: {effort: "high"}`, `context_management: {edits:
+[{type: "clear_thinking_20251015", keep: "all"}]}`, `cache_control` on the system prompt
+and `max_tokens: 32000`. Nothing is refused, and nothing needs stripping.
+- `k3[1m]` goes on the wire as `k3` with the `context-1m-2025-08-07` beta.
+- For an id it does not know, Claude Code still sends adaptive thinking and an effort, and
+  says it keeps the session within 200K unless a `modelPicker` row maps the model with
+  `behavesAs`, or `[1m]` is added.
+
+**What comes back.**
+- Anthropic's shape, streamed as Anthropic's events: `message_start`, `content_block_*`,
+  `thinking_delta`, `signature_delta`, `text_delta`, `message_delta`, `message_stop`
+  (`stream-k3.sse`). Its `data:` lines have no space after the colon, which capture's
+  scanner reads.
+- Kimi Code streams its thinking even when asked for `display: "omitted"`, and **signs its
+  thinking blocks** (`signature`).
+- Usage is Anthropic's flat form: `input_tokens`, `cache_creation_input_tokens`,
+  `cache_read_input_tokens`, `output_tokens`, `output_tokens_details.thinking_tokens`, and
+  `service_tier`. The final `message_delta` carries all of it.
+- No `request-id`: `x-trace-id` instead, and no rate-limit headers.
+- Errors are `{"error": {"message", "type"}}` with no top-level `"type": "error"`
+  (`401-invalid-key.json`).
+
+### Moving a conversation between providers
+
+Measured with a real Claude Code session (2.1.267, a scratch `CLAUDE_CONFIG_DIR`) through
+this router's build on loopback, with the probe key as its Kimi Code account and this Mac's
+Claude Code login as its Anthropic one. One conversation, resumed turn by turn:
+`k3` → `claude-haiku-5-5` → `k3` → `claude-sonnet-5-5` → `k3`.
+
+- **Every request was served on its first try**, each by its own provider, all 200. No
+  refusal, so Claude Code's recovery (drop the thinking blocks, retry) was never needed.
+- **Kimi's signed thinking blocks went to Anthropic and were taken.** The first `k3` turn's
+  thinking block, with Kimi's signature, is in the transcript Claude Code resent to Haiku.
+- **Not exercised: Claude's signed thinking going to Kimi Code.** Neither Claude turn chose
+  to think (adaptive thinking, `thinking_tokens: 0`), so no Anthropic-signed block reached
+  Kimi Code. If one is ever refused, the router can drop another provider's thinking blocks
+  from the history it forwards. That is filed only if it is seen to happen.
+- A Claude subscription credential is used only by Claude Code's own requests. A request
+  made by hand through the router was answered 429 `rate_limit_error`, with the window at
+  49%, so the cross-provider check needs a real session, as here.
+
+### Not measured
+
+- **A spent window's 403.** It cannot be had without using up the owner's 5-hour window, which
+  Kimi Code's own apps share. The body AGEN-0088 classifies is the one in Kimi's error
+  reference until the router records a real one.
+- **The concurrency 403.** Kimi applies it by risk control, and appeals are by email, so it
+  is not provoked on purpose.
 
 ## Clients
 
