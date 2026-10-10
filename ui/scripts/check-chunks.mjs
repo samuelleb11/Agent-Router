@@ -53,8 +53,12 @@ const dist = join(ui, 'dist');
 /// 2026-10-08 (AGEN-0051): the script budget moves from 520 to 525 kB for the Library, a
 /// first-level screen whose rail entry, icon and palette entry every page carries. It took the
 /// first load from 518.5 to 521.1 kB; the screen itself is a chunk of its own.
+/// 2026-10-10 (AGEN-0092): the gzipped script budget moves from 165 to 167 kB for sources, which
+/// every page carries in the palette and the Settings model: a run of models per provider, the
+/// Kimi Code account commands, the Models page's route and the provider types. It took the first
+/// load to 165.1 kB gzipped (522.1 kB raw); the Models page itself is a chunk of its own.
 const BUDGET = {
-  script: { raw: 525_000, gzip: 165_000 },
+  script: { raw: 525_000, gzip: 167_000 },
   style: { raw: 720_000, gzip: 75_000 },
 };
 
