@@ -25,8 +25,9 @@ const KINDS: readonly { readonly kind: SearchKind; readonly label: string }[] = 
 
 interface Asked {
   readonly text: string;
-  /// What the router is asked: the text verbatim, trimmed, with the page's project, session and
-  /// range when it was asked, never its account (OV-C43, OV-C44); null for a blank query (OV-C40).
+  /// What the router is asked: the text verbatim, trimmed, with the page's scope when it was asked —
+  /// its provider, account, project, session and range (OV-C43, OV-C44, OV-C227); null for a blank
+  /// query (OV-C40).
   readonly params: Record<string, string> | null;
   /// Each ask is its own read: the router does not cache a search, and nor does the page (OV-C42).
   readonly seq: number;

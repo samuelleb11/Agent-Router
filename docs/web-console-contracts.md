@@ -72,7 +72,9 @@ after the owner looked at the deployed console, Add account came to ask the prov
 and Accounts to show a section per provider with a list box for the account its requests go to,
 ST-C125 (AGEN-0092), so Settings holds 125. The same day Quota headroom came to hold a block per
 provider with an account, each with its own windows, headroom and first to run out (AGEN-0133):
-OV-C224 and OV-C225, so the Overview holds 226.
+OV-C224 and OV-C225, so the Overview holds 226. The same day each total came to show its split by
+provider under it, and the scope to offer a provider that the page's figures follow (AGEN-0134):
+OV-C226 and OV-C227, so the Overview holds 228.
 
 ## Shell
 
@@ -598,6 +600,7 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
   reading "All accounts", "All projects" and "All sessions" until a level is set and in the strong
   style once it is. *Why:* where the page is narrowed and how to change it are one control.
   *Regression:* no. *Source:* `assets/index.html:405-415`, `assets/index.html:1000-1025`.
+  *Amended:* a provider above the three levels, chosen beside the account crumb (OV-C227).
 - **OV-C13** A crumb names its level the way the lists do: an account by its label (its router id
   until the summary knows it), a project by the last part of its path with the whole path one press
   away, a session by its first eight characters followed by its git branch when known. *Why:* the
@@ -619,7 +622,8 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
   account is scoped, the sessions while a session is. *Why:* the pickers' lists — up to 200 sessions
   and every project — were read every five seconds for menus that are almost always closed.
   *Regression:* no. *Source:* `ui/src/data/overview.ts` (`usePickers`),
-  `ui/src/screens/Overview/ScopeBar.tsx`.
+  `ui/src/screens/Overview/ScopeBar.tsx`. *Amended:* each picker reads under the chosen provider, so
+  the account picker offers only that provider's accounts (OV-C227).
 - **OV-C16** A picker lists "All …" first, then one row per account, project or session, each with
   its name, a second line and a meta of tokens · requests · cost, the current choice marked; the
   name never shrinks, and a project's path gives up the space and ellipsises from the left, keeping
@@ -672,7 +676,8 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
 - **OV-C25** "Clear scope" shows exactly when an account, project or session is set; it clears all
   three and keeps the time range. *Why:* the range is a separate choice from what is narrowed.
   *Regression:* no. *Source:* `assets/index.html:414`, `assets/index.html:940`,
-  `assets/index.html:1002`.
+  `assets/index.html:1002`. *Amended:* a chosen provider narrows the page too, so it shows then as
+  well, and clears the provider with the three (OV-C227).
 - **OV-C26** The time range is one of all, 1h, 24h, 7d and 30d, all by default, as an always-visible
   single-choice switcher named "Time range"; a relative range is measured back from the moment of
   each read, so it slides with the clock. *Why:* each read asks for its lower bound afresh.
@@ -687,7 +692,7 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
 - **OV-C28** A range named in a link that is not one of the five reads as all, never as a property
   every object has (`constructor`, `__proto__`). *Why:* the address is input anyone can type.
   *Regression:* no. *Source:* `assets/index.html:912-913`, `assets/index.html:928-929`.
-- **OV-C29** The scope, the range and the open request rows are in the address, so a scoped view is a link. An address in the old dashboard's spelling, `#a=&p=&s=&r=&o=`, opens the Overview unscoped: it is neither read nor rewritten. *Why:* a link to a scoped view has to survive a reload; the clean cut (decision J) keeps no compatibility code for the old page's addresses. *Regression:* no. *Source:* `assets/index.html:908-925` (the old spelling); plan, decision J.
+- **OV-C29** The scope, the range and the open request rows are in the address, so a scoped view is a link. An address in the old dashboard's spelling, `#a=&p=&s=&r=&o=`, opens the Overview unscoped: it is neither read nor rewritten. *Why:* a link to a scoped view has to survive a reload; the clean cut (decision J) keeps no compatibility code for the old page's addresses. *Regression:* no. *Source:* `assets/index.html:908-925` (the old spelling); plan, decision J. *Amended:* the provider too, as `provider=` (OV-C227).
 - **OV-C30** A scope or range change pushes a history entry, so Back un-scopes the page. *Why:*
   Northstar's rule, adopted by the plan; the dashboard replaces the entry today, so Back leaves the
   page. *Regression:* no. *Source:* `assets/index.html:914-923`.
@@ -715,6 +720,23 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
   with no word that the list was cut.
 - **OV-C35** The scope bar stays in view at the top while the page scrolls. *Why:* the scope
   qualifies every figure below it. *Regression:* no. *Source:* `assets/index.html:67-68`.
+- **OV-C227** The scope offers a provider: all of them, then each provider with an account, by mark
+  and name, as a switcher beside the account picker, every choice visible at rest as the range's
+  are; a router with one provider offers no choice. Every figure the scope narrows follows it — the
+  totals, activity, read and context, models, threads, the lists and the requests — Search included;
+  Quota headroom and All accounts keep covering every provider, as they cover every account whatever
+  the scope (OV-C54, OV-C87). With a provider chosen, the account picker offers only that provider's
+  accounts, and an account already picked from another provider is let go, the project and the
+  session kept, as "All accounts" keeps them (OV-C23). The choice is part of the URL, as `provider=`,
+  as the rest of the scope is; a provider the router does not know reads as all of them, never as a
+  property every object has (OV-C28). It narrows as a level does: Clear scope clears it (OV-C25), and
+  an empty panel says "in this scope" (OV-C145). *Why:* the owner chose a provider in the page's
+  scope, beside each total's split (AGEN-0134), and every read the Overview scopes takes one
+  (AGEN-0130, AGEN-0132). *Regression:* no. *Source:* `src/api.rs` (`Filter`, `SearchQuery`),
+  `ui/src/model/scope.ts` (`parseProvider`, `chooseProvider`, `readQuery`, `writeQuery`),
+  `ui/src/data/overview.ts` (`snapshotPaths`, `usePickers`), `ui/src/model/search.ts`
+  (`searchParams`), `ui/src/screens/Overview/scopeOptions.ts` (`providerChoices`),
+  `ui/src/screens/Overview/ScopeBar.tsx`.
 
 ### Search
 
@@ -756,7 +778,9 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
   those three narrows it. *Why:* the reader must know whether the scope hid a match. *Regression:*
   no. *Source:* `assets/index.html:2591-2592`, `assets/index.html:2634`, `src/api.rs:612-624`.
   *Today:* broken — only the no-match message says "in the current scope"; the idle caption claims
-  "every message, tool call and result ever captured" under any range.
+  "every message, tool call and result ever captured" under any range. *Amended:* the search API takes the account and the provider
+  now (AGEN-0132), so the search follows the page's whole scope — provider, account, project, session
+  and range — and says so whenever any of them narrows it (OV-C227).
 - **OV-C45** A failed search says so where the results go, in the router's own words: "Search
   failed: <message>". *Why:* a refusal renders in the server's own words (Northstar §5).
   *Regression:* no. *Source:* `assets/index.html:809-814`, `assets/index.html:2593-2600`,
@@ -1142,6 +1166,7 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
   Output tokens, Served from cache, Cache writes, Time to first token and Errors — each with its
   meaning as visible text under its value. *Why:* the plan's `StatTile`, with each tile's meaning
   visible. *Regression:* no. *Source:* `assets/index.html:450-451`, `assets/index.html:1462-1474`.
+  *Amended:* each total with its split by provider under it (OV-C226).
 - **OV-C99** The largest tile says what it counts and over what span — "<first> → <last> ·
   everything the model read, cached or not" — over a sparkline per bucket; with nothing recorded it
   says "nothing recorded yet — point Claude Code at this router". *Why:* an empty router tells the
@@ -1184,6 +1209,19 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
   tile is a clickable `div` with no role or tab stop, worded "click to list them".
 - **OV-C108** The heading's caption reads "N requests · <last seen>" once anything is recorded.
   *Why:* how much and how recent, at a glance. *Regression:* no. *Source:* `assets/index.html:1521`.
+- **OV-C226** Each total keeps one figure and shows its split by provider under it: the providers'
+  marks and figures, with a thin stacked bar of their shares. Prompt tokens read, Spend, Requests,
+  Output tokens, Served from cache (its cache reads) and Cache writes are split; Time to first token
+  and Errors, which the router gives no figure per provider for, are not. A line per provider,
+  Anthropic's first, holds its mark, named by its provider, its figure as the tile writes the total,
+  and its share (OV-C179); a spend of nothing beside requests the router could not price reads "not
+  priced", never "$0" (OV-C178, OV-C221). Each part of the bar wears its provider's colour, keyed
+  beside its mark; the bar is hidden from a screen reader, which hears the lines, and takes no focus.
+  A router with one provider shows no split, nor does a scope narrowed to one. *Why:* the owner
+  chose one total with its split by provider under it, over a total per provider (AGEN-0134); the
+  router splits every total by provider (`by_provider`, AGEN-0130). *Regression:* no. *Source:*
+  `src/api.rs` (`summary_of`), `ui/src/screens/Overview/tiles.ts` (`providerSplit`),
+  `ui/src/screens/Overview/ProviderSplit.tsx`, `ui/src/screens/Overview/Headline.tsx`.
 
 ### Activity
 

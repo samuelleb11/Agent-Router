@@ -9,15 +9,18 @@
 // - a scope with nothing priced reads "—", and one with unpriced requests in it says so, where the
 //   router's sum made both look priced (OV-C178).
 
-import type { Latency, ModelRow, Totals } from '~/data/overview';
-import { ago, compact, count, ms, pct, plural, projectName, tod, usd } from '~/model/format';
+import type { Latency, ModelRow, ProviderTotals, Totals } from '~/data/overview';
+import { DASH, ago, compact, count, ms, pct, plural, projectName, tod, usd } from '~/model/format';
 import type { Scope } from '~/model/scope';
+import type { Provider } from '~/model/settings';
 import { unpricedModel } from './panels';
 
 export type TileTone = 'ok' | 'warn' | 'bad';
 
+export type TileKey = 'prompt' | 'spend' | 'requests' | 'output' | 'cache' | 'writes' | 'latency' | 'errors';
+
 export interface Tile {
-  readonly key: 'prompt' | 'spend' | 'requests' | 'output' | 'cache' | 'writes' | 'latency' | 'errors';
+  readonly key: TileKey;
   readonly label: string;
   /// Null renders "—": a value the router did not give is not a zero.
   readonly value: string | null;
@@ -26,9 +29,55 @@ export interface Tile {
   /// What it means, as visible text (OV-C98).
   readonly meaning: string;
   readonly tone?: TileTone;
+  /// Its total split by provider, shown under it; null with fewer than two providers in scope, and
+  /// for a figure the router does not split (OV-C226).
+  readonly byProvider: readonly ProviderPart[] | null;
+}
+
+/// One provider's part of a total (OV-C226).
+export interface ProviderPart {
+  readonly provider: Provider;
+  /// Its size, for the bar of shares, which leaves out a zero.
+  readonly value: number;
+  /// As the tile writes its total: "12.20M", "412", "$41.20" — and "not priced" for a cost of nothing
+  /// beside requests the router could not price, never "$0" (OV-C178, OV-C221).
+  readonly figure: string;
+  /// Its share of the total, "98%", "0.4%" (OV-C179); null for a part with no figure to share.
+  readonly share: string | null;
 }
 
 const n = (v: number | null | undefined): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+
+/// What each total is split by: the figure of each provider's row it adds up, and how it is written.
+/// Latency and errors are not split: the router gives no per-provider figure for them.
+const SPLITS: Readonly<Partial<Record<TileKey, { readonly of: (p: ProviderTotals) => number | null; readonly format: (v: number) => string }>>> = {
+  prompt: { of: (p) => p.prompt_tokens, format: compact },
+  spend: { of: (p) => p.cost, format: usd },
+  requests: { of: (p) => p.requests, format: count },
+  output: { of: (p) => p.output_tokens, format: compact },
+  // Served from cache splits what it is made of, the cache reads.
+  cache: { of: (p) => p.cache_read_tokens, format: compact },
+  writes: { of: (p) => p.cache_write_tokens, format: compact },
+};
+
+/// A total's split by provider, in the router's order, Anthropic's first: each provider's figure and
+/// its share of the whole. Null when fewer than two providers served in scope — a router with one
+/// provider, or a scope narrowed to one, shows no split — and for a tile with no split (OV-C226).
+export function providerSplit(t: Totals, key: TileKey): ProviderPart[] | null {
+  const rows = t.by_provider;
+  const split = SPLITS[key];
+  if (!split || rows.length < 2) return null;
+  const whole = rows.reduce((a, r) => a + n(split.of(r)), 0);
+  return rows.map((r) => {
+    const value = n(split.of(r));
+    if (key === 'spend' && !(value > 0)) {
+      // Nothing priced is not free: a cost of nothing reads "not priced" beside requests the router
+      // could not price, and "—" otherwise, never "$0" (OV-C178, OV-C221).
+      return { provider: r.provider, value: 0, figure: n(r.unpriced) > 0 ? 'not priced' : DASH, share: null };
+    }
+    return { provider: r.provider, value, figure: split.format(value), share: pct(value, whole) };
+  });
+}
 
 /// The requests in scope the router could not price: a model with tokens and no cost contributes
 /// nothing to the total rather than counting as free (src/pricing.rs), so its requests are named
@@ -43,13 +92,13 @@ export function spendValue(t: Totals): string | null {
   return n(t.cost) > 0 ? usd(t.cost) : null;
 }
 
-/// The eight tiles, the largest first (OV-C98).
+/// The eight tiles, the largest first (OV-C98), each total with its split by provider (OV-C226).
 export function headline(t: Totals, latency: Latency | null | undefined, models: readonly ModelRow[], scope: Scope, now: number = Date.now()): Tile[] {
   const prompt = n(t.prompt_tokens);
   const cached = n(t.cache_read_tokens);
   const left = unpriced(models);
   const leaves = left.requests ? ` · leaves out ${plural(left.requests, 'request', 'requests')} the router could not price` : '';
-  return [
+  const tiles: Omit<Tile, 'byProvider'>[] = [
     {
       key: 'prompt',
       label: 'Prompt tokens read',
@@ -121,6 +170,7 @@ export function headline(t: Totals, latency: Latency | null | undefined, models:
       tone: n(t.errors) > 0 ? 'bad' : undefined,
     },
   ];
+  return tiles.map((tile) => ({ ...tile, byProvider: providerSplit(t, tile.key) }));
 }
 
 /// Spend's full split: the total, uncached input, the two cache-write tiers, cache reads, output,

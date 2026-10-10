@@ -7,6 +7,7 @@ import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useNavigate } from 'react-router';
 import { keys } from '~/app/query';
+import type { AccountSplitRow } from '~/data/overview';
 import { identityNote, notes, noteText } from '~/model/settings';
 import { renderScreen } from '~/test-utils';
 import Overview from './index';
@@ -38,6 +39,7 @@ import {
   session,
   summary,
   totals,
+  TWO_PROVIDERS,
 } from './fixtures';
 
 /// The whole page is drawn in jsdom, beside every other spec in the run: generous limits, so a loaded
@@ -459,7 +461,7 @@ describe('searching the transcripts', () => {
     type('kestrel');
     await waitFor(() => expect(r.calls('/api/search')).toHaveLength(1));
     const reads = r.calls('/api/summary').length;
-    await act(() => client.refetchQueries({ queryKey: keys.overview({ account: null, project: null, session: null, range: 'all' }, 'search') }));
+    await act(() => client.refetchQueries({ queryKey: keys.overview({ provider: null, account: null, project: null, session: null, range: 'all' }, 'search') }));
     expect(r.calls('/api/summary').length).toBe(reads + 1);
     expect(r.calls('/api/search')).toHaveLength(1);
     const kinds = within(screen.getByRole('tablist', { name: 'What to search' }));
@@ -872,6 +874,166 @@ describe('each provider', () => {
     expect(marks('bbbbbbbb')).toEqual([['Kimi Code', 'Kimi Code']]);
     // Beside its client, in the client's chip.
     expect(within(list).getByRole('button', { name: 'bbbbbbbb' }).querySelector('[data-providers]')).toHaveTextContent(/^Kimi Code CLI$/);
+  });
+});
+
+describe('the provider in the scope, and each total by provider', () => {
+  const KIMI_ROW: AccountSplitRow = { id: 'kimi-acc', label: 'Kimi', provider: 'kimi', active: 1, requests: 12, prompt_tokens: 200_000, cost: 0, output_tokens: 10_000, sessions: 1, last_seen: NOW - 5 * MIN };
+  /// A router with an Anthropic account and a Kimi Code account, its totals split between them, and
+  /// By account narrowed by the provider asked for, as the router narrows it.
+  const both = () =>
+    router((path, query) => {
+      if (path === '/api/summary') {
+        const all: AccountSplitRow[] = [...(summary().by_account ?? []), KIMI_ROW];
+        const provider = query.get('provider');
+        const byAccount = provider ? all.filter((a) => (a.provider || 'anthropic') === provider) : all;
+        return ok(partsOf(summary({ totals: totals({ by_provider: TWO_PROVIDERS }), by_account: byAccount, providers: [anthropicBlock(), kimiBlock()] }), query.get('parts')));
+      }
+      if (path === '/api/accounts') return ok([...ACCOUNTS, { id: 'kimi-acc', label: 'Kimi', email: null, source: 'token', provider: 'kimi', active: 1 }]);
+      return undefined;
+    });
+  const switcher = () => screen.getByRole('tablist', { name: 'Provider' });
+  /// A total's lines by provider: each provider's mark, by its name, and its figure and share.
+  const lines = (label: string) =>
+    within(within(tile(label)).getByRole('list', { name: `${label}, by provider` }))
+      .getAllByRole('listitem')
+      .map((li) => [within(li).getByRole('img').getAttribute('aria-label'), li.textContent?.trim()]);
+
+  it('OV-C227: the scope offers every provider, then each provider with an account by its mark and name, beside the account picker; a router with one provider offers no choice', async () => {
+    both();
+    const first = show();
+    await loaded();
+    const tabs = within(switcher()).getAllByRole('tab');
+    expect(tabs.map((t) => t.textContent)).toEqual(['All providers', 'Anthropic', 'Kimi Code']);
+    expect(tabs[0]).toHaveAttribute('aria-selected', 'true');
+    expect(tabs[1]!.querySelector('[data-glyph="anthropic"]')).not.toBeNull();
+    expect(tabs[2]!.querySelector('[data-glyph="kimi"]')).not.toBeNull();
+    // In the scope bar, visible at rest, just before the account picker it narrows.
+    expect(within(screen.getByRole('region', { name: 'Scope' })).getByRole('tablist', { name: 'Provider' })).toBe(switcher());
+    expect(switcher().compareDocumentPosition(screen.getByRole('button', { name: 'Account: All accounts' })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    first.unmount();
+
+    // Anthropic's accounts alone: nothing to choose between.
+    router();
+    show();
+    await loaded();
+    expect(screen.queryByRole('tablist', { name: 'Provider' })).toBeNull();
+  });
+
+  it('OV-C227: choosing a provider puts it in the address and every read follows it; an account picked from another provider is let go, the project kept; Quota headroom and All accounts still cover every provider', async () => {
+    const r = both();
+    show('/?account=secondary&project=%2Fcode%2Fagent-router&range=all');
+    await loaded();
+    fireEvent.click(within(switcher()).getByRole('tab', { name: 'Kimi Code' }));
+    await waitFor(() => expect(where()).toBe('/?provider=kimi&project=%2Fcode%2Fagent-router&range=all'));
+    await waitFor(() => expect(r.calls('/api/summary').some((c) => c.query.get('provider') === 'kimi')).toBe(true));
+    const asked = r.calls('/api/summary').find((c) => c.query.get('provider') === 'kimi')!.query;
+    expect([asked.get('account'), asked.get('project')]).toEqual([null, '/code/agent-router']);
+    await waitFor(() => expect(within(switcher()).getByRole('tab', { selected: true })).toHaveTextContent('Kimi Code'));
+    // The quota and the forecast keep their own horizon: every provider's blocks, every account.
+    expect(r.calls('/api/forecast').every((c) => !c.query.has('provider'))).toBe(true);
+    expect([...panel('Quota headroom').querySelectorAll('[data-quota-provider]')].map((b) => b.getAttribute('data-quota-provider'))).toEqual(['anthropic', 'kimi']);
+    // Clear scope clears the provider too, keeping the range; Back returns to it (OV-C25, OV-C30).
+    fireEvent.click(screen.getByRole('button', { name: 'Clear scope' }));
+    await waitFor(() => expect(where()).toBe('/?range=all'));
+    fireEvent.click(screen.getByRole('button', { name: 'test: back' }));
+    await waitFor(() => expect(where()).toBe('/?provider=kimi&project=%2Fcode%2Fagent-router&range=all'));
+    // Every provider again: the provider leaves the address, the rest of the scope stays.
+    fireEvent.click(within(switcher()).getByRole('tab', { name: 'All providers' }));
+    await waitFor(() => expect(where()).toBe('/?project=%2Fcode%2Fagent-router&range=all'));
+  });
+
+  it('OV-C227: an account of the provider chosen is kept, and with a provider chosen the account picker reads and offers only that provider’s accounts', async () => {
+    const r = both();
+    show('/?account=kimi-acc&range=all');
+    await loaded();
+    fireEvent.click(within(switcher()).getByRole('tab', { name: 'Kimi Code' }));
+    await waitFor(() => expect(where()).toBe('/?provider=kimi&account=kimi-acc&range=all'));
+    fireEvent.click(within(switcher()).getByRole('tab', { name: 'All providers' }));
+    await waitFor(() => expect(where()).toBe('/?account=kimi-acc&range=all'));
+    fireEvent.click(within(switcher()).getByRole('tab', { name: 'Kimi Code' }));
+    await waitFor(() => expect(where()).toBe('/?provider=kimi&account=kimi-acc&range=all'));
+    fireEvent.click(screen.getByRole('button', { name: 'Clear scope' }));
+    await waitFor(() => expect(where()).toBe('/?range=all'));
+    fireEvent.click(within(switcher()).getByRole('tab', { name: 'Kimi Code' }));
+    await waitFor(() => expect(where()).toBe('/?provider=kimi&range=all'));
+
+    // Reached through the crumb that controls it, as in OV-C217's spec.
+    const crumb = screen.getByRole('button', { name: 'Account: All accounts' });
+    fireEvent.click(crumb);
+    await waitFor(() => expect(crumb).toHaveAttribute('aria-controls'));
+    const listbox = document.getElementById(crumb.getAttribute('aria-controls')!)!;
+    await waitFor(() => expect(listbox.textContent).toContain('kimi-acc'));
+    expect(r.calls('/api/summary').filter((c) => c.query.get('parts') === 'by_account').map((c) => c.query.get('provider'))).toEqual(['kimi']);
+    expect(within(listbox).getAllByRole('option', { hidden: true }).map((o) => o.getAttribute('data-key'))).toEqual(['*', 'kimi-acc']);
+    // The project picker reads under the provider too.
+    fireEvent.keyDown(within(listbox).getAllByRole('option', { hidden: true })[0]!, { key: 'Escape' });
+    await waitFor(() => expect(crumb).not.toHaveAttribute('aria-controls'));
+    fireEvent.click(screen.getByRole('button', { name: 'Project: All projects' }));
+    await waitFor(() => expect(r.calls('/api/projects')).toHaveLength(1));
+    expect(Object.fromEntries(r.calls('/api/projects')[0]!.query)).toEqual({ provider: 'kimi' });
+  });
+
+  it('OV-C227: Search follows the whole scope, its provider and its account with the rest, and says the scope narrows it', async () => {
+    const r = both();
+    show('/?provider=kimi&account=kimi-acc&range=all&tab=search');
+    await loaded();
+    expect(within(panel('Search the transcripts')).getByText('every message, tool call and result captured in the current scope')).toBeVisible();
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search the transcripts' }), { target: { value: 'kestrel' } });
+    await waitFor(() => expect(r.calls('/api/search')).toHaveLength(1));
+    expect(Object.fromEntries(r.calls('/api/search')[0]!.query)).toEqual({ q: 'kestrel', provider: 'kimi', account: 'kimi-acc' });
+  });
+
+  it('OV-C226: each total keeps its figure and shows its split by provider under it — each provider’s mark, figure and share over a thin bar of their shares — and a router with one provider shows none', async () => {
+    both();
+    const first = show();
+    await loaded();
+    // One figure per total, as with one provider.
+    expect(tile('Prompt tokens read')).toHaveTextContent(/^Prompt tokens read12\.40M/);
+    expect(lines('Prompt tokens read')).toEqual([
+      ['Anthropic', '12.20M 98%'],
+      ['Kimi Code', '200k 1.6%'],
+    ]);
+    expect(lines('Spend')).toEqual([
+      ['Anthropic', '$41.20 100%'],
+      ['Kimi Code', 'not priced'],
+    ]);
+    expect(lines('Requests')).toEqual([
+      ['Anthropic', '400 97%'],
+      ['Kimi Code', '12 2.9%'],
+    ]);
+    expect(lines('Output tokens')).toEqual([
+      ['Anthropic', '300k 97%'],
+      ['Kimi Code', '10k 3.2%'],
+    ]);
+    expect(lines('Served from cache')).toEqual([
+      ['Anthropic', '10.30M 99%'],
+      ['Kimi Code', '100k 1.0%'],
+    ]);
+    expect(lines('Cache writes')).toEqual([
+      ['Anthropic', '1.38M 99%'],
+      ['Kimi Code', '20k 1.4%'],
+    ]);
+    // The thin bar: a part per provider, sized by its figure, in its provider's colour; hidden from a
+    // screen reader, which hears the lines, and no tab stop.
+    const bar = tile('Prompt tokens read').querySelector('[data-provider-split] > [aria-hidden="true"]') as HTMLElement;
+    const parts = [...bar.querySelectorAll<HTMLElement>('[data-provider]')];
+    expect(parts.map((p) => [p.dataset['provider'], p.style.flexGrow, p.style.background])).toEqual([
+      ['anthropic', '12200000', 'var(--ar-tok)'],
+      ['kimi', '200000', 'var(--ar-model-kimi)'],
+    ]);
+    expect(tile('Prompt tokens read').querySelector('[data-provider-split] [tabindex]')).toBeNull();
+    // A provider with nothing priced adds nothing to Spend's bar.
+    expect(tile('Spend').querySelectorAll('[data-provider-split] > [aria-hidden="true"] > [data-provider]')).toHaveLength(1);
+    // No figure per provider for latency or errors.
+    expect([tile('Time to first token'), tile('Errors')].map((t) => t.querySelector('[data-provider-split]'))).toEqual([null, null]);
+    first.unmount();
+
+    // Anthropic's alone: one figure per total and no split anywhere.
+    router();
+    show();
+    await loaded();
+    expect(document.querySelector('[data-provider-split]')).toBeNull();
   });
 });
 

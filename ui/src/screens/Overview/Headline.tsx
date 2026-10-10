@@ -1,5 +1,6 @@
 // New for agent-router: Totals in scope (assets/index.html, `#headline`, `renderHeadline`): eight tiles,
-// each with its meaning as visible text (OV-C98).
+// each with its meaning as visible text (OV-C98), and each total its split by provider under it
+// (OV-C226).
 import { Fragment } from 'react';
 import { Button } from '@carbon/react';
 import { DataTip } from '~/components/DataTip';
@@ -14,6 +15,7 @@ import type { Bucket } from './timeline';
 import { headline, spendSplit, totalsCaption } from './tiles';
 import { Panel } from './parts';
 import { listErrors } from './requestList';
+import { ProviderSplit } from './ProviderSplit';
 import styles from './Overview.module.scss';
 
 const n = (v: number | null | undefined): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
@@ -47,11 +49,14 @@ export function Headline({
       <StatGrid label="Totals in scope">
         {tiles.map((tile) => {
           const value = tile.value === '—' ? null : tile.value;
+          // The total's split by provider, under it and its own picture (OV-C226).
+          const providers = <ProviderSplit label={tile.label} parts={tile.byProvider} />;
           switch (tile.key) {
             case 'prompt':
               return (
                 <StatTile key={tile.key} hero label={tile.label} value={value} detail={tile.detail} meaning={tile.meaning}>
                   {bk.length > 0 && <Sparkline label="Prompt tokens per bucket" buckets={times} series={[{ key: 'prompt', label: 'prompt tokens', values: bk.map((b) => b.prompt), colour: '--ar-tok' }]} format={compact} />}
+                  {providers}
                 </StatTile>
               );
             case 'spend':
@@ -75,6 +80,7 @@ export function Headline({
                     </dl>
                     <span className={styles.note}>the whole split — tap or focus</span>
                   </DataTip>
+                  {providers}
                 </StatTile>
               );
             case 'cache':
@@ -83,12 +89,14 @@ export function Headline({
                   <span className={styles.cacheMeter} aria-hidden="true">
                     {prompt > 0 && <span className={styles.cacheFill} style={{ inlineSize: `${(100 * n(t.cache_read_tokens)) / prompt}%`, background: 'var(--ar-tok-3)' }} />}
                   </span>
+                  {providers}
                 </StatTile>
               );
             case 'output':
               return (
                 <StatTile key={tile.key} label={tile.label} value={value} detail={tile.detail} meaning={tile.meaning}>
                   {bk.length > 0 && <Sparkline label="Output tokens per bucket" buckets={times} series={[{ key: 'output', label: 'output tokens', values: bk.map((b) => b.output), colour: '--ar-tok' }]} format={compact} />}
+                  {providers}
                 </StatTile>
               );
             case 'errors':
@@ -102,7 +110,11 @@ export function Headline({
                 </StatTile>
               );
             default:
-              return <StatTile key={tile.key} label={tile.label} value={value} detail={tile.detail} meaning={tile.meaning} tone={tile.tone} />;
+              return (
+                <StatTile key={tile.key} label={tile.label} value={value} detail={tile.detail} meaning={tile.meaning} tone={tile.tone}>
+                  {providers}
+                </StatTile>
+              );
           }
         })}
       </StatGrid>

@@ -3,7 +3,7 @@
 // expects where. Read only by specs.
 import { vi } from 'vitest';
 import type { ProjectRow } from '~/data/router';
-import type { LiveQuota, ProviderQuota, RequestRecord, SessionRow, Summary, Tools, Totals } from '~/data/overview';
+import type { LiveQuota, ProviderQuota, ProviderTotals, RequestRecord, SessionRow, Summary, Tools, Totals } from '~/data/overview';
 import type { Forecast, ForecastAccount, Headroom } from '~/model/forecast';
 import type { Account, Auth } from '~/model/settings';
 
@@ -59,6 +59,18 @@ export function kimiBlock(over: Partial<ProviderQuota> = {}): ProviderQuota {
 export const S1 = 'aaaaaaaa-1111-4111-8111-111111111111';
 export const S2 = 'bbbbbbbb-2222-4222-8222-222222222222';
 
+/// One provider's part of the totals (src/api.rs `summary_of`, `by_provider`).
+export function providerTotals(provider: string, over: Partial<ProviderTotals> = {}): ProviderTotals {
+  return { provider, requests: 0, prompt_tokens: 0, cost: 0, unpriced: 0, estimated: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, ...over };
+}
+
+/// The totals below split between Anthropic and Kimi Code, Anthropic's first, each figure adding up
+/// to the total's own; Kimi Code's twelve requests all ones the router could not price (OV-C226).
+export const TWO_PROVIDERS: ProviderTotals[] = [
+  providerTotals('anthropic', { requests: 400, prompt_tokens: 12_200_000, cost: 41.2, output_tokens: 300_000, cache_read_tokens: 10_300_000, cache_write_tokens: 1_380_000 }),
+  providerTotals('kimi', { requests: 12, prompt_tokens: 200_000, cost: 0, unpriced: 12, output_tokens: 10_000, cache_read_tokens: 100_000, cache_write_tokens: 20_000 }),
+];
+
 export function totals(over: Partial<Totals> = {}): Totals {
   return {
     requests: 412,
@@ -77,6 +89,8 @@ export function totals(over: Partial<Totals> = {}): Totals {
     projects: 2,
     first_seen: NOW - 3 * HOUR,
     last_seen: NOW - 2 * MIN,
+    // Anthropic's alone, as most routers have: one provider, so no split (OV-C226).
+    by_provider: [providerTotals('anthropic', { requests: 412, prompt_tokens: 12_400_000, cost: 41.2, output_tokens: 310_000, cache_read_tokens: 10_400_000, cache_write_tokens: 1_400_000 })],
     ...over,
   };
 }

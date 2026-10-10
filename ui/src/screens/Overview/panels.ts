@@ -20,7 +20,7 @@ import { FAMILY_COLOUR } from '~/lib/concepts';
 import type { ProjectDirectory, ProjectRow } from '~/data/router';
 import type { AccountSplitRow, ContextRow, ModelRow, SessionRow, ThreadRow, ToolCallRow, ToolOutputRow, Totals } from '~/data/overview';
 import { DASH, ago, client, compact, count, duration, family, id8, pct, plural, projectName, shortModel, tod, usd, UNRESOLVED, type Family } from '~/model/format';
-import { SESSION_CAP, type Scope } from '~/model/scope';
+import { SESSION_CAP, isScoped, type Scope } from '~/model/scope';
 import { providerName, providerOf, type Provider } from '~/model/settings';
 
 const n = (v: number | null | undefined): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
@@ -33,7 +33,7 @@ export type Empty = 'projects' | 'sessions' | 'toolOutput' | 'toolCalls' | 'read
 /// Which empty a panel is (OV-C145): nothing recorded at all, with how to start; nothing in the
 /// range; or nothing in this scope.
 export function emptyWords(what: Empty, scope: Scope): string {
-  const narrowed = !!(scope.account || scope.project || scope.session);
+  const narrowed = isScoped(scope);
   const range = scope.range;
   if (!narrowed && range === 'all') {
     return {
@@ -67,7 +67,7 @@ export function emptyWords(what: Empty, scope: Scope): string {
 }
 
 /// Whether nothing at all is recorded: the empty that says how to start (OV-C145).
-export const nothingRecorded = (scope: Scope): boolean => !scope.account && !scope.project && !scope.session && scope.range === 'all';
+export const nothingRecorded = (scope: Scope): boolean => !isScoped(scope) && scope.range === 'all';
 
 // ---------------------------------------------------------------- what the model read
 

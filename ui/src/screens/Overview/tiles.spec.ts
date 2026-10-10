@@ -5,9 +5,9 @@ import { describe, expect, it } from 'vitest';
 import type { ModelRow } from '~/data/overview';
 import { tod } from '~/model/format';
 import { UNSCOPED } from '~/model/scope';
-import { headline, spendSplit, spendValue, totalsCaption, unpriced } from './tiles';
+import { headline, providerSplit, spendSplit, spendValue, totalsCaption, unpriced, type TileKey } from './tiles';
 import { listErrors } from './requestList';
-import { HOUR, MIN, totals } from './fixtures';
+import { HOUR, MIN, providerTotals, totals, TWO_PROVIDERS } from './fixtures';
 
 const NOW = Date.UTC(2026, 9, 5, 15, 0, 0);
 const LATENCY = { ttfb_p50: 812, ttfb_p95: 3_200, duration_p50: 9_400, duration_p95: 31_000, duration_max: 64_000 };
@@ -87,6 +87,52 @@ describe('Totals in scope', () => {
     expect(tile('spend', tiles(totals(), UNSCOPED, mixed)).detail).toBe('10.40M cached reads · 310k out · leaves out 22 requests the router could not price');
     expect(spendValue(totals({ cost: 0 }))).toBeNull();
     expect(spendSplit(totals({ cost: 0 }))[0]).toEqual({ value: '—', label: 'total in scope' });
+  });
+
+  it('OV-C226: each total keeps its one figure and carries its split by provider, Anthropic’s first: each provider’s figure as the tile writes it and its share', () => {
+    const list = tiles(totals({ by_provider: TWO_PROVIDERS }));
+    const split = (key: TileKey) => tile(key, list).byProvider?.map((p) => [p.provider, p.figure, p.share]);
+    // One figure per total, the same as with one provider.
+    expect(list.map((t) => t.value)).toEqual(tiles().map((t) => t.value));
+    expect(split('prompt')).toEqual([
+      ['anthropic', '12.20M', '98%'],
+      ['kimi', '200k', '1.6%'],
+    ]);
+    expect(split('requests')).toEqual([
+      ['anthropic', '400', '97%'],
+      ['kimi', '12', '2.9%'],
+    ]);
+    expect(split('output')).toEqual([
+      ['anthropic', '300k', '97%'],
+      ['kimi', '10k', '3.2%'],
+    ]);
+    // Served from cache splits what it is made of, the cache reads; Cache writes its writes.
+    expect(split('cache')).toEqual([
+      ['anthropic', '10.30M', '99%'],
+      ['kimi', '100k', '1.0%'],
+    ]);
+    expect(split('writes')).toEqual([
+      ['anthropic', '1.38M', '99%'],
+      ['kimi', '20k', '1.4%'],
+    ]);
+    // Spend: a cost of nothing beside requests the router could not price is "not priced", never "$0",
+    // and has no share; with none it could not price, "—".
+    expect(split('spend')).toEqual([
+      ['anthropic', '$41.20', '100%'],
+      ['kimi', 'not priced', null],
+    ]);
+    expect(providerSplit(totals({ by_provider: [TWO_PROVIDERS[0]!, { ...TWO_PROVIDERS[1]!, unpriced: 0 }] }), 'spend')?.[1]).toMatchObject({ figure: '—', share: null, value: 0 });
+    // The bar's parts are sized by the figures themselves.
+    expect(tile('prompt', list).byProvider?.map((p) => p.value)).toEqual([12_200_000, 200_000]);
+    // Latency and errors have no figure per provider to split.
+    expect([tile('latency', list).byProvider, tile('errors', list).byProvider]).toEqual([null, null]);
+  });
+
+  it('OV-C226: a router with one provider, or a scope narrowed to one, shows no split', () => {
+    // The fixture's totals are Anthropic's alone.
+    for (const t of tiles()) expect(t.byProvider, t.label).toBeNull();
+    expect(providerSplit(totals({ by_provider: [providerTotals('kimi', { requests: 12, prompt_tokens: 200_000 })] }), 'prompt')).toBeNull();
+    expect(providerSplit(totals({ by_provider: [] }), 'requests')).toBeNull();
   });
 
   it('OV-C182: a moment reads as its time of day when it is today, and as its date and time otherwise', () => {

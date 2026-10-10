@@ -118,7 +118,7 @@ export function Lists({
   const sessions = sessionRows(part.sessions, scope, now);
   // Sessions holds up to 200: a first page and "Show more", never every row at once (OV-C139). The
   // page returns to its first twenty when the scope changes (OV-C33).
-  const scopeKey = `${scope.account}|${scope.project}|${scope.session}|${scope.range}`;
+  const scopeKey = `${scope.provider}|${scope.account}|${scope.project}|${scope.session}|${scope.range}`;
   const [paging, setPaging] = useState({ key: scopeKey, shown: LIST_PAGE });
   const shown = paging.key === scopeKey ? paging.shown : LIST_PAGE;
   const orphanProjects = unattributed(orphans, 'project', scope);

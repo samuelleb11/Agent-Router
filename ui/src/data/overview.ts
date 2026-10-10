@@ -46,6 +46,24 @@ export interface Totals {
   /// Epoch milliseconds; null when nothing is recorded in scope.
   readonly first_seen: number | null;
   readonly last_seen: number | null;
+  /// The same figures split by the provider that served them, Anthropic's first, one row per
+  /// provider with requests in scope; a request recorded before providers is Anthropic's (OV-C226).
+  readonly by_provider: readonly ProviderTotals[];
+}
+
+/// One provider's part of the totals (src/api.rs, `summary_of`, `by_provider`).
+export interface ProviderTotals {
+  readonly provider: Provider;
+  readonly requests: number | null;
+  readonly prompt_tokens: number | null;
+  readonly cost: number | null;
+  /// Requests with usage the router could not price, which add nothing to `cost`.
+  readonly unpriced: number | null;
+  /// Requests whose usage the router estimated rather than was told.
+  readonly estimated: number | null;
+  readonly output_tokens: number | null;
+  readonly cache_read_tokens: number | null;
+  readonly cache_write_tokens: number | null;
 }
 
 /// A provider's serving account: its active one, the one signing its new requests.
@@ -400,18 +418,19 @@ export function summaryParts(scope: Scope, tab: OverviewTab): SummaryPart[] {
   return SUMMARY_PARTS.filter((p) => wanted.has(p));
 }
 
-/// The paths a cycle may read, each with the scope the router narrows it by. The navigators are never
-/// narrowed by the level they pick (OV-C131): projects by the account and the range, sessions by the
-/// account, the project and the range. The quota is Anthropic's serving account's whatever the
-/// scope (OV-C54), and the forecast covers every account, its usage over the range (OV-C27, OV-C87).
+/// The paths a cycle may read, each with the scope the router narrows it by. The provider narrows
+/// every one the scope does (OV-C227). The navigators are never narrowed by the level they pick
+/// (OV-C131): projects by the account and the range, sessions by the account, the project and the
+/// range. The quota is Anthropic's serving account's whatever the scope (OV-C54), and the forecast
+/// covers every account, its usage over the range (OV-C27, OV-C87).
 export function snapshotPaths(scope: Scope, tab: OverviewTab, since: number | null, tz: number) {
-  const { account, project, session } = scope;
+  const { provider, account, project, session } = scope;
   return {
-    summary: `/api/summary${query({ account, project, session, since, tz, parts: summaryParts(scope, tab).join(',') })}`,
-    projects: `/api/projects${query({ account, since })}`,
-    sessions: `/api/sessions${query({ account, project, since })}`,
-    tools: `/api/tools${query({ account, project, session, since })}`,
-    requests: `/api/requests${query({ account, project, session, since })}`,
+    summary: `/api/summary${query({ provider, account, project, session, since, tz, parts: summaryParts(scope, tab).join(',') })}`,
+    projects: `/api/projects${query({ provider, account, since })}`,
+    sessions: `/api/sessions${query({ provider, account, project, since })}`,
+    tools: `/api/tools${query({ provider, account, project, session, since })}`,
+    requests: `/api/requests${query({ provider, account, project, session, since })}`,
     quota: '/api/quota',
     forecast: `/api/forecast${query({ since })}`,
   } as const;
@@ -605,7 +624,8 @@ export function useOverview(scope: Scope, tab: OverviewTab): OverviewRead {
   };
 }
 
-const sameScope = (a: Scope, b: Scope): boolean => a.account === b.account && a.project === b.project && a.session === b.session && a.range === b.range;
+const sameScope = (a: Scope, b: Scope): boolean =>
+  a.provider === b.provider && a.account === b.account && a.project === b.project && a.session === b.session && a.range === b.range;
 
 // ---------------------------------------------------------------- the scope pickers
 
@@ -625,14 +645,19 @@ function usePickerRead<T>(queryKey: readonly unknown[], path: () => string, open
 
 /// The three pickers' rows, each read only while its picker is open: the accounts that served in the
 /// range, the projects under the account, and the sessions under the account and the project — never
-/// narrowed by the level they pick (OV-C131).
+/// narrowed by the level they pick (OV-C131) — each of the chosen provider alone, so the account
+/// picker offers only that provider's accounts (OV-C227).
 export function usePickers(scope: Scope, open: Level | null) {
-  const { account, project, range } = scope;
+  const { provider, account, project, range } = scope;
   const since = () => sinceMs(range);
   return {
-    account: usePickerRead<Pick<Summary, 'by_account'>>(keys.picker('account', range), () => `/api/summary${query({ since: since(), parts: 'by_account' })}`, open === 'account'),
-    project: usePickerRead<ProjectRow[]>(keys.picker('project', range, account), () => `/api/projects${query({ account, since: since() })}`, open === 'project'),
-    session: usePickerRead<SessionRow[]>(keys.picker('session', range, account, project), () => `/api/sessions${query({ account, project, since: since() })}`, open === 'session'),
+    account: usePickerRead<Pick<Summary, 'by_account'>>(keys.picker('account', range, provider), () => `/api/summary${query({ provider, since: since(), parts: 'by_account' })}`, open === 'account'),
+    project: usePickerRead<ProjectRow[]>(keys.picker('project', range, provider, account), () => `/api/projects${query({ provider, account, since: since() })}`, open === 'project'),
+    session: usePickerRead<SessionRow[]>(
+      keys.picker('session', range, provider, account, project),
+      () => `/api/sessions${query({ provider, account, project, since: since() })}`,
+      open === 'session',
+    ),
   };
 }
 

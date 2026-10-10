@@ -133,3 +133,12 @@ export const FAMILY_COLOUR = {
 } as const satisfies Record<string, ArToken>;
 
 export type Family = keyof typeof FAMILY_COLOUR;
+
+/// A provider's colour in a bar of their shares (OV-C226): Anthropic's the token slate, since its
+/// models wear three families' colours of their own, Kimi Code's its family's, and any other the
+/// "other" family's. Beside it, always, the provider's own mark (SH-C56): the colour only keys the bar.
+export function providerColour(provider: string | null | undefined): ArToken {
+  if (!provider || provider === 'anthropic') return '--ar-tok';
+  if (provider === 'kimi') return FAMILY_COLOUR.kimi;
+  return FAMILY_COLOUR.other;
+}

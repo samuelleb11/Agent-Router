@@ -46,6 +46,7 @@
 /// switcher's whole width and lets them shrink alike, which cut "24h" and "30d" to "2…" and "3…".
 /// Carbon's rule is three classes deep, so its width is undone with the button's own attributes.
 .range,
+.providers,
 .kinds,
 .kindSwitch {
   flex: 0 1 auto;
@@ -55,6 +56,7 @@
 }
 
 .range :global(.cds--content-switcher-btn)[role='tab'][type='button'],
+.providers :global(.cds--content-switcher-btn)[role='tab'][type='button'],
 .kinds :global(.cds--content-switcher-btn)[role='tab'][type='button'],
 .kindSwitch :global(.cds--content-switcher-btn)[role='tab'][type='button'] {
   flex: 1 0 auto;
@@ -571,6 +573,65 @@
   block-size: 100%;
 }
 
+/// A total's split by provider, under its tile (OV-C226): a thin bar of their shares, as thin as the
+/// cache meter, over a line per provider that wraps rather than widens a phone's tile.
+.byProvider {
+  display: grid;
+  gap: $spacing-02;
+  min-inline-size: 0;
+}
+
+.byProviderBar {
+  display: flex;
+  gap: $spacing-01;
+  block-size: $spacing-02;
+  background: var(--cds-layer-accent-01);
+}
+
+/// A part above zero is at least 3 px wide, so a sliver is still seen, as in every share bar
+/// (OV-C189): geometry that is the data's, not spacing. Its width is its share, set on the element.
+.byProviderPart {
+  flex-basis: 0;
+  flex-shrink: 1;
+  min-inline-size: 3px;
+  block-size: 100%;
+}
+
+.byProviderList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: $spacing-01 $spacing-04;
+  min-inline-size: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  @include type-style('label-01');
+  color: var(--cds-text-primary);
+
+  li {
+    display: inline-flex;
+    align-items: center;
+    gap: $spacing-02;
+    white-space: nowrap;
+  }
+}
+
+/// The part's colour in the bar above, beside its mark.
+.byProviderKey {
+  flex: none;
+  inline-size: $spacing-03;
+  block-size: $spacing-03;
+}
+
+.byProviderFigure {
+  font-variant-numeric: tabular-nums;
+}
+
+.byProviderShare {
+  font-variant-numeric: tabular-nums;
+  color: var(--cds-text-secondary);
+}
+
 // ---------------------------------------------------------------- activity
 
 .legend {
@@ -741,7 +802,8 @@
   .filterRow :global(.cds--tag),
   .kinds :global(.cds--content-switcher-btn),
   .kindSwitch :global(.cds--content-switcher-btn),
-  .range :global(.cds--content-switcher-btn) {
+  .range :global(.cds--content-switcher-btn),
+  .providers :global(.cds--content-switcher-btn) {
     min-block-size: $spacing-09;
   }
 
@@ -762,10 +824,16 @@
 /// their own lines.
 @include breakpoint-down('md') {
   .range,
+  .providers,
   .kinds,
   .kindSwitch {
     flex-wrap: wrap;
     block-size: auto;
     inline-size: 100%;
+  }
+
+  /// The provider takes a line of its own over the crumbs, so nothing follows it on its line.
+  .providerSep {
+    display: none;
   }
 }

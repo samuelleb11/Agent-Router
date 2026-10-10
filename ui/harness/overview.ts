@@ -170,6 +170,8 @@ const ACCOUNTS: readonly (Account & { readonly subscription_type: string | null;
 // ---------------------------------------------------------------- the router's arithmetic
 
 interface Filter {
+  /// Every request in the log is Anthropic's: Kimi Code's account has none (OV-C227).
+  readonly provider: string | null;
   readonly account: string | null;
   readonly project: string | null;
   readonly session: string | null;
@@ -178,6 +180,7 @@ interface Filter {
 }
 
 const filterOf = (q: URLSearchParams): Filter => ({
+  provider: q.get('provider'),
   account: q.get('account'),
   project: q.get('project'),
   session: q.get('session'),
@@ -185,8 +188,12 @@ const filterOf = (q: URLSearchParams): Filter => ({
   tz: Number(q.get('tz') ?? 0),
 });
 
+/// A request's provider, Anthropic's when it names none, as the router reads one (`provider_test`).
+const ofProvider = (f: Filter) => (r: Logged) => f.provider === null || (r.provider || 'anthropic') === f.provider;
+
 /// src/api.rs `SCOPE`: "(unresolved)" selects the requests whose session has no project.
 const inScope = (f: Filter) => (r: Logged) =>
+  ofProvider(f)(r) &&
   (f.project === null || r.project === f.project || (f.project === '(unresolved)' && r.session_id !== null && r.project === null)) &&
   (f.session === null || r.session_id === f.session) &&
   (f.since === null || r.started_at >= f.since) &&
@@ -226,6 +233,23 @@ function summary(f: Filter): Summary {
     projects: new Set(rows.filter((r) => r.session_id).map((r) => r.project ?? '')).size,
     first_seen: rows.length ? Math.min(...rows.map((r) => r.started_at)) : null,
     last_seen: rows.length ? Math.max(...rows.map((r) => r.started_at)) : null,
+    // Each figure's split by provider, Anthropic's first (OV-C226).
+    by_provider: [...new Set(rows.map((r) => r.provider || 'anthropic'))]
+      .sort((a, b) => Number(a !== 'anthropic') - Number(b !== 'anthropic') || a.localeCompare(b))
+      .map((provider) => {
+        const rs = rows.filter((r) => (r.provider || 'anthropic') === provider);
+        return {
+          provider,
+          requests: rs.length,
+          prompt_tokens: sum(rs, (r) => r.prompt_tokens),
+          cost: sum(rs, (r) => r.cost),
+          unpriced: rs.filter((r) => r.cost === null).length,
+          estimated: 0,
+          output_tokens: sum(rs, (r) => r.output_tokens),
+          cache_read_tokens: sum(rs, (r) => r.cache_read_tokens),
+          cache_write_tokens: sum(rs, (r) => r.cache_write_tokens),
+        };
+      }),
   };
   const active = ACCOUNTS.find((a) => a.active)!;
   const latest = LOG.find((r) => r.account_id === active.id && r.rl_5h !== null);
@@ -264,7 +288,7 @@ function summary(f: Filter): Summary {
       agents: new Set(rs.map((r) => r.agent_id).filter(Boolean)).size,
     };
   };
-  const ranged = LOG.filter((r) => f.since === null || r.started_at >= f.since);
+  const ranged = LOG.filter((r) => ofProvider(f)(r) && (f.since === null || r.started_at >= f.since));
   const byAccount: AccountSplitRow[] = [...new Set(ranged.map((r) => r.account_id))]
     .map((id) => {
       const rs = ranged.filter((r) => r.account_id === id);
@@ -379,7 +403,7 @@ function summary(f: Filter): Summary {
 
 /// src/api.rs `projects_inner`: narrowed by the account and the range only (OV-C131).
 function projects(f: Filter): ProjectRow[] {
-  const rows = LOG.filter((r) => r.session_id !== null && (f.since === null || r.started_at >= f.since) && (f.account === null || r.account_id === f.account));
+  const rows = LOG.filter((r) => ofProvider(f)(r) && r.session_id !== null && (f.since === null || r.started_at >= f.since) && (f.account === null || r.account_id === f.account));
   const by = new Map<string | null, Logged[]>();
   for (const r of rows) by.set(r.project, [...(by.get(r.project) ?? []), r]);
   return [...by]
@@ -405,7 +429,7 @@ function projects(f: Filter): ProjectRow[] {
 /// src/api.rs `sessions_of`: narrowed by the account, the project and the range, never the session.
 function sessions(f: Filter): SessionRow[] {
   return SESSIONS.map((s): SessionRow | null => {
-    const rs = LOG.filter((r) => r.session_id === s.id && (f.since === null || r.started_at >= f.since) && (f.account === null || r.account_id === f.account));
+    const rs = LOG.filter((r) => ofProvider(f)(r) && r.session_id === s.id && (f.since === null || r.started_at >= f.since) && (f.account === null || r.account_id === f.account));
     if (!rs.length || (f.project !== null && s.project !== f.project && !(f.project === '(unresolved)' && s.project === null))) return null;
     const last = Math.max(...rs.map((r) => r.started_at));
     return {
@@ -568,7 +592,10 @@ function search(q: URLSearchParams): SearchReply {
       (!kind || b.kind === kind) &&
       (!q.get('project') || b.s.project === q.get('project')) &&
       (!q.get('session') || b.s.id === q.get('session')) &&
-      (!q.get('since') || b.at >= Number(q.get('since'))),
+      (!q.get('since') || b.at >= Number(q.get('since'))) &&
+      // The account and the provider of the requests its session made (OV-C227).
+      (!q.get('account') || LOG.some((r) => r.session_id === b.s.id && r.account_id === q.get('account'))) &&
+      (!q.get('provider') || LOG.some((r) => r.session_id === b.s.id && (r.provider || 'anthropic') === q.get('provider'))),
   );
   const mark = (text: string) => {
     const at = text.toLowerCase().indexOf(term);
@@ -623,15 +650,15 @@ const json = (payload: unknown): Response => new Response(JSON.stringify(payload
 export function overviewRead(path: string, query: URLSearchParams): Response | null {
   const only = (...allowed: string[]) => [...query.keys()].every((p) => allowed.includes(p));
   const f = filterOf(query);
-  if (path === '/api/summary' && only('account', 'project', 'session', 'since', 'tz', 'parts')) return json(partsOf(summary(f), query.get('parts')));
-  if (path === '/api/projects' && only('account', 'since')) return json(projects(f));
-  if (path === '/api/sessions' && only('account', 'project', 'since')) return json(sessions(f));
-  if (path === '/api/tools' && only('account', 'project', 'session', 'since')) return json(tools(f));
-  if (path === '/api/requests' && only('account', 'project', 'session', 'since')) return json(requests(f));
+  if (path === '/api/summary' && only('provider', 'account', 'project', 'session', 'since', 'tz', 'parts')) return json(partsOf(summary(f), query.get('parts')));
+  if (path === '/api/projects' && only('provider', 'account', 'since')) return json(projects(f));
+  if (path === '/api/sessions' && only('provider', 'account', 'project', 'since')) return json(sessions(f));
+  if (path === '/api/tools' && only('provider', 'account', 'project', 'session', 'since')) return json(tools(f));
+  if (path === '/api/requests' && only('provider', 'account', 'project', 'session', 'since')) return json(requests(f));
   if (path === '/api/quota' && only()) return json(quota());
   if (path === '/api/forecast' && only('since')) return json(forecast(f));
   if (path === '/api/auth' && only()) return json(auth());
   if (path === '/api/accounts' && only()) return json(ACCOUNTS);
-  if (path === '/api/search' && only('q', 'kind', 'project', 'session', 'since', 'limit')) return json(search(query));
+  if (path === '/api/search' && only('q', 'kind', 'provider', 'account', 'project', 'session', 'since', 'limit')) return json(search(query));
   return null;
 }

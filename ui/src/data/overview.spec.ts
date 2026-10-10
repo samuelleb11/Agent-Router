@@ -8,7 +8,7 @@ import { dropped, held, kimiBlock, ok, partsOf, QUOTA, refused, router, forecast
 import { TIMEOUT_MS } from './http';
 
 const NOW = Date.UTC(2026, 9, 5, 15, 0, 0);
-const SCOPED: Scope = { account: 'secondary', project: '/code/agent-router', session: 'aaaaaaaa-1', range: '24h' };
+const SCOPED: Scope = { provider: null, account: 'secondary', project: '/code/agent-router', session: 'aaaaaaaa-1', range: '24h' };
 const query = (path: string) => Object.fromEntries(new URL(path, 'http://x').searchParams);
 
 afterEach(() => {
@@ -40,6 +40,16 @@ describe('what a cycle asks', () => {
   it('OV-C54, OV-C87: the quota is the serving account’s whatever the scope, and all accounts covers every account, only its usage following the range', () => {
     expect(query(p.quota)).toEqual({});
     expect(query(p.forecast)).toEqual({ since: String(NOW - 86_400_000) });
+  });
+
+  it('OV-C227: the provider narrows every read the scope does — the summary, projects, sessions, tools and requests — and never the quota or the forecast', () => {
+    const kimi = snapshotPaths({ ...SCOPED, provider: 'kimi' }, 'projects', NOW - 86_400_000, -240);
+    for (const path of [kimi.summary, kimi.projects, kimi.sessions, kimi.tools, kimi.requests]) expect(query(path).provider, path).toBe('kimi');
+    expect(query(kimi.projects)).toEqual({ provider: 'kimi', account: 'secondary', since: String(NOW - 86_400_000) });
+    expect(kimi.quota).toBe('/api/quota');
+    expect(query(kimi.forecast)).toEqual({ since: String(NOW - 86_400_000) });
+    // Every provider sends none.
+    for (const path of Object.values(p)) expect(query(path), path).not.toHaveProperty('provider');
   });
 
   it('OV-C167: the accounts are read without a credential check, which only Settings asks for', async () => {
@@ -74,7 +84,7 @@ describe('one snapshot', () => {
       requests: { paths: ['/api/requests'], parts: [] },
       search: { paths: [], parts: [] },
     };
-    const unscoped: Scope = { account: null, project: null, session: null, range: '24h' };
+    const unscoped: Scope = { provider: null, account: null, project: null, session: null, range: '24h' };
     for (const tab of TABS) {
       const r = router();
       const s = await readSnapshot(unscoped, tab, { now: NOW });
