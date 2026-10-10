@@ -51,30 +51,33 @@ export function settingsPages(auth: Auth | null | undefined): Page[] {
 /// would refuse (OV-C204, ST-C53).
 export const readsSetup = (auth: Auth | null | undefined): boolean => known(auth) && !isHosted(auth);
 
-/// The ways to add an account. `kimi` is a Kimi Code key, which the router keeps as it keeps a
-/// pasted token (`source: token`, `provider: kimi`).
-export type Source = 'signin' | 'token' | 'profile' | 'kimi';
+/// The providers Add account asks for first, Anthropic's chosen when the form opens. Every router
+/// offers both: a Kimi Code key is a pasted key, kept as a token is (ST-C124, ST-C117).
+export const ADD_PROVIDERS = ['anthropic', 'kimi'] as const;
+export type AddProvider = (typeof ADD_PROVIDERS)[number];
 
-/// The ways to add an account: on a local router sign-in first, then a pasted token, then a
-/// separate profile (ST-C40); on a hosted router, which never runs `claude`, a pasted token only
-/// (ST-C52, OV-C205). A Kimi Code key comes last on both, a pasted key like the token (ST-C117).
-/// The first is the form's choice when it opens.
+/// Anthropic's ways to add an account. A Kimi Code account has one way only, its key, so it is not
+/// among them (ST-C124).
+export type Source = 'signin' | 'token' | 'profile';
+
+/// Anthropic's ways to add an account: on a local router sign-in first, then a pasted token, then a
+/// separate profile (ST-C40); on a hosted router, which never runs `claude`, and on one that has not
+/// said what it is, a pasted token only (ST-C52, ST-C101, OV-C205). The first is the form's choice
+/// when it opens.
 export function accountSources(auth: Auth | null | undefined): Source[] {
-  return known(auth) && !isHosted(auth) ? ['signin', 'token', 'profile', 'kimi'] : ['token', 'kimi'];
+  return known(auth) && !isHosted(auth) ? ['signin', 'token', 'profile'] : ['token'];
 }
 
-/// The add form for a choice: the token field for a token, the key and base URL fields for a Kimi
-/// Code key, the sign-in explanation for sign-in, and the button's words (ST-C43, ST-C117).
+/// The add form for one of Anthropic's ways: the token field for a token, the sign-in explanation
+/// for sign-in, and the button's words (ST-C43).
 export function addForm(source: Source): {
   readonly token: boolean;
-  readonly kimi: boolean;
   readonly signin: boolean;
   readonly save: string;
   readonly help: string | null;
 } {
   return {
     token: source === 'token',
-    kimi: source === 'kimi',
     signin: source === 'signin',
     save: source === 'signin' ? 'Start sign-in' : 'Add account',
     help:
@@ -293,6 +296,20 @@ export function providerName(provider: Provider | null | undefined): string {
 
 /// An account's provider, Anthropic's when the row names none.
 export const providerOf = (account: { readonly provider?: Provider | null }): Provider => account.provider || 'anthropic';
+
+/// The accounts by provider, one group per provider that has any: Anthropic's first, then the others
+/// in the order the router lists them, each group's accounts in the router's order. A row from a
+/// router that predates providers is Anthropic's (ST-C119, ST-C125).
+export function byProvider<T extends { readonly provider?: Provider | null }>(accounts: readonly T[]): { readonly provider: Provider; readonly accounts: T[] }[] {
+  const groups = new Map<Provider, T[]>([['anthropic', []]]);
+  for (const a of accounts) {
+    const p = providerOf(a);
+    const group = groups.get(p);
+    if (group) group.push(a);
+    else groups.set(p, [a]);
+  }
+  return [...groups].filter(([, list]) => list.length > 0).map(([provider, list]) => ({ provider, accounts: list }));
+}
 
 /// One row of `GET /api/accounts` (src/api.rs), as much as Settings decides from.
 export interface Account {

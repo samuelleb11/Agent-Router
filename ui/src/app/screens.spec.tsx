@@ -88,7 +88,9 @@ describe('a sentence that names a control links to it', () => {
     settingsRouter({ '/api/auth': answers(SETTINGS_LOCAL), '/api/accounts': answers(SETTINGS_ACCOUNTS), '/api/login/status': answers({ phase: 'failed', url: null }) });
     renderScreen(<AccountsPage />, { path: '/settings/accounts', at: '/settings/accounts' });
     const work = await screen.findByLabelText('Account work');
-    for (const control of ['Use', 'Edit', 'Remove']) expect(within(work).getByRole('button', { name: control })).toBeInTheDocument();
+    for (const control of ['Edit', 'Remove']) expect(within(work).getByRole('button', { name: control })).toBeInTheDocument();
+    // Switched in its provider's list box, above the cards (ST-C125).
+    expect(screen.getByRole('combobox', { name: 'Requests go to' })).toBeInTheDocument();
   });
 });
 

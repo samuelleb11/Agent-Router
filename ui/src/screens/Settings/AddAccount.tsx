@@ -1,13 +1,17 @@
 // New for agent-router: adding an account, in place under the Accounts heading (assets/index.html,
-// `wireAddForm`; ST-C39 to ST-C52, ST-C117, ST-C118). Each way to add one is a choice that carries
-// its explanation, a Kimi Code key among them; the sign-in link and the profile command sit in code
-// snippets with a copy button that says when copying failed; nothing opens a window by itself.
+// `wireAddForm`; ST-C39 to ST-C52, ST-C117, ST-C118, ST-C124). The provider is asked first, each a
+// choice with its mark, its name and its explanation; then, for Anthropic, each way to add one is a
+// choice that carries its explanation, or, when the router offers one way only, that way's field
+// with its explanation; Kimi Code goes straight to its key. The sign-in link and the profile command
+// sit in code snippets with a copy button that says when copying failed; nothing opens a window by
+// itself.
 import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 import { Button, CodeSnippet, Form, InlineLoading, PasswordInput, RadioTile, TextInput, Tile, TileGroup } from '@carbon/react';
 import { keys } from '~/app/query';
 import { CopyButton } from '~/components/CopyButton';
+import { ProviderMark } from '~/components/ProviderMark';
 import { addAccount, probeProfile, readLogin, startSignin, useReread, type AccountRow } from '~/data/settings';
-import { accountSources, addForm, KIMI_BASE_URL, notes, type Auth, type Source } from '~/model/settings';
+import { accountSources, ADD_PROVIDERS, addForm, KIMI_BASE_URL, notes, type AddProvider, type Auth, type Source } from '~/model/settings';
 import {
   accountId,
   baseUrlProblem,
@@ -26,8 +30,17 @@ import {
 import { Explain, Outcome, ReadFailed, Words } from './parts';
 import styles from './Settings.module.scss';
 
-/// Each way in, as its choice says it (ST-C40, ST-C43, ST-C117).
-const CHOICE: Readonly<Record<Source, { readonly title: string; readonly body: readonly (string | { readonly code: string } | { readonly b: string })[] }>> = {
+/// An explanation's words: text, and the code and emphasis inside it, never markup.
+type Parts = readonly (string | { readonly code: string } | { readonly b: string })[];
+
+/// Each provider, as its choice explains it; its mark and name are the shared ones (ST-C124, SH-C56).
+const PROVIDER: Readonly<Record<AddProvider, Parts>> = {
+  anthropic: ['Claude’s models, signed by a Claude subscription.'],
+  kimi: ['Kimi’s models (', { code: 'k3' }, ', ', { code: 'kimi-for-coding' }, '), signed by a key from the Kimi Code console.'],
+};
+
+/// Each of Anthropic's ways in, as its choice says it (ST-C40, ST-C43).
+const CHOICE: Readonly<Record<Source, { readonly title: string; readonly body: Parts }>> = {
   signin: {
     title: 'Sign in from here (recommended)',
     body: [
@@ -46,19 +59,9 @@ const CHOICE: Readonly<Record<Source, { readonly title: string; readonly body: r
     title: 'Separate Claude Code profile',
     body: [addForm('profile').help ?? ''],
   },
-  kimi: {
-    title: 'Kimi Code',
-    body: [
-      'A key from the Kimi Code console, for Kimi’s models (',
-      { code: 'k3' },
-      ', ',
-      { code: 'kimi-for-coding' },
-      '): a session moves to Kimi Code by picking one of them.',
-    ],
-  },
 };
 
-function Body({ parts }: { parts: (typeof CHOICE)[Source]['body'] }) {
+function Body({ parts }: { parts: Parts }) {
   return (
     <>
       {parts.map((p, i) => (typeof p === 'string' ? <span key={i}>{p}</span> : 'code' in p ? <code key={i}>{p.code}</code> : <b key={i}>{p.b}</b>))}
@@ -143,21 +146,26 @@ function useProfileWatch(id: string | null, onIn: (who: string) => void) {
 
 export function AddAccount({ auth, accounts, onDone, onClose }: { auth: Auth | null; accounts: readonly AccountRow[]; onDone: (said: string) => void; onClose: () => void }) {
   const reread = useReread();
+  // Anthropic first, chosen as the form opens, on every router (ST-C124).
+  const [provider, setProvider] = useState<AddProvider>(ADD_PROVIDERS[0]);
+  const kimi = provider === 'kimi';
   const sources = accountSources(auth);
   const offered = sources.join(',');
   const [picked, setPicked] = useState<Source>(sources[0] ?? 'token');
   // A choice the router no longer offers (it said it is hosted) gives way to the first one left.
   const source: Source = sources.includes(picked) ? picked : (sources[0] ?? 'token');
+  // Anthropic's way, or none for Kimi Code, which has its key only.
+  const way: Source | null = kimi ? null : source;
   const [label, setLabel] = useState('');
   const [token, setToken] = useState('');
-  // A Kimi Code key has fields of its own: a token typed under another choice is not one.
+  // A Kimi Code key has fields of its own: a token typed for Anthropic is not one.
   const [key, setKey] = useState('');
   const [baseUrl, setBaseUrl] = useState('');
   const [tried, setTried] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const [profile, setProfile] = useState<{ readonly id: string; readonly command: string } | null>(null);
-  const flow = useSignin(source === 'signin');
+  const flow = useSignin(way === 'signin');
   const groupName = useId();
   const form = addForm(source);
 
@@ -165,9 +173,9 @@ export function AddAccount({ auth, accounts, onDone, onClose }: { auth: Auth | n
   // The name is checked as it is typed once it says something; empty, only once Add was pressed.
   const showName = (label.trim() !== '' || tried) && !!nameIssue;
   // Each provider's key by its own rule: `sk-ant-` is Anthropic's alone (ST-C118).
-  const tokenIssue = source === 'token' ? (token.trim() === '' ? TOKEN_NEEDED : tokenProblem(token)) : null;
-  const keyIssue = source === 'kimi' ? (key.trim() === '' ? TOKEN_NEEDED : kimiKeyProblem(key)) : null;
-  const urlIssue = source === 'kimi' ? baseUrlProblem(baseUrl) : null;
+  const tokenIssue = way === 'token' ? (token.trim() === '' ? TOKEN_NEEDED : tokenProblem(token)) : null;
+  const keyIssue = kimi ? (key.trim() === '' ? TOKEN_NEEDED : kimiKeyProblem(key)) : null;
+  const urlIssue = kimi ? baseUrlProblem(baseUrl) : null;
   const id = accountId(label);
 
   const finish = (said: string) => {
@@ -192,16 +200,17 @@ export function AddAccount({ auth, accounts, onDone, onClose }: { auth: Auth | n
     setBusy(true);
     setError(null);
     try {
-      if (source === 'signin') {
+      if (way === null) {
+        // Sent as it always was (ST-C117).
+        await addAccount(label, { source: 'kimi', token: key, base_url: baseUrl });
+        setKey('');
+        finish(`Added ${label.trim()}.`);
+      } else if (way === 'signin') {
         flow.begin(signin(await startSignin(label)));
-      } else if (source === 'token') {
+      } else if (way === 'token') {
         await addAccount(label, { source: 'token', token });
         // Stored: the secret leaves the screen. On a refusal it stays where it was pasted (ST-C50).
         setToken('');
-        finish(`Added ${label.trim()}.`);
-      } else if (source === 'kimi') {
-        await addAccount(label, { source: 'kimi', token: key, base_url: baseUrl });
-        setKey('');
         finish(`Added ${label.trim()}.`);
       } else {
         const added = await addAccount(label, { source: 'profile' });
@@ -223,24 +232,41 @@ export function AddAccount({ auth, accounts, onDone, onClose }: { auth: Auth | n
     }
   };
 
-  const signing = source === 'signin' && flow.seen && running(flow.status);
+  const signing = way === 'signin' && flow.seen && running(flow.status);
   const url = flow.status.stage === 'waiting' || flow.status.stage === 'starting' ? flow.status.url : null;
 
   return (
     <Tile className={styles.addForm}>
       <Form aria-label="Add an account" onSubmit={(e) => void submit(e)} onKeyDown={escape} className={styles.form}>
         <h3 className={styles.cardTitle}>Add an account</h3>
-        {/* Every router offers more than one way: a hosted one a token and a Kimi Code key. */}
-        <TileGroup key={offered} legend="How to add it" name={groupName} valueSelected={source} onChange={(v) => setPicked(v as Source)} className={styles.choices}>
-          {sources.map((s) => (
-            <RadioTile key={s} id={`${groupName}-way-${s}`} value={s} className={styles.choice}>
-              <span className={styles.choiceTitle}>{CHOICE[s].title}</span>
+        {/* The provider first, each by its mark and name, then its explanation (ST-C124). */}
+        <TileGroup legend="Provider" name={`${groupName}-provider`} valueSelected={provider} onChange={(v) => setProvider(v as AddProvider)} className={styles.choices}>
+          {ADD_PROVIDERS.map((p) => (
+            <RadioTile key={p} id={`${groupName}-provider-${p}`} value={p} className={styles.choice}>
+              <span className={styles.choiceTitle}>
+                <ProviderMark provider={p} />
+              </span>
               <span className={styles.choiceBody}>
-                <Body parts={CHOICE[s].body} />
+                <Body parts={PROVIDER[p]} />
               </span>
             </RadioTile>
           ))}
         </TileGroup>
+
+        {/* Anthropic's ways, when the router offers more than one: a hosted router's one way, the
+            setup token, is no choice, and its field below explains it (ST-C124, ST-C48). */}
+        {!kimi && sources.length > 1 ? (
+          <TileGroup key={offered} legend="How to add it" name={`${groupName}-way`} valueSelected={source} onChange={(v) => setPicked(v as Source)} className={styles.choices}>
+            {sources.map((s) => (
+              <RadioTile key={s} id={`${groupName}-way-${s}`} value={s} className={styles.choice}>
+                <span className={styles.choiceTitle}>{CHOICE[s].title}</span>
+                <span className={styles.choiceBody}>
+                  <Body parts={CHOICE[s].body} />
+                </span>
+              </RadioTile>
+            ))}
+          </TileGroup>
+        ) : null}
 
         <TextInput
           id={`${groupName}-name-field`}
@@ -252,7 +278,7 @@ export function AddAccount({ auth, accounts, onDone, onClose }: { auth: Auth | n
           invalid={showName}
           invalidText={nameIssue ?? undefined}
           helperText={
-            (source === 'token' || source === 'kimi') && looksLikeEmail(label)
+            (kimi || way === 'token') && looksLikeEmail(label)
               ? 'This name is an email address, so it becomes the account’s identity: a long-lived token cannot report which account it belongs to.'
               : id
                 ? `Its id will be “${id}”.`
@@ -261,7 +287,7 @@ export function AddAccount({ auth, accounts, onDone, onClose }: { auth: Auth | n
           disabled={signing}
         />
 
-        {source === 'token' ? (
+        {way === 'token' ? (
           <PasswordInput
             id={`${groupName}-token-field`}
             labelText="Token"
@@ -276,7 +302,7 @@ export function AddAccount({ auth, accounts, onDone, onClose }: { auth: Auth | n
           />
         ) : null}
 
-        {form.kimi ? (
+        {kimi ? (
           <>
             <PasswordInput
               id={`${groupName}-key-field`}
@@ -305,7 +331,7 @@ export function AddAccount({ auth, accounts, onDone, onClose }: { auth: Auth | n
           </>
         ) : null}
 
-        {source === 'signin' && flow.seen ? <SigninPanel status={flow.status} url={url} misses={flow.misses} /> : null}
+        {way === 'signin' && flow.seen ? <SigninPanel status={flow.status} url={url} misses={flow.misses} /> : null}
 
         {profile ? (
           <div className={styles.flow}>
@@ -323,14 +349,14 @@ export function AddAccount({ auth, accounts, onDone, onClose }: { auth: Auth | n
         <div className={styles.actions}>
           {!signing && !profile ? (
             <Button type="submit" kind="primary" size="md" disabled={busy}>
-              {form.save}
+              {kimi ? 'Add account' : form.save}
             </Button>
           ) : null}
           <Button kind="secondary" size="md" onClick={onClose} disabled={busy}>
             {signing || profile ? 'Close' : 'Cancel'}
           </Button>
         </div>
-        <Outcome busy={busy} busyText={source === 'signin' ? 'Starting…' : 'Adding…'} error={error} />
+        <Outcome busy={busy} busyText={way === 'signin' ? 'Starting…' : 'Adding…'} error={error} />
       </Form>
     </Tile>
   );

@@ -210,6 +210,19 @@ export const NOT_ON_A_SERVER =
 /// pasted token on a hosted router, which refuses the rest (ST-C27).
 export const usable = (a: Pick<Account, 'source'>, hosted: boolean): boolean => !hosted || a.source === 'token';
 
+/// One choice of a provider's "Requests go to" list box: one of that provider's accounts.
+export interface ActiveChoice {
+  readonly id: string;
+  readonly label: string;
+}
+
+/// What a provider's "Requests go to" list box offers, from that provider's accounts (ST-C125): each
+/// that can be made the one that signs here — a hosted router refuses all but a pasted key (ST-C27) —
+/// and whichever is active now, so the box always shows what the router reports.
+export function activeChoices(own: readonly Pick<Account, 'id' | 'label' | 'email' | 'source' | 'active'>[], hosted: boolean): ActiveChoice[] {
+  return own.filter((a) => usable(a, hosted) || flag(a.active)).map((a) => ({ id: a.id, label: accountName(a) }));
+}
+
 /// What an active card says it does. Each provider has its own active account, which signs that
 /// provider's requests, all but a model's assigned to another account (ST-C121, ST-C123).
 export function activeWords(a: Pick<Account, 'provider'>): string {

@@ -1,12 +1,13 @@
 // New for agent-router: one account, as a card that carries every fact a desk row had and its
-// actions at rest — Use, Edit, Remove — with the editor opening inside it (assets/index.html,
+// actions at rest — Edit, Remove — with the editor opening inside it (assets/index.html,
 // `renderAccounts`, `openEdit`, `wireEditForm`; ST-C19 to ST-C38). It names its provider, and Org,
-// Plan and the claude.ai session key are Anthropic's alone (ST-C119, ST-C120).
+// Plan and the claude.ai session key are Anthropic's alone (ST-C119, ST-C120). Which account signs
+// is chosen in its provider's section, above the cards (ST-C125).
 import { useState, type FormEvent, type KeyboardEvent } from 'react';
 import { useMutation } from '@tanstack/react-query';
 import { Button, Form, PasswordInput, Tag, TextInput, Tile } from '@carbon/react';
 import { keys } from '~/app/query';
-import { activateAccount, clearSessionKey, editAccount, removeAccount, setSessionKey, useReread, type AccountEdit, type AccountRow } from '~/data/settings';
+import { clearSessionKey, editAccount, removeAccount, setSessionKey, useReread, type AccountEdit, type AccountRow } from '~/data/settings';
 import { identityNote, KIMI_BASE_URL, notes, providerName, providerOf, removable, type Auth } from '~/model/settings';
 import {
   accountName,
@@ -38,17 +39,8 @@ export function AccountCard({ account, accounts, auth, hosted }: { account: Acco
   const builtIn = account.source === 'keychain' && !hosted;
   const anthropic = providerOf(account) === 'anthropic';
 
-  // Use and Remove each re-read the list whatever the router said, and a refusal stays on this
-  // card in the router's words (ST-C24, ST-C25).
-  const use = useMutation({
-    mutationFn: async () => {
-      try {
-        await activateAccount(account.id);
-      } finally {
-        await reread(keys.accounts);
-      }
-    },
-  });
+  // Remove re-reads the list whatever the router said, and a refusal stays on this card in the
+  // router's words (ST-C25).
   const remove = useMutation({
     mutationFn: async () => {
       try {
@@ -62,7 +54,7 @@ export function AccountCard({ account, accounts, auth, hosted }: { account: Acco
   return (
     <Tile className={styles.card} aria-label={`Account ${name}`}>
       <div className={styles.cardHead}>
-        <h3 className={styles.cardTitle}>{name}</h3>
+        <h4 className={styles.cardTitle}>{name}</h4>
         {active ? (
           <Tag type="green" size="md">
             active
@@ -116,11 +108,6 @@ export function AccountCard({ account, accounts, auth, hosted }: { account: Acco
       ) : null}
 
       <div className={styles.actions}>
-        {!active && usable(account, hosted) ? (
-          <Button kind="primary" size="md" onClick={() => use.mutate()} disabled={use.isPending}>
-            Use
-          </Button>
-        ) : null}
         <Button kind="secondary" size="md" onClick={() => setEditing(true)} disabled={editing}>
           Edit
         </Button>
@@ -145,7 +132,6 @@ export function AccountCard({ account, accounts, auth, hosted }: { account: Acco
           <span className={styles.subtle}>{BUILT_IN}</span>
         </div>
       ) : null}
-      <Outcome busy={use.isPending} busyText="Switching…" error={use.error} />
       <Outcome error={remove.error} />
 
       {editing ? <AccountEditor account={account} auth={auth} onClose={() => setEditing(false)} /> : null}

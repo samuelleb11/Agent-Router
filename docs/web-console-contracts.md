@@ -67,7 +67,10 @@ console (AGEN-0116): its sessions' labels and controls, SE-C234 to SE-C238, and 
 one, SE-C239 to SE-C241, so Sessions holds 241; and each machine's clients, MA-C8 to MA-C10, so
 Machines holds 10. The same day each provider's own mark and name came to stand beside what it
 concerns (AGEN-0127): the mark itself, SH-C56, so the Shell holds 56; accounts, requests and models,
-OV-C231, so the Overview holds 224; and sessions, SE-C242, so Sessions holds 242.
+OV-C231, so the Overview holds 224; and sessions, SE-C242, so Sessions holds 242. The same day,
+after the owner looked at the deployed console, Add account came to ask the provider first, ST-C124,
+and Accounts to show a section per provider with a list box for the account its requests go to,
+ST-C125 (AGEN-0092), so Settings holds 125.
 
 ## Shell
 
@@ -3695,6 +3698,8 @@ disclosure, and each explanation next to the field it concerns.
   removed). *Why:* "One card per account rather than nine columns: the row never truncates,
   at any width." *Regression:* no. *Source:* `assets/index.html:304-315`,
   `assets/index.html:1946-1971`, `docs/web-console-carbon.md:371-372`.
+  *Amended:* a card has no Use button; the account that signs is chosen above the cards, in its
+  provider's section (ST-C125).
 - **ST-C20** A credential that was not checked reads "not checked", never ready or failed;
   a ready one names its kind; a failed one shows the router's whole reason, wrapped, in the
   error tone. *Why:* not asked and asked-and-fine are different facts (Northstar §2).
@@ -3718,12 +3723,15 @@ disclosure, and each explanation next to the field it concerns.
   drops its cached credential so the switch takes effect on the very next request,
   mid-session, and it is undone the same way. *Regression:* no. *Source:*
   `assets/index.html:1987-1991`, `src/api.rs:1485-1489`.
+  *Amended:* the switch is one pick in the provider's "Requests go to" list box, through the same
+  call (ST-C125).
 - **ST-C25** A refused Use or Remove shows the router's sentence on that account's card,
   and the list re-reads. *Why:* activation and removal refuse as HTTP 500 with `{error}`.
   *Regression:* no. *Source:* `assets/index.html:1987-2001`, `src/api.rs:122-131`,
   `src/api.rs:1475-1481`, `src/api.rs:1496-1502`. *Today:* broken — the handlers have no
   catch, so a refusal is an unhandled rejection: nothing is shown and the list is not
-  re-read.
+  re-read. *Amended:* a refused switch shows beside the provider's "Requests go to" list box,
+  where it was made (ST-C125); a refused Remove still shows on its card.
 - **ST-C26** On a local router the built-in Claude Code account offers no Remove and says it
   is built in; on a hosted router it is removable like any other. *Why:* locally the router
   refuses ("the default account is discovered automatically and cannot be removed") and would
@@ -3737,7 +3745,9 @@ disclosure, and each explanation next to the field it concerns.
   Code login on a developer's machine, which a hosted router cannot read …"). *Why:* the
   router refuses to activate anything but a token there. *Regression:* no. *Source:*
   `src/api.rs:1475-1481`, `src/accounts.rs:141-144`, `docs/hosting-on-kubernetes.md:163-167`.
-  *Today:* broken — Use is offered on those rows and its refusal is swallowed.
+  *Today:* broken — Use is offered on those rows and its refusal is swallowed. *Amended:* the
+  provider's "Requests go to" list box does not offer such an account unless it is the active one,
+  and its card still says, in the router's sentence, why it cannot sign there (ST-C125).
 - **ST-C28** Remove's confirmation names the account, says its stored credential and
   session key are deleted, and, when it is the active account, names the account that will
   sign next: the oldest one left. *Why:* the router never leaves itself with nothing to sign
@@ -3758,7 +3768,24 @@ disclosure, and each explanation next to the field it concerns.
   The palette's "Use …" works the same way, and a Kimi Code account's command reads "Use <name> for
   Kimi Code". *Why:* `active` became one per provider (AGEN-0082), and "the active account" alone no
   longer says which. *Regression:* no. *Source:* `src/accounts.rs` (`activate`, `remove`),
-  [Sources](sources-and-models.md), "The catalogue".
+  [Sources](sources-and-models.md), "The catalogue". *Amended:* a provider's active account is
+  chosen in that provider's own section, in its "Requests go to" list box, and the cards have no Use
+  (ST-C125); the palette's "Use …" is unchanged.
+- **ST-C125** Accounts shows one section per provider that has accounts, Anthropic's first, each
+  headed by the provider's mark and name (SH-C56) and holding that provider's cards. Above its cards
+  each section has a visible Carbon list box (a Dropdown) labelled "Requests go to", listing that
+  provider's accounts that can sign on this router (a hosted router signs with a pasted key only,
+  ST-C27) and whichever is active now, with the active one selected. Picking another makes it the
+  provider's active account in one choice, with no confirmation, through the call Use made (`POST
+  /api/accounts/activate`, ST-C24); the list re-reads whatever the router said, the box shows the
+  active account the router reads back (ST-C13), and a refusal shows beside the box in the router's
+  words, as Use showed it (ST-C25). Its helper text says that provider's models go to this account
+  unless the Models page, linked, assigns a model elsewhere (ST-C123). A card has no Use button; the
+  palette's "Use …" stays (ST-C121). *Why:* the owner, on the deployed console (2026-10-10): "per
+  provider an option to select the account where we route the requests. Since apparently we separate
+  Claude and Kimi." A Use button on every card, in one list, did not say that each provider has an
+  account of its own. *Regression:* no. *Source:* `ui/src/screens/Settings/Accounts.tsx`,
+  `src/accounts.rs` (`activate`), [Sources](sources-and-models.md), "The catalogue".
 
 ### Accounts: editing
 
@@ -3831,6 +3858,8 @@ disclosure, and each explanation next to the field it concerns.
   check "a hosted router adds an account by pasted token only, and a local one every way".
   *Source:* `assets/index.html:567-571`, `assets/index.html:2183-2194`,
   `docs/web-console-carbon.md:377-378`, `scripts/check-dashboard-ui.js:371-383`.
+  *Amended:* these are Anthropic's ways, offered under "How to add it" once Anthropic is the chosen
+  provider; Kimi Code is a provider, chosen before any way, not a way among them (ST-C124).
 - **ST-C41** A name is required before anything is sent, and the form says so beside the
   Name field. *Why:* the router turns an empty name into a made-up id for a token or a
   profile, and refuses one for a sign-in ("give the account a name first"). *Regression:* no.
@@ -3908,7 +3937,9 @@ disclosure, and each explanation next to the field it concerns.
   `src/hosted.rs:28-31`, `src/hosted.rs:78-85`, `scripts/check-dashboard-ui.js:371-383`.
   *Amended:* a Kimi Code key is a pasted key kept as a token, so a hosted router, and one that has
   not said what it is, offers it beside the setup token (ST-C117); sign-in and profile are still not
-  offered, and the form still opens on the setup token.
+  offered, and the form still opens on the setup token. *Amended:* the provider is asked first
+  (ST-C124): with Anthropic chosen, the setup token is its one way there, shown as its field with no
+  choice, and Kimi Code is the other provider.
 - **ST-C117** Add account offers Kimi Code beside the sign-in, the setup token and the profile on a
   local router, and beside the setup token on a hosted router and on one that has not said what it
   is: a choice carrying its own explanation, offered last. It takes a name, a key from the Kimi Code
@@ -3917,7 +3948,10 @@ disclosure, and each explanation next to the field it concerns.
   base_url}`, the base URL only when one was typed; an Anthropic token is sent as it always was,
   naming no provider. *Why:* a Kimi Code key is kept as a setup token is, and the router stores
   Kimi Code's default itself. *Regression:* no. *Source:* `src/api.rs` (`AddAccount`,
-  `base_url_for`), [Sources](sources-and-models.md), "Words" and "Providers".
+  `base_url_for`), [Sources](sources-and-models.md), "Words" and "Providers". *Amended:* Kimi Code is
+  chosen as the provider, before any way and on every router, and goes straight to its name, key and
+  base URL; it is no longer a way offered last beside Anthropic's (ST-C124). What it takes, checks
+  and sends is unchanged.
 - **ST-C118** Each provider's key rule is checked before sending, beside its field, in the router's
   words: the `sk-ant-` rule (ST-C11, ST-C48) is for an Anthropic token only; a Kimi Code key must be
   given ("a token is required for this account type") and must not be an Anthropic token ("that is
@@ -3926,6 +3960,20 @@ disclosure, and each explanation next to the field it concerns.
   key pasted into the wrong provider's field would be stored, then refused upstream at every
   request it signed. *Regression:* no. *Source:* `src/accounts.rs` (`Provider::key_problem`),
   `src/api.rs` (`accounts_add`, `base_url_for`).
+- **ST-C124** Add account asks the provider first: a "Provider" choice of Carbon radio tiles, each
+  with the provider's mark and name (SH-C56) and its explanation — Anthropic, "Claude’s models,
+  signed by a Claude subscription"; Kimi Code, "Kimi’s models (`k3`, `kimi-for-coding`), signed by a
+  key from the Kimi Code console" — with Anthropic chosen when the form opens, on every router. Then,
+  for Anthropic only, "How to add it" offers the ways this router offers: sign-in, the setup token
+  and a profile on a local router (ST-C40); the setup token only on a hosted router and on one that
+  has not said what it is (ST-C52, ST-C101). One way is no choice: none is shown, and that way's field
+  comes with its explanation as helper text, the setup token's being the one ST-C48 gives it. Kimi
+  Code goes straight to its name, key and base URL (ST-C117), and what either sends is unchanged
+  (ST-C117). *Why:* the owner, on the deployed console (2026-10-10): "I'd expect to have a Provider
+  type selection." Kimi Code offered as a fourth way beside Anthropic's three read as one of
+  Anthropic's, and a choice of one is no choice. *Regression:* no. *Source:*
+  `ui/src/screens/Settings/AddAccount.tsx`, `ui/src/model/settings.ts` (`ADD_PROVIDERS`,
+  `accountSources`).
 
 ### Models
 
