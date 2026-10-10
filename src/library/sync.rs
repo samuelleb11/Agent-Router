@@ -16,8 +16,9 @@
 //! (`<data-dir>/library/ledger.json`) says this agent placed it.
 //!
 //! On a machine with Kimi Code the same sync runs again for it (`Places::kimi`), with a ledger
-//! of its own: its skills and subagents in its home, a subagent converted to its form
-//! (`library::kimi`), and the ledger keeping the digest of what was written as well.
+//! of its own: its skills and subagents in its home, a subagent converted to its form, its
+//! commands in the router's plugin (`library::kimi`), and the ledger keeping the digest of
+//! what was written as well. The report says each client's apart (`Report::clients`).
 
 use std::collections::{BTreeMap, HashSet};
 use std::future::Future;
@@ -49,23 +50,17 @@ pub struct Places {
     pub kimi: Option<PathBuf>,
 }
 
-/// Which client a sync places for, and so which kinds it takes and in what form.
+/// Which client a sync places for, and so where and in what form.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Form {
     #[default]
     Claude,
-    /// Skills as they are, subagents converted, no commands (`library::kimi`).
+    /// Skills as they are, subagents converted, commands in the router's plugin
+    /// (`library::kimi`).
     Kimi,
 }
 
 impl Form {
-    fn takes(self, kind: Kind) -> bool {
-        match self {
-            Form::Claude => true,
-            Form::Kimi => super::kimi::takes(kind),
-        }
-    }
-
     fn shape(self, bundle: Bundle) -> Result<Bundle> {
         match self {
             Form::Claude => Ok(bundle),
@@ -84,9 +79,10 @@ impl Places {
         Places { claude: home, data: data.join("kimi"), form: Form::Kimi, kimi: None }
     }
 
-    /// Where Claude Code reads an item of this kind.
+    /// Where the client reads an item of this kind.
     pub fn target(&self, kind: Kind, name: &str) -> PathBuf {
         match kind {
+            Kind::Command if self.form == Form::Kimi => super::kimi::command_path(&self.claude, name),
             Kind::Skill => self.claude.join("skills").join(name),
             Kind::Command => self.claude.join("commands").join(format!("{name}.md")),
             Kind::Subagent => self.claude.join("agents").join(format!("{name}.md")),
@@ -220,7 +216,11 @@ impl Line {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Report {
     pub at_ms: i64,
+    /// Claude Code's.
     pub items: Vec<Line>,
+    /// Each other client's, by its name: `kimi-code`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub clients: BTreeMap<String, Vec<Line>>,
 }
 
 /// What is at an item's place now.
@@ -244,8 +244,7 @@ fn here(places: &Places, kind: Kind, name: &str) -> Here {
 /// per data directory: the agent's and `agent-router library sync`'s wait for each other.
 pub fn sync(places: &Places, source: &dyn Source, now: i64) -> Result<Report> {
     let _one = one_at_a_time(places)?;
-    let wanted: Vec<Wanted> =
-        source.manifest().context("reading the router's manifest")?.into_iter().filter(|w| places.form.takes(w.kind)).collect();
+    let wanted = source.manifest().context("reading the router's manifest")?;
     let mut ledger = Ledger::load(places);
     let mut items = Vec::new();
     for item in &wanted {
@@ -266,7 +265,10 @@ pub fn sync(places: &Places, source: &dyn Source, now: i64) -> Result<Report> {
         items.push(line);
         ledger.save(places)?;
     }
-    let report = Report { at_ms: now, items };
+    if places.form == Form::Kimi {
+        super::kimi::keep_plugin(&places.claude).context("keeping the router's Kimi Code plugin")?;
+    }
+    let report = Report { at_ms: now, items, ..Default::default() };
     write_json(&places.last_sync(), &report)?;
     Ok(report)
 }
@@ -596,15 +598,12 @@ pub async fn run_once(places: Places, router: Arc<Router>, library: Option<bool>
     let report = tokio::task::spawn_blocking(move || {
         let source = Blocking { router: &router, handle };
         let now = crate::db::now_ms();
-        let report = sync(&places, &source, now)?;
-        // Kimi Code's, from the same manifest, with a ledger of its own. Said in the log: the
-        // router hears Claude Code's report.
+        let mut report = sync(&places, &source, now)?;
+        // Kimi Code's, from the same manifest, with a ledger of its own, in the same report.
         if let Some(home) = places.kimi.clone() {
             match sync(&Places::kimi(&places.data, home), &source, now) {
                 Ok(kimi) => {
-                    for line in kimi.items.iter().filter(|l| l.outcome != Outcome::InStep) {
-                        tracing::info!(kind = %line.kind, name = %line.name, version = line.version, outcome = ?line.outcome, kept = ?line.kept, why = ?line.why, "the Library, for Kimi Code");
-                    }
+                    report.clients.insert(crate::clients::KIMI_CODE.to_string(), kimi.items);
                 }
                 Err(e) => tracing::warn!("the Library could not be placed for Kimi Code: {e:#}"),
             }
@@ -873,6 +872,48 @@ mod tests {
         report.items.iter().map(|l| (l.name.clone(), l.outcome)).collect()
     }
 
+    /// The Library's commands reach Kimi Code in the router's plugin, registered beside the
+    /// owner's own plugins, and the plugin goes once the Library has no command.
+    #[test]
+    fn library_commands_reach_kimi_code_as_a_plugin() {
+        let claude = scratch("kimi-plugin");
+        let places = Places::kimi(&claude.data, claude.claude.parent().unwrap().join("kimi-home"));
+        let home = places.claude.clone();
+        let theirs = serde_json::json!({ "id": "theirs", "root": "/x", "source": "github", "enabled": false });
+        std::fs::create_dir_all(home.join("plugins")).unwrap();
+        std::fs::write(home.join("plugins/installed.json"), serde_json::to_vec(&serde_json::json!({ "version": 1, "plugins": [theirs] })).unwrap())
+            .unwrap();
+
+        let shelf = Shelf::of(vec![(command("deploy", "Deploys $ARGUMENTS."), 1)]);
+        sync(&places, &shelf, 1).unwrap();
+        let root = home.join("plugins/managed/agent-router");
+        assert_eq!(read(&root.join("commands/deploy.md")), "---\ndescription: Deploys $ARGUMENTS.\n---\nDeploys $ARGUMENTS.\n", "as it is");
+        let manifest: serde_json::Value = serde_json::from_str(&read(&root.join("kimi.plugin.json"))).unwrap();
+        assert_eq!((manifest["name"].as_str(), manifest["commands"].as_str()), (Some("agent-router"), Some("./commands")));
+        let installed: serde_json::Value = serde_json::from_str(&read(&home.join("plugins/installed.json"))).unwrap();
+        let plugins = installed["plugins"].as_array().unwrap();
+        assert_eq!(plugins[0], theirs, "the owner's own, as it was");
+        assert_eq!(plugins[1]["id"], "agent-router");
+        assert_eq!(plugins[1]["root"], root.display().to_string());
+        assert_eq!((plugins[1]["source"].as_str(), plugins[1]["enabled"].as_bool()), (Some("local-path"), Some(true)));
+
+        // Turned off by the owner: a sync leaves it off.
+        let mut off = installed.clone();
+        off["plugins"][1]["enabled"] = serde_json::json!(false);
+        std::fs::write(home.join("plugins/installed.json"), serde_json::to_vec(&off).unwrap()).unwrap();
+        sync(&places, &shelf, 2).unwrap();
+        let again: serde_json::Value = serde_json::from_str(&read(&home.join("plugins/installed.json"))).unwrap();
+        assert_eq!(again["plugins"][1]["enabled"], false);
+
+        // No commands left: the plugin goes, and the owner's stays.
+        let none = Shelf::of(vec![(skill("release", "Ships.", vec![]), 1)]);
+        sync(&places, &none, 3).unwrap();
+        assert!(!root.exists());
+        let after: serde_json::Value = serde_json::from_str(&read(&home.join("plugins/installed.json"))).unwrap();
+        assert_eq!(after["plugins"], serde_json::json!([theirs]));
+        done(&claude);
+    }
+
     /// A machine with Kimi Code: its skills and subagents in its home, a subagent in its form,
     /// no commands, and an item edited there put back with the edited copy kept.
     #[test]
@@ -887,18 +928,34 @@ mod tests {
         ]);
 
         let first = sync(&places, &shelf, 1).unwrap();
-        assert_eq!(outcomes(&first), [("release".into(), Outcome::Placed), ("code-reviewer".into(), Outcome::Placed)]);
-        assert_eq!(tree(&home), ["agents/code-reviewer.md", "skills/release/SKILL.md", "skills/release/scripts/ship.sh"]);
+        assert_eq!(
+            outcomes(&first),
+            [("release".into(), Outcome::Placed), ("deploy".into(), Outcome::Placed), ("code-reviewer".into(), Outcome::Placed)]
+        );
+        assert_eq!(
+            tree(&home),
+            [
+                "agents/code-reviewer.md",
+                "plugins/installed.json",
+                "plugins/managed/agent-router/commands/deploy.md",
+                "plugins/managed/agent-router/kimi.plugin.json",
+                "skills/release/SKILL.md",
+                "skills/release/scripts/ship.sh",
+            ]
+        );
         assert_eq!(read(&home.join("skills/release/SKILL.md")), skill_md("release", "Ships a build."), "a skill as it is");
         let agent = read(&home.join("agents/code-reviewer.md"));
         assert!(agent.contains("\nwhenToUse: \"Reviews a diff.\"\ntools: \"*\"\n---\nYou review.\n"), "{agent}");
-        assert!(!home.join("commands").exists(), "Kimi Code takes no commands from here");
+        assert!(!home.join("commands").exists(), "Kimi Code has no commands folder: they are in the plugin");
         assert!(!claude.claude.exists(), "nothing of Claude Code's is touched");
 
         // In step: nothing fetched again, a converted subagent included.
         let fetched = shelf.fetched.lock().unwrap().len();
         let again = sync(&places, &shelf, 2).unwrap();
-        assert_eq!(outcomes(&again), [("release".into(), Outcome::InStep), ("code-reviewer".into(), Outcome::InStep)]);
+        assert_eq!(
+            outcomes(&again),
+            [("release".into(), Outcome::InStep), ("deploy".into(), Outcome::InStep), ("code-reviewer".into(), Outcome::InStep)]
+        );
         assert_eq!(shelf.fetched.lock().unwrap().len(), fetched);
 
         // Edited here: the Library wins, and the edited copy is kept.
@@ -1155,6 +1212,7 @@ mod tests {
         let last = Report {
             at_ms: 4,
             items: vec![Line { why: Some("what the router sent does not match its digest".into()), ..Line::of(Kind::Skill, "broken", 4, Outcome::Failed) }],
+            ..Default::default()
         };
         write_json(&places.last_sync(), &last).unwrap();
 

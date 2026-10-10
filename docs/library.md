@@ -311,13 +311,18 @@ time for it, from the same manifest, with a ledger of its own under `<data-dir>/
 - subagents go to `$KIMI_CODE_HOME/agents/<name>.md` in Kimi Code's form (`src/library/kimi.rs`):
   `description` kept and `whenToUse` said from it, `tools` mapped to Kimi Code's names, `*`
   when none is named, and the prompt as it is;
-- commands do not: Kimi Code has no folder for them, and they reach it as a plugin
-  (AGEN-0115).
+- commands go into the router's own Kimi Code plugin, `agent-router`, as they are: Kimi Code
+  has no folder for commands. The plugin is `$KIMI_CODE_HOME/plugins/managed/agent-router/`,
+  its `kimi.plugin.json` naming `./commands`, registered in `plugins/installed.json` beside
+  the owner's plugins, and taken out once the Library has no command (AGEN-0115). An owner
+  who turns it off keeps it off.
 
 The ledger keeps the digest of what was written as well, so a converted subagent reads as in
-step. An item edited there is put back and the edited copy kept, as under `~/.claude`. The
-router hears Claude Code's report; Kimi Code's is in the agent's log until each client's
-state is reported (AGEN-0115).
+step. An item edited there is put back and the edited copy kept, as under `~/.claude`.
+
+**Each client's state.** The report a machine sends keeps Claude Code's lines in `items` and
+each other client's under `clients` (`"kimi-code": [...]`), and `/api/machines` gives the
+machine's `library` standing for Claude Code with a `clients` map beside it for the rest.
 
 ### Push
 

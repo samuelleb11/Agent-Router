@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::store::{self, Heard, Version};
-use super::sync::{Outcome, Report};
+use super::sync::{Line, Outcome, Report};
 use crate::machines::{Machine, Relay, Seen};
 use crate::proxy::AppState;
 use crate::refusal::{failed, refuse, JsonBody};
@@ -187,11 +187,15 @@ pub struct Standing {
     pub replaced: Vec<String>,
     /// When it last said anything.
     pub at_ms: Option<i64>,
+    /// Each other client's standing on the machine, by its name: `kimi-code`. The fields
+    /// above are Claude Code's.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub clients: std::collections::BTreeMap<String, Standing>,
 }
 
 impl Standing {
     pub fn not_yet() -> Standing {
-        Standing { state: "not_yet", behind: 0, failed: 0, replaced: Vec::new(), at_ms: None }
+        Standing { state: "not_yet", behind: 0, failed: 0, replaced: Vec::new(), at_ms: None, clients: Default::default() }
     }
 }
 
@@ -205,9 +209,16 @@ pub fn standing(heard: Option<&(i64, Heard)>, live: &[Version]) -> Standing {
         Heard::Predates => return said("predates"),
         Heard::Report(report) => report,
     };
+    let mut standing = of_lines(&report.items, live, *at_ms);
+    standing.clients = report.clients.iter().map(|(client, lines)| (client.clone(), of_lines(lines, live, *at_ms))).collect();
+    standing
+}
+
+/// One client's standing, from its lines of a report.
+fn of_lines(lines: &[Line], live: &[Version], at_ms: i64) -> Standing {
     let (mut behind, mut failed) = (0, 0);
     for version in live {
-        let line = report.items.iter().find(|l| l.kind == version.kind && l.name == version.name);
+        let line = lines.iter().find(|l| l.kind == version.kind && l.name == version.name);
         match line {
             Some(l) if l.version == version.number && matches!(l.outcome, Outcome::InStep | Outcome::Placed | Outcome::Replaced) => {}
             Some(l) if l.version == version.number && l.outcome == Outcome::Failed => failed += 1,
@@ -215,7 +226,7 @@ pub fn standing(heard: Option<&(i64, Heard)>, live: &[Version]) -> Standing {
         }
     }
     let replaced: Vec<String> =
-        report.items.iter().filter(|l| l.outcome == Outcome::Replaced).map(|l| format!("{}/{}", l.kind, l.name)).collect();
+        lines.iter().filter(|l| l.outcome == Outcome::Replaced).map(|l| format!("{}/{}", l.kind, l.name)).collect();
     let state = if failed > 0 {
         "failed"
     } else if behind > 0 {
@@ -225,7 +236,7 @@ pub fn standing(heard: Option<&(i64, Heard)>, live: &[Version]) -> Standing {
     } else {
         "in_step"
     };
-    Standing { state, behind, failed, replaced, at_ms: Some(*at_ms) }
+    Standing { state, behind, failed, replaced, at_ms: Some(at_ms), clients: Default::default() }
 }
 
 /// Every machine's standing that has said anything, by machine id.
@@ -344,6 +355,7 @@ mod tests {
                     why: None,
                 })
                 .collect(),
+            ..Default::default()
         }
     }
 
@@ -554,5 +566,41 @@ mod tests {
         let read = standing(Some(&heard), &live);
         assert_eq!((read.state, read.replaced.as_slice()), ("replaced", ["skill/bench".to_string()].as_slice()));
         assert_eq!(standing(None, &live).state, "not_yet");
+    }
+
+    fn bench(number: i64) -> Version {
+        Version {
+            kind: Kind::Skill,
+            name: "bench".into(),
+            number,
+            digest: "d".into(),
+            size: 1,
+            description: "Two.".into(),
+            provenance: store::Provenance::Upload,
+            state: store::State::Live,
+            created_at: 1,
+            decided_at: None,
+        }
+    }
+
+    /// A machine's report says each client's sync apart, and its standing keeps each.
+    #[test]
+    fn a_machines_library_state_is_kept_per_client() {
+        let mut said = report(&[("bench", 2, Outcome::InStep)]);
+        said.clients.insert("kimi-code".into(), report(&[("bench", 1, Outcome::InStep)]).items);
+        let read = standing(Some(&(5, Heard::Report(said.clone()))), &[bench(2)]);
+        assert_eq!(read.state, "in_step", "Claude Code's");
+        assert_eq!(read.clients["kimi-code"].state, "behind", "Kimi Code's, a version back");
+        assert_eq!(read.clients["kimi-code"].behind, 1);
+
+        // As /api/machines gives it, and as a report travels and is kept.
+        let json = serde_json::to_value(&read).unwrap();
+        assert_eq!(json["clients"]["kimi-code"]["state"], "behind");
+        let kept: Report = serde_json::from_value(serde_json::to_value(&said).unwrap()).unwrap();
+        assert_eq!(kept, said);
+        // A report from before there were clients reads with none, and says none.
+        let old: Report = serde_json::from_value(serde_json::json!({ "at_ms": 1, "items": [] })).unwrap();
+        assert!(old.clients.is_empty());
+        assert!(serde_json::to_value(standing(Some(&(1, Heard::Report(old))), &[])).unwrap().get("clients").is_none());
     }
 }
