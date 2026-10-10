@@ -234,6 +234,89 @@ pub fn bodies_path(main: &Path) -> PathBuf {
 /// The row loses its `REFERENCES requests(id) ON DELETE CASCADE`: a foreign key cannot
 /// span two database files. Nothing deletes a request today, so there is no cascade to
 /// lose — but anything that starts deleting them has to clear both files.
+/// When the cached-token fix (AGEN-0098, 4e403ec) was committed, 2026-10-10T05:40:00Z: no
+/// build from before it counted Kimi Code's cache reads once.
+const KIMI_CACHE_FIX_MS: i64 = 1_791_610_800_000;
+
+/// The settings key that says `recompute_kimi_usage` has run on this store.
+const KIMI_USAGE_KEY: &str = "kimi_usage_recomputed";
+
+/// Kimi Code requests recorded before the cached-token fix counted its cache reads twice: its
+/// `input_tokens` holds them, where Anthropic's leaves them out (AGEN-0140). Each Kimi Code
+/// request whose response was kept is recomputed from it, as capture reads one now: its input
+/// is what Kimi Code reported less its cache reads, and its prompt total follows. Its output is
+/// left as capture counted it from the whole stream, since a kept response can be cut short.
+/// One with no response kept, recorded before the fix, has its cache reads taken out of its
+/// input and is marked `estimated`. Recomputing one from its response gives the same figures
+/// again, and an estimated one is never taken from twice. Once per store, at open, as the
+/// store's other migrations run.
+pub(crate) fn recompute_kimi_usage(conn: &Connection) -> Result<(usize, usize)> {
+    let done = conn
+        .query_row("SELECT 1 FROM settings WHERE key = ?1", [KIMI_USAGE_KEY], |_| Ok(()))
+        .optional()?
+        .is_some();
+    if done {
+        return Ok((0, 0));
+    }
+    type Row = (i64, i64, i64, Option<Vec<u8>>);
+    let found: Vec<Row> = {
+        let mut stmt = conn.prepare(
+            "SELECT r.id, r.started_at, u.estimated, b.content
+             FROM requests r
+             JOIN usage u ON u.request_id = r.id
+             LEFT JOIN bodies_db.bodies b ON b.request_id = r.id AND b.direction = 'response'
+             WHERE r.provider = 'kimi'",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    let tx = conn.unchecked_transaction()?;
+    let (mut recomputed, mut estimated) = (0, 0);
+    for (id, started_at, already, body) in found {
+        let read = body.filter(|b| !b.is_empty()).map(|body| {
+            let mut scan = crate::analyze::SseScanner::default();
+            let text = body.trim_ascii_start();
+            if text.starts_with(b"event:") || text.starts_with(b"data:") {
+                scan.feed(&body);
+                scan.feed(b"\n");
+            } else {
+                scan.absorb_json_body(&body);
+            }
+            scan.usage
+        });
+        if let Some(u) = read.filter(|u| u.input_tokens > 0 || u.cache_read_tokens > 0) {
+            let input = (u.input_tokens - u.cache_read_tokens).max(0);
+            tx.execute(
+                "UPDATE usage SET input_tokens = ?2, cache_read_tokens = ?3,
+                    prompt_tokens = ?2 + ?3 + cache_creation_5m_tokens + cache_creation_1h_tokens, estimated = 0
+                 WHERE request_id = ?1",
+                params![id, input, u.cache_read_tokens],
+            )?;
+            recomputed += 1;
+        } else if started_at < KIMI_CACHE_FIX_MS && already == 0 {
+            tx.execute(
+                "UPDATE usage SET input_tokens = max(input_tokens - cache_read_tokens, 0),
+                    prompt_tokens = max(input_tokens - cache_read_tokens, 0) + cache_read_tokens
+                                    + cache_creation_5m_tokens + cache_creation_1h_tokens,
+                    estimated = 1
+                 WHERE request_id = ?1",
+                [id],
+            )?;
+            estimated += 1;
+        }
+    }
+    tx.execute(
+        "INSERT INTO settings (key, value, updated_at) VALUES (?1, ?2, ?3)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+        params![KIMI_USAGE_KEY, format!("{recomputed} recomputed, {estimated} estimated"), now_ms()],
+    )?;
+    tx.commit()?;
+    if recomputed + estimated > 0 {
+        tracing::info!(recomputed, estimated, "Kimi Code requests from before the cached-token fix corrected");
+    }
+    Ok((recomputed, estimated))
+}
+
 pub(crate) fn attach_bodies(conn: &Connection, main: &Path) -> Result<()> {
     let side = bodies_path(main);
     conn.execute(
@@ -428,6 +511,9 @@ impl Db {
         ensure_column(&conn, "requests", "provider", "TEXT")?;
         // The coding clients a machine said it has (`clients`), as JSON.
         ensure_column(&conn, "machines", "clients", "TEXT")?;
+        // A request whose tokens were corrected without its response to read them from
+        // (`recompute_kimi_usage`): its figures are an estimate, and the Overview says so.
+        ensure_column(&conn, "usage", "estimated", "INTEGER NOT NULL DEFAULT 0")?;
         attach_bodies(&conn, path)?;
         for (col, ty) in [
             ("source", "TEXT NOT NULL DEFAULT 'keychain'"),
@@ -447,6 +533,7 @@ impl Db {
         ] {
             ensure_column(&conn, "accounts", col, ty)?;
         }
+        recompute_kimi_usage(&conn)?;
         Ok(Self { conn, seen_blocks: Default::default() })
     }
 
@@ -1048,6 +1135,89 @@ mod tests {
     /// The account that served a request, and its provider, are kept on the request, so
     /// the request list says where each one went; a request kept from before there was a
     /// second provider reads as Anthropic's, which it was.
+    /// A store with Kimi Code requests as builds before the cached-token fix recorded them, and
+    /// one as builds after it do: its cache reads counted in its input, and not.
+    fn kimi_rows(tag: &str) -> (std::path::PathBuf, Connection) {
+        let dir = std::env::temp_dir().join(format!("ar-kimi-usage-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("store.db");
+        drop(Db::open(&path).unwrap());
+        let conn = Connection::open(&path).unwrap();
+        attach_bodies(&conn, &path).unwrap();
+        // Ran when the store opened, with nothing to do: these rows are written after.
+        conn.execute("DELETE FROM settings WHERE key = ?1", [KIMI_USAGE_KEY]).unwrap();
+        let before = KIMI_CACHE_FIX_MS - 3_600_000;
+        let after = KIMI_CACHE_FIX_MS + 3_600_000;
+        conn.execute_batch(&format!(
+            "INSERT INTO requests (id, request_id, account_id, method, path, started_at, model, provider) VALUES
+               (1, 'kept', 'kimi', 'POST', '/v1/messages', {before}, 'k3', 'kimi'),
+               (2, 'lost', 'kimi', 'POST', '/v1/messages', {before}, 'k3', 'kimi'),
+               (3, 'new',  'kimi', 'POST', '/v1/messages', {after},  'k3', 'kimi'),
+               (4, 'lost-after', 'kimi', 'POST', '/v1/messages', {after}, 'k3', 'kimi'),
+               (5, 'claude', 'work', 'POST', '/v1/messages', {before}, 'claude-opus-5-5', 'anthropic');
+             INSERT INTO usage (request_id, input_tokens, output_tokens, cache_read_tokens, prompt_tokens) VALUES
+               (1, 37312, 200, 18000, 55312),
+               (2, 37312, 200, 18000, 55312),
+               (3, 19312, 200, 18000, 37312),
+               (4, 19312, 200, 18000, 37312),
+               (5, 1000, 50, 18000, 19000);"
+        ))
+        .unwrap();
+        // Kimi Code's own stream: its input holds what it read from cache. The kept copy is cut
+        // short before its last event, as a capped one can be.
+        let stream = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"model\":\"k3\",\"usage\":{\"input_tokens\":37312,\"cache_read_input_tokens\":18000,\"output_tokens\":1}}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\"";
+        for id in [1, 3] {
+            conn.execute(
+                "INSERT INTO bodies_db.bodies (request_id, direction, content, truncated_at, true_bytes) VALUES (?1, 'response', ?2, ?3, 9999)",
+                params![id, stream.as_bytes(), stream.len() as i64],
+            )
+            .unwrap();
+        }
+        (dir, conn)
+    }
+
+    fn figures(conn: &Connection, id: i64) -> (i64, i64, i64, i64, i64) {
+        conn.query_row(
+            "SELECT input_tokens, cache_read_tokens, prompt_tokens, output_tokens, estimated FROM usage WHERE request_id = ?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .unwrap()
+    }
+
+    /// A Kimi Code request recorded before the fix is recomputed from its kept response, and
+    /// one recorded after it reads the same; doing it again changes nothing (AGEN-0140).
+    #[test]
+    fn kimi_rows_from_before_the_cache_fix_are_recomputed_from_their_bodies() {
+        let (dir, conn) = kimi_rows("bodies");
+        assert_eq!(recompute_kimi_usage(&conn).unwrap(), (2, 1));
+        assert_eq!(figures(&conn, 1), (19312, 18000, 37312, 200, 0), "its cache reads counted once, its output as captured");
+        assert_eq!(figures(&conn, 3), (19312, 18000, 37312, 200, 0), "already right, and still");
+        assert_eq!(figures(&conn, 5), (1000, 18000, 19000, 50, 0), "Anthropic's untouched");
+
+        assert_eq!(recompute_kimi_usage(&conn).unwrap(), (0, 0), "once per store");
+        conn.execute("DELETE FROM settings WHERE key = ?1", [KIMI_USAGE_KEY]).unwrap();
+        recompute_kimi_usage(&conn).unwrap();
+        assert_eq!(figures(&conn, 1), (19312, 18000, 37312, 200, 0), "again, the same");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A Kimi Code request recorded before the fix whose response was not kept has its cache
+    /// reads taken out of its input, once, and is marked estimated; one recorded after the fix
+    /// is left as it was (AGEN-0140).
+    #[test]
+    fn a_kimi_row_without_its_body_is_estimated() {
+        let (dir, conn) = kimi_rows("estimated");
+        recompute_kimi_usage(&conn).unwrap();
+        assert_eq!(figures(&conn, 2), (19312, 18000, 37312, 200, 1));
+        assert_eq!(figures(&conn, 4), (19312, 18000, 37312, 200, 0), "recorded after the fix: right as it was");
+        conn.execute("DELETE FROM settings WHERE key = ?1", [KIMI_USAGE_KEY]).unwrap();
+        recompute_kimi_usage(&conn).unwrap();
+        assert_eq!(figures(&conn, 2), (19312, 18000, 37312, 200, 1), "never taken from twice");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn the_request_row_names_the_account_and_provider_that_served_it() {
         let dir = std::env::temp_dir().join(format!("ar-provider-row-{}", std::process::id()));

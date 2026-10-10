@@ -416,6 +416,7 @@ fn summary_parts_of(conn: &Connection, f: &Filter, parts: &[&str]) -> anyhow::Re
                         coalesce(sum(u.prompt_tokens),0)   AS prompt_tokens,
                         coalesce(sum(c.cost),0) AS cost,
                         coalesce(sum(CASE WHEN u.request_id IS NOT NULL AND c.request_id IS NULL THEN 1 ELSE 0 END),0) AS unpriced,
+                        coalesce(sum(u.estimated),0) AS estimated,
                         coalesce(sum(u.input_tokens),0)    AS input_tokens,
                         coalesce(sum(u.output_tokens),0)   AS output_tokens,
                         coalesce(sum(u.thinking_tokens),0) AS thinking_tokens,
@@ -448,6 +449,7 @@ fn summary_parts_of(conn: &Connection, f: &Filter, parts: &[&str]) -> anyhow::Re
                         coalesce(sum(u.prompt_tokens),0) AS prompt_tokens,
                         coalesce(sum(c.cost),0) AS cost,
                         coalesce(sum(CASE WHEN u.request_id IS NOT NULL AND c.request_id IS NULL THEN 1 ELSE 0 END),0) AS unpriced,
+                        coalesce(sum(u.estimated),0) AS estimated,
                         coalesce(sum(u.output_tokens),0) AS output_tokens,
                         coalesce(sum(u.cache_read_tokens),0) AS cache_read_tokens,
                         coalesce(sum(u.cache_creation_5m_tokens + u.cache_creation_1h_tokens),0) AS cache_write_tokens
@@ -540,6 +542,7 @@ fn summary_parts_of(conn: &Connection, f: &Filter, parts: &[&str]) -> anyhow::Re
                         coalesce(sum(u.prompt_tokens),0)   AS prompt_tokens,
                         coalesce(sum(c.cost),0) AS cost,
                         coalesce(sum(CASE WHEN u.request_id IS NOT NULL AND c.request_id IS NULL THEN 1 ELSE 0 END),0) AS unpriced,
+                        coalesce(sum(u.estimated),0) AS estimated,
                         coalesce(sum(u.output_tokens),0)   AS output_tokens,
                         coalesce(sum(u.thinking_tokens),0) AS thinking_tokens,
                         coalesce(sum(u.cache_read_tokens),0) AS cache_read_tokens,
@@ -567,6 +570,7 @@ fn summary_parts_of(conn: &Connection, f: &Filter, parts: &[&str]) -> anyhow::Re
                         coalesce(sum(u.prompt_tokens),0) AS prompt_tokens,
                         coalesce(sum(c.cost),0) AS cost,
                         coalesce(sum(CASE WHEN u.request_id IS NOT NULL AND c.request_id IS NULL THEN 1 ELSE 0 END),0) AS unpriced,
+                        coalesce(sum(u.estimated),0) AS estimated,
                         coalesce(sum(u.output_tokens),0) AS output_tokens,
                         coalesce(sum(u.cache_read_tokens),0) AS cache_read_tokens,
                         count(DISTINCT r.agent_id) AS agents
@@ -624,6 +628,7 @@ fn summary_parts_of(conn: &Connection, f: &Filter, parts: &[&str]) -> anyhow::Re
                     coalesce(sum(u.prompt_tokens),0) AS prompt_tokens,
                         coalesce(sum(c.cost),0) AS cost,
                         coalesce(sum(CASE WHEN u.request_id IS NOT NULL AND c.request_id IS NULL THEN 1 ELSE 0 END),0) AS unpriced,
+                        coalesce(sum(u.estimated),0) AS estimated,
                     coalesce(sum(u.output_tokens),0) AS output_tokens,
                     count(DISTINCT r.session_id) AS sessions,
                     max(r.started_at) AS last_seen
@@ -685,6 +690,7 @@ fn summary_parts_of(conn: &Connection, f: &Filter, parts: &[&str]) -> anyhow::Re
                                 coalesce(sum(u.prompt_tokens),0) AS prompt_tokens,
                         coalesce(sum(c.cost),0) AS cost,
                         coalesce(sum(CASE WHEN u.request_id IS NOT NULL AND c.request_id IS NULL THEN 1 ELSE 0 END),0) AS unpriced,
+                        coalesce(sum(u.estimated),0) AS estimated,
                                 coalesce(sum(u.output_tokens),0) AS output_tokens,
                                 coalesce(sum(u.cache_read_tokens),0) AS cache_read_tokens,
                                 coalesce(sum(CASE WHEN coalesce(r.is_sidechain,0) = 1 THEN u.prompt_tokens ELSE 0 END),0) AS subagent_tokens,
@@ -865,6 +871,7 @@ fn projects_of(conn: &Connection, f: &Filter) -> anyhow::Result<Value> {
                 coalesce(sum(u.prompt_tokens),0) AS prompt_tokens,
                     coalesce(sum(c.cost),0) AS cost,
                     coalesce(sum(CASE WHEN u.request_id IS NOT NULL AND c.request_id IS NULL THEN 1 ELSE 0 END),0) AS unpriced,
+                    coalesce(sum(u.estimated),0) AS estimated,
                 coalesce(sum(u.output_tokens),0) AS output_tokens,
                 coalesce(sum(u.cache_read_tokens),0) AS cache_read_tokens,
                 coalesce(sum(CASE WHEN coalesce(r.is_sidechain,0) = 1 THEN u.prompt_tokens ELSE 0 END),0) AS subagent_tokens,
@@ -947,6 +954,7 @@ pub(crate) fn sessions_of(conn: &Connection, f: &Filter) -> anyhow::Result<Value
                 coalesce(sum(u.prompt_tokens),0) AS prompt_tokens,
                 coalesce(sum(c.cost),0) AS cost,
                 coalesce(sum(CASE WHEN u.request_id IS NOT NULL AND c.request_id IS NULL THEN 1 ELSE 0 END),0) AS unpriced,
+                coalesce(sum(u.estimated),0) AS estimated,
                 coalesce(sum(u.output_tokens),0) AS output_tokens,
                 coalesce(sum(u.cache_read_tokens),0) AS cache_read_tokens,
                 coalesce(sum(CASE WHEN coalesce(r.is_sidechain,0) = 1 THEN u.prompt_tokens ELSE 0 END),0) AS subagent_tokens,
@@ -1559,6 +1567,8 @@ pub(crate) fn forecast_inner(state: &AppState, f: &Filter) -> anyhow::Result<Val
                     -- is not free, and the dashboard says so rather than showing $0.
                     coalesce(sum(CASE WHEN u.request_id IS NOT NULL AND c.request_id IS NULL
                                       THEN 1 ELSE 0 END),0) AS unpriced,
+                    -- Requests whose tokens are an estimate (`db::recompute_kimi_usage`).
+                    coalesce(sum(u.estimated),0)      AS estimated,
                     max(r.started_at)                 AS last_seen
              FROM requests r
              LEFT JOIN usage u        ON u.request_id = r.id
@@ -1573,6 +1583,7 @@ pub(crate) fn forecast_inner(state: &AppState, f: &Filter) -> anyhow::Result<Val
             &conn,
             "SELECT coalesce(sum(c.cost),0) AS cost,
                     coalesce(sum(CASE WHEN u.request_id IS NOT NULL AND c.request_id IS NULL THEN 1 ELSE 0 END),0) AS unpriced,
+                    coalesce(sum(u.estimated),0) AS estimated,
                     coalesce(sum(u.prompt_tokens),0) AS prompt_tokens,
                     count(*) AS requests
              FROM requests r
@@ -1735,6 +1746,8 @@ fn global_rollup(accounts: &[Value], now: i64) -> Value {
             "cost":          week_cost * 30.0 / 7.0,
             // The week's requests the router could not price, which its cost leaves out.
             "unpriced":      sum("week", "unpriced"),
+            // And those whose tokens are an estimate (`db::recompute_kimi_usage`).
+            "estimated":     sum("week", "estimated"),
             "prompt_tokens": week_tokens * 30.0 / 7.0,
             "basis":         "the last 7 days of recorded spend",
         },
