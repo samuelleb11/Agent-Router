@@ -1070,7 +1070,7 @@ mod tests {
         }
         db.conn.execute("UPDATE requests SET provider = NULL WHERE request_id = 'req-before'", []).unwrap();
 
-        let everything = crate::api::Filter { project: None, session: None, account: None, since: None, until: None, tz: None };
+        let everything = crate::api::Filter { project: None, session: None, account: None, since: None, until: None, tz: None, provider: None };
         let list = crate::api::requests_of(&db.conn, &everything).unwrap();
         let served: Vec<(&str, &str, &str)> = list
             .as_array()

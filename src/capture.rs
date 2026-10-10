@@ -647,7 +647,7 @@ mod tests {
         let body = kimi_body(session, "/Users/u/code/kimi-project");
         let db = captured("client", kimi_event(Some(session.into()), &body, "kimi-code-vscode/0.8.1")).await;
         let reads = crate::api::ReadPool::new(&db);
-        let everything = crate::api::Filter { project: None, session: None, account: None, since: None, until: None, tz: None };
+        let everything = crate::api::Filter { project: None, session: None, account: None, since: None, until: None, tz: None, provider: None };
         let list = crate::api::sessions_of(&reads.get().unwrap(), &everything).unwrap();
         let row = list.as_array().unwrap().iter().find(|s| s["id"] == session).unwrap().clone();
         assert_eq!((&row["client"], &row["entrypoint"]), (&serde_json::json!("kimi-code-vscode"), &serde_json::json!("kimi-code-vscode/0.8.1")));

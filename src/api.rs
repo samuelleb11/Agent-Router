@@ -34,6 +34,11 @@ pub struct Filter {
     /// The viewer's UTC offset in minutes (JavaScript's `-getTimezoneOffset()`), so
     /// day-sized timeline buckets start at the viewer's midnight rather than UTC's.
     pub tz: Option<i64>,
+    /// Which provider served the request (`anthropic`, `kimi`). Absent means every provider;
+    /// a name no provider has is refused before any read. A request recorded before providers
+    /// is Anthropic's.
+    #[serde(default)]
+    pub provider: Option<crate::accounts::Provider>,
 }
 
 /// Whether the session joined as `s` is in the project bound as parameter `?n`. A project
@@ -64,6 +69,23 @@ const SCOPE: &str = concat!(
                      AND (?5 IS NULL OR r.started_at < ?5)"
 );
 
+/// `SCOPE`, narrowed to one provider's requests when the scope names one (AGEN-0130). The
+/// provider is written into the statement by its own name rather than bound: it is one of
+/// `Provider`'s closed set, and a sixth bound parameter would renumber every read that binds
+/// its own after the scope's five.
+fn scope_sql(f: &Filter) -> String {
+    format!("{SCOPE}{}", provider_test(f))
+}
+
+/// The provider half of `scope_sql`, for a read that writes the rest of its scope itself:
+/// nothing when the scope names no provider.
+fn provider_test(f: &Filter) -> String {
+    match f.provider {
+        Some(provider) => format!("\n                     AND coalesce(r.provider, 'anthropic') = '{}'", provider.as_str()),
+        None => String::new(),
+    }
+}
+
 fn scope_params(f: &Filter) -> [&dyn rusqlite::ToSql; 5] {
     [&f.project, &f.session, &f.since, &f.account, &f.until]
 }
@@ -71,14 +93,14 @@ fn scope_params(f: &Filter) -> [&dyn rusqlite::ToSql; 5] {
 /// A percentile of a request column within the scope, by ORDER BY + OFFSET. SQLite
 /// has no percentile function, and the row counts here never justify pulling the
 /// whole column into memory.
-fn pctile(col: &str, pct: i64) -> String {
+fn pctile(col: &str, pct: i64, scope: &str) -> String {
     format!(
         "(SELECT r.{col} FROM requests r LEFT JOIN sessions s ON s.id = r.session_id
-          WHERE r.{col} IS NOT NULL AND {SCOPE}
+          WHERE r.{col} IS NOT NULL AND {scope}
           ORDER BY r.{col}
           LIMIT 1 OFFSET (SELECT (count(*) * {pct}) / 100
                           FROM requests r LEFT JOIN sessions s ON s.id = r.session_id
-                          WHERE r.{col} IS NOT NULL AND {SCOPE}))"
+                          WHERE r.{col} IS NOT NULL AND {scope}))"
     )
 }
 
@@ -254,8 +276,8 @@ impl Memo {
 /// Everything that changes an answer, and nothing that does not.
 fn memo_key(name: &str, f: &Filter) -> String {
     format!(
-        "{name}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
-        f.project, f.session, f.since, f.account, f.tz, f.until
+        "{name}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
+        f.project, f.session, f.since, f.account, f.tz, f.until, f.provider
     )
 }
 
@@ -385,6 +407,7 @@ fn summary_parts_of(conn: &Connection, f: &Filter, parts: &[&str]) -> anyhow::Re
     let mut out = Map::new();
     let now = crate::db::now_ms();
     let p = scope_params(f);
+    let scope = scope_sql(f);
     if want("totals") {
         let mut totals = one(
             conn,
@@ -410,10 +433,34 @@ fn summary_parts_of(conn: &Connection, f: &Filter, parts: &[&str]) -> anyhow::Re
                  LEFT JOIN usage u    ON u.request_id = r.id
                  LEFT JOIN request_cost c ON c.request_id = r.id
                  LEFT JOIN sessions s ON s.id = r.session_id
-                 WHERE {SCOPE}"
+                 WHERE {scope}"
             ),
             &p,
         )?;
+        // Each figure's split by provider, kept under the one total (AGEN-0130). Anthropic's
+        // first; a request recorded before providers is Anthropic's.
+        let split = rows(
+            conn,
+            &format!(
+                "SELECT coalesce(r.provider, 'anthropic') AS provider,
+                        count(*) AS requests,
+                        coalesce(sum(u.prompt_tokens),0) AS prompt_tokens,
+                        coalesce(sum(c.cost),0) AS cost,
+                        coalesce(sum(u.output_tokens),0) AS output_tokens,
+                        coalesce(sum(u.cache_read_tokens),0) AS cache_read_tokens,
+                        coalesce(sum(u.cache_creation_5m_tokens + u.cache_creation_1h_tokens),0) AS cache_write_tokens
+                 FROM requests r
+                 LEFT JOIN usage u    ON u.request_id = r.id
+                 LEFT JOIN request_cost c ON c.request_id = r.id
+                 LEFT JOIN sessions s ON s.id = r.session_id
+                 WHERE {scope}
+                 GROUP BY 1 ORDER BY 1 <> 'anthropic', 1"
+            ),
+            &p,
+        )?;
+        if let Some(t) = totals.as_object_mut() {
+            t.insert("by_provider".into(), split);
+        }
         // The requests in the scope that no session holds: Claude Code sent no session id, or
         // sent one the store has no session row for. Neither the Projects nor the Sessions
         // list can show them — both join on the session — so the dashboard ends each list
@@ -476,7 +523,7 @@ fn summary_parts_of(conn: &Connection, f: &Filter, parts: &[&str]) -> anyhow::Re
                  LEFT JOIN model_rate m ON m.model = r.model
                  LEFT JOIN pricing p    ON p.model = m.key
                  LEFT JOIN sessions s  ON s.id = r.session_id
-                 WHERE {SCOPE}
+                 WHERE {scope}
                  GROUP BY c.component ORDER BY est_tokens DESC"
             ),
             &p,
@@ -499,7 +546,7 @@ fn summary_parts_of(conn: &Connection, f: &Filter, parts: &[&str]) -> anyhow::Re
                  LEFT JOIN usage u    ON u.request_id = r.id
                  LEFT JOIN request_cost c ON c.request_id = r.id
                  LEFT JOIN sessions s ON s.id = r.session_id
-                 WHERE r.model IS NOT NULL AND {SCOPE}
+                 WHERE r.model IS NOT NULL AND {scope}
                  GROUP BY r.model ORDER BY prompt_tokens DESC"
             ),
             &p,
@@ -523,7 +570,7 @@ fn summary_parts_of(conn: &Connection, f: &Filter, parts: &[&str]) -> anyhow::Re
                  LEFT JOIN usage u    ON u.request_id = r.id
                  LEFT JOIN request_cost c ON c.request_id = r.id
                  LEFT JOIN sessions s ON s.id = r.session_id
-                 WHERE {SCOPE}
+                 WHERE {scope}
                  GROUP BY coalesce(r.is_sidechain,0) ORDER BY coalesce(r.is_sidechain,0)"
             ),
             &p,
@@ -536,11 +583,11 @@ fn summary_parts_of(conn: &Connection, f: &Filter, parts: &[&str]) -> anyhow::Re
             &format!(
                 "SELECT {} AS ttfb_p50, {} AS ttfb_p95, {} AS duration_p50, {} AS duration_p95,
                         (SELECT max(r.duration_ms) FROM requests r
-                         LEFT JOIN sessions s ON s.id = r.session_id WHERE {SCOPE}) AS duration_max",
-                pctile("ttfb_ms", 50),
-                pctile("ttfb_ms", 95),
-                pctile("duration_ms", 50),
-                pctile("duration_ms", 95),
+                         LEFT JOIN sessions s ON s.id = r.session_id WHERE {scope}) AS duration_max",
+                pctile("ttfb_ms", 50, &scope),
+                pctile("ttfb_ms", 95, &scope),
+                pctile("duration_ms", 50, &scope),
+                pctile("duration_ms", 95, &scope),
             ),
             &p,
         )?;
@@ -552,7 +599,7 @@ fn summary_parts_of(conn: &Connection, f: &Filter, parts: &[&str]) -> anyhow::Re
             &format!(
                 "SELECT coalesce(r.stop_reason, '(none)') AS stop_reason, count(*) AS requests
                  FROM requests r LEFT JOIN sessions s ON s.id = r.session_id
-                 WHERE {SCOPE}
+                 WHERE {scope}
                  GROUP BY 1 ORDER BY 2 DESC"
             ),
             &p,
@@ -562,7 +609,8 @@ fn summary_parts_of(conn: &Connection, f: &Filter, parts: &[&str]) -> anyhow::Re
     if want("by_account") {
         let by_account = rows(
             conn,
-            "SELECT r.account_id AS id,
+            &format!(
+                "SELECT r.account_id AS id,
                     coalesce(a.email, a.label, r.account_id) AS label,
                     -- The account's own, else what its requests were signed for: an account
                     -- removed since keeps naming its provider.
@@ -579,8 +627,10 @@ fn summary_parts_of(conn: &Connection, f: &Filter, parts: &[&str]) -> anyhow::Re
              LEFT JOIN request_cost c ON c.request_id = r.id
              LEFT JOIN accounts a ON a.id = r.account_id
              WHERE (?1 IS NULL OR r.started_at >= ?1)
-               AND (?2 IS NULL OR r.started_at < ?2)
+               AND (?2 IS NULL OR r.started_at < ?2){provider}
              GROUP BY r.account_id ORDER BY prompt_tokens DESC",
+                provider = provider_test(f),
+            ),
             &[&f.since, &f.until],
         )?;
         out.insert("by_account".into(), by_account);
@@ -596,7 +646,7 @@ fn summary_parts_of(conn: &Connection, f: &Filter, parts: &[&str]) -> anyhow::Re
         conn,
         &format!(
             "SELECT min(r.started_at) AS lo, max(r.started_at) AS hi
-             FROM requests r LEFT JOIN sessions s ON s.id = r.session_id WHERE {SCOPE}"
+             FROM requests r LEFT JOIN sessions s ON s.id = r.session_id WHERE {scope}"
         ),
         &p,
     )?;
@@ -637,7 +687,7 @@ fn summary_parts_of(conn: &Connection, f: &Filter, parts: &[&str]) -> anyhow::Re
                          LEFT JOIN usage u    ON u.request_id = r.id
                          LEFT JOIN request_cost c ON c.request_id = r.id
                          LEFT JOIN sessions s ON s.id = r.session_id
-                         WHERE {SCOPE}
+                         WHERE {scope}
                          GROUP BY t, r.model ORDER BY t, r.model"
                     ),
                     &[&f.project, &f.session, &f.since, &f.account, &f.until, &tz_ms, &bucket],
@@ -801,7 +851,8 @@ fn projects_inner(state: &AppState, f: &Filter) -> anyhow::Result<Value> {
 fn projects_of(conn: &Connection, f: &Filter) -> anyhow::Result<Value> {
     let mut projects = rows(
         conn,
-        "SELECT s.project AS project,
+        &format!(
+            "SELECT s.project AS project,
                 max(s.repository)    AS repository,
                 count(DISTINCT s.id) AS sessions,
                 count(*)             AS requests,
@@ -820,8 +871,10 @@ fn projects_of(conn: &Connection, f: &Filter) -> anyhow::Result<Value> {
          JOIN sessions s   ON s.id = r.session_id
          WHERE (?1 IS NULL OR r.started_at >= ?1)
            AND (?2 IS NULL OR r.account_id = ?2)
-           AND (?3 IS NULL OR r.started_at < ?3)
+           AND (?3 IS NULL OR r.started_at < ?3){provider}
          GROUP BY s.project ORDER BY prompt_tokens DESC",
+            provider = provider_test(f),
+        ),
         &[&f.since, &f.account, &f.until],
     )?;
 
@@ -879,6 +932,7 @@ fn sessions_inner(state: &AppState, f: &Filter) -> anyhow::Result<Value> {
 /// `(unresolved)` included. The one bound it never takes is the session: the list is how
 /// a session is picked, so that place in the scope is bound empty.
 pub(crate) fn sessions_of(conn: &Connection, f: &Filter) -> anyhow::Result<Value> {
+    let scope = scope_sql(f);
     let sql = format!(
         "SELECT s.id, s.project, s.cwd, s.repository, s.machine AS machine_id, m.label AS machine_label,
                 s.git_branch, s.entrypoint, s.started_at, s.last_seen_at,
@@ -899,7 +953,7 @@ pub(crate) fn sessions_of(conn: &Connection, f: &Filter) -> anyhow::Result<Value
          LEFT JOIN request_cost c ON c.request_id = r.id
          JOIN sessions s   ON s.id = r.session_id
          LEFT JOIN machines m ON m.id = s.machine
-         WHERE {SCOPE}
+         WHERE {scope}
          GROUP BY s.id ORDER BY s.last_seen_at DESC LIMIT 200"
     );
     let every_session: Option<String> = None;
@@ -1065,6 +1119,7 @@ fn requests_inner(state: &AppState, f: &Filter) -> anyhow::Result<Value> {
 
 /// The 300 most recent requests in scope, from whichever connection it is handed.
 pub(crate) fn requests_of(conn: &Connection, f: &Filter) -> anyhow::Result<Value> {
+    let scope = scope_sql(f);
     let sql = format!(
         "SELECT r.id, r.request_id, r.session_id, s.project AS project, r.model, r.status,
                 r.account_id, coalesce(r.provider, 'anthropic') AS provider,
@@ -1083,7 +1138,7 @@ pub(crate) fn requests_of(conn: &Connection, f: &Filter) -> anyhow::Result<Value
          LEFT JOIN usage u    ON u.request_id = r.id
          LEFT JOIN request_cost c ON c.request_id = r.id
          LEFT JOIN sessions s ON s.id = r.session_id
-         WHERE {SCOPE}
+         WHERE {scope}
          ORDER BY r.started_at DESC LIMIT 300"
     );
     Ok(rows(conn, &sql, &scope_params(f))?)
@@ -1105,6 +1160,7 @@ fn tools_of(conn: &Connection, f: &Filter) -> anyhow::Result<Value> {
     // Results are keyed by tool_use_id and carry their own session and timestamp, so
     // they scope directly rather than through the request that first carried them: the
     // project test every read shares, and their own bounds for the rest.
+    let scope = scope_sql(f);
     let produced = rows(
         conn,
         &format!(
@@ -1126,9 +1182,10 @@ fn tools_of(conn: &Connection, f: &Filter) -> anyhow::Result<Value> {
                AND (?2 IS NULL OR tc.session_id = ?2)
                AND (?3 IS NULL OR tc.seen_at >= ?3)
                AND (?4 IS NULL OR r.account_id = ?4)
-               AND (?5 IS NULL OR tc.seen_at < ?5)
+               AND (?5 IS NULL OR tc.seen_at < ?5){provider}
              GROUP BY tc.name ORDER BY est_tokens DESC",
             project = in_project!(1),
+            provider = provider_test(f),
         ),
         &scope_params(f),
     )?;
@@ -1141,7 +1198,7 @@ fn tools_of(conn: &Connection, f: &Filter) -> anyhow::Result<Value> {
              FROM tool_invocations ti
              JOIN requests r      ON r.id = ti.request_id
              LEFT JOIN sessions s ON s.id = r.session_id
-             WHERE {SCOPE}
+             WHERE {scope}
              GROUP BY ti.name ORDER BY calls DESC"
         ),
         &scope_params(f),
@@ -2251,6 +2308,7 @@ mod tests {
             since,
             until: None,
             tz: None,
+            provider: None,
         }
     }
 
@@ -2477,6 +2535,83 @@ mod tests {
         assert_eq!(named(&requests_of(&conn, &all).unwrap(), "request_id")[1], pair("k", "kimi"));
         let sessions = sessions_of(&conn, &all).unwrap();
         assert_eq!(sessions[0]["providers"], json!(["anthropic", "kimi"]), "Anthropic's first");
+    }
+
+    /// A store with one session that went to both providers: two requests to Anthropic, the
+    /// second with no provider recorded (from before providers), and one to Kimi Code.
+    fn two_providers(tag: &str) -> Store {
+        let store = store(tag);
+        store
+            .conn
+            .execute_batch(
+                "INSERT INTO accounts (id, label, active, created_at, provider) VALUES ('work', 'work', 1, 1, 'anthropic');
+                 INSERT INTO accounts (id, label, active, created_at, provider) VALUES ('kimi', 'kimi', 1, 2, 'kimi');
+                 INSERT INTO sessions (id, cwd, started_at, last_seen_at) VALUES ('s', '/code/a', 1, 1);
+                 INSERT INTO requests (request_id, session_id, account_id, method, path, started_at, model, provider)
+                   VALUES ('a', 's', 'work', 'POST', '/v1/messages', 1700000000000, 'claude-opus-5-5', 'anthropic');
+                 INSERT INTO requests (request_id, session_id, account_id, method, path, started_at, model)
+                   VALUES ('old', 's', 'work', 'POST', '/v1/messages', 1700000001000, 'claude-opus-5-5');
+                 INSERT INTO requests (request_id, session_id, account_id, method, path, started_at, model, provider)
+                   VALUES ('k', 's', 'kimi', 'POST', '/v1/messages', 1700000002000, 'k3', 'kimi');",
+            )
+            .unwrap();
+        store
+    }
+
+    /// The scope takes a provider, as the console's scope sends it, and every read narrows to
+    /// it: totals, models, requests, sessions, By account. A name no provider has is refused,
+    /// and each provider's answer is kept apart (AGEN-0130).
+    #[test]
+    fn the_scope_takes_a_provider() {
+        let store = two_providers("scope-provider");
+        let conn = store.reads.get().unwrap();
+        let parse = |q: &str| Query::<Filter>::try_from_uri(&format!("/api/summary?{q}").parse::<axum::http::Uri>().unwrap()).map(|q| q.0);
+        let kimi = parse("since=0&provider=kimi").unwrap();
+        assert_eq!(kimi.provider, Some(crate::accounts::Provider::Kimi));
+        assert!(parse("provider=openai").is_err(), "a provider the router does not have");
+        let anthropic = parse("provider=anthropic").unwrap();
+
+        let part = summary_parts_of(&conn, &kimi, &["totals", "models", "by_account"]).unwrap();
+        assert_eq!(part["totals"]["requests"], 1);
+        assert_eq!(part["models"].as_array().unwrap().iter().map(|m| m["model"].as_str().unwrap()).collect::<Vec<_>>(), ["k3"]);
+        assert_eq!(part["by_account"].as_array().unwrap().iter().map(|a| a["id"].as_str().unwrap()).collect::<Vec<_>>(), ["kimi"]);
+        let requests = requests_of(&conn, &kimi).unwrap();
+        assert_eq!(requests.as_array().unwrap().iter().map(|r| r["request_id"].as_str().unwrap()).collect::<Vec<_>>(), ["k"]);
+        assert_eq!(sessions_of(&conn, &kimi).unwrap()[0]["requests"], 1);
+        assert_eq!(projects_of(&conn, &kimi).unwrap()[0]["requests"], 1, "the project navigator too");
+
+        // A request recorded before providers is Anthropic's.
+        assert_eq!(summary_parts_of(&conn, &anthropic, &["totals"]).unwrap()["totals"]["requests"], 2);
+        assert_eq!(summary_parts_of(&conn, &scope(None, None, None, None), &["totals"]).unwrap()["totals"]["requests"], 3);
+        assert_ne!(memo_key("summary", &kimi), memo_key("summary", &anthropic), "each provider's answer kept apart");
+    }
+
+    /// Each total keeps one figure and carries its split by provider, Anthropic's first
+    /// (AGEN-0130).
+    #[test]
+    fn totals_are_split_by_provider() {
+        let store = two_providers("totals-split");
+        store
+            .conn
+            .execute_batch(
+                "INSERT INTO usage (request_id, prompt_tokens, input_tokens, output_tokens)
+                   SELECT id, 1000, 1000, 10 FROM requests WHERE request_id IN ('a', 'old');
+                 INSERT INTO usage (request_id, prompt_tokens, input_tokens, output_tokens)
+                   SELECT id, 400, 400, 4 FROM requests WHERE request_id = 'k';",
+            )
+            .unwrap();
+        let conn = store.reads.get().unwrap();
+        let totals = summary_parts_of(&conn, &scope(None, None, None, None), &["totals"]).unwrap()["totals"].clone();
+        assert_eq!((totals["requests"].as_i64(), totals["prompt_tokens"].as_i64()), (Some(3), Some(2400)), "one figure");
+        let split = totals["by_provider"].as_array().unwrap();
+        let read: Vec<(&str, i64, i64)> = split
+            .iter()
+            .map(|p| (p["provider"].as_str().unwrap(), p["requests"].as_i64().unwrap(), p["prompt_tokens"].as_i64().unwrap()))
+            .collect();
+        assert_eq!(read, [("anthropic", 2, 2000), ("kimi", 1, 400)]);
+        for key in ["cost", "output_tokens", "cache_read_tokens", "cache_write_tokens"] {
+            assert!(split[0].get(key).is_some(), "{key}");
+        }
     }
 
     /// Each provider's serving account, its own windows and their history: Anthropic's from
@@ -3062,7 +3197,7 @@ mod tests {
             )
             .unwrap();
         }
-        let everything = Filter { project: None, session: None, account: None, since: None, until: None, tz: None };
+        let everything = Filter { project: None, session: None, account: None, since: None, until: None, tz: None, provider: None };
         let got = forecast_inner(&lab.state, &everything).unwrap();
         let card = got["accounts"].as_array().unwrap().iter().find(|a| a["id"] == "forecast-kimi").unwrap().clone();
         assert_eq!(card["provider"], "kimi");
@@ -3089,7 +3224,7 @@ mod tests {
         )
         .unwrap();
         crate::pricing::resolve_models(&conn).unwrap();
-        let everything = Filter { project: None, session: None, account: None, since: None, until: None, tz: None };
+        let everything = Filter { project: None, session: None, account: None, since: None, until: None, tz: None, provider: None };
         let got = forecast_inner(&lab.state, &everything).unwrap();
         let card = got["accounts"].as_array().unwrap().iter().find(|a| a["id"] == "work").unwrap().clone();
         // A request with no usage (refused) has nothing to price; only the one with usage and
@@ -3128,7 +3263,7 @@ mod tests {
             .unwrap();
         crate::pricing::resolve_models(&conn).unwrap();
 
-        let everything = Filter { project: None, session: None, account: None, since: None, until: None, tz: None };
+        let everything = Filter { project: None, session: None, account: None, since: None, until: None, tz: None, provider: None };
         let got = forecast_inner(&lab.state, &everything).unwrap();
         let card = got["accounts"].as_array().unwrap().iter().find(|a| a["id"] == "work").unwrap().clone();
         let week = &card["seven_day"];

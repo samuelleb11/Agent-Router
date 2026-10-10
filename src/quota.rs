@@ -1045,7 +1045,7 @@ mod tests {
     }
 
     fn card(state: &AppState, account: &str) -> Value {
-        let everything = crate::api::Filter { project: None, session: None, account: None, since: None, until: None, tz: None };
+        let everything = crate::api::Filter { project: None, session: None, account: None, since: None, until: None, tz: None, provider: None };
         let got = crate::api::forecast_inner(state, &everything).unwrap();
         got["accounts"].as_array().unwrap().iter().find(|a| a["id"] == account).unwrap().clone()
     }
