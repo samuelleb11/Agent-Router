@@ -294,7 +294,7 @@ fn one(conn: &Connection, sql: &str, params: &[&dyn rusqlite::ToSql]) -> anyhow:
 
 /// The parts of the summary a caller can name in `parts=`, in the order the answer gives
 /// them. `totals` brings `unattributed` with it: both come from one statement.
-const SUMMARY_PARTS: [&str; 11] = [
+const SUMMARY_PARTS: [&str; 12] = [
     "totals",
     "quota",
     "account",
@@ -306,6 +306,7 @@ const SUMMARY_PARTS: [&str; 11] = [
     "by_account",
     "timeline",
     "quota_history",
+    "providers",
 ];
 
 /// `GET /api/summary`'s own parameter, beside the scope every read shares.
@@ -584,7 +585,7 @@ fn summary_parts_of(conn: &Connection, f: &Filter, parts: &[&str]) -> anyhow::Re
         )?;
         out.insert("by_account".into(), by_account);
     }
-    if !want("timeline") && !want("quota_history") {
+    if !want("timeline") && !want("quota_history") && !want("providers") {
         return Ok(Value::Object(out));
     }
 
@@ -678,7 +679,107 @@ fn summary_parts_of(conn: &Connection, f: &Filter, parts: &[&str]) -> anyhow::Re
     if want("quota_history") {
         out.insert("quota_history".into(), quota_history);
     }
+    if want("providers") {
+        out.insert("providers".into(), providers_quota(conn, range, tz_ms, bucket, now)?);
+    }
     Ok(Value::Object(out))
+}
+
+/// Each provider's serving account and its quota windows, with their history over the
+/// timeline's buckets (AGEN-0129): the Overview's one block per provider. Anthropic's come from
+/// the rate-limit headers its requests carry, Kimi Code's from the readings of its usage API,
+/// its second window by its own name (`month`, else `seven_day`) and a window it said is spent
+/// read as full. A provider with no account is left out; Anthropic's comes first. Times are
+/// epoch ms, a window's `resets_at` epoch seconds, as the headers give them.
+fn providers_quota(conn: &Connection, span: Option<(i64, i64)>, tz_ms: i64, bucket: i64, now: i64) -> anyhow::Result<Value> {
+    // The serving account first within each provider: its active one, else its oldest.
+    let accounts = rows(
+        conn,
+        "SELECT coalesce(provider, 'anthropic') AS provider, id, label, email, org_name, subscription_type
+         FROM accounts
+         ORDER BY coalesce(provider, 'anthropic') <> 'anthropic', coalesce(provider, 'anthropic'), active DESC, created_at",
+        &[],
+    )?;
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for a in accounts.as_array().map(Vec::as_slice).unwrap_or_default() {
+        let provider = a["provider"].as_str().unwrap_or("anthropic").to_string();
+        let Some(id) = a["id"].as_str() else { continue };
+        if !seen.insert(provider.clone()) {
+            continue;
+        }
+        let account = json!({ "id": id, "label": a["label"], "email": a["email"], "org_name": a["org_name"], "plan": a["subscription_type"] });
+        let window = |utilization: &Value, resets_at: &Value| {
+            if utilization.is_null() && resets_at.is_null() {
+                Value::Null
+            } else {
+                json!({ "utilization": utilization, "resets_at": resets_at })
+            }
+        };
+        let block = if provider == "kimi" {
+            let latest = one(
+                conn,
+                "SELECT at, five_hour_used, five_hour_reset, coalesce(second_window, 'month') AS second_window, second_used, second_reset
+                 FROM quota_readings WHERE account_id = ?1 ORDER BY at DESC LIMIT 1",
+                &[&id],
+            )?;
+            let second = latest["second_window"].as_str().unwrap_or("month").to_string();
+            let mut windows = Map::new();
+            windows.insert("five_hour".into(), window(&latest["five_hour_used"], &latest["five_hour_reset"]));
+            windows.insert(second.clone(), window(&latest["second_used"], &latest["second_reset"]));
+            let spent = crate::quota::spent_windows(conn, id, now)?;
+            for (name, _, until) in &spent {
+                windows.insert(name.clone(), json!({ "utilization": 1.0, "resets_at": until }));
+            }
+            let history = match span {
+                Some((start, end)) => {
+                    let mut h = rows(
+                        conn,
+                        "SELECT ((at + ?1) / ?2) * ?2 - ?1 AS t, max(five_hour_used) AS five_hour, max(second_used) AS second
+                         FROM quota_readings WHERE account_id = ?5 AND at >= ?3 AND at <= ?4
+                         GROUP BY t ORDER BY t",
+                        &[&tz_ms, &bucket, &start, &end, &id],
+                    )?;
+                    for row in h.as_array_mut().into_iter().flatten().filter_map(Value::as_object_mut) {
+                        let v = row.remove("second").unwrap_or(Value::Null);
+                        row.insert(second.clone(), v);
+                    }
+                    h
+                }
+                None => json!([]),
+            };
+            let status = if spent.is_empty() { latest.get("at").filter(|v| !v.is_null()).map(|_| "allowed") } else { Some("rejected") };
+            json!({ "provider": provider, "account": account, "windows": windows, "status": status,
+                    "at": latest.get("at").cloned().unwrap_or(Value::Null), "history": history })
+        } else {
+            let latest = one(
+                conn,
+                "SELECT rl_status, rl_5h_utilization, rl_7d_utilization, rl_5h_reset, rl_7d_reset, started_at
+                 FROM requests WHERE rl_status IS NOT NULL AND account_id = ?1
+                 ORDER BY started_at DESC LIMIT 1",
+                &[&id],
+            )?;
+            let history = match span {
+                Some((start, end)) => rows(
+                    conn,
+                    "SELECT ((started_at + ?1) / ?2) * ?2 - ?1 AS t,
+                            max(rl_5h_utilization) AS five_hour, max(rl_7d_utilization) AS seven_day
+                     FROM requests
+                     WHERE rl_status IS NOT NULL AND account_id = ?5 AND started_at >= ?3 AND started_at <= ?4
+                     GROUP BY t ORDER BY t",
+                    &[&tz_ms, &bucket, &start, &end, &id],
+                )?,
+                None => json!([]),
+            };
+            json!({ "provider": provider, "account": account,
+                    "windows": { "five_hour": window(&latest["rl_5h_utilization"], &latest["rl_5h_reset"]),
+                                 "seven_day": window(&latest["rl_7d_utilization"], &latest["rl_7d_reset"]) },
+                    "status": latest.get("rl_status").cloned().unwrap_or(Value::Null),
+                    "at": latest.get("started_at").cloned().unwrap_or(Value::Null), "history": history })
+        };
+        out.push(block);
+    }
+    Ok(Value::Array(out))
 }
 
 /// The project navigator. Never narrowed by project or session (it is how you pick
@@ -1516,6 +1617,11 @@ pub(crate) fn forecast_inner(state: &AppState, f: &Filter) -> anyhow::Result<Val
 ///
 /// This is a reporting figure. The router does not route around a spent limit; the
 /// active-account switch stays where it was, in the user's hands.
+///
+/// Headroom is each provider's own (`providers`, AGEN-0129): no figure compares one
+/// provider's windows with another's, Anthropic's 7-day with Kimi Code's month. Kimi Code's
+/// month window counts in its own. `combined_headroom` is Anthropic's, which is what the
+/// clients that predate providers have always read there.
 fn global_rollup(accounts: &[Value], now: i64) -> Value {
     let sum = |key: &str, field: &str| -> f64 {
         accounts
@@ -1523,7 +1629,38 @@ fn global_rollup(accounts: &[Value], now: i64) -> Value {
             .filter_map(|a| a.get(key)?.get(field)?.as_f64())
             .sum()
     };
+    let provider_of = |a: &Value| a.get("provider").and_then(Value::as_str).unwrap_or("anthropic").to_string();
+    let mut providers = Map::new();
+    let mut names: Vec<String> = accounts.iter().map(provider_of).collect();
+    names.sort_by_key(|p| (p != "anthropic", p.clone()));
+    names.dedup();
+    for name in names {
+        let theirs: Vec<&Value> = accounts.iter().filter(|a| provider_of(a) == name).collect();
+        providers.insert(name, headroom_of(&theirs, now));
+    }
+    let anthropic: Vec<&Value> = accounts.iter().filter(|a| provider_of(a) == "anthropic").collect();
 
+    let week_cost = sum("week", "cost");
+    let week_tokens = sum("week", "prompt_tokens");
+    json!({
+        "requests":      sum("usage", "requests"),
+        "prompt_tokens": sum("usage", "prompt_tokens"),
+        "output_tokens": sum("usage", "output_tokens"),
+        "cost":          sum("usage", "cost"),
+        "accounts":      accounts.len(),
+        "combined_headroom": headroom_of(&anthropic, now),
+        "providers": providers,
+        "pace_30d": {
+            "cost":          week_cost * 30.0 / 7.0,
+            "prompt_tokens": week_tokens * 30.0 / 7.0,
+            "basis":         "the last 7 days of recorded spend",
+        },
+    })
+}
+
+/// The hours of work left across `accounts`, one provider's, and the window that runs out
+/// first among them: every window each has, Kimi Code's month included.
+fn headroom_of(accounts: &[&Value], now: i64) -> Value {
     let mut pools: Map<String, Value> = Map::new();
     let mut soonest: Option<(i64, String, &str)> = None;
     for a in accounts {
@@ -1532,7 +1669,7 @@ fn global_rollup(accounts: &[Value], now: i64) -> Value {
             .get("pool")
             .and_then(Value::as_i64)
             .map_or_else(|| id.clone(), |p| p.to_string());
-        for key in ["five_hour", "seven_day"] {
+        for key in [crate::forecast::FIVE_HOUR.name, crate::forecast::SEVEN_DAY.name, crate::forecast::MONTH.name] {
             let Some(w) = a.get(key).filter(|w| w.is_object()) else { continue };
             if w.get("expired").and_then(Value::as_bool).unwrap_or(false) {
                 continue;
@@ -1552,27 +1689,12 @@ fn global_rollup(accounts: &[Value], now: i64) -> Value {
         }
     }
     let headroom: f64 = pools.values().filter_map(Value::as_f64).sum();
-
-    let week_cost = sum("week", "cost");
-    let week_tokens = sum("week", "prompt_tokens");
     json!({
-        "requests":      sum("usage", "requests"),
-        "prompt_tokens": sum("usage", "prompt_tokens"),
-        "output_tokens": sum("usage", "output_tokens"),
-        "cost":          sum("usage", "cost"),
-        "accounts":      accounts.len(),
-        "combined_headroom": {
-            "active_hours_left": if pools.is_empty() { Value::Null } else { json!(headroom) },
-            "pools": pools.len(),
-            "first_to_exhaust": soonest.map(|(at, id, window)| json!({
-                "account_id": id, "window": window, "at": at, "in_ms": at - now,
-            })),
-        },
-        "pace_30d": {
-            "cost":          week_cost * 30.0 / 7.0,
-            "prompt_tokens": week_tokens * 30.0 / 7.0,
-            "basis":         "the last 7 days of recorded spend",
-        },
+        "active_hours_left": if pools.is_empty() { Value::Null } else { json!(headroom) },
+        "pools": pools.len(),
+        "first_to_exhaust": soonest.map(|(at, id, window)| json!({
+            "account_id": id, "window": window, "at": at, "in_ms": at - now,
+        })),
     })
 }
 
@@ -2357,6 +2479,83 @@ mod tests {
         assert_eq!(sessions[0]["providers"], json!(["anthropic", "kimi"]), "Anthropic's first");
     }
 
+    /// Each provider's serving account, its own windows and their history: Anthropic's from
+    /// its requests' headers, Kimi Code's from its readings, month by name. A provider with no
+    /// account has no block, and no headroom (AGEN-0129).
+    #[test]
+    fn the_overview_reads_quota_per_provider() {
+        const T: i64 = 1_791_650_000_000;
+        let both = store("quota-providers");
+        both.conn
+            .execute_batch(&format!(
+                "INSERT INTO accounts (id, label, active, created_at, provider) VALUES ('work', 'work', 1, 1, 'anthropic');
+                 INSERT INTO accounts (id, label, active, created_at, provider) VALUES ('spare', 'spare', 0, 2, 'anthropic');
+                 INSERT INTO accounts (id, label, active, created_at, provider) VALUES ('kimi', 'kimi', 1, 3, 'kimi');
+                 INSERT INTO requests (request_id, account_id, method, path, started_at, provider, rl_status,
+                                       rl_5h_utilization, rl_7d_utilization, rl_5h_reset, rl_7d_reset)
+                   VALUES ('a', 'work', 'POST', '/v1/messages', {T}, 'anthropic', 'allowed', 0.48, 0.81, 1791660000, 1792000000);
+                 INSERT INTO quota_readings (account_id, at, five_hour_used, five_hour_reset, second_window, second_used, second_reset)
+                   VALUES ('kimi', {T}, 0.18, 1791660000, 'month', 0.27, 1793000000);"
+            ))
+            .unwrap();
+        let conn = both.reads.get().unwrap();
+        let read = |c: &Connection| summary_parts_of(c, &scope(None, None, None, Some(T - 60_000)), &["providers"]).unwrap();
+        let blocks = read(&conn)["providers"].clone();
+        assert_eq!(blocks.as_array().unwrap().len(), 2, "{blocks}");
+        let (anthropic, kimi) = (&blocks[0], &blocks[1]);
+        assert_eq!((anthropic["provider"].as_str(), anthropic["account"]["id"].as_str()), (Some("anthropic"), Some("work")), "its serving account");
+        assert_eq!(anthropic["windows"]["five_hour"]["utilization"], 0.48);
+        assert_eq!(anthropic["windows"]["seven_day"]["utilization"], 0.81);
+        assert_eq!(anthropic["history"][0]["seven_day"], 0.81);
+        assert_eq!((kimi["provider"].as_str(), kimi["account"]["id"].as_str()), (Some("kimi"), Some("kimi")));
+        assert_eq!(kimi["windows"]["five_hour"]["utilization"], 0.18);
+        assert_eq!(kimi["windows"]["month"]["utilization"], 0.27, "its second window by its own name");
+        assert!(kimi["windows"].get("seven_day").is_none());
+        assert_eq!(kimi["history"][0]["month"], 0.27);
+        assert_eq!(kimi["status"], "allowed");
+
+        // A router with Kimi Code's accounts only has Kimi Code's block, and its headroom only.
+        let only = store("quota-kimi-only");
+        only.conn
+            .execute_batch(&format!(
+                "INSERT INTO accounts (id, label, active, created_at, provider) VALUES ('kimi', 'kimi', 1, 1, 'kimi');
+                 INSERT INTO quota_readings (account_id, at, five_hour_used, five_hour_reset, second_window, second_used, second_reset)
+                   VALUES ('kimi', {T}, 0.5, 1791660000, 'month', 0.1, 1793000000);"
+            ))
+            .unwrap();
+        let only_blocks = read(&only.reads.get().unwrap())["providers"].clone();
+        assert_eq!(only_blocks.as_array().unwrap().len(), 1);
+        assert_eq!(only_blocks[0]["provider"], "kimi");
+        let rollup = global_rollup(&[json!({ "id": "kimi", "provider": "kimi", "month": { "active_hours_left": 9.0 } })], T);
+        assert_eq!(rollup["providers"].as_object().unwrap().keys().collect::<Vec<_>>(), ["kimi"]);
+        assert_eq!(rollup["combined_headroom"]["active_hours_left"], Value::Null, "no Anthropic account, no Anthropic headroom");
+    }
+
+    /// Kimi Code's month window counts in its own headroom, and is named when it runs out
+    /// first; no figure mixes it with Anthropic's windows (AGEN-0129).
+    #[test]
+    fn headroom_counts_kimi_codes_month_window() {
+        let now = 1_791_650_000_000;
+        let hours = |h: i64| now + h * 3_600_000;
+        let accounts = [
+            json!({ "id": "work", "provider": "anthropic", "pool": null,
+                    "five_hour": { "active_hours_left": 3.0, "exhausts_at": hours(10) },
+                    "seven_day": { "active_hours_left": 20.0, "exhausts_at": hours(120) } }),
+            json!({ "id": "kimi", "provider": "kimi", "pool": null,
+                    "five_hour": { "active_hours_left": 4.0 },
+                    "seven_day": null,
+                    "month": { "active_hours_left": 2.0, "exhausts_at": hours(3) } }),
+        ];
+        let rollup = global_rollup(&accounts, now);
+        let kimi = &rollup["providers"]["kimi"];
+        assert_eq!(kimi["active_hours_left"], 2.0, "its month binds before its 5-hour window");
+        assert_eq!(kimi["first_to_exhaust"]["window"], "month");
+        let anthropic = &rollup["providers"]["anthropic"];
+        assert_eq!(anthropic["active_hours_left"], 3.0);
+        assert_eq!(anthropic["first_to_exhaust"]["window"], "five_hour", "not Kimi Code's month, three hours sooner");
+        assert_eq!(rollup["combined_headroom"], *anthropic, "the old key is Anthropic's");
+    }
+
     /// The phones ask with no `parts=` and decode every key as they always have; the iPhone
     /// fails on any one of nine missing. Without parts the summary is whole.
     #[test]
@@ -2376,7 +2575,7 @@ mod tests {
             keys,
             [
                 "totals", "unattributed", "quota", "account", "context", "models", "threads",
-                "latency", "stop_reasons", "by_account", "timeline", "quota_history",
+                "latency", "stop_reasons", "by_account", "timeline", "quota_history", "providers",
             ]
         );
         assert_eq!(whole["totals"]["requests"], 2);
