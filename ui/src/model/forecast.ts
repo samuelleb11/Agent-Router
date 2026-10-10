@@ -95,8 +95,8 @@ export const windowName = (key: WindowKey): string => WINDOW_NAME[key];
 
 /// A window as a meter or a burn-down is captioned: "5-hour window", "7-day window", "Month window".
 export const windowLabel = (key: WindowKey): string => {
-  const name = windowName(key);
-  return `${name.charAt(0).toUpperCase()}${name.slice(1)} window`;
+  const said = windowName(key);
+  return `${said.charAt(0).toUpperCase()}${said.slice(1)} window`;
 };
 
 export interface ForecastAccount {
