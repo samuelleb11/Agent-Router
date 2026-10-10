@@ -415,6 +415,7 @@ fn summary_parts_of(conn: &Connection, f: &Filter, parts: &[&str]) -> anyhow::Re
                 "SELECT count(*) AS requests,
                         coalesce(sum(u.prompt_tokens),0)   AS prompt_tokens,
                         coalesce(sum(c.cost),0) AS cost,
+                        coalesce(sum(CASE WHEN u.request_id IS NOT NULL AND c.request_id IS NULL THEN 1 ELSE 0 END),0) AS unpriced,
                         coalesce(sum(u.input_tokens),0)    AS input_tokens,
                         coalesce(sum(u.output_tokens),0)   AS output_tokens,
                         coalesce(sum(u.thinking_tokens),0) AS thinking_tokens,
@@ -446,6 +447,7 @@ fn summary_parts_of(conn: &Connection, f: &Filter, parts: &[&str]) -> anyhow::Re
                         count(*) AS requests,
                         coalesce(sum(u.prompt_tokens),0) AS prompt_tokens,
                         coalesce(sum(c.cost),0) AS cost,
+                        coalesce(sum(CASE WHEN u.request_id IS NOT NULL AND c.request_id IS NULL THEN 1 ELSE 0 END),0) AS unpriced,
                         coalesce(sum(u.output_tokens),0) AS output_tokens,
                         coalesce(sum(u.cache_read_tokens),0) AS cache_read_tokens,
                         coalesce(sum(u.cache_creation_5m_tokens + u.cache_creation_1h_tokens),0) AS cache_write_tokens
@@ -537,6 +539,7 @@ fn summary_parts_of(conn: &Connection, f: &Filter, parts: &[&str]) -> anyhow::Re
                 "SELECT r.model, coalesce(max(r.provider), 'anthropic') AS provider, count(*) AS requests,
                         coalesce(sum(u.prompt_tokens),0)   AS prompt_tokens,
                         coalesce(sum(c.cost),0) AS cost,
+                        coalesce(sum(CASE WHEN u.request_id IS NOT NULL AND c.request_id IS NULL THEN 1 ELSE 0 END),0) AS unpriced,
                         coalesce(sum(u.output_tokens),0)   AS output_tokens,
                         coalesce(sum(u.thinking_tokens),0) AS thinking_tokens,
                         coalesce(sum(u.cache_read_tokens),0) AS cache_read_tokens,
@@ -563,6 +566,7 @@ fn summary_parts_of(conn: &Connection, f: &Filter, parts: &[&str]) -> anyhow::Re
                         count(*) AS requests,
                         coalesce(sum(u.prompt_tokens),0) AS prompt_tokens,
                         coalesce(sum(c.cost),0) AS cost,
+                        coalesce(sum(CASE WHEN u.request_id IS NOT NULL AND c.request_id IS NULL THEN 1 ELSE 0 END),0) AS unpriced,
                         coalesce(sum(u.output_tokens),0) AS output_tokens,
                         coalesce(sum(u.cache_read_tokens),0) AS cache_read_tokens,
                         count(DISTINCT r.agent_id) AS agents
@@ -619,6 +623,7 @@ fn summary_parts_of(conn: &Connection, f: &Filter, parts: &[&str]) -> anyhow::Re
                     count(*) AS requests,
                     coalesce(sum(u.prompt_tokens),0) AS prompt_tokens,
                         coalesce(sum(c.cost),0) AS cost,
+                        coalesce(sum(CASE WHEN u.request_id IS NOT NULL AND c.request_id IS NULL THEN 1 ELSE 0 END),0) AS unpriced,
                     coalesce(sum(u.output_tokens),0) AS output_tokens,
                     count(DISTINCT r.session_id) AS sessions,
                     max(r.started_at) AS last_seen
@@ -679,6 +684,7 @@ fn summary_parts_of(conn: &Connection, f: &Filter, parts: &[&str]) -> anyhow::Re
                                 count(*) AS requests,
                                 coalesce(sum(u.prompt_tokens),0) AS prompt_tokens,
                         coalesce(sum(c.cost),0) AS cost,
+                        coalesce(sum(CASE WHEN u.request_id IS NOT NULL AND c.request_id IS NULL THEN 1 ELSE 0 END),0) AS unpriced,
                                 coalesce(sum(u.output_tokens),0) AS output_tokens,
                                 coalesce(sum(u.cache_read_tokens),0) AS cache_read_tokens,
                                 coalesce(sum(CASE WHEN coalesce(r.is_sidechain,0) = 1 THEN u.prompt_tokens ELSE 0 END),0) AS subagent_tokens,
@@ -858,6 +864,7 @@ fn projects_of(conn: &Connection, f: &Filter) -> anyhow::Result<Value> {
                 count(*)             AS requests,
                 coalesce(sum(u.prompt_tokens),0) AS prompt_tokens,
                     coalesce(sum(c.cost),0) AS cost,
+                    coalesce(sum(CASE WHEN u.request_id IS NOT NULL AND c.request_id IS NULL THEN 1 ELSE 0 END),0) AS unpriced,
                 coalesce(sum(u.output_tokens),0) AS output_tokens,
                 coalesce(sum(u.cache_read_tokens),0) AS cache_read_tokens,
                 coalesce(sum(CASE WHEN coalesce(r.is_sidechain,0) = 1 THEN u.prompt_tokens ELSE 0 END),0) AS subagent_tokens,
@@ -939,6 +946,7 @@ pub(crate) fn sessions_of(conn: &Connection, f: &Filter) -> anyhow::Result<Value
                 count(*) AS requests,
                 coalesce(sum(u.prompt_tokens),0) AS prompt_tokens,
                 coalesce(sum(c.cost),0) AS cost,
+                coalesce(sum(CASE WHEN u.request_id IS NOT NULL AND c.request_id IS NULL THEN 1 ELSE 0 END),0) AS unpriced,
                 coalesce(sum(u.output_tokens),0) AS output_tokens,
                 coalesce(sum(u.cache_read_tokens),0) AS cache_read_tokens,
                 coalesce(sum(CASE WHEN coalesce(r.is_sidechain,0) = 1 THEN u.prompt_tokens ELSE 0 END),0) AS subagent_tokens,
@@ -1549,6 +1557,7 @@ pub(crate) fn forecast_inner(state: &AppState, f: &Filter) -> anyhow::Result<Val
         let week = one(
             &conn,
             "SELECT coalesce(sum(c.cost),0) AS cost,
+                    coalesce(sum(CASE WHEN u.request_id IS NOT NULL AND c.request_id IS NULL THEN 1 ELSE 0 END),0) AS unpriced,
                     coalesce(sum(u.prompt_tokens),0) AS prompt_tokens,
                     count(*) AS requests
              FROM requests r
@@ -1709,6 +1718,8 @@ fn global_rollup(accounts: &[Value], now: i64) -> Value {
         "providers": providers,
         "pace_30d": {
             "cost":          week_cost * 30.0 / 7.0,
+            // The week's requests the router could not price, which its cost leaves out.
+            "unpriced":      sum("week", "unpriced"),
             "prompt_tokens": week_tokens * 30.0 / 7.0,
             "basis":         "the last 7 days of recorded spend",
         },
@@ -2612,6 +2623,45 @@ mod tests {
         for key in ["cost", "output_tokens", "cache_read_tokens", "cache_write_tokens"] {
             assert!(split[0].get(key).is_some(), "{key}");
         }
+    }
+
+    /// A request the router could not price is counted beside every sum it is in, so a cost
+    /// never reads as if it were free (AGEN-0131): the totals and their split, models,
+    /// threads, By account, the timeline's buckets, projects, sessions and the 30-day pace.
+    #[test]
+    fn each_sum_counts_its_unpriced_requests() {
+        let store = store("unpriced");
+        store
+            .conn
+            .execute_batch(
+                "INSERT INTO accounts (id, label, active, created_at, provider) VALUES ('work', 'work', 1, 1, 'anthropic');
+                 INSERT INTO sessions (id, cwd, started_at, last_seen_at) VALUES ('s', '/code/a', 1, 1);
+                 INSERT INTO requests (request_id, session_id, account_id, method, path, started_at, model, provider)
+                   VALUES ('priced', 's', 'work', 'POST', '/v1/messages', 1700000000000, 'claude-opus-5-5', 'anthropic');
+                 INSERT INTO requests (request_id, session_id, account_id, method, path, started_at, model, provider)
+                   VALUES ('mystery', 's', 'work', 'POST', '/v1/messages', 1700000001000, 'mystery-model-1', 'anthropic');
+                 INSERT INTO usage (request_id, prompt_tokens, input_tokens, output_tokens)
+                   SELECT id, 1000, 1000, 10 FROM requests;",
+            )
+            .unwrap();
+        // As the router does for each model it has seen: matched against the rate table.
+        crate::pricing::resolve_models(&store.conn).unwrap();
+        let conn = store.reads.get().unwrap();
+        let all = scope(None, None, None, None);
+        let part = summary_parts_of(&conn, &all, &["totals", "models", "threads", "by_account", "timeline"]).unwrap();
+        assert_eq!(part["totals"]["unpriced"], 1);
+        assert!(part["totals"]["cost"].as_f64().unwrap() > 0.0, "the priced one is priced");
+        assert_eq!(part["totals"]["by_provider"][0]["unpriced"], 1);
+        let model = |name: &str| part["models"].as_array().unwrap().iter().find(|m| m["model"] == name).unwrap()["unpriced"].clone();
+        assert_eq!((model("claude-opus-5-5"), model("mystery-model-1")), (json!(0), json!(1)));
+        assert_eq!(part["threads"][0]["unpriced"], 1);
+        assert_eq!(part["by_account"][0]["unpriced"], 1);
+        let buckets: i64 = part["timeline"]["rows"].as_array().unwrap().iter().filter_map(|r| r["unpriced"].as_i64()).sum();
+        assert_eq!(buckets, 1);
+        assert_eq!(projects_of(&conn, &all).unwrap()[0]["unpriced"], 1);
+        assert_eq!(sessions_of(&conn, &all).unwrap()[0]["unpriced"], 1);
+        let pace = global_rollup(&[json!({ "id": "work", "week": { "cost": 1.0, "unpriced": 2 } })], 0)["pace_30d"].clone();
+        assert_eq!(pace["unpriced"], 2.0, "the 30-day pace says what its week left out");
     }
 
     /// Each provider's serving account, its own windows and their history: Anthropic's from
