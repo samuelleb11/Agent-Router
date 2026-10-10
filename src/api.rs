@@ -486,7 +486,7 @@ fn summary_parts_of(conn: &Connection, f: &Filter, parts: &[&str]) -> anyhow::Re
         let models = rows(
             conn,
             &format!(
-                "SELECT r.model, count(*) AS requests,
+                "SELECT r.model, coalesce(max(r.provider), 'anthropic') AS provider, count(*) AS requests,
                         coalesce(sum(u.prompt_tokens),0)   AS prompt_tokens,
                         coalesce(sum(c.cost),0) AS cost,
                         coalesce(sum(u.output_tokens),0)   AS output_tokens,
@@ -563,6 +563,9 @@ fn summary_parts_of(conn: &Connection, f: &Filter, parts: &[&str]) -> anyhow::Re
             conn,
             "SELECT r.account_id AS id,
                     coalesce(a.email, a.label, r.account_id) AS label,
+                    -- The account's own, else what its requests were signed for: an account
+                    -- removed since keeps naming its provider.
+                    coalesce(max(a.provider), max(r.provider), 'anthropic') AS provider,
                     max(coalesce(a.active, 0)) AS active,
                     count(*) AS requests,
                     coalesce(sum(u.prompt_tokens),0) AS prompt_tokens,
@@ -787,6 +790,7 @@ pub(crate) fn sessions_of(conn: &Connection, f: &Filter) -> anyhow::Result<Value
                 coalesce(sum(CASE WHEN r.status >= 400 OR r.error IS NOT NULL THEN 1 ELSE 0 END),0) AS errors,
                 count(DISTINCT r.agent_id) AS subagents,
                 group_concat(DISTINCT r.model) AS models,
+                group_concat(DISTINCT coalesce(r.provider, 'anthropic')) AS providers,
                 min(r.started_at) AS first_request_at,
                 max(r.started_at) AS last_request_at
          FROM requests r
@@ -812,6 +816,11 @@ pub(crate) fn sessions_of(conn: &Connection, f: &Filter) -> anyhow::Result<Value
             // Which client it was, from the User-Agent its requests carried.
             let client = row.get("entrypoint").and_then(Value::as_str).and_then(crate::analyze::client_of);
             row.insert("client".into(), json!(client));
+            // Which providers served it, Anthropic's first: one session can move between them.
+            let mut providers: Vec<String> =
+                row.get("providers").and_then(Value::as_str).unwrap_or_default().split(',').filter(|p| !p.is_empty()).map(str::to_owned).collect();
+            providers.sort_by_key(|p| (p != "anthropic", p.clone()));
+            row.insert("providers".into(), json!(providers));
         }
     }
     Ok(listed)
@@ -2301,6 +2310,51 @@ mod tests {
         assert_ne!(key(Some("totals")), key(Some("totals,models")));
         assert_ne!(key(Some("totals")), key(None));
         assert_eq!(key(Some("models,totals")), key(Some("totals, models,models")));
+    }
+
+    /// Every row the Overview reads that names an account names its provider too, a model its
+    /// own, and a session every provider its requests went to (AGEN-0126). A request recorded
+    /// before providers is Anthropic's.
+    #[test]
+    fn the_overviews_rows_name_their_provider() {
+        let store = store("providers");
+        store
+            .conn
+            .execute_batch(
+                "INSERT INTO accounts (id, label, active, created_at, provider) VALUES ('work', 'work', 1, 1, 'anthropic');
+                 INSERT INTO accounts (id, label, active, created_at, provider) VALUES ('kimi', 'kimi', 1, 2, 'kimi');
+                 INSERT INTO sessions (id, cwd, started_at, last_seen_at) VALUES ('s', '/code/a', 1, 1);
+                 INSERT INTO requests (request_id, session_id, account_id, method, path, started_at, model, provider)
+                   VALUES ('a', 's', 'work', 'POST', '/v1/messages', 1700000000000, 'claude-opus-5-5', 'anthropic');
+                 INSERT INTO requests (request_id, session_id, account_id, method, path, started_at, model, provider)
+                   VALUES ('k', 's', 'kimi', 'POST', '/v1/messages', 1700000001000, 'k3', 'kimi');
+                 INSERT INTO requests (request_id, session_id, account_id, method, path, started_at, model)
+                   VALUES ('old', 's', 'gone', 'POST', '/v1/messages', 1700000002000, 'claude-sonnet-5-5');",
+            )
+            .unwrap();
+        let conn = store.reads.get().unwrap();
+        let all = scope(None, None, None, None);
+        let part = summary_parts_of(&conn, &all, &["by_account", "models"]).unwrap();
+        let named = |rows: &Value, key: &str| -> Vec<(String, String)> {
+            let mut out: Vec<(String, String)> = rows
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| (r[key].as_str().unwrap().to_string(), r["provider"].as_str().unwrap().to_string()))
+                .collect();
+            out.sort();
+            out
+        };
+        let pair = |a: &str, b: &str| (a.to_string(), b.to_string());
+        assert_eq!(named(&part["by_account"], "id"), [pair("gone", "anthropic"), pair("kimi", "kimi"), pair("work", "anthropic")]);
+        assert_eq!(
+            named(&part["models"], "model"),
+            [pair("claude-opus-5-5", "anthropic"), pair("claude-sonnet-5-5", "anthropic"), pair("k3", "kimi")]
+        );
+        assert_eq!(named(&requests_of(&conn, &all).unwrap(), "request_id").len(), 3);
+        assert_eq!(named(&requests_of(&conn, &all).unwrap(), "request_id")[1], pair("k", "kimi"));
+        let sessions = sessions_of(&conn, &all).unwrap();
+        assert_eq!(sessions[0]["providers"], json!(["anthropic", "kimi"]), "Anthropic's first");
     }
 
     /// The phones ask with no `parts=` and decode every key as they always have; the iPhone
