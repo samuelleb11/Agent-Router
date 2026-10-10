@@ -10,8 +10,10 @@ two things well:
    model, per tool — and kept in a single SQLite file you can mine later.
 
 It is **not** a load balancer for evading rate limits, not an optimiser, and not a research
-profiler. It never rewrites a request's semantics; the only thing it changes on the wire is
-the `Authorization` header.
+profiler. It never rewrites a request's semantics: the body goes upstream as the client sent
+it. On the wire it changes the credential and, as sources land, the host,
+chosen by the request's model: each model is served by an account at its provider
+(Anthropic, Kimi Code). See [docs/sources-and-models.md](docs/sources-and-models.md).
 
 ## Locked decisions
 
