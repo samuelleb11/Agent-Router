@@ -397,6 +397,10 @@ impl Db {
         // Every phone registered before there was a second push service was an iPhone,
         // which is exactly what the default backfills.
         ensure_column(&conn, "push_devices", "platform", "TEXT NOT NULL DEFAULT 'apns'")?;
+        // The provider of the account that served a request, kept on the request so it
+        // outlives the account. Every request recorded before there was a second provider
+        // was Anthropic's; the API reads a missing one as that.
+        ensure_column(&conn, "requests", "provider", "TEXT")?;
         attach_bodies(&conn, path)?;
         for (col, ty) in [
             ("source", "TEXT NOT NULL DEFAULT 'keychain'"),
@@ -512,8 +516,8 @@ impl Db {
                started_at, ttfb_ms, duration_ms, status, streaming, stop_reason,
                service_tier, error, rl_status, rl_5h_utilization, rl_7d_utilization,
                rl_5h_reset, rl_7d_reset, request_bytes, response_bytes,
-               agent_id, is_sidechain, account_email)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25)
+               agent_id, is_sidechain, account_email, provider)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26)
              ON CONFLICT(request_id) DO NOTHING",
             params![
                 ev.request_id,
@@ -541,6 +545,7 @@ impl Db {
                 ev.agent_id,
                 ev.agent_id.is_some() as i64,
                 ev.account_email,
+                ev.provider.as_str(),
             ],
         )?;
         let row_id = tx.last_insert_rowid();
@@ -952,6 +957,7 @@ mod tests {
             account_email: None,
             agent_id: None,
             account_id: "acct-1".into(),
+            provider: crate::accounts::Provider::Anthropic,
             entrypoint: None,
             model: Some(model.into()),
             method: "POST".into(),
@@ -976,6 +982,47 @@ mod tests {
             request_bytes: 11,
             response_bytes: 0,
         }
+    }
+
+    /// The account that served a request, and its provider, are kept on the request, so
+    /// the request list says where each one went; a request kept from before there was a
+    /// second provider reads as Anthropic's, which it was.
+    #[test]
+    fn the_request_row_names_the_account_and_provider_that_served_it() {
+        let dir = std::env::temp_dir().join(format!("ar-provider-row-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut db = Db::open(&dir.join("store.db")).unwrap();
+        crate::pricing::ensure_table(&db.conn).unwrap();
+
+        let claude = an_event("claude-opus-5-5");
+        let mut kimi = an_event("k3");
+        kimi.request_id = Some("req-kimi".into());
+        kimi.account_id = "kimi".into();
+        kimi.provider = crate::accounts::Provider::Kimi;
+        kimi.started_at_ms += 1_000;
+        let mut before = an_event("claude-opus-4-1");
+        before.request_id = Some("req-before".into());
+        before.started_at_ms -= 1_000;
+        for ev in [&claude, &kimi, &before] {
+            db.record(ev).unwrap();
+        }
+        db.conn.execute("UPDATE requests SET provider = NULL WHERE request_id = 'req-before'", []).unwrap();
+
+        let everything = crate::api::Filter { project: None, session: None, account: None, since: None, until: None, tz: None };
+        let list = crate::api::requests_of(&db.conn, &everything).unwrap();
+        let served: Vec<(&str, &str, &str)> = list
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| (r["request_id"].as_str().unwrap(), r["account_id"].as_str().unwrap(), r["provider"].as_str().unwrap()))
+            .collect();
+        assert_eq!(
+            served,
+            [("req-kimi", "kimi", "kimi"), ("req-1", "acct-1", "anthropic"), ("req-before", "acct-1", "anthropic")]
+        );
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The replay problem in miniature. Two requests one turn apart: the second resends

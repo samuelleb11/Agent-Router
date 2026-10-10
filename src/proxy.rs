@@ -23,7 +23,7 @@ use tokio::sync::mpsc::Sender;
 
 use crate::analyze::analyze_request;
 use crate::capture::{CaptureEvent, Pending, RateLimit, Tee};
-use crate::accounts::{self, token_kind};
+use crate::accounts::{self, token_kind, Provider};
 use crate::config::Config;
 use crate::db::now_ms;
 
@@ -68,7 +68,8 @@ pub(crate) fn no_credential(headers: &HeaderMap) -> Option<axum::response::Respo
     Some((StatusCode::UNAUTHORIZED, "agent-router: no credential presented\n").into_response())
 }
 
-/// The credential currently being signed with, cached between requests.
+/// A credential being signed with, cached between requests.
+#[derive(Clone)]
 pub struct Active {
     pub account_id: String,
     pub label: String,
@@ -76,6 +77,38 @@ pub struct Active {
     pub identity: Option<String>,
     pub token: String,
     pub expires_at_ms: i64,
+    /// The account's provider, which fixes how a request is signed and where it goes.
+    pub provider: Provider,
+    /// Where its requests go, when not its provider's default (`Account::base_url`).
+    pub base_url: Option<String>,
+}
+
+impl Active {
+    /// The address a request for `path_and_query` goes to: the router's `upstream` for an
+    /// Anthropic account, the account's own base URL, else its provider's, for any other.
+    pub(crate) fn upstream(&self, router_upstream: &str, path_and_query: &str) -> String {
+        let base = self
+            .base_url
+            .as_deref()
+            .or(self.provider.default_base_url())
+            .unwrap_or(router_upstream);
+        format!("{}{path_and_query}", base.trim_end_matches('/'))
+    }
+}
+
+/// Where a request goes.
+pub(crate) enum Route {
+    /// Signed with this account's credential.
+    Sign(Active),
+    /// Nothing serves the model it asks for; the router answers it, and nothing goes upstream.
+    NoSource(String),
+}
+
+/// Whether a path carries a model to route by. Every other `/v1/` path goes to the active
+/// Anthropic account, as every path did before there was a second provider.
+fn routed_by_model(path_and_query: &str) -> bool {
+    let path = path_and_query.split('?').next().unwrap_or_default();
+    path == "/v1/messages" || path == "/v1/messages/count_tokens"
 }
 
 type HttpsClient = Client<
@@ -86,11 +119,11 @@ type HttpsClient = Client<
 pub struct AppState {
     pub client: HttpsClient,
     pub config: Config,
-    /// Cached, not held: a Keychain-sourced token is refreshed by Claude Code roughly
-    /// hourly, so one cached at startup would begin 401ing mid-session. Cleared
-    /// outright when the active account changes, so a switch takes effect on the very
-    /// next request with nothing restarted.
-    pub active: tokio::sync::RwLock<Option<Active>>,
+    /// Each account's credential, by account id. Cached, not held: a Keychain-sourced token
+    /// is refreshed by Claude Code roughly hourly, so one cached at startup would begin
+    /// 401ing mid-session. Cleared outright when an account changes, so a switch takes
+    /// effect on the very next request with nothing restarted.
+    pub credentials: tokio::sync::RwLock<std::collections::HashMap<String, Active>>,
     /// Last quota reading; see `quota`. Keyed by account, because one account's
     /// numbers must never be shown under another's name.
     pub quota_cache: tokio::sync::RwLock<Option<crate::quota::Cached>>,
@@ -139,7 +172,7 @@ impl AppState {
         Ok(Arc::new(Self {
             client,
             config,
-            active: tokio::sync::RwLock::new(None),
+            credentials: Default::default(),
             quota_cache: tokio::sync::RwLock::new(None),
             login: Default::default(),
             auth,
@@ -154,42 +187,74 @@ impl AppState {
         }))
     }
 
-    /// Drop the cached credential so the next request re-resolves it.
+    /// Drop every cached credential so the next request re-resolves its own.
     pub async fn invalidate(&self) {
-        *self.active.write().await = None;
+        self.credentials.write().await.clear();
         // The quota reading belongs to the account that produced it, so a switch
         // must drop it too — otherwise the new account inherits the old one's numbers.
         *self.quota_cache.write().await = None;
     }
 
-    /// The account id and token to sign with.
+    /// The active Anthropic account's id and token: what a request with no model to route
+    /// by is signed with, and whose quota the dashboard shows.
     pub(crate) async fn signing_credential(&self) -> anyhow::Result<(String, String)> {
         self.signing_credential_full()
             .await
             .map(|(id, _identity, token)| (id, token))
     }
 
-    /// The account, the identity it resolved to, and the token — re-resolved when the
-    /// cache is empty or the token is close to expiry.
+    /// The active Anthropic account, the identity it resolved to, and its token.
     pub(crate) async fn signing_credential_full(
         &self,
     ) -> anyhow::Result<(String, Option<String>, String)> {
+        let a = self.anthropic_signer().await?;
+        Ok((a.account_id, a.identity, a.token))
+    }
+
+    async fn anthropic_signer(&self) -> anyhow::Result<Active> {
+        let db = self.config.db_path.clone();
+        let id = tokio::task::spawn_blocking(move || accounts::Store::new(db).active().map(|a| a.id)).await??;
+        self.signer(&id).await
+    }
+
+    /// The account a request goes to: for a path that carries a model, the account that
+    /// model is assigned, else its provider's active one (`models::account_for`); for any
+    /// other path, the active Anthropic account.
+    pub(crate) async fn route(&self, path_and_query: &str, model: Option<&str>) -> anyhow::Result<Route> {
+        let Some(model) = model.filter(|_| routed_by_model(path_and_query)) else {
+            return Ok(Route::Sign(self.anthropic_signer().await?));
+        };
+        let chosen = crate::models::account_for(&*self.reads.get()?, model)?;
+        match (chosen, crate::models::provider_of(model)) {
+            (Some((id, _)), _) => Ok(Route::Sign(self.signer(&id).await?)),
+            // A Claude model with no Anthropic account to sign it: the refusal there has
+            // always been, in its words.
+            (None, Some(Provider::Anthropic)) => Ok(Route::Sign(self.anthropic_signer().await?)),
+            (None, _) => Ok(Route::NoSource(model.to_string())),
+        }
+    }
+
+    /// The credential to sign with for `account_id`, re-resolved when the cache does not
+    /// hold it or its token is close to expiry.
+    pub(crate) async fn signer(&self, account_id: &str) -> anyhow::Result<Active> {
         const RENEW_WITHIN_SECS: i64 = 300;
         {
-            let held = self.active.read().await;
-            if let Some(a) = held.as_ref() {
+            let held = self.credentials.read().await;
+            if let Some(a) = held.get(account_id) {
                 let fresh = a.expires_at_ms == 0
                     || (a.expires_at_ms - crate::db::now_ms()) / 1000 > RENEW_WITHIN_SECS;
                 if fresh {
-                    return Ok((a.account_id.clone(), a.identity.clone(), a.token.clone()));
+                    return Ok(a.clone());
                 }
             }
         }
-        let mut held = self.active.write().await;
+        let mut held = self.credentials.write().await;
         let db_path = self.config.db_path.clone();
+        let id = account_id.to_string();
         let loaded = tokio::task::spawn_blocking(move || {
-            let store = accounts::Store::new(db_path);
-            let account = store.active()?;
+            let account = accounts::Store::new(db_path)
+                .get(&id)?
+                .ok_or_else(|| anyhow::anyhow!("no account with id {id:?}"))?;
             let resolved = accounts::resolve(&account)?;
             Ok::<_, anyhow::Error>(Active {
                 account_id: account.id,
@@ -197,22 +262,31 @@ impl AppState {
                 identity: resolved.identity.or(account.email),
                 token: resolved.token,
                 expires_at_ms: resolved.expires_at_ms,
+                provider: account.provider,
+                base_url: account.base_url,
             })
         })
         .await??;
         tracing::info!(
             account = %loaded.label,
+            provider = loaded.provider.as_str(),
             identity = loaded.identity.as_deref().unwrap_or("-"),
             credential = token_kind(&loaded.token),
             "signing credential resolved"
         );
-        let out = (
-            loaded.account_id.clone(),
-            loaded.identity.clone(),
-            loaded.token.clone(),
-        );
-        *held = Some(loaded);
-        Ok(out)
+        held.insert(loaded.account_id.clone(), loaded.clone());
+        Ok(loaded)
+    }
+
+    /// What an upstream's answer says about the credential that signed it. A 401 is the
+    /// provider no longer taking it — revoked, rotated elsewhere, replaced in a console — so
+    /// that account's is forgotten, and the next request reads the stored one again instead
+    /// of repeating the refusal until a restart. Only that account's: the others still sign.
+    pub(crate) async fn heard(&self, account_id: &str, status: StatusCode) {
+        if status == StatusCode::UNAUTHORIZED {
+            self.credentials.write().await.remove(account_id);
+            tracing::warn!(account = account_id, "upstream refused the credential; it will be read again for the next request");
+        }
     }
 
     /// Hand a finished request to the capture task, or drop it. Never blocks.
@@ -277,34 +351,18 @@ async fn forward(state: Arc<AppState>, req: Request<Body>) -> anyhow::Result<Res
     let request_bytes = axum::body::to_bytes(body, MAX_REQUEST_BODY).await?;
     let shape = analyze_request(&request_bytes);
 
-    let upstream: Uri = format!("{}{}", state.config.upstream, path_and_query).parse()?;
-    let authority = upstream
-        .authority()
-        .map(|a| a.as_str().to_owned())
-        .unwrap_or_default();
-
-    let (account_id, account_email, token) = state.signing_credential_full().await?;
-    let mut out = Request::builder().method(parts.method.clone()).uri(upstream);
-    {
-        let headers = out.headers_mut().expect("builder has headers");
-        copy_forwardable(&parts.headers, headers);
-        let forwarding: Vec<HeaderName> =
-            headers.keys().filter(|n| is_forwarding(n.as_str())).cloned().collect();
-        for name in forwarding {
-            headers.remove(&name);
+    // The account the request goes to, by the model it asks for.
+    let model = shape.as_ref().and_then(|s| s.model.clone());
+    let signer = match state.route(&path_and_query, model.as_deref()).await? {
+        Route::Sign(signer) => signer,
+        Route::NoSource(model) => {
+            tracing::warn!(path = %path_and_query, model = %model, "refused: no source serves the model");
+            return Ok(no_source(&model));
         }
-        headers.insert("host", HeaderValue::from_str(&authority)?);
-        // The credential swap: whatever the agent sent is discarded, ours goes on.
-        headers.remove("x-api-key");
-        let mut auth = HeaderValue::from_str(&format!("Bearer {token}"))?;
-        auth.set_sensitive(true);
-        headers.insert("authorization", auth);
-    }
-
-    let upstream_resp = state
-        .client
-        .request(out.body(Body::from(request_bytes.clone()))?)
-        .await?;
+    };
+    let upstream: Uri = signer.upstream(&state.config.upstream, &path_and_query).parse()?;
+    let out = outgoing(&parts.method, &parts.headers, upstream, &signer, request_bytes.clone())?;
+    let upstream_resp = state.client.request(out).await?;
     let (resp_parts, resp_body) = upstream_resp.into_parts();
 
     let ttfb_ms = started.elapsed().as_millis() as i64;
@@ -329,13 +387,7 @@ async fn forward(state: Arc<AppState>, req: Request<Body>) -> anyhow::Result<Res
     if resp_parts.status.is_client_error() || resp_parts.status.is_server_error() {
         dump_response_headers(&resp_parts.headers);
     }
-    // Anthropic no longer takes the credential we signed with — revoked, rotated
-    // elsewhere, or replaced in the dashboard. Forget it, so the next request reads the
-    // stored one again instead of repeating the refusal until a restart.
-    if resp_parts.status == StatusCode::UNAUTHORIZED {
-        *state.active.write().await = None;
-        tracing::warn!("upstream refused the credential; it will be read again for the next request");
-    }
+    state.heard(&signer.account_id, resp_parts.status).await;
 
     let mut resp = Response::builder().status(resp_parts.status);
     {
@@ -351,8 +403,9 @@ async fn forward(state: Arc<AppState>, req: Request<Body>) -> anyhow::Result<Res
         request_id,
         session_id,
         agent_id,
-        account_id,
-        account_email,
+        account_id: signer.account_id.clone(),
+        account_email: signer.identity.clone(),
+        provider: signer.provider,
         entrypoint,
         method: parts.method.to_string(),
         path: path_and_query,
@@ -395,6 +448,60 @@ async fn forward(state: Arc<AppState>, req: Request<Body>) -> anyhow::Result<Res
     };
 
     Ok(resp.body(Body::from_stream(body))?)
+}
+
+/// The request that goes upstream: the client's, its forwarding headers dropped, its host
+/// and its credential replaced, and its body exactly as it was sent.
+fn outgoing(
+    method: &axum::http::Method,
+    from: &HeaderMap,
+    uri: Uri,
+    signer: &Active,
+    body: bytes::Bytes,
+) -> anyhow::Result<Request<Body>> {
+    let authority = uri.authority().map(|a| a.as_str().to_owned()).unwrap_or_default();
+    let mut out = Request::builder().method(method.clone()).uri(uri);
+    {
+        let headers = out.headers_mut().expect("builder has headers");
+        copy_forwardable(from, headers);
+        let forwarding: Vec<HeaderName> =
+            headers.keys().filter(|n| is_forwarding(n.as_str())).cloned().collect();
+        for name in forwarding {
+            headers.remove(&name);
+        }
+        headers.insert("host", HeaderValue::from_str(&authority)?);
+        sign(headers, signer)?;
+    }
+    Ok(out.body(Body::from(body))?)
+}
+
+/// The credential swap: whatever the client sent is discarded, and the account's goes on,
+/// the way its provider takes it — Anthropic's as a bearer token, Kimi Code's as
+/// `x-api-key`, as its own Claude Code guide sets it.
+fn sign(headers: &mut HeaderMap, signer: &Active) -> anyhow::Result<()> {
+    headers.remove("x-api-key");
+    headers.remove("authorization");
+    let (name, value) = match signer.provider {
+        Provider::Anthropic => ("authorization", format!("Bearer {}", signer.token)),
+        Provider::Kimi => ("x-api-key", signer.token.clone()),
+    };
+    let mut value = HeaderValue::from_str(&value)?;
+    value.set_sensitive(true);
+    headers.insert(name, value);
+    Ok(())
+}
+
+/// The router's answer to a request for a model nothing serves, in the shape of an API
+/// error so the client shows its words as they are.
+fn no_source(model: &str) -> Response<Body> {
+    let body = serde_json::json!({
+        "type": "error",
+        "error": {
+            "type": "not_found_error",
+            "message": format!("agent-router: no source serves the model {model:?}"),
+        },
+    });
+    (StatusCode::NOT_FOUND, axum::Json(body)).into_response()
 }
 
 /// Copy every header except the hop-by-hop set. Values are moved verbatim — no
@@ -472,5 +579,173 @@ mod tests {
         ] {
             assert!(!is_forwarding(h), "{h} must reach Anthropic");
         }
+    }
+
+    use super::*;
+    use crate::api_refusals::Lab;
+    use serde_json::{json, Value};
+
+    /// Not credentials: no key of either provider looks like these.
+    const WORK: &str = "sk-ant-oat01-route-work-not-a-credential";
+    const HOME: &str = "sk-ant-oat01-route-home-not-a-credential";
+    const KIMI: &str = "sk-kimi-route-not-a-credential";
+
+    /// A router with two Claude accounts and a Kimi Code one, added as the dashboard adds
+    /// them; `<tag>-work` is the active Anthropic one, being the first.
+    async fn lab_with_accounts(tag: &str) -> Lab {
+        let lab = Lab::local(tag);
+        for add in [
+            json!({ "label": format!("{tag} work"), "source": "token", "token": WORK }),
+            json!({ "label": format!("{tag} home"), "source": "token", "token": HOME }),
+            json!({ "label": format!("{tag} kimi"), "source": "token", "provider": "kimi", "token": KIMI }),
+        ] {
+            let (status, body) = lab.post("/api/accounts", &add.to_string()).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+        }
+        lab
+    }
+
+    async fn signer_for(lab: &Lab, path: &str, model: &str) -> Active {
+        match lab.state.route(path, Some(model)).await.unwrap() {
+            Route::Sign(signer) => signer,
+            Route::NoSource(model) => panic!("nothing serves {model}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_request_goes_to_the_account_its_model_is_assigned_to() {
+        let lab = lab_with_accounts("route-assigned").await;
+        let assign = json!({ "model": "claude-opus-5-5", "account": "route-assigned-home" }).to_string();
+        assert_eq!(lab.post("/api/models/assign", &assign).await.0, StatusCode::OK);
+
+        let path = "/v1/messages?beta=true";
+        let home = signer_for(&lab, path, "claude-opus-5-5").await;
+        assert_eq!((home.account_id.as_str(), home.token.as_str()), ("route-assigned-home", HOME));
+        assert_eq!(home.upstream(&lab.state.config.upstream, path), "https://upstream.invalid/v1/messages?beta=true");
+
+        let kimi = signer_for(&lab, path, "k3").await;
+        assert_eq!((kimi.account_id.as_str(), kimi.token.as_str(), kimi.provider), ("route-assigned-kimi", KIMI, Provider::Kimi));
+        assert_eq!(kimi.upstream(&lab.state.config.upstream, path), "https://api.kimi.ai/coding/v1/messages?beta=true");
+    }
+
+    #[tokio::test]
+    async fn an_unassigned_claude_model_goes_to_the_active_anthropic_account() {
+        let lab = lab_with_accounts("route-unassigned").await;
+        let path = "/v1/messages?beta=true";
+        assert_eq!(signer_for(&lab, path, "claude-sonnet-5-5").await.account_id, "route-unassigned-work");
+        // Switching the active Anthropic account takes effect on the very next request.
+        assert_eq!(lab.post("/api/accounts/activate", r#"{"id":"route-unassigned-home"}"#).await.0, StatusCode::OK);
+        assert_eq!(signer_for(&lab, path, "claude-sonnet-5-5").await.account_id, "route-unassigned-home");
+        // A path with no model to route by goes there too.
+        let Route::Sign(other) = lab.state.route("/v1/files", None).await.unwrap() else { panic!() };
+        assert_eq!(other.account_id, "route-unassigned-home");
+        // And a Kimi Code model still goes to the Kimi Code account.
+        assert_eq!(signer_for(&lab, path, "kimi-for-coding").await.account_id, "route-unassigned-kimi");
+    }
+
+    #[tokio::test]
+    async fn a_kimi_request_is_signed_with_x_api_key_and_forwarded_unchanged() {
+        let lab = lab_with_accounts("route-kimi-wire").await;
+        let path = "/v1/messages?beta=true";
+        let signer = signer_for(&lab, path, "k3").await;
+
+        // What Claude Code sends, behind a proxy that added its own header.
+        let mut from = HeaderMap::new();
+        for (name, value) in [
+            ("authorization", "Bearer the-clients-own"),
+            ("x-api-key", "the-clients-own"),
+            ("user-agent", "claude-cli/2.1.267 (external, cli)"),
+            ("anthropic-version", "2023-06-01"),
+            ("anthropic-beta", "claude-code-20250219"),
+            ("x-claude-code-session-id", "6f708192-0000-4000-8000-00000000000f"),
+            ("content-type", "application/json"),
+            ("x-forwarded-for", "10.0.0.9"),
+            ("host", "127.0.0.1:8787"),
+        ] {
+            from.insert(HeaderName::from_static(name), HeaderValue::from_static(value));
+        }
+        let body = bytes::Bytes::from_static(br#"{"model":"k3","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}"#);
+        let uri: Uri = signer.upstream(&lab.state.config.upstream, path).parse().unwrap();
+        let out = outgoing(&axum::http::Method::POST, &from, uri, &signer, body.clone()).unwrap();
+
+        assert_eq!(out.uri().to_string(), "https://api.kimi.ai/coding/v1/messages?beta=true");
+        let headers = out.headers();
+        assert_eq!(headers.get("x-api-key").unwrap(), KIMI, "the account's key, as x-api-key");
+        assert!(headers.get("authorization").is_none(), "no bearer token beside it");
+        assert_eq!(headers.get("user-agent").unwrap(), "claude-cli/2.1.267 (external, cli)", "the client's own, as Kimi's terms ask");
+        for kept in ["anthropic-version", "anthropic-beta", "x-claude-code-session-id", "content-type"] {
+            assert_eq!(headers.get(kept), from.get(kept), "{kept}");
+        }
+        assert_eq!(headers.get("host").unwrap(), "api.kimi.ai");
+        assert!(headers.get("x-forwarded-for").is_none());
+        let sent = axum::body::to_bytes(out.into_body(), 1 << 20).await.unwrap();
+        assert_eq!(sent, body, "the body byte for byte");
+    }
+
+    #[tokio::test]
+    async fn count_tokens_is_routed_by_its_model() {
+        let lab = lab_with_accounts("route-count").await;
+        let path = "/v1/messages/count_tokens?beta=true";
+        let kimi = signer_for(&lab, path, "k3").await;
+        assert_eq!(kimi.account_id, "route-count-kimi");
+        assert_eq!(kimi.upstream(&lab.state.config.upstream, path), "https://api.kimi.ai/coding/v1/messages/count_tokens?beta=true");
+        let claude = signer_for(&lab, path, "claude-haiku-5-5").await;
+        assert_eq!(claude.account_id, "route-count-work");
+        assert_eq!(claude.upstream(&lab.state.config.upstream, path), "https://upstream.invalid/v1/messages/count_tokens?beta=true");
+    }
+
+    #[tokio::test]
+    async fn a_model_no_source_serves_is_refused_naming_it() {
+        use axum::extract::ConnectInfo;
+        use tower::ServiceExt;
+
+        // Only a Claude account: neither an unknown model nor a Kimi Code one has a source.
+        let lab = Lab::local("route-no-source");
+        let add = json!({ "label": "route-no-source work", "source": "token", "token": WORK }).to_string();
+        assert_eq!(lab.post("/api/accounts", &add).await.0, StatusCode::OK);
+        for model in ["gpt-9", "k3"] {
+            let body = json!({ "model": model, "max_tokens": 1, "messages": [] }).to_string();
+            let mut req = Request::post("/v1/messages?beta=true")
+                .header("host", "127.0.0.1")
+                .header("content-type", "application/json")
+                .header("x-api-key", "the-clients-own")
+                .body(Body::from(body))
+                .unwrap();
+            req.extensions_mut().insert(ConnectInfo(std::net::SocketAddr::from(([127, 0, 0, 1], 50_000))));
+            let res = lab.app.clone().oneshot(req).await.unwrap();
+            // Anything sent to the test's upstream, which is nowhere, would come back a 502.
+            assert_eq!(res.status(), StatusCode::NOT_FOUND, "{model}");
+            let answer: Value = serde_json::from_slice(&axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap()).unwrap();
+            assert_eq!(
+                answer,
+                json!({ "type": "error", "error": { "type": "not_found_error",
+                        "message": format!("agent-router: no source serves the model \"{model}\"") } })
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_refusal_drops_only_the_refused_accounts_credential() {
+        let lab = lab_with_accounts("route-refused").await;
+        let path = "/v1/messages?beta=true";
+        signer_for(&lab, path, "claude-opus-5-5").await;
+        signer_for(&lab, path, "k3").await;
+        let held = |lab: &Lab| {
+            let lab = lab.state.clone();
+            async move {
+                let mut ids: Vec<String> = lab.credentials.read().await.keys().cloned().collect();
+                ids.sort();
+                ids
+            }
+        };
+        assert_eq!(held(&lab).await, ["route-refused-kimi", "route-refused-work"]);
+
+        // Kimi Code answered 200 to one and 401 to the other: only the refused one goes.
+        lab.state.heard("route-refused-kimi", StatusCode::OK).await;
+        assert_eq!(held(&lab).await.len(), 2);
+        lab.state.heard("route-refused-kimi", StatusCode::UNAUTHORIZED).await;
+        assert_eq!(held(&lab).await, ["route-refused-work"], "the Claude account keeps signing from the cache");
+        // The next request reads the refused one's stored key again.
+        assert_eq!(signer_for(&lab, path, "k3").await.token, KIMI);
     }
 }

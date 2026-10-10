@@ -135,7 +135,6 @@ pub struct Account {
     pub provider: Provider,
     /// Where this account's requests go, when not its provider's default. Always `None`
     /// for an Anthropic account.
-    #[cfg_attr(not(test), expect(dead_code, reason = "read by the proxy once requests are routed by their model (AGEN-0084)"))]
     pub base_url: Option<String>,
     pub profile_dir: Option<String>,
     /// The identity this account was recorded as. For a Keychain account this is

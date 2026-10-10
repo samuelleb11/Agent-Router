@@ -73,6 +73,8 @@ pub struct CaptureEvent {
     /// separates subagent token burn from its parent session.
     pub agent_id: Option<String>,
     pub account_id: String,
+    /// The provider of the account that served it.
+    pub provider: crate::accounts::Provider,
     pub entrypoint: Option<String>,
     pub model: Option<String>,
     pub method: String,
@@ -164,6 +166,7 @@ pub struct Pending {
     /// an account row's identity can change under it — `/login` rewrites the Keychain
     /// entry the default account reads.
     pub account_email: Option<String>,
+    pub provider: crate::accounts::Provider,
     pub entrypoint: Option<String>,
     pub method: String,
     pub path: String,
@@ -269,6 +272,7 @@ impl Drop for Tee {
             agent_id: p.agent_id,
             account_id: p.account_id,
             account_email: p.account_email,
+            provider: p.provider,
             entrypoint: p.entrypoint,
             model: self
                 .scanner

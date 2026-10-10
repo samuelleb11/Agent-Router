@@ -951,9 +951,10 @@ fn requests_inner(state: &AppState, f: &Filter) -> anyhow::Result<Value> {
 }
 
 /// The 300 most recent requests in scope, from whichever connection it is handed.
-fn requests_of(conn: &Connection, f: &Filter) -> anyhow::Result<Value> {
+pub(crate) fn requests_of(conn: &Connection, f: &Filter) -> anyhow::Result<Value> {
     let sql = format!(
         "SELECT r.id, r.request_id, r.session_id, s.project AS project, r.model, r.status,
+                r.account_id, coalesce(r.provider, 'anthropic') AS provider,
                 r.ttfb_ms, r.duration_ms, r.stop_reason, r.is_sidechain, r.agent_id,
                 r.started_at, substr(r.error, 1, 200) AS error,
                 u.prompt_tokens, u.input_tokens, u.output_tokens, u.thinking_tokens,

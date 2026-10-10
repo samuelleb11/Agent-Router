@@ -522,6 +522,7 @@ mod tests {
                 account_email: None,
                 agent_id: None,
                 account_id: "acct-1".into(),
+                provider: crate::accounts::Provider::Anthropic,
                 entrypoint: None,
                 model: None,
                 method: "POST".into(),

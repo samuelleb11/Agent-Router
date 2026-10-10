@@ -161,7 +161,6 @@ pub fn catalogue(conn: &Connection) -> rusqlite::Result<Vec<Model>> {
 /// The account `model`'s next request goes to, and its provider: the account it was
 /// assigned, else its provider's active account. `None` when no provider serves the model,
 /// or its provider has no account.
-#[cfg_attr(not(test), expect(dead_code, reason = "the proxy routes each request by it (AGEN-0084)"))]
 pub fn account_for(conn: &Connection, model: &str) -> rusqlite::Result<Option<(String, Provider)>> {
     let Some(provider) = provider_of(model) else {
         return Ok(None);

@@ -6,8 +6,9 @@ Anthropic. Switching provider is switching model in the client — `/model k3` i
 Code — with no account to flip and nothing restarted.
 
 Written for the maintainer, and as the contract the items are built against. The work is
-Northstar's milestone `sources` ([Tracked in Northstar](#tracked-in-northstar)). Nothing in
-this document is built yet.
+Northstar's milestone `sources` ([Tracked in Northstar](#tracked-in-northstar)). The router's
+part is built: accounts at a provider, the catalogue, and routing by model (AGEN-0082 to
+AGEN-0085). Kimi Code's quota, limits and prices, and the clients, are not yet.
 
 ## Owner's decisions (2026-10-09)
 
