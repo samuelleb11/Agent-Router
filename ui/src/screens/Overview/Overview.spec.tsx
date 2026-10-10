@@ -12,11 +12,16 @@ import { renderScreen } from '~/test-utils';
 import Overview from './index';
 import {
   ACCOUNTS,
+  ANTHROPIC_ROOM,
+  anthropicBlock,
   dropped,
   forecast,
   forecastAccount,
   held,
   HOSTED,
+  KIMI_ROOM,
+  kimiAccount,
+  kimiBlock,
   LOCAL,
   MIN,
   NOW,
@@ -138,7 +143,7 @@ describe('the Overview’s layout', () => {
       [
         null,
         {
-          'Quota headroom': /^the account that is serving right now/,
+          'Quota headroom': "each provider's account that is serving right now",
           'All accounts': '2 accounts · spend and tokens add up, quota does not',
           'Totals in scope': /^412 requests · /,
           'Activity over time': '12.40M prompt tokens · 412 requests',
@@ -288,7 +293,7 @@ describe('the address', () => {
     const tabReads = ['/api/projects', '/api/sessions', '/api/tools', '/api/requests'];
     const read = () => tabReads.filter((path) => r.calls(path).length > 0);
     expect(read()).toEqual([]);
-    expect(r.calls('/api/summary')[0]!.query.get('parts')).toBe('totals,quota,account,models,latency,timeline,quota_history');
+    expect(r.calls('/api/summary')[0]!.query.get('parts')).toBe('totals,models,latency,timeline,providers');
     // Opened, a tab is read at once, by the time the press has been handled.
     await act(async () => {
       fireEvent.click(screen.getByRole('tab', { name: 'Tools' }));
@@ -296,7 +301,7 @@ describe('the address', () => {
     expect(read()).toEqual(['/api/tools']);
     await screen.findByRole('heading', { level: 2, name: 'Tool calls made' });
     await tabTo('Context', 'By model');
-    expect(r.calls('/api/summary').at(-1)!.query.get('parts')).toBe('totals,quota,account,context,models,threads,latency,timeline,quota_history');
+    expect(r.calls('/api/summary').at(-1)!.query.get('parts')).toBe('totals,context,models,threads,latency,timeline,providers');
     // Closed, it is read no more: the next cycles read the top and the open tab.
     const tools = r.calls('/api/tools').length;
     await act(() => client.refetchQueries({ queryKey: ['overview'] }));
@@ -493,13 +498,14 @@ describe('searching the transcripts', () => {
 });
 
 describe('the quota', () => {
-  it('OV-C54: describes the account serving now whatever the page is scoped to, and its caption names it', async () => {
+  it('OV-C54: a provider’s block describes its account serving now whatever the page is scoped to, and names it', async () => {
     const r = router();
     show('/?account=primary&project=%2Fcode%2Fnorthstar');
     await loaded();
     const quota = panel('Quota headroom');
-    expect(within(quota).getByRole('link', { name: 'secondary@example.test · max' })).toHaveAttribute('href', '/settings/accounts');
-    expect(within(quota).getByText('41% used · resets in 2h 00m')).toBeInTheDocument();
+    const anthropic = within(quota).getByRole('region', { name: 'Anthropic' });
+    expect(within(anthropic).getByRole('link', { name: 'secondary@example.test · max' })).toHaveAttribute('href', '/settings/accounts');
+    expect(within(anthropic).getByText('41% used · resets in 2h 00m')).toBeInTheDocument();
     expect(r.calls('/api/quota').every((c) => [...c.query.keys()].length === 0)).toBe(true);
   });
 
@@ -515,6 +521,107 @@ describe('the quota', () => {
     expect(screen.getByRole('heading', { name: 'All accounts' })).toBeInTheDocument();
     expect(freshness()).toHaveAttribute('data-freshness', 'live');
     expect(r.calls('/api/quota').length).toBeGreaterThan(1);
+  });
+});
+
+describe('a quota block per provider', () => {
+  /// A router with an Anthropic account and a Kimi Code account, each provider's headroom its own.
+  const both = () =>
+    router((path, query) =>
+      path === '/api/summary'
+        ? ok(partsOf(summary({ providers: [anthropicBlock(), kimiBlock()] }), query.get('parts')))
+        : path === '/api/forecast'
+          ? ok(forecast([forecastAccount('secondary'), forecastAccount('primary', { five_hour: null, seven_day: null, seen_at: null }), kimiAccount()], { anthropic: ANTHROPIC_ROOM, kimi: KIMI_ROOM }))
+          : undefined,
+    );
+  const block = (name: string) => within(panel('Quota headroom')).getByRole('region', { name });
+  const meter = (b: HTMLElement, name: string) => within(b).getByRole('meter', { name }).getAttribute('aria-valuetext');
+
+  it('OV-C224: Quota headroom holds a block per provider with an account — its mark and name, its serving account, its own windows’ meters, history and burn-downs', async () => {
+    both();
+    show();
+    await loaded();
+    const quota = panel('Quota headroom');
+    expect([...quota.querySelectorAll('[data-quota-provider]')].map((b) => b.getAttribute('data-quota-provider'))).toEqual(['anthropic', 'kimi']);
+    expect(quota.querySelector('[data-quota-blocks]')).toHaveAttribute('data-quota-blocks', '2');
+    const anthropic = block('Anthropic');
+    const kimi = block('Kimi Code');
+    // Each headed by its provider's mark and name (SH-C56).
+    expect(within(anthropic).getByRole('heading', { level: 3, name: 'Anthropic' }).querySelector('[data-glyph="anthropic"]')).not.toBeNull();
+    expect(within(kimi).getByRole('heading', { level: 3, name: 'Kimi Code' }).querySelector('[data-glyph="kimi"]')).not.toBeNull();
+    // Each its own serving account, leading to Settings → Accounts (SH-C17).
+    expect(within(anthropic).getByRole('link', { name: 'secondary@example.test · max' })).toHaveAttribute('href', '/settings/accounts');
+    expect(within(kimi).getByRole('link', { name: 'Kimi' })).toHaveAttribute('href', '/settings/accounts');
+    // Each its own windows: Anthropic's live reading, Kimi Code's usage reading, never the other's.
+    expect([meter(anthropic, '5-hour window'), meter(anthropic, '7-day window')]).toEqual(['41% used · resets in 2h 00m', '58% used · resets in 3d 0h']);
+    expect([meter(kimi, '5-hour window'), meter(kimi, 'Month window')]).toEqual(['18% used · resets in 3h 00m', '27% used · resets in 20d 0h']);
+    expect(within(kimi).getByText('checked 2 min ago')).toBeInTheDocument();
+    // Each its own history, its second line by its window's name, and its own burn-downs.
+    expect(within(anthropic).getByText('7-day used')).toBeInTheDocument();
+    expect(within(kimi).getByText('month used')).toBeInTheDocument();
+    expect(kimi.querySelector('path[data-series="month"]')).not.toBeNull();
+    expect(within(anthropic).getByText('7-day window · burn-down')).toBeInTheDocument();
+    expect(within(kimi).getByText('Month window · burn-down')).toBeInTheDocument();
+    expect(within(kimi).queryByText(/7-day/)).toBeNull();
+    // Side by side on a desk, stacked on a phone, never wider than the screen.
+    expect(scss).toMatch(/\.blocks \{[^}]*repeat\(auto-fit, minmax\(min\(100%, 24rem\), 1fr\)\)[^}]*breakpoint-down\('md'\) \{\s*grid-template-columns: minmax\(0, 1fr\);/);
+  });
+
+  it('OV-C224: a router with Kimi Code’s accounts alone shows Kimi Code’s block alone, and nothing reads “no account” for Anthropic', async () => {
+    router((path, query) =>
+      path === '/api/summary'
+        ? ok(partsOf(summary({ providers: [kimiBlock()] }), query.get('parts')))
+        : path === '/api/quota'
+          ? refused('no Anthropic account')
+          : path === '/api/forecast'
+            ? ok(forecast([kimiAccount()], { kimi: KIMI_ROOM }))
+            : undefined,
+    );
+    show();
+    await loaded();
+    const quota = panel('Quota headroom');
+    expect([...quota.querySelectorAll('[data-quota-provider]')].map((b) => b.getAttribute('data-quota-provider'))).toEqual(['kimi']);
+    expect(within(quota).queryByRole('region', { name: 'Anthropic' })).toBeNull();
+    expect(quota).not.toHaveTextContent(/Anthropic|no account|No account|No quota reading/);
+    expect(meter(block('Kimi Code'), 'Month window')).toBe('27% used · resets in 20d 0h');
+    expect(within(block('Kimi Code')).getByText('Headroom left')).toBeInTheDocument();
+  });
+
+  it('OV-C224, OV-C225: Kimi Code’s month is named by its own key and counted in its own block’s headroom', async () => {
+    both();
+    show();
+    await loaded();
+    const kimi = block('Kimi Code');
+    const tile = within(kimi).getByText('Headroom left').closest('.cds--tile') as HTMLElement;
+    expect(within(tile).getByText('3.5 h')).toBeInTheDocument();
+    expect(within(tile).getByText("first to go: Kimi's month window, in 5d 0h")).toBeInTheDocument();
+    expect(tile).toHaveAttribute('data-tone', 'bad');
+    expect(kimi.querySelector('[data-first-to-go]')).toHaveTextContent(/^First to run out: Kimi's month window, .+\.$/);
+  });
+
+  it('OV-C225: headroom left and first to run out are each block’s own, and no figure compares one provider’s windows with another’s', async () => {
+    both();
+    show();
+    await loaded();
+    const anthropic = block('Anthropic');
+    const kimi = block('Kimi Code');
+    // Anthropic's: its own hours, and its own first to go, a 7-day window too close to call.
+    const own = within(anthropic).getByText('Headroom left').closest('.cds--tile') as HTMLElement;
+    expect(within(own).getByText('4.9 h')).toBeInTheDocument();
+    expect(within(own).getByText("too close to call: secondary@example.test's 7-day window could run out in 2d 20h")).toBeInTheDocument();
+    expect(anthropic.querySelector('[data-first-to-go]')).toHaveTextContent(/^First to run out: secondary@example\.test's 7-day window, .+ — too close to call\.$/);
+    // Kimi Code's: its own hours, and its month, by name.
+    const theirs = within(kimi).getByText('Headroom left').closest('.cds--tile') as HTMLElement;
+    expect(within(theirs).getByText('3.5 h')).toBeInTheDocument();
+    expect(kimi.querySelector('[data-first-to-go]')).toHaveTextContent(/^First to run out: Kimi's month window, /);
+    // Neither block names the other provider's account or windows: no figure sets Anthropic's 7-day
+    // against Kimi Code's month.
+    expect(anthropic).not.toHaveTextContent(/Kimi|month/);
+    expect(kimi).not.toHaveTextContent(/secondary@example\.test|7-day/);
+    // One headroom per block, and none totalled across providers in All accounts.
+    expect(within(panel('Quota headroom')).getAllByText('Headroom left')).toHaveLength(2);
+    expect(within(panel('All accounts')).queryByText('Headroom left')).toBeNull();
+    expect(panel('All accounts').querySelector('[data-first-to-go]')).toBeNull();
   });
 });
 

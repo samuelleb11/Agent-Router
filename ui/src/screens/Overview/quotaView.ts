@@ -1,6 +1,8 @@
 // New for agent-router: the quota panel's figures with no DOM (assets/index.html, `renderQuota`,
-// `renderRunway`, `renderHeader`'s account chip). The meters, the status tag, the history and the
-// burn-downs describe the account serving now, whatever the page is scoped to (OV-C54).
+// `renderRunway`, `renderHeader`'s account chip). The panel holds one block per provider with an
+// account, and each block's meters, status tag, history and burn-downs describe that provider's
+// serving account, whatever the page is scoped to (OV-C54, OV-C224): each window by its own name, Kimi
+// Code's month as a month.
 //
 // Where the page broke its own rule, the rule is kept:
 // - a window with no reading, or a usage reply without a 7-day window, shows "—", never "0% used"
@@ -8,16 +10,20 @@
 // - the status tag's colour and its word come from one field, and the error icon only from a red
 //   one (OV-C59), where the colour also read the last header's `rl_status`;
 // - a header reading from before its window's reset is never shown as current (OV-C72);
-// - the 7-day window wears slate on its meter as on its line and its burn-down (OV-C62).
+// - the second window wears slate on its meter as on its line and its burn-down (OV-C62).
 
 import type { Burn } from '~/components/BurnDown';
 import type { Bucket } from './timeline';
-import type { HeaderQuota, LiveQuota, QuotaHistoryRow, Reading, ServingAccount } from '~/data/overview';
+import type { BlockHistoryRow, LiveQuota, ProviderQuota, Reading, ServingAccount } from '~/data/overview';
 import { ago, relative, resetAt, tod, when } from '~/model/format';
-import { fcLine, type ForecastAccount, type Line, type Window, type WindowKey } from '~/model/forecast';
+import { fcLine, windowLabel, windowName, type ForecastAccount, type Line, type Window, type WindowKey } from '~/model/forecast';
 import type { Series } from '~/components/Sparkline';
 
 export type Tone = 'accent' | 'slate';
+
+/// A block's second window: a week for Anthropic and a Kimi Code legacy plan, a month for a Kimi Code
+/// newer plan (OV-C218, OV-C224).
+export type SecondKey = Exclude<WindowKey, 'five_hour'>;
 
 export interface QuotaWindow {
   readonly key: WindowKey;
@@ -30,7 +36,7 @@ export interface QuotaWindow {
   readonly resetsAt: string | undefined;
   /// The window rolled over: its sentence, and no figure (OV-C72).
   readonly expired: string | undefined;
-  /// The 5-hour window is the accent, the 7-day slate (OV-C62).
+  /// The 5-hour window is the accent, the second slate (OV-C62).
   readonly tone: Tone;
   /// Its forecast line, or none when the forecast has nothing for it (OV-C75).
   readonly line: Line | null;
@@ -47,11 +53,13 @@ export interface Status {
 }
 
 export interface QuotaView {
+  /// The 5-hour window, then the second by its own name.
   readonly windows: readonly [QuotaWindow, QuotaWindow];
   readonly status: Status | null;
   /// Where the numbers came from and how old they are (OV-C56).
   readonly source: string;
-  /// Which reading it is: the live usage, or the last response's headers (OV-C55).
+  /// Which reading it is: a usage API's, current on an idle machine — Anthropic's live reading, or
+  /// Kimi Code's own — or the last response's headers (OV-C55).
   readonly from: 'live' | 'headers';
 }
 
@@ -66,97 +74,111 @@ export function statusOf(field: string | null | undefined): Status | null {
   return { word: field, tone: 'neutral', icon: false };
 }
 
-const LABEL: Readonly<Record<WindowKey, string>> = { five_hour: '5-hour window', seven_day: '7-day window' };
-const TONE: Readonly<Record<WindowKey, Tone>> = { five_hour: 'accent', seven_day: 'slate' };
+/// A block's second window, by the name its provider gives it: `month` when the block carries one,
+/// else `seven_day` when it carries that, else what the forecast has for the account (OV-C224).
+export function secondOf(block: Pick<ProviderQuota, 'windows'> | null | undefined, fc?: Pick<ForecastAccount, 'month'> | null): SecondKey {
+  const keys = block?.windows ? Object.keys(block.windows) : [];
+  if (keys.includes('month')) return 'month';
+  if (keys.includes('seven_day')) return 'seven_day';
+  return fc?.month != null ? 'month' : 'seven_day';
+}
 
 /// A live reading the panel can stand on: one the router says it has, with at least its 5-hour window.
 const usable = (live: LiveQuota | null | undefined): live is LiveQuota => !!live && live.source !== 'unavailable' && !!live.five_hour;
 
-/// The quota panel: the live usage reading when there is one, which stays current on an idle machine,
-/// else the last response's rate-limit headers, which move only when traffic flows (OV-C55); and it
-/// says which, and how old (OV-C56). Null with neither: the panel says there is no reading yet.
+/// One block's meters, status and source (OV-C224). Anthropic's block prefers the live usage reading
+/// (`/api/quota`, Anthropic's serving account's), which stays current on an idle machine, for the
+/// account it was read for, else the last response's rate-limit headers, which move only when traffic
+/// flows (OV-C55); and it says which, and how old (OV-C56). Kimi Code's windows are its usage API's
+/// reading, checked, its second by its own name. Null with no reading: the block says there is none
+/// yet.
 export function quotaView(
   live: Reading<LiveQuota> | null | undefined,
-  headers: HeaderQuota | null | undefined,
-  fc: Pick<ForecastAccount, 'five_hour' | 'seven_day'> | null | undefined,
+  block: Pick<ProviderQuota, 'provider' | 'account' | 'windows' | 'status' | 'at'> | null | undefined,
+  fc: Pick<ForecastAccount, 'five_hour' | 'seven_day' | 'month'> | null | undefined,
   now: number = Date.now(),
 ): QuotaView | null {
   const window = (key: WindowKey, used: number | null, reset: number | null): QuotaWindow => {
     const rolled = reset !== null && reset <= now;
     return {
       key,
-      label: LABEL[key],
+      label: windowLabel(key),
       used: rolled ? null : used,
       resets: reset !== null && !rolled ? `resets ${relative(reset, now)}` : undefined,
       resetsAt: reset !== null && !rolled ? when(reset) : undefined,
       expired: rolled ? `window rolled over ${ago(reset, now)} · nothing seen since` : undefined,
-      tone: TONE[key],
+      tone: key === 'five_hour' ? 'accent' : 'slate',
       line: fcLine(fc?.[key] ?? null, now),
     };
   };
   const pct = (v: number | null | undefined): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
 
-  if (live && usable(live.value)) {
+  // `/api/quota` reads Anthropic's serving account: it stands for that block alone, and only for the
+  // account it says it read.
+  const anthropic = !block || block.provider === 'anthropic';
+  if (anthropic && live && usable(live.value) && (!block || !live.value.account_id || live.value.account_id === block.account.id)) {
     const q = live.value;
     const headersOnly = q.source === 'response-headers';
     const seen = headersOnly ? (q.seen_at ?? live.at) : live.at - (q.age_ms ?? 0);
     return {
-      windows: [
-        window('five_hour', pct(q.five_hour?.utilization), resetAt(q.five_hour?.resets_at)),
-        window('seven_day', pct(q.seven_day?.utilization), resetAt(q.seven_day?.resets_at)),
-      ],
+      windows: [window('five_hour', pct(q.five_hour?.utilization), resetAt(q.five_hour?.resets_at)), window('seven_day', pct(q.seven_day?.utilization), resetAt(q.seven_day?.resets_at))],
       status: statusOf(q.severity),
       source: `${headersOnly ? 'from the last request' : 'checked'} ${ago(seen, now)}`,
       from: headersOnly ? 'headers' : 'live',
     };
   }
-  if (headers) {
-    const frac = (v: number | null) => (typeof v === 'number' && Number.isFinite(v) ? v * 100 : null);
-    const secs = (v: number | null) => (typeof v === 'number' && Number.isFinite(v) ? v * 1000 : null);
+  if (block && Object.values(block.windows ?? {}).some((w) => w != null)) {
+    const frac = (v: number | null | undefined) => (typeof v === 'number' && Number.isFinite(v) ? v * 100 : null);
+    const secs = (v: number | null | undefined) => (typeof v === 'number' && Number.isFinite(v) ? v * 1000 : null);
+    const of = (key: WindowKey) => window(key, frac(block.windows[key]?.utilization), secs(block.windows[key]?.resets_at));
+    // Anthropic's block is its last response's headers; any other provider's, its usage API's reading.
+    // A window the provider said is spent can stand before any usage was read.
+    const read = anthropic ? 'from the last request' : 'checked';
     return {
-      windows: [window('five_hour', frac(headers.rl_5h_utilization), secs(headers.rl_5h_reset)), window('seven_day', frac(headers.rl_7d_utilization), secs(headers.rl_7d_reset))],
-      status: statusOf(headers.rl_status),
-      source: `from the last request ${ago(headers.started_at, now)}`,
-      from: 'headers',
+      windows: [of('five_hour'), of(secondOf(block, fc))],
+      status: statusOf(block.status),
+      source: block.at != null ? `${read} ${ago(block.at, now)}` : anthropic ? read : 'usage not read yet',
+      from: anthropic ? 'headers' : 'live',
     };
   }
   return null;
 }
 
-/// The serving account as the caption names it: its email, else its label, with its plan; "no
-/// account" when nothing serves (SH-C16).
-export function servingName(account: ServingAccount | null | undefined): string {
-  if (!account) return 'no account';
+/// A serving account as its block names it: its email, else its label, with its plan (SH-C16).
+export function servingName(account: Pick<ServingAccount, 'id' | 'label' | 'email' | 'plan'>): string {
   const name = account.email || account.label || account.id;
-  return account.subscription_type ? `${name} · ${account.subscription_type}` : name;
+  return account.plan ? `${name} · ${account.plan}` : name;
 }
 
-/// The serving account's forecast: the one whose id the summary names (OV-C54).
-export function forecastFor(accounts: readonly ForecastAccount[] | null | undefined, account: ServingAccount | null | undefined): ForecastAccount | null {
+/// A serving account's forecast: the one with its id (OV-C54).
+export function forecastFor(accounts: readonly ForecastAccount[] | null | undefined, account: Pick<ServingAccount, 'id'> | null | undefined): ForecastAccount | null {
   if (!account) return null;
   return (accounts ?? []).find((a) => a.id === account.id) ?? null;
 }
 
-/// The quota history: the 5-hour and 7-day percentages as two lines on the activity chart's time
-/// axis, one point per bucket, the worst reading in it, capped at 100 %. A bucket with no reading for
-/// a window is left off that window's line, never 0 % (OV-C60, OV-C61).
-export function history(rows: readonly QuotaHistoryRow[] | null | undefined, bk: readonly Bucket[], now: number = Date.now()): { readonly buckets: string[]; readonly series: Series[] } | null {
+/// A block's quota history: its 5-hour and second windows' percentages as two lines on the activity
+/// chart's time axis, one point per bucket, the worst reading in it, capped at 100 %, each line named
+/// by its window. A bucket with no reading for a window is left off that window's line, never 0 %
+/// (OV-C60, OV-C61, OV-C224).
+export function history(rows: readonly BlockHistoryRow[] | null | undefined, second: SecondKey, bk: readonly Bucket[], now: number = Date.now()): { readonly buckets: string[]; readonly series: Series[] } | null {
   const slot = new Map(bk.map((b, i) => [b.t, i]));
-  const points = (rows ?? []).filter((r) => (r.rl_5h != null || r.rl_7d != null) && slot.has(Number(r.t)));
+  const points = (rows ?? []).filter((r) => (r.five_hour != null || r[second] != null) && slot.has(Number(r.t)));
   if (!points.length || !bk.length) return null;
   const five: (number | null)[] = bk.map(() => null);
-  const seven: (number | null)[] = bk.map(() => null);
+  const other: (number | null)[] = bk.map(() => null);
   const cap = (v: number) => Math.min(100, Math.max(0, v * 100));
   for (const p of points) {
     const i = slot.get(Number(p.t))!;
-    if (typeof p.rl_5h === 'number') five[i] = cap(p.rl_5h);
-    if (typeof p.rl_7d === 'number') seven[i] = cap(p.rl_7d);
+    const a = p.five_hour;
+    const b = p[second];
+    if (typeof a === 'number') five[i] = cap(a);
+    if (typeof b === 'number') other[i] = cap(b);
   }
   return {
     buckets: bk.map((b) => tod(b.t, now)),
     series: [
-      { key: '5h', label: '5-hour used', values: five, colour: '--cds-interactive' },
-      { key: '7d', label: '7-day used', values: seven, colour: '--ar-tok' },
+      { key: '5h', label: `${windowName('five_hour')} used`, values: five, colour: '--cds-interactive' },
+      { key: second === 'month' ? 'month' : '7d', label: `${windowName(second)} used`, values: other, colour: '--ar-tok' },
     ],
   };
 }

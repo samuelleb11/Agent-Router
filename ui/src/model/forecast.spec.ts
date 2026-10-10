@@ -4,7 +4,7 @@
 import { describe, expect, it } from 'vitest';
 import forecastText from './fixtures/forecast.json?raw';
 import { windows } from './fixtures/dashboard';
-import { allAccounts, burnDown, burnDownLayout, fcBasis, fcState, meter, windowMeter, type Forecast, type ForecastAccount, type Window } from './forecast';
+import { allAccounts, burnDown, burnDownLayout, burnDowns, fcBasis, fcState, meter, providerHeadroom, windowLabel, windowMeter, windowName, type Forecast, type ForecastAccount, type Headroom, type Window } from './forecast';
 import { when } from './format';
 
 const NOW = Date.UTC(2026, 9, 5, 12, 0, 0);
@@ -33,6 +33,9 @@ const KIMI: ForecastAccount = {
   month: { used: 0.12, reset_at: (NOW + 20 * 24 * HOUR) / 1000, expired: false, basis: 'none', series: [], spent: false },
 };
 const only = (...accounts: ForecastAccount[]): Forecast => ({ ...FORECAST, accounts });
+/// The captured payload predates providers: its headroom, as the router now gives it, Anthropic's own.
+const ANTHROPIC: Headroom = { active_hours_left: 3.247111236383442, pools: 1, first_to_exhaust: { account_id: 'secondary', window: 'seven_day', at: 1_789_744_498_781, in_ms: 333_870_956 } };
+const withRooms = (fc: Forecast, providers: Readonly<Record<string, Headroom>>): Forecast => ({ ...fc, global: { ...fc.global, providers } });
 
 describe('forecast', () => {
   it('OV-C69: the words are the same on every client', () => {
@@ -103,8 +106,8 @@ describe('forecast', () => {
   it('OV-C92, OV-C93: Headroom is red only for a crossing and names the first account to run out by its label, window and time', () => {
     // The bundled payload's first to go is a tight 7-day window, which the page painted red under
     // the router's id.
-    const tight = allAccounts(FORECAST, NOW);
-    expect(tight?.headroom).toEqual({
+    const tight = providerHeadroom(withRooms(FORECAST, { anthropic: ANTHROPIC }), 'anthropic', NOW);
+    expect(tight?.tile).toEqual({
       label: 'Headroom left',
       value: '3.2 h',
       sub: "too close to call: secondary@example.test's 7-day window could run out in 3d 20h",
@@ -115,21 +118,61 @@ describe('forecast', () => {
     const secondary = crossing.accounts.find((a) => a.id === 'secondary');
     if (!secondary) throw new Error('the fixture lost its serving account');
     secondary.seven_day.verdict = 'crosses';
-    expect(allAccounts(crossing as Forecast, NOW)?.headroom).toMatchObject({ sub: "first to go: secondary@example.test's 7-day window, in 3d 20h", tone: 'bad' });
+    expect(providerHeadroom(withRooms(crossing as Forecast, { anthropic: ANTHROPIC }), 'anthropic', NOW)?.tile).toMatchObject({ sub: "first to go: secondary@example.test's 7-day window, in 3d 20h", tone: 'bad' });
   });
 
-  it('OV-C88, OV-C89, OV-C90, OV-C91: five tiles, quota pools counted rather than credentials, and the pace over a fixed horizon', () => {
-    const panel = allAccounts({ ...FORECAST, global: { ...FORECAST.global, combined_headroom: { active_hours_left: 3.247, pools: 1, first_to_exhaust: null } } }, NOW);
+  it('OV-C88, OV-C89, OV-C90, OV-C91: four tiles that add up, quota pools counted rather than credentials, and the pace over a fixed horizon', () => {
+    const panel = allAccounts(FORECAST, NOW);
     expect(panel?.caption).toBe('3 accounts · spend and tokens add up, quota does not');
-    expect([panel?.spend.label, panel?.tokens.label, panel?.requests.label, panel?.headroom.label, panel?.pace.label]).toEqual([
-      'Spend, every account',
-      'Tokens read',
-      'Requests',
-      'Headroom left',
-      '30-day pace',
-    ]);
-    expect(panel?.headroom).toMatchObject({ value: '3.2 h', sub: '1 quota pool, none projected to run out', tone: 'plain' });
+    // Headroom is no tile of every account's: it is each provider's own, in its quota block (OV-C225).
+    expect([panel?.spend.label, panel?.tokens.label, panel?.requests.label, panel?.pace.label]).toEqual(['Spend, every account', 'Tokens read', 'Requests', '30-day pace']);
+    expect(panel).not.toHaveProperty('headroom');
+    const room = providerHeadroom(withRooms(FORECAST, { anthropic: { active_hours_left: 3.247, pools: 1, first_to_exhaust: null } }), 'anthropic', NOW);
+    expect(room).toEqual({ tile: { label: 'Headroom left', value: '3.2 h', sub: '1 quota pool, none projected to run out', tone: 'plain' }, first: null });
     expect(panel?.pace.sub).toBe('20.67B tokens · from the last 7 days of recorded spend');
+  });
+
+  it('OV-C225: headroom and the first to run out are each provider’s own, and no figure sets one provider’s windows against another’s', () => {
+    // Kimi Code's month runs out an hour and twenty minutes before Anthropic's 5-hour window: each
+    // block names its own first to run out, never the other's.
+    const kimi: ForecastAccount = {
+      ...KIMI,
+      five_hour: { used: 0.3, reset_at: (NOW + 2 * HOUR) / 1000, expired: false, spent: false, basis: 'this-window', active_hours_left: 4, burn_per_active_hour: 0.1, projected_end_util: 0.6, verdict: 'resets-first' },
+      month: { used: 0.97, reset_at: (NOW + 20 * 24 * HOUR) / 1000, expired: false, spent: false, basis: 'this-window', active_hours_left: 0.5, burn_per_active_hour: 0.05, exhausts_at: NOW + 40 * 60e3, verdict: 'crosses' },
+    };
+    const work: ForecastAccount = { id: 'work', label: 'work', provider: 'anthropic', five_hour: { used: 0.7, reset_at: (NOW + 3 * HOUR) / 1000, active_hours_left: 3, exhausts_at: NOW + 2 * HOUR, verdict: 'crosses' } };
+    const rooms: Record<string, Headroom> = {
+      anthropic: { active_hours_left: 3, pools: 1, first_to_exhaust: { account_id: 'work', window: 'five_hour', at: NOW + 2 * HOUR, in_ms: 2 * HOUR } },
+      kimi: { active_hours_left: 0.5, pools: 1, first_to_exhaust: { account_id: 'kimi', window: 'month', at: NOW + 40 * 60e3, in_ms: 40 * 60e3 } },
+    };
+    const fc: Forecast = { accounts: [work, kimi], global: { providers: rooms } };
+    const anthropic = providerHeadroom(fc, 'anthropic', NOW);
+    const own = providerHeadroom(fc, 'kimi', NOW);
+    expect(anthropic?.tile).toMatchObject({ value: '3.0 h', sub: "first to go: work's 5-hour window, in 2h 00m", tone: 'bad' });
+    expect(anthropic?.first).toMatchObject({ name: 'work', window: '5-hour', at: NOW + 2 * HOUR, verdict: 'crosses' });
+    // Kimi Code's month counts in its own headroom, named by its own key.
+    expect(own?.tile).toMatchObject({ value: '30 min', sub: "first to go: Kimi's month window, in 40 min", tone: 'bad' });
+    expect(own?.first).toMatchObject({ name: 'Kimi', window: 'month', at: NOW + 40 * 60e3, verdict: 'crosses' });
+    // Neither figure names the other provider's account or window.
+    expect(JSON.stringify(anthropic)).not.toMatch(/Kimi|month/);
+    expect(JSON.stringify(own)).not.toMatch(/work|5-hour|7-day/);
+    // A provider the router has no headroom for has none here: nothing reads "no account" for it.
+    expect(providerHeadroom({ ...fc, global: { providers: { kimi: rooms['kimi']! } } }, 'anthropic', NOW)).toBeNull();
+    expect(providerHeadroom(null, 'kimi', NOW)).toBeNull();
+    // All accounts totals no headroom across the two providers.
+    const all = allAccounts(fc, NOW);
+    expect(all).not.toHaveProperty('headroom');
+    expect(JSON.stringify(all)).not.toMatch(/Headroom/);
+  });
+
+  it('OV-C224: a window is named by its own key, and a Kimi Code month gets its burn-down by that name', () => {
+    expect((['five_hour', 'seven_day', 'month'] as const).map((k) => [windowName(k), windowLabel(k)])).toEqual([
+      ['5-hour', '5-hour window'],
+      ['7-day', '7-day window'],
+      ['month', 'Month window'],
+    ]);
+    const month: Window = { used: 0.27, reset_at: (NOW + 20 * 24 * HOUR) / 1000, window_start: (NOW - 10 * 24 * HOUR) / 1000, expired: false };
+    expect(burnDowns({ ...KIMI, month }).map((b) => [b.key, b.label])).toEqual([['month', 'Month window']]);
   });
 
   it('OV-C218: a Kimi Code account’s card names Kimi Code and shows its two windows, the second under its real name, a month or a week', () => {

@@ -70,7 +70,9 @@ concerns (AGEN-0127): the mark itself, SH-C56, so the Shell holds 56; accounts, 
 OV-C231, so the Overview holds 224; and sessions, SE-C242, so Sessions holds 242. The same day,
 after the owner looked at the deployed console, Add account came to ask the provider first, ST-C124,
 and Accounts to show a section per provider with a list box for the account its requests go to,
-ST-C125 (AGEN-0092), so Settings holds 125.
+ST-C125 (AGEN-0092), so Settings holds 125. The same day Quota headroom came to hold a block per
+provider with an account, each with its own windows, headroom and first to run out (AGEN-0133):
+OV-C224 and OV-C225, so the Overview holds 226.
 
 ## Shell
 
@@ -196,7 +198,10 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
   *Why:* today's header chip says this on every view; Carbon's 48 px header cannot wrap the
   way today's does, so the identity moves to where the quota is. *Regression:* no.
   *Source:* `assets/index.html:400`, `assets/index.html:1137-1138`,
-  `docs/web-console-carbon.md:207-209`.
+  `docs/web-console-carbon.md:207-209`. *Amended:* each provider's serving account is named in
+  that provider's quota block. A provider with no account has no block, and nothing says "no
+  account" for it; a router with no account at all says "No account yet" and links to Settings →
+  Accounts (OV-C224).
 - **SH-C17** The serving account's name leads to Settings → Accounts, where it can be
   switched, edited or removed. *Why:* today's account chip ("Switch, add or remove
   accounts") opens the settings; the way from the identity to its controls stays.
@@ -506,13 +511,16 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
   Overview's brief is to keep everything the dashboard shows; on 2026-10-08 the owner asked for it
   to read less at once, with the sections tabbed under the figures read first, and chose which
   stay on top. *Regression:* no. *Source:* `assets/index.html:405-511`;
-  `ui/src/screens/Overview/index.tsx`.
+  `ui/src/screens/Overview/index.tsx`. *Amended:* Quota headroom holds a block per provider with
+  an account, each with its meters, history and burn-downs (OV-C224).
 - **OV-C2** Every section heading carries a caption saying what the section measures or how to use
   it — "the account that is serving right now", "cache vs. paid in full", "estimate · by character
   share", "prompt tokens read", "share of prompt tokens", "est. tokens", "by the model" — as visible
   text beside the heading, never in a tooltip. *Why:* an explanation belongs next to what it
   explains (the user's standing preference), and Carbon's `Tag` drops `title`. *Regression:* no.
   *Source:* `assets/index.html:417`, `assets/index.html:439`, `assets/index.html:461-501`.
+  *Amended:* Quota headroom's caption reads "each provider's account that is serving right now",
+  and each provider's block names its own serving account beside its heading (OV-C224).
 - **OV-C3** Every control is visible at rest — the time range, Clear scope, the tabs, and the open
   tab's own: the search kinds, the request filters, Show more — and none sits in an overflow menu or
   behind a disclosure. *Why:* the
@@ -803,11 +811,16 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
   account, not the project (`src/api.rs:302-305`); the header chip that names the account today does
   not fit Carbon's 48 px header. *Regression:* yes — 54d3c94: the page pooled every account while
   the quota showed only the serving one, and the two disagreed. *Source:* `assets/index.html:439`,
-  `assets/index.html:2531-2535`, `src/api.rs:347-362`.
+  `assets/index.html:2531-2535`, `src/api.rs:347-362`. *Amended:* the panel holds a block per
+  provider with an account, and each block describes that provider's serving account, its active
+  one, whatever the scope, and names it beside the block's heading (OV-C224).
 - **OV-C55** The panel prefers the live usage reading, which the router polls from Anthropic and
   which stays current on an idle machine, and falls back to the last response's rate-limit headers,
   which move only when traffic flows. *Why:* the comment at the head of `renderQuota`. *Regression:*
-  no. *Source:* `assets/index.html:1144-1156`, `src/quota.rs:184-216`.
+  no. *Source:* `assets/index.html:1144-1156`, `src/quota.rs:184-216`. *Amended:* the live usage
+  reading is Anthropic's serving account's, and stands in Anthropic's block alone, only for the
+  account it says it read; its fallback is that block's headers. Kimi Code's block is its own usage
+  API's reading, "checked <ago>" (OV-C224).
 - **OV-C56** The panel says where its numbers came from and how old they are: "checked <ago>" for
   the live reading, "from the last request <ago>" for headers. *Why:* "a response header is only as
   fresh as the last request, while the usage endpoint is current even on an idle machine."
@@ -816,7 +829,9 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
   at 100 %, amber from 70 % and red from 90 %; it is a meter to assistive technology and no poll
   re-announces it. *Why:* the plan's `UsageMeter` (`role=meter`), since Carbon's `ProgressBar` would
   re-announce every five seconds. *Regression:* no. *Source:* `assets/index.html:105-109`,
-  `assets/index.html:1159-1173`.
+  `assets/index.html:1159-1173`. *Amended:* one meter per window of each block, each named by its
+  own key: Anthropic's "5-hour window" and "7-day window", Kimi Code's "5-hour window" and its
+  second, "Month window" on a newer plan and "7-day window" on a legacy one (OV-C224).
 - **OV-C58** A window with no reading shows "—", never "0% used". *Why:* missing is not zero
   (Northstar §1), and the plan lists this among the wrong figures. *Regression:* no. *Source:*
   `assets/index.html:1148-1149`, `assets/index.html:1160`, `src/quota.rs:344-345`. *Today:* broken —
@@ -833,7 +848,9 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
   each line and the legend "percent used, over the window charted below"; pointing at it gives the
   nearest point's time and both percentages. *Why:* "two lines over the same time axis as the
   activity chart", and "The worst reading in a bucket is the one that matters for headroom."
-  *Regression:* no. *Source:* `assets/index.html:1180-1220`, `src/api.rs:517-530`.
+  *Regression:* no. *Source:* `assets/index.html:1180-1220`, `src/api.rs:517-530`. *Amended:* each
+  block draws its own windows' history, its second line named by its window — "7-day used",
+  "month used" (OV-C224).
 - **OV-C61** A history point with no reading for a window is left off that window's line and reads
   "—" in its details, never 0 %. *Why:* missing is not zero. *Regression:* no. *Source:*
   `assets/index.html:1189`, `assets/index.html:1198`, `assets/index.html:1216`. *Today:* broken —
@@ -845,6 +862,7 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
   `assets/index.html:1196-1197`, `assets/index.html:1325-1326`, `assets/index.html:1431-1432`.
   *Today:* broken — the quota panel draws its 7-day meter in the accent like the 5-hour one, while
   its history line, its burn-down and the account cards draw the 7-day window in slate.
+  *Amended:* the second window is slate whatever its name, Kimi Code's month included (OV-C224).
 - **OV-C63** The times behind each window — the exact reset and, on the burn-down, when the window
   opened and the usage now — are readable without hovering, on a phone and from the keyboard. *Why:*
   the plan lists reset times among the facts a phone cannot reach. *Regression:* no. *Source:*
@@ -858,7 +876,34 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
   read for. *Why:* a kept value is honest only about what it measured. *Regression:* no. *Source:*
   `assets/index.html:2529-2534`. *Today:* broken — the last good forecast and live quota are reused
   whatever the range or the serving account has become, so after a range change a failed forecast
-  read leaves the previous range's spend under "in the selected range".
+  read leaves the previous range's spend under "in the selected range". *Amended:* the live
+  reading is kept for Anthropic's serving account, as its block names it, and for none on a router
+  with no Anthropic account (OV-C224).
+- **OV-C224** The quota panel holds one block per provider with an account, Anthropic's first. Each
+  block has its provider's mark and name as its heading (SH-C56); its serving account, the
+  provider's active one, named as SH-C16 names it and leading to Settings → Accounts (SH-C17); its
+  own windows' meters, each named by its own key — Anthropic's "5-hour window" and "7-day window",
+  Kimi Code's "5-hour window" and, on a newer plan, "Month window", never "7-day" for a month; and
+  those windows' history and burn-downs. The blocks sit side by side on a wide screen and stack on
+  a phone, never wider than the screen. A provider with no account has no block, and nothing reads
+  "no account" for it; a router with no account at all says "No account yet" and where to add one.
+  *Why:* the owner's decision (2026-10-10, AGEN-0133): with two providers on one router, a panel of
+  Anthropic's active account alone left Kimi Code's quota unseen, and a router with Kimi Code's
+  accounts alone would have shown an empty Anthropic panel. *Regression:* no. *Source:* `src/api.rs`
+  (`providers_quota`, the summary's `providers`); `ui/src/screens/Overview/Quota.tsx`,
+  `ui/src/screens/Overview/quotaView.ts` (`quotaView`, `secondOf`, `history`),
+  `ui/src/model/forecast.ts` (`burnDowns`, `windowName`, `windowLabel`).
+- **OV-C225** Headroom left and first to run out are each block's own: its provider's hours of work
+  left across that provider's quota pools, and the first of that provider's windows to run out, by
+  its account's label, the window by its own name and the time, Kimi Code's month counted in Kimi
+  Code's block. No figure compares windows of different providers: nothing totals, ranks or sets
+  one provider's windows against another's, and All accounts carries no headroom. *Why:* the
+  owner's decision (2026-10-10, AGEN-0133): Anthropic's 7-day window and Kimi Code's month are
+  different allowances on different clocks, and hours summed across both, or a first to run out
+  picked across both, answer no question either provider's quota can. *Regression:* no. *Source:*
+  `src/api.rs` (`global_rollup`, `headroom_of`, the forecast's `global.providers`);
+  `ui/src/model/forecast.ts` (`providerHeadroom`, `allAccounts`),
+  `ui/src/screens/Overview/Quota.tsx`.
 
 ### Forecast
 
@@ -953,6 +998,8 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
   % and a faint line at now. *Why:* "The dashed ray is the whole point — where it meets the ceiling
   is the answer." *Regression:* no. *Source:* `assets/index.html:1285-1321`,
   `assets/index.html:1338-1339`. *Amended:* a second, dotted ray for the short trend, OV-C223.
+  *Amended:* each block's serving account's live windows, Kimi Code's month captioned "Month window
+  · burn-down" (OV-C224).
 - **OV-C81** The projection is always drawn: to its crossing on the 100 % line when there is one,
   otherwise to the reset at the level it ends; a crossing, and only a crossing, gets the one marker.
   *Why:* check "the burn-down chart draws for every state that has a window". *Regression:* no.
@@ -1006,16 +1053,19 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
   being of its own account's limit, so headroom is totalled in hours of work, and the caption says
   "spend and tokens add up, quota does not". *Why:* the comment on `renderAllAccounts`, and
   `src/api.rs:1158-1163`. *Regression:* no. *Source:* `assets/index.html:1356-1368`,
-  `assets/index.html:1390-1395`.
+  `assets/index.html:1390-1395`. *Amended:* headroom is totalled within each provider, in its quota
+  block, never across providers (OV-C225).
 - **OV-C89** Headroom counts quota pools, not credentials: two credentials onto one Anthropic
   account share a quota, reporting the same 7-day reset, and count once, and each pool counts the
   window that runs dry first. *Why:* `src/api.rs:1158-1163` and `src/api.rs:1193`. *Regression:* no.
-  *Source:* `assets/index.html:1386-1392`, `src/api.rs:1175-1202`.
+  *Source:* `assets/index.html:1386-1392`, `src/api.rs:1175-1202`. *Amended:* pools are counted
+  within one provider, for its block's headroom, Kimi Code's month among the windows (OV-C225).
 - **OV-C90** Five tiles: "Spend, every account" (at API rates, across N accounts), "Tokens read"
   (with what was written back), "Requests" (in the selected range), "Headroom left" (hours of work,
   with the first account to run out or "N quota pools, none projected to run out") and "30-day
   pace". *Why:* each tile's meaning is visible text. *Regression:* no. *Source:*
-  `assets/index.html:1370-1396`.
+  `assets/index.html:1370-1396`. *Amended:* four tiles: "Headroom left" is each provider's own, in
+  its quota block (OV-C225).
 - **OV-C91** The 30-day pace is the last seven days of recorded spend scaled to thirty, whatever
   range the page shows, and says so. *Why:* "A pace is only meaningful against a fixed horizon."
   *Regression:* no. *Source:* `assets/index.html:1396`, `src/api.rs:1054-1066`,
@@ -1025,10 +1075,12 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
   `assets/index.html:1382-1389`, `src/api.rs:1188-1192`, `scripts/fixtures/forecast.json`. *Today:*
   broken — the router picks the first to exhaust from the central estimate and the tile turns red
   for it, so the bundled fixture's tight 7-day window reads "first to go: secondary in …" in red.
+  *Amended:* each provider's block has its own headroom tile, which follows this rule (OV-C225).
 - **OV-C93** Headroom names the first account to run out as its card does, by its label, with the
   window and the time. *Why:* one account, one name. *Regression:* no. *Source:*
   `assets/index.html:1387`, `assets/index.html:1393-1394`, `assets/index.html:1428`. *Today:* broken
-  — it prints the router id, and the window and time only in its tooltip.
+  — it prints the router id, and the window and time only in its tooltip. *Amended:* each
+  provider's block names its own first to run out, the window by its own name (OV-C225).
 - **OV-C94** One card per account: its label, an "active" tag while it serves new requests, a line
   with its plan, "last request <ago>" or "never seen" and any shared quota; a 5-hour and a 7-day
   meter with percentage and reset, or "—" for a window rolled over or never read; each window's
@@ -1333,7 +1385,8 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
   `assets/index.html:1705-1707`, `assets/index.html:1743-1744`, `assets/index.html:1772`,
   `assets/index.html:1784`, `assets/index.html:1601`. *Today:* broken — the tool panels and What the
   model read say "yet" ("No tool results captured yet.", "Nothing read yet.") whatever the scope or
-  range.
+  range. *Amended:* no quota reading yet is said in the block of the provider whose serving account
+  has none; a router with no account at all says "No account yet" and where to add one (OV-C224).
 
 ### Requests
 

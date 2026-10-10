@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Unreachable } from '~/lib/errors';
 import { TABS, type OverviewTab, type Scope } from '~/model/scope';
 import { createPoll, freshnessOf, keepReading, readAccounts, readSnapshot, snapshotPaths, UNREACHABLE_AFTER, type Snapshot } from './overview';
-import { dropped, held, ok, QUOTA, refused, router, forecast, summary } from '~/screens/Overview/fixtures';
+import { dropped, held, kimiBlock, ok, partsOf, QUOTA, refused, router, forecast, summary } from '~/screens/Overview/fixtures';
 import { TIMEOUT_MS } from './http';
 
 const NOW = Date.UTC(2026, 9, 5, 15, 0, 0);
@@ -62,8 +62,10 @@ describe('one snapshot', () => {
     await expect(readSnapshot(SCOPED, 'requests', { now: NOW })).rejects.toThrow('database is locked');
   });
 
-  it('OV-C216: each cycle reads the top’s summary parts, the quota and the forecast, plus the open tab’s own reads, and nothing for a tab that is not open', async () => {
-    const top = ['totals', 'quota', 'account', 'models', 'latency', 'timeline', 'quota_history'];
+  it('OV-C216, OV-C224: each cycle reads the top’s summary parts, a quota block per provider among them, the quota and the forecast, plus the open tab’s own reads, and nothing for a tab that is not open', async () => {
+    // `providers` holds every provider's block; Anthropic's `quota`, `account` and `quota_history` are
+    // the phones' to read.
+    const top = ['totals', 'models', 'latency', 'timeline', 'providers'];
     const own: Record<OverviewTab, { readonly paths: readonly string[]; readonly parts: readonly string[] }> = {
       activity: { paths: [], parts: [] },
       context: { paths: [], parts: ['context', 'threads'] },
@@ -97,6 +99,23 @@ describe('one snapshot', () => {
     expect(second.quota).toEqual({ ...first.quota, kept: true });
     expect(second.forecast).toEqual({ ...first.forecast, kept: true });
     expect(second.summary.totals).toEqual(summary().totals);
+  });
+
+  it('OV-C65, OV-C224: a quota reading is kept for Anthropic’s serving account, named by its block, and on a router with no Anthropic account for none', async () => {
+    router();
+    const both = await readSnapshot(SCOPED, 'activity', { now: NOW });
+    expect(both.quota?.for).toBe('secondary');
+    // Kimi Code's accounts alone: `/api/quota` refuses, and a kept reading is for no account.
+    router((path, query) =>
+      path === '/api/summary'
+        ? ok(partsOf(summary({ providers: [kimiBlock()] }), query.get('parts')))
+        : path === '/api/quota'
+          ? refused('no Anthropic account')
+          : undefined,
+    );
+    const kimiOnly = await readSnapshot(SCOPED, 'activity', { now: NOW, kept: { quota: both.quota, forecast: null } });
+    expect(kimiOnly.quota).toBeNull();
+    expect(kimiOnly.summary.providers.map((b) => b.provider)).toEqual(['kimi']);
   });
 
   it('OV-C65: a kept reading is shown only for the account and the range it was read for', () => {

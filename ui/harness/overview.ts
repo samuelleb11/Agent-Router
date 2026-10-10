@@ -11,10 +11,11 @@
 import type { ProjectRow } from '~/data/router';
 import type {
   AccountSplitRow,
+  BlockHistoryRow,
   ContextRow,
   LiveQuota,
   ModelRow,
-  QuotaHistoryRow,
+  ProviderQuota,
   RequestRecord,
   SessionRow,
   Summary,
@@ -157,6 +158,10 @@ const LOG: readonly Logged[] = (() => {
   return out.sort((a, b) => b.started_at - a.started_at);
 })();
 
+/// A Kimi Code account with nothing in the request log: its usage API reads it all the same, so it
+/// has a quota block of its own beside Anthropic's (OV-C224).
+const KIMI = { id: 'kimi-code', label: 'kimi@example.test' } as const;
+
 const ACCOUNTS: readonly (Account & { readonly subscription_type: string | null; readonly org_name: string | null })[] = [
   { id: 'primary', label: 'primary@example.test', email: 'primary@example.test', source: 'keychain', active: 0, subscription_type: 'pro', org_name: null },
   { id: 'secondary', label: 'secondary@example.test', email: 'secondary@example.test', source: 'token', active: 1, subscription_type: 'max', org_name: null },
@@ -286,7 +291,8 @@ function summary(f: Filter): Summary {
   const range = lo !== null && hi !== null ? [f.since !== null ? Math.min(f.since, lo) : lo, f.since !== null ? Math.max(NOW, hi) : hi] : f.since !== null ? [f.since, Math.max(NOW, f.since + 1)] : null;
   const tzMs = Math.max(-14 * 60, Math.min(14 * 60, f.tz)) * MIN;
   let timeline: TimelineRow[] = [];
-  let history: QuotaHistoryRow[] = [];
+  let history: BlockHistoryRow[] = [];
+  let kimiHistory: BlockHistoryRow[] = [];
   let bucket = 0;
   if (range) {
     bucket = pickBucket(range[1]! - range[0]!);
@@ -316,15 +322,44 @@ function summary(f: Filter): Summary {
       const was = quota.get(t) ?? { h: 0, d: 0 };
       quota.set(t, { h: Math.max(was.h, r.rl_5h ?? 0), d: Math.max(was.d, r.rl_7d ?? 0) });
     }
-    history = [...quota].map(([t, v]) => ({ t, rl_5h: v.h, rl_7d: v.d })).sort((a, b) => a.t - b.t);
+    history = [...quota].map(([t, v]) => ({ t, five_hour: v.h, seven_day: v.d })).sort((a, b) => a.t - b.t);
+    // Kimi Code's usage, read every quarter hour over the last day: a 5-hour window that climbs
+    // through the session and a month that creeps.
+    const kimi = new Map<number, BlockHistoryRow>();
+    for (let read = NOW - DAY; read <= NOW; read += 15 * MIN) {
+      if (read < range[0]! || read > range[1]!) continue;
+      const t = at(read);
+      const five = Math.min(1, 0.05 + ((read - (NOW - DAY)) % (5 * HOUR)) / (5 * HOUR) * 0.6);
+      const month = 0.62 + ((read - (NOW - DAY)) / DAY) * 0.04;
+      const was = kimi.get(t);
+      kimi.set(t, { t, five_hour: Math.max(was?.five_hour ?? 0, five), month: Math.max(was?.month ?? 0, month) });
+    }
+    kimiHistory = [...kimi.values()].sort((a, b) => a.t - b.t);
   }
+  // A block per provider with an account, Anthropic's first (src/api.rs `providers_quota`).
+  const providers: ProviderQuota[] = [
+    {
+      provider: 'anthropic',
+      account: { id: active.id, label: active.label ?? null, email: active.email ?? null, org_name: null, plan: active.subscription_type },
+      windows: latest
+        ? { five_hour: { utilization: latest.rl_5h, resets_at: Math.floor((NOW + 2 * HOUR) / 1000) }, seven_day: { utilization: latest.rl_7d, resets_at: Math.floor((NOW + 3 * DAY) / 1000) } }
+        : { five_hour: null, seven_day: null },
+      status: latest ? 'allowed' : null,
+      at: latest?.started_at ?? null,
+      history,
+    },
+    {
+      provider: 'kimi',
+      account: { id: KIMI.id, label: KIMI.label, email: null, org_name: null, plan: null },
+      windows: { five_hour: { utilization: 0.38, resets_at: Math.floor((NOW + 3 * HOUR + 40 * MIN) / 1000) }, month: { utilization: 0.66, resets_at: Math.floor((NOW + 17 * DAY) / 1000) } },
+      status: 'allowed',
+      at: NOW - 4 * MIN,
+      history: kimiHistory,
+    },
+  ];
   return {
     totals,
     unattributed: rows.filter((r) => r.session_id === null).length,
-    quota: latest
-      ? { rl_status: 'allowed', rl_5h_utilization: latest.rl_5h, rl_7d_utilization: latest.rl_7d, rl_5h_reset: Math.floor((NOW + 2 * HOUR) / 1000), rl_7d_reset: Math.floor((NOW + 3 * DAY) / 1000), started_at: latest.started_at }
-      : null,
-    account: { id: active.id, label: active.label ?? null, email: active.email ?? null, org_name: null, subscription_type: active.subscription_type },
     context,
     models,
     threads: [thread(0), thread(1)].filter((t): t is ThreadRow => t !== null),
@@ -338,7 +373,7 @@ function summary(f: Filter): Summary {
     stop_reasons: [...stops].map(([stop_reason, requests]) => ({ stop_reason, requests })).sort((a, b) => b.requests - a.requests),
     by_account: byAccount,
     timeline: { start: range?.[0] ?? null, end: range?.[1] ?? null, bucket_ms: bucket, rows: timeline },
-    quota_history: history,
+    providers,
   };
 }
 
@@ -440,8 +475,8 @@ const quota = (): LiveQuota => ({
 const secs = (ms: number) => Math.floor(ms / 1000);
 
 /// src/api.rs `forecast_inner`: the serving account with a 5-hour window that resets first and a
-/// 7-day one too close to call; the other with both windows rolled over; and one removed from the
-/// router that still has history (OV-C96).
+/// 7-day one too close to call; the other with both windows rolled over; one removed from the router
+/// that still has history (OV-C96); and a Kimi Code account with a 5-hour window and a month.
 function forecast(f: Filter): Forecast {
   const usage = (id: string) => {
     const rs = LOG.filter((r) => r.account_id === id && (f.since === null || r.started_at >= f.since));
@@ -469,6 +504,24 @@ function forecast(f: Filter): Forecast {
       five_hour: { expired: true, reset_at: secs(NOW - 26 * HOUR), seen_at: NOW - 30 * HOUR }, seven_day: { expired: true, reset_at: secs(NOW - DAY), seen_at: NOW - 30 * HOUR } },
     { id: 'secondary', label: 'secondary@example.test', email: 'secondary@example.test', plan: 'max', active: 1, usage: usage('secondary'), seen_at: NOW - 2 * MIN, status: 'allowed', pool: secs(NOW + 3 * DAY + 5 * HOUR), five_hour: five, seven_day: seven },
     { id: 'retired', label: 'retired', email: null, plan: null, active: 0, usage: usage('retired'), seen_at: null, status: null, pool: null, five_hour: null, seven_day: null },
+    {
+      id: KIMI.id, label: KIMI.label, email: null, plan: null, active: 1, provider: 'kimi', usage: usage(KIMI.id), seen_at: NOW - 4 * MIN, status: 'allowed', pool: null,
+      five_hour: {
+        used: 0.38, reset_at: secs(NOW + 3 * HOUR + 40 * MIN), window_start: secs(NOW - HOUR - 20 * MIN),
+        burn_per_active_hour: 0.2, active_hours_left: 3.1, duty_fraction: 0.9, duty: { low: 0.9, mid: 0.9, high: 0.9 },
+        exhausts_at: null, exhausts_at_early: null, exhausts_at_late: null, resets_first: true, verdict: 'resets-first',
+        projected_end_util: 0.86, projected_end_util_low: 0.86, projected_end_util_high: 0.86,
+        basis: 'this-window', measured_active_hours: 1.2, readings: 6, expired: false, spent: false, seen_at: NOW - 4 * MIN, series: series(NOW - HOUR - 20 * MIN, 0.38, 6),
+      },
+      seven_day: null,
+      month: {
+        used: 0.66, reset_at: secs(NOW + 17 * DAY), window_start: secs(NOW - 13 * DAY),
+        burn_per_active_hour: 0.012, active_hours_left: 28, duty_fraction: 0.3, duty: { low: 0.22, mid: 0.3, high: 0.38 },
+        exhausts_at: NOW + 11 * DAY, exhausts_at_early: NOW + 8 * DAY, exhausts_at_late: null, resets_first: false, verdict: 'tight',
+        projected_end_util: 1, projected_end_util_low: 0.92, projected_end_util_high: 1,
+        basis: 'this-window', measured_active_hours: 55, readings: 1240, expired: false, spent: false, seen_at: NOW - 4 * MIN, series: series(NOW - 13 * DAY, 0.66, 48),
+      },
+    },
   ];
   const all = accounts.map((a) => a.usage!);
   return {
@@ -480,7 +533,11 @@ function forecast(f: Filter): Forecast {
       output_tokens: all.reduce((x, u) => x + (u.output_tokens ?? 0), 0),
       cost: all.reduce((x, u) => x + (u.cost ?? 0), 0),
       accounts: accounts.length,
-      combined_headroom: { active_hours_left: 3.2, pools: 2, first_to_exhaust: { account_id: 'secondary', window: 'seven_day', at: NOW + 3 * DAY + 2 * HOUR, in_ms: 3 * DAY + 2 * HOUR } },
+      // Each provider's own headroom, never totalled across them (OV-C225).
+      providers: {
+        anthropic: { active_hours_left: 3.2, pools: 2, first_to_exhaust: { account_id: 'secondary', window: 'seven_day', at: NOW + 3 * DAY + 2 * HOUR, in_ms: 3 * DAY + 2 * HOUR } },
+        kimi: { active_hours_left: 3.1, pools: 1, first_to_exhaust: { account_id: KIMI.id, window: 'month', at: NOW + 11 * DAY, in_ms: 11 * DAY } },
+      },
       pace_30d: { cost: 1840.5, prompt_tokens: 2_100_000_000, basis: 'the last 7 days of recorded spend' },
     },
   };

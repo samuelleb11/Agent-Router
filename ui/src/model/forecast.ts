@@ -21,6 +21,9 @@
 // its card shows the 5-hour window and the second under its real name, a month or a week, a spent
 // window as spent until its reset, its last request whenever it served one, and "not priced" where
 // the router could not price it (OV-C218 to OV-C221).
+//
+// Headroom is each provider's own, in that provider's quota block: no figure compares one
+// provider's windows with another's, Anthropic's 7-day with Kimi Code's month (OV-C225).
 
 import { DASH, ago, compact, count, duration, hours, plural, relative, tod, usd, when } from './format';
 import { providerOf, type Provider } from './settings';
@@ -79,11 +82,20 @@ export interface Window {
   } | null;
 }
 
-export type WindowKey = 'five_hour' | 'seven_day';
+/// A quota window by its own name: the 5-hour, and the second, a week for an Anthropic account and a
+/// Kimi Code account on a legacy plan, a month for a Kimi Code account on a newer one (OV-C218).
+export type WindowKey = 'five_hour' | 'seven_day' | 'month';
 
-/// A window on an account's card: a Kimi Code account's second window is a month on newer plans,
-/// and a week on legacy ones as every other account's is (OV-C218).
-export type CardWindowKey = WindowKey | 'month';
+const WINDOW_NAME: Readonly<Record<WindowKey, string>> = { five_hour: '5-hour', seven_day: '7-day', month: 'month' };
+
+/// A window named by its own key, as a sentence says it: "5-hour", "7-day", "month" (OV-C224).
+export const windowName = (key: WindowKey): string => WINDOW_NAME[key];
+
+/// A window as a meter or a burn-down is captioned: "5-hour window", "7-day window", "Month window".
+export const windowLabel = (key: WindowKey): string => {
+  const name = windowName(key);
+  return `${name.charAt(0).toUpperCase()}${name.slice(1)} window`;
+};
 
 export interface ForecastAccount {
   readonly id: string;
@@ -116,6 +128,21 @@ export interface ForecastAccount {
   readonly month?: Window | null;
 }
 
+/// One provider's headroom (src/api.rs `headroom_of`): hours of work left across its quota pools,
+/// each pool counting the window that runs dry first, and the first of its windows to run out —
+/// every window its accounts have, Kimi Code's month included.
+export interface Headroom {
+  readonly active_hours_left?: number | null;
+  readonly pools?: number | null;
+  readonly first_to_exhaust?: {
+    readonly account_id: string;
+    readonly window: WindowKey;
+    /// Epoch milliseconds.
+    readonly at: number;
+    readonly in_ms: number;
+  } | null;
+}
+
 export interface Forecast {
   readonly generated_at?: number | null;
   readonly accounts?: readonly ForecastAccount[] | null;
@@ -125,17 +152,9 @@ export interface Forecast {
     readonly output_tokens?: number | null;
     readonly cost?: number | null;
     readonly accounts?: number | null;
-    readonly combined_headroom?: {
-      readonly active_hours_left?: number | null;
-      readonly pools?: number | null;
-      readonly first_to_exhaust?: {
-        readonly account_id: string;
-        readonly window: WindowKey;
-        /// Epoch milliseconds.
-        readonly at: number;
-        readonly in_ms: number;
-      } | null;
-    } | null;
+    /// Each provider's headroom, by provider, Anthropic's first: one per provider with an account,
+    /// and none totalled across them (OV-C225).
+    readonly providers?: Readonly<Record<string, Headroom>> | null;
     readonly pace_30d?: {
       readonly cost?: number | null;
       readonly prompt_tokens?: number | null;
@@ -334,16 +353,15 @@ export interface BurnDownWindow {
   readonly window: Window;
 }
 
-/// The serving account's windows that get a burn-down, captioned "<window> · burn-down" (OV-C80);
-/// none for an account with nothing current (OV-C84).
-export function burnDowns(account: Pick<ForecastAccount, 'five_hour' | 'seven_day'> | null | undefined): BurnDownWindow[] {
-  const all: [WindowKey, string, Window | null | undefined][] = [
-    ['five_hour', '5-hour window', account?.five_hour],
-    ['seven_day', '7-day window', account?.seven_day],
-  ];
-  return all
-    .filter((e): e is [WindowKey, string, Window] => !!e[2] && !e[2].expired && e[2].window_start != null)
-    .map(([key, label, window]) => ({ key, label, window }));
+/// A provider's serving account's windows that get a burn-down, captioned "<window> · burn-down",
+/// Kimi Code's month by its name (OV-C80, OV-C224); none for an account with nothing current
+/// (OV-C84).
+export function burnDowns(account: Pick<ForecastAccount, 'five_hour' | 'seven_day' | 'month'> | null | undefined): BurnDownWindow[] {
+  const keys: readonly WindowKey[] = ['five_hour', 'seven_day', 'month'];
+  return keys.flatMap((key) => {
+    const window = account?.[key];
+    return window && !window.expired && window.window_start != null ? [{ key, label: windowLabel(key), window }] : [];
+  });
 }
 
 /// Two burn-downs sit side by side only when both fit at 250 px, otherwise they stack, and each is
@@ -363,7 +381,7 @@ export interface Tile {
 }
 
 export interface CardWindow {
-  readonly key: CardWindowKey;
+  readonly key: WindowKey;
   readonly label: string;
   /// The window as the router sent it, for the meter to draw.
   readonly window: Window | null;
@@ -397,23 +415,67 @@ export interface FirstToGo {
   readonly verdict: Verdict;
 }
 
+/// Spend, tokens, requests and pace add up across accounts and providers; headroom does not, and is
+/// each provider's own, in its quota block (OV-C225).
 export interface AllAccounts {
   readonly caption: string;
   readonly spend: Tile;
   readonly tokens: Tile;
   readonly requests: Tile;
-  readonly headroom: Tile;
   readonly pace: Tile;
-  readonly first: FirstToGo | null;
   readonly cards: readonly AccountCard[];
+}
+
+/// One provider's headroom, for its quota block: "Headroom left", and the first of its windows to run
+/// out (OV-C225).
+export interface ProviderHeadroom {
+  readonly tile: Tile;
+  readonly first: FirstToGo | null;
 }
 
 const nameOf = (a: Pick<ForecastAccount, 'id' | 'label'>): string => a.label || a.id;
 
 /// An account's second window and its real name: a Kimi Code account on a newer plan has a month
 /// where every other has a week (OV-C218).
-function secondWindow(a: ForecastAccount): { readonly key: CardWindowKey; readonly label: string; readonly window: Window | null | undefined } {
+function secondWindow(a: ForecastAccount): { readonly key: WindowKey; readonly label: string; readonly window: Window | null | undefined } {
   return a.month != null ? { key: 'month', label: 'Month', window: a.month } : { key: 'seven_day', label: '7-day', window: a.seven_day };
+}
+
+/// One provider's headroom, from its own entry in `global.providers`: its hours of work left across
+/// its quota pools, and the first of its windows to run out, named by its account's label, with the
+/// window by its own name and the time (OV-C225). Red only for a window whose verdict crosses, amber
+/// and worded as too close to call for a tight one (OV-C92, OV-C93). Null when the forecast has
+/// nothing for the provider, or could not be read. Nothing here reads another provider's windows.
+export function providerHeadroom(fc: Forecast | null | undefined, provider: Provider, now: number = Date.now()): ProviderHeadroom | null {
+  const room = fc?.global?.providers?.[provider];
+  if (!room) return null;
+  const first = room.first_to_exhaust;
+  if (!first) {
+    return {
+      tile: { label: 'Headroom left', value: hours(room.active_hours_left), sub: `${plural(room.pools, 'quota pool', 'quota pools')}, none projected to run out`, tone: 'plain' },
+      first: null,
+    };
+  }
+  const account = (fc?.accounts ?? []).find((a) => !!a && a.id === first.account_id);
+  const w = account?.[first.window];
+  const verdict: Verdict = w ? verdictOf(w) : 'crosses';
+  const window = windowName(first.window);
+  const who = account ? nameOf(account) : first.account_id;
+  const at = first.in_ms > 0 ? relative(now + first.in_ms, now) : 'now';
+  return {
+    tile: {
+      label: 'Headroom left',
+      value: hours(room.active_hours_left),
+      sub:
+        verdict === 'tight'
+          ? `too close to call: ${who}'s ${window} window could run out ${at}`
+          : verdict === 'crosses'
+            ? `first to go: ${who}'s ${window} window, ${at}`
+            : `${who}'s ${window} window is projected to reset first`,
+      tone: verdict === 'crosses' ? 'bad' : verdict === 'tight' ? 'warn' : 'plain',
+    },
+    first: { name: who, window, at: first.at, when: when(first.at), verdict },
+  };
 }
 
 /// When an account was last seen, in words (OV-C94, OV-C220). An account that served requests is
@@ -441,40 +503,13 @@ function costWords(u: NonNullable<ForecastAccount['usage']>): string {
 
 /// Every account at once, whatever the page is scoped to (OV-C87); null — the panel, its heading
 /// and its tiles gone — when the forecast lists no account or could not be read (OV-C86). Spend,
-/// tokens and requests add up across accounts; quota percentages never do, so headroom is totalled
-/// in hours of work (OV-C88), counting quota pools rather than credentials (OV-C89).
+/// tokens and requests add up across accounts; quota percentages never do (OV-C88), and headroom is
+/// each provider's own, in its quota block (OV-C225).
 export function allAccounts(fc: Forecast | null | undefined, now: number = Date.now()): AllAccounts | null {
   const list = (fc?.accounts ?? []).filter((a): a is ForecastAccount => !!a && !!a.id);
   if (!list.length) return null;
   const g = fc?.global ?? {};
-  const room = g.combined_headroom ?? {};
   const pace = g.pace_30d ?? {};
-
-  const first = room.first_to_exhaust;
-  let firstToGo: FirstToGo | null = null;
-  let headroom: Tile;
-  if (first) {
-    const account = list.find((a) => a.id === first.account_id);
-    const w = account?.[first.window];
-    const verdict: Verdict = w ? verdictOf(w) : 'crosses';
-    const window = first.window === 'five_hour' ? '5-hour' : '7-day';
-    const who = account ? nameOf(account) : first.account_id;
-    const at = first.in_ms > 0 ? relative(now + first.in_ms, now) : 'now';
-    firstToGo = { name: who, window, at: first.at, when: when(first.at), verdict };
-    headroom = {
-      label: 'Headroom left',
-      value: hours(room.active_hours_left),
-      sub:
-        verdict === 'tight'
-          ? `too close to call: ${who}'s ${window} window could run out ${at}`
-          : verdict === 'crosses'
-            ? `first to go: ${who}'s ${window} window, ${at}`
-            : `${who}'s ${window} window is projected to reset first`,
-      tone: verdict === 'crosses' ? 'bad' : verdict === 'tight' ? 'warn' : 'plain',
-    };
-  } else {
-    headroom = { label: 'Headroom left', value: hours(room.active_hours_left), sub: `${plural(room.pools, 'quota pool', 'quota pools')}, none projected to run out`, tone: 'plain' };
-  }
 
   // Two credentials onto one Anthropic account share a quota and report the same 7-day reset: say
   // so on every card in the pool, rather than letting the page read as two allowances (OV-C95).
@@ -484,7 +519,7 @@ export function allAccounts(fc: Forecast | null | undefined, now: number = Date.
     const key = String(a.pool);
     pools.set(key, [...(pools.get(key) ?? []), nameOf(a)]);
   }
-  const cardWindow = (key: CardWindowKey, label: string, w: Window | null | undefined): CardWindow => ({
+  const cardWindow = (key: WindowKey, label: string, w: Window | null | undefined): CardWindow => ({
     key,
     label,
     window: w ?? null,
@@ -523,11 +558,9 @@ export function allAccounts(fc: Forecast | null | undefined, now: number = Date.
     },
     tokens: { label: 'Tokens read', value: compact(g.prompt_tokens), sub: `${compact(g.output_tokens)} written back`, tone: 'plain' },
     requests: { label: 'Requests', value: count(g.requests), sub: 'in the selected range', tone: 'plain' },
-    headroom,
     // A pace is only meaningful against a fixed horizon: the last seven days scaled to thirty,
     // whatever range the page shows (OV-C91).
     pace: { label: '30-day pace', value: usd(pace.cost), sub: `${compact(pace.prompt_tokens)} tokens · from ${pace.basis || 'recent spend'}`, tone: 'plain' },
-    first: firstToGo,
     cards,
   };
 }

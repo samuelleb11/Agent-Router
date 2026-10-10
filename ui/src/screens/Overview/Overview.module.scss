@@ -370,6 +370,45 @@
 
 // ---------------------------------------------------------------- quota
 
+/// One block per provider with an account: side by side on a desk, stacked in a hand (OV-C224), never
+/// with a minimum wider than the screen, as two panels are (OV-C202).
+.blocks {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 24rem), 1fr));
+  gap: $spacing-07 $spacing-06;
+  min-inline-size: 0;
+
+  @include breakpoint-down('md') {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/// A provider's block: its head, its headroom, its meters, its history and its burn-downs.
+.block {
+  display: grid;
+  align-content: start;
+  gap: $spacing-05;
+  min-inline-size: 0;
+}
+
+/// A block's heading: the provider's mark and name (SH-C56).
+.h3 {
+  display: inline-flex;
+  align-items: center;
+  gap: $spacing-03;
+  margin: 0;
+  @include type-style('heading-02');
+  color: var(--cds-text-primary);
+}
+
+/// A block's own headroom tile, with its first to run out under it (OV-C225).
+.room {
+  display: grid;
+  align-content: start;
+  gap: $spacing-03;
+  min-inline-size: 0;
+}
+
 .meters {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr));

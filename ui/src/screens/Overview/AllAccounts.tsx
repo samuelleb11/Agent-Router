@@ -1,7 +1,8 @@
 // New for agent-router: All accounts (assets/index.html, `renderAllAccounts`): every account at once,
 // whatever the page is scoped to (OV-C87), and nothing at all when the forecast lists none (OV-C86). A
 // Kimi Code account's card draws its second window under its real name (OV-C218), and every card names
-// its provider by its mark and name beside the account's (OV-C231).
+// its provider by its mark and name beside the account's (OV-C231). Headroom is not totalled here: it
+// is each provider's own, in its quota block (OV-C225).
 import { Tile } from '@carbon/react';
 import { ProviderMark } from '~/components/ProviderMark';
 import { StatGrid } from '~/components/StatGrid';
@@ -33,7 +34,7 @@ function CardWindow({ label, w, now, tone }: { label: string; w: Window | null |
 export function AllAccounts({ forecast, now, busy }: { forecast: Reading<Forecast> | null; now: number; busy: boolean }) {
   const all = allAccounts(forecast?.value, now);
   if (!all) return null;
-  const tiles = [all.spend, all.tokens, all.requests, all.headroom, all.pace];
+  const tiles = [all.spend, all.tokens, all.requests, all.pace];
   const Person = CONCEPTS.account.icon;
   return (
     <Panel concept="account" title="All accounts" caption={all.caption} busy={busy}>
@@ -42,13 +43,6 @@ export function AllAccounts({ forecast, now, busy }: { forecast: Reading<Forecas
           <StatTile key={t.label} label={t.label} value={t.value === '—' ? null : t.value} detail={t.sub} tone={toneOf(t.tone)} />
         ))}
       </StatGrid>
-      {all.first && (
-        // The first to run out, by its label, with its window and its time, as text (OV-C93).
-        <p className={styles.note} data-first-to-go="">
-          First to run out: {all.first.name}'s {all.first.window} window, {all.first.when}
-          {all.first.verdict === 'tight' ? ' — too close to call' : ''}.
-        </p>
-      )}
       <div className={styles.cards}>
         {all.cards.map((c) => (
           <Tile key={c.id} className={styles.card} data-account-card={c.id}>
