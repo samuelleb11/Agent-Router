@@ -258,6 +258,36 @@ Claude Code login as its Anthropic one. One conversation, resumed turn by turn:
   made by hand through the router was answered 429 `rate_limit_error`, with the window at
   49%, so the cross-provider check needs a real session, as here.
 
+### Claude Code's features on Kimi Code (measured 2026-10-10)
+
+One throwaway Claude Code session (2.1.267, a scratch `CLAUDE_CONFIG_DIR`, `ANTHROPIC_API_KEY`
+a dummy) on `k3[1m]`, through this router's build on loopback: the vault's probe key as the
+Kimi Code account, this Mac's Claude Code login as the Anthropic one. A stdio MCP server, a
+skill and two subagents of its own, each answering with a code word, so a result says which
+of them ran. Five turns, one conversation; 32 requests, every one 200: 30 to Kimi Code (13
+messages, 17 `count_tokens`), 2 to Anthropic.
+
+| Feature | On `k3[1m]` | What showed it |
+| --- | --- | --- |
+| MCP tool | Works | The stdio server connected, K3 called `mcp__probe__probe_echo`, and its answer came back |
+| Skill | Works | K3 called `Skill` for `probe-skill` and answered with its code word |
+| Bash | Works | `echo bash-ok-$((6*7))` ran and gave `bash-ok-42` |
+| Subagents | Work, on either provider | `model: inherit` ran on `k3` at Kimi Code; `model: haiku` ran on `claude-haiku-4-5` at Anthropic. Both are logged as subagent traffic: one session, two providers |
+| WebSearch | Works | The search request went to Kimi Code on `k3`, which runs the server-side search itself, and real results came back |
+| WebFetch | Works | Claude Code fetched the page itself and had Haiku summarise it, and the router sent that to Anthropic. With no Claude account, as when Claude Code points straight at Kimi Code, that summary request has nowhere to go, which is likely why WebFetch is reported failing there |
+| `/context` | Works | "18.9k / 1m (2%)" on `k3[1m]`, by category, with the MCP tool, both subagents and the skill listed. It sends one `count_tokens` per category, 17 here, to Kimi Code |
+| Prompt caching | Works | After the first turn every `k3` request read 12.8K to 18.4K tokens from Kimi Code's cache |
+
+- **Which model does Claude Code's own small work.** In this session WebFetch's summary went
+  to Haiku because the session signed in with `ANTHROPIC_API_KEY`. A machine set up for a
+  hosted router signs in with `ANTHROPIC_AUTH_TOKEN`, and Claude Code's gateway documentation
+  says such a session uses its main model for that work, which here would be K3 at Kimi Code.
+  That case was not measured.
+- **Kimi Code counts cached tokens inside `input_tokens`.** Anthropic does not. The last
+  request carried 18,880 input tokens and 18,432 cache reads for a context `/context` put at
+  18.9K. The router adds the two, so it counted 37,312 prompt tokens and priced the cached
+  ones twice. That is a defect, filed in Northstar.
+
 ### Not measured
 
 - **A spent window's 403.** It cannot be had without using up the owner's 5-hour window, which
