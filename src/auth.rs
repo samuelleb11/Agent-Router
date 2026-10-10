@@ -134,9 +134,15 @@ pub(crate) fn base64_decode(s: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// The password a request presents, whichever way it presents it.
+/// The password a request presents, whichever way it presents it: `Authorization` (Basic,
+/// Bearer), else `x-api-key`, which is how a Kimi Code provider sends its key and sends no
+/// `Authorization` at all (docs/kimi-client.md).
 pub fn presented(headers: &HeaderMap) -> Option<String> {
-    let value = headers.get("authorization")?.to_str().ok()?.trim();
+    let Some(value) = headers.get("authorization") else {
+        let key = headers.get("x-api-key")?.to_str().ok()?.trim();
+        return (!key.is_empty()).then(|| key.to_string());
+    };
+    let value = value.to_str().ok()?.trim();
     let (scheme, rest) = value.split_once(' ')?;
     let rest = rest.trim();
     if scheme.eq_ignore_ascii_case("basic") {
@@ -247,7 +253,11 @@ impl Auth {
         let Some(record) = self.record.read().await.as_ref().map(|r| r.hash.clone()) else {
             return Verdict::NoPassword;
         };
-        let Some(raw) = headers.get("authorization").and_then(|v| v.to_str().ok()) else {
+        let Some(raw) = headers
+            .get("authorization")
+            .or_else(|| headers.get("x-api-key"))
+            .and_then(|v| v.to_str().ok())
+        else {
             return Verdict::Missing;
         };
         let Some(password) = presented(headers) else {

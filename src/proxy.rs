@@ -748,4 +748,46 @@ mod tests {
         // The next request reads the refused one's stored key again.
         assert_eq!(signer_for(&lab, path, "k3").await.token, KIMI);
     }
+
+    /// A Kimi Code provider sends its key as `x-api-key` and no `Authorization`, so on a
+    /// hosted router that key is the password. Whatever it carried, the request upstream is
+    /// signed with the account's credential and carries no trace of it.
+    #[tokio::test]
+    async fn a_hosted_router_takes_its_password_as_x_api_key() {
+        use axum::extract::ConnectInfo;
+        use tower::ServiceExt;
+
+        let lab = Lab::hosted("x-api-key-password").await;
+        let password = lab.password.unwrap();
+        let ask = |key: Option<&str>| {
+            let mut req = Request::get("/api/accounts").header("host", "127.0.0.1");
+            if let Some(key) = key {
+                req = req.header("x-api-key", key);
+            }
+            let mut req = req.body(Body::empty()).unwrap();
+            req.extensions_mut().insert(ConnectInfo(std::net::SocketAddr::from(([127, 0, 0, 1], 50_000))));
+            lab.app.clone().oneshot(req)
+        };
+        assert_eq!(ask(Some(password)).await.unwrap().status(), StatusCode::OK, "the password as x-api-key is admitted");
+        assert_eq!(ask(Some("not the password")).await.unwrap().status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(ask(None).await.unwrap().status(), StatusCode::UNAUTHORIZED);
+
+        // Upstream, the account's credential and nothing of the password.
+        let signer = Active {
+            account_id: "work".into(),
+            label: "work".into(),
+            identity: None,
+            token: WORK.into(),
+            expires_at_ms: 0,
+            provider: Provider::Anthropic,
+            base_url: None,
+        };
+        let mut from = HeaderMap::new();
+        from.insert("x-api-key", HeaderValue::from_static("the deployment's own"));
+        let uri: Uri = "https://upstream.invalid/v1/messages".parse().unwrap();
+        let out = outgoing(&axum::http::Method::POST, &from, uri, &signer, bytes::Bytes::new()).unwrap();
+        assert_eq!(out.headers()["authorization"], format!("Bearer {WORK}").as_str());
+        assert!(out.headers().get("x-api-key").is_none());
+        assert!(out.headers().values().all(|v| v.to_str().map(|v| !v.contains(password)).unwrap_or(true)));
+    }
 }
