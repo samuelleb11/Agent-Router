@@ -92,6 +92,11 @@ tokens spent, and nothing of the owner's Kimi Code state touched.
   - an abort;
   - `POST …/profile` for model and mode;
   - a WebSocket.
+
+  Measured again on 2026-10-10 while building the hosted sessions (fixtures/kimi/README.md):
+  a model given when a session is made is not kept, so it is set through `…/profile`; and
+  the abort is `POST …/prompts/<prompt id>:abort`. `scripts/check-kimi-hosting.sh` drives the
+  real server through the agent's code on a scratch home.
 - **`kimi acp`.** The Agent Client Protocol over stdio: `session/new`, `session/load`,
   `session/prompt`, `session/cancel`, `session/set_mode`, `session/set_model`, and
   `session/request_permission` back to the client.

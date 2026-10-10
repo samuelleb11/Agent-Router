@@ -5,6 +5,7 @@
 pub mod config;
 pub mod registry;
 pub mod session;
+pub mod web;
 
 use std::path::{Path, PathBuf};
 
