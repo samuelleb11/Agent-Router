@@ -1,0 +1,203 @@
+// Copied from Northstar ui/src/app/Shell.module.scss at e9c1589.
+// Changed: a note for a project list that is empty or could not be read; the coarse-pointer rule's count of links is the router's; the header reaches under a phone's notch and pads its bar below it, and the page, the rail and its overlay start where it ends; the page clears the header by padding, never by a margin that collapses through #root; the address the console was reached at sits beside the name, or under it in a hand.
+@use '@carbon/react/scss/spacing' as *;
+@use '@carbon/react/scss/theme' as *;
+@use '@carbon/react/scss/type' as *;
+@use '@carbon/react/scss/breakpoint' as *;
+@use '@carbon/react/scss/themes' as themes;
+
+.section {
+  @include type-style('label-01');
+  color: $text-secondary;
+  padding: $spacing-05 $spacing-05 $spacing-02;
+  white-space: nowrap;
+  overflow: hidden;
+
+  &[aria-hidden='true'] {
+    visibility: hidden;
+  }
+}
+
+/// What the projects section says when it has no project to list: none yet, or none read. In
+/// the section's own type, under its heading, and gone with it when the rail collapses.
+.note {
+  @include type-style('helper-text-01');
+  color: $text-secondary;
+  padding: $spacing-02 $spacing-05 $spacing-03;
+
+  &[aria-hidden='true'] {
+    visibility: hidden;
+  }
+}
+
+/// The shell's chrome is dark on either page theme — the header and the rail together, the
+/// way IBM's own consoles frame a light page. Carbon's `<Theme>` would do this, but it
+/// renders a wrapper div, and Carbon indents the page off `.cds--side-nav ~ .cds--content`:
+/// a wrapper between them breaks that sibling rule and the page slides under the rail. So
+/// the rail carries the theme itself, on the element that is already there.
+.rail {
+  @include theme(themes.$g100);
+
+  // Under the header, however far down a notch pushes it; Carbon pins the rail at 3rem.
+  &:global(.cds--side-nav) {
+    inset-block-start: var(--ar-shell-header);
+  }
+}
+
+/// The phone drawer's overlay starts where the header ends too, so the header over it stays
+/// readable and its menu button pressable while the drawer is open.
+:global(.cds--side-nav__overlay.cds--side-nav__overlay) {
+  inset-block-start: var(--ar-shell-header);
+}
+
+.content {
+  // The rail is 3rem collapsed; Carbon's Content assumes the 16rem sidebar.
+  padding: 0;
+  background: $background;
+
+  // Clear of the fixed header by PADDING, never by Carbon's 3rem margin. A top margin on the
+  // page's first box collapses through #root, and through the app's theme wrapper, to the root
+  // of the document: every page was 48 px taller than the window and scrolled by that much with
+  // nothing under it. Padding cannot collapse, so a page is exactly a window tall until what it
+  // holds is taller. The id outweighs Carbon's `div:has(.cds--header) ~ .cds--content`.
+  &:global(#main-content) {
+    margin-block-start: 0;
+    padding-block-start: var(--ar-shell-header);
+    min-block-size: 100dvh;
+  }
+
+  // On a phone the drawer lies OVER the page rather than beside it, so the inline margin
+  // Carbon reserves for a rail (3rem, 16rem expanded) is a dead strip down the page's left
+  // and nothing else. The id is the Content's own; it outweighs Carbon's three-class rule.
+  // It is global because a CSS module renames every id it is not told is: written bare, it
+  // compiled to a scoped id nothing carries, and the strip stayed on every phone page.
+  @include breakpoint-down('md') {
+    &:global(#main-content) {
+      margin-inline-start: 0;
+    }
+  }
+}
+
+/// The settings group, pinned to the foot of the rail. Carbon's own items list is
+/// `flex: 1 1 0%`, so this one only has to refuse to grow.
+.footer {
+  flex: 0 0 auto;
+  padding-block: 0 $spacing-03;
+}
+
+/// Carbon's divider carries a block margin meant for a list between items; at the foot of
+/// the rail it only has to separate the group above from the group below.
+.footerRule {
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+/// The header is the width of the SCREEN, always.
+///
+/// It is `position: fixed`, so it should take its width from the viewport — but while the
+/// phone drawer is open it takes it from the document instead, and the header then grows
+/// with anything that overflows, pushing its own actions off the right edge and scrolling
+/// the page sideways. A phone never scrolls sideways.
+.header {
+  inline-size: 100vw;
+  max-inline-size: 100vw;
+  // Carbon's header is fixed and knows nothing of a phone's notch: with the page drawn under
+  // the status bar (viewport-fit=cover, which the Sessions screen needs for its composer), the
+  // header's actions would sit under the notch in landscape. Zero everywhere else.
+  padding-inline: env(safe-area-inset-left, 0px) env(safe-area-inset-right, 0px);
+
+  // And in portrait the notch is above it: the header reaches up under the status bar and pads
+  // its bar below it, so the bar is never hidden, and is exactly as tall as the page, the rail
+  // and the palette are told it is (--ar-shell-header). Carbon fixes its block size, so the
+  // class is doubled to outweigh it whatever order the stylesheets load in.
+  &:global(.cds--header) {
+    block-size: var(--ar-shell-header);
+    padding-block-start: env(safe-area-inset-top, 0px);
+  }
+
+  // The actions are the last thing that may give. Carbon's global bar sizes to its content,
+  // so a long freshness word — "unreachable", "connecting" — pushed it 4px past the header
+  // and clipped the rightmost button to 44px. The width of a word about the router's health
+  // is not a reason to make a control harder to press.
+  //
+  // So the bar is bounded by the header and the badge is what shrinks. A freshness word
+  // that loses its tail is recoverable: the badge carries the whole sentence as its
+  // accessible name. A control that loses its edge is not.
+  :global(.cds--header__global) {
+    max-inline-size: 100%;
+    min-inline-size: 0;
+  }
+
+  :global(.cds--header__global) > *:not(:global(.cds--header__action)) {
+    min-inline-size: 0;
+    overflow: hidden;
+  }
+}
+
+/// The name, and the address the console was reached at: beside it on a desk, under it in a
+/// hand, where the bar has no room beside it (SH-C9). It is how a reader tells which router a
+/// tab is showing — the Mac's, one on the LAN, or a hosted one. The address may shorten; the
+/// name and the actions keep their room.
+.brand {
+  display: flex;
+  flex: 0 1 auto;
+  align-items: center;
+  min-inline-size: 0;
+  block-size: 100%;
+
+  // Carbon pads the name 8px from the menu button and 32px before whatever follows it; here the
+  // address follows it, so it sits close and the room after the address is the bar's.
+  :global(.cds--header__name) {
+    flex: none;
+    padding-inline: $spacing-03;
+  }
+}
+
+.host {
+  @include type-style('code-01');
+  min-inline-size: 0;
+  overflow: hidden;
+  padding-inline-end: $spacing-05;
+  color: $text-secondary;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@include breakpoint-down('md') {
+  .brand {
+    position: relative;
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: center;
+    // The name and the bar's actions keep their room: the address gives first.
+    max-inline-size: 50%;
+
+    :global(.cds--header__name) {
+      block-size: auto;
+      padding-inline: $spacing-05 0;
+
+      // The name's link reaches over the address under it, so a fingertip anywhere on the two
+      // lines goes home: one target the height of the header, never a 20px line.
+      &::after {
+        position: absolute;
+        content: '';
+        inset: 0;
+      }
+    }
+  }
+
+  .host {
+    max-inline-size: 100%;
+    padding-inline: $spacing-05 0;
+  }
+}
+
+/// The rail is the whole of this console's navigation in a hand, and Carbon draws its links
+/// 32px tall at every pointer. Its links are the only way between the screens and to every
+/// project, each a third under the fingertip bar the rest of the console keeps.
+@media (pointer: coarse) {
+  .rail :global(.cds--side-nav__link),
+  .rail :global(.cds--side-nav__submenu) {
+    min-block-size: $spacing-09;
+  }
+}

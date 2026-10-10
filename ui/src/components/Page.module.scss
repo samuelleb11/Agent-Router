@@ -1,0 +1,59 @@
+// Copied from Northstar ui/src/components/Page.module.scss at e9c1589.
+// Changed: the frame's width token is named for this console.
+@use '@carbon/react/scss/spacing' as *;
+@use '@carbon/react/scss/type' as *;
+@use '@carbon/react/scss/breakpoint' as *;
+
+/// Carbon's `max` grid breakpoint width — 1584px, the width its own CSS grid stops growing
+/// at. `@carbon/grid`'s `$grid-breakpoints` is not forwarded through
+/// `@carbon/react/scss/breakpoint` and `@carbon/grid` is not resolvable from this package's
+/// `node_modules`, so the one number the console's frame needs from that map is named here,
+/// once, rather than repeated as a literal wherever a page is bounded.
+$ar-content-max: 99rem;
+
+/// The frame. Gutter $spacing-07 on a desk and $spacing-05 in a hand; sections $spacing-07
+/// apart at both. `align-content: start` so a short page keeps its rhythm instead of
+/// spreading its sections down an empty viewport.
+.page {
+  display: grid;
+  align-content: start;
+  gap: $spacing-07;
+  padding: $spacing-07 $spacing-07 $spacing-09;
+  max-inline-size: $ar-content-max;
+  min-inline-size: 0;
+
+  @include breakpoint-down('md') {
+    padding: $spacing-05 $spacing-05 $spacing-09;
+  }
+}
+
+.section {
+  display: grid;
+  align-content: start;
+  gap: $spacing-05;
+  min-inline-size: 0;
+  // An in-page link lands the heading clear of the shell's header rather than under it.
+  scroll-margin-block-start: $spacing-09;
+}
+
+.sectionHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: $spacing-04;
+  min-inline-size: 0;
+}
+
+.h2 {
+  @include type-style('heading-03');
+  margin: 0;
+  color: var(--cds-text-primary);
+}
+
+.sectionAction {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: $spacing-04;
+}

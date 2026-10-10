@@ -1,0 +1,289 @@
+// New for agent-router: one request as a card that opens into its detail, on Carbon tokens
+// (docs/web-console-carbon.md, "Why Carbon, and what it does not cover"). Drawn from the dashboard's
+// `.rrow`, `.sum` and `.det` (assets/index.html), without the eleven-track row that scrolled a phone
+// sideways.
+@use '@carbon/react/scss/spacing' as *;
+@use '@carbon/react/scss/type' as *;
+@use '@carbon/react/scss/motion' as *;
+@use '@carbon/react/scss/breakpoint' as *;
+@use '@carbon/react/scss/utilities/button-reset';
+@use '@carbon/react/scss/utilities/focus-outline' as *;
+
+.row {
+  min-inline-size: 0;
+  border-block-end: 1px solid var(--cds-border-subtle-01);
+}
+
+/// The summary, one line on a desk. Its parts are as wide as the figures they hold (`ch` of
+/// tabular figures), so they line up from one row to the next; a desk too narrow for all of them
+/// wraps the last onto a second line rather than scroll sideways.
+.summary {
+  @include button-reset.reset;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: $spacing-02 $spacing-03;
+  min-block-size: $spacing-07;
+  padding: $spacing-02 $spacing-03;
+  @include type-style('body-compact-01');
+  color: var(--cds-text-primary);
+  font-variant-numeric: tabular-nums;
+
+  &:hover {
+    background: var(--cds-layer-hover-01);
+  }
+
+  &:focus-visible {
+    @include focus-outline('outline');
+  }
+}
+
+.chev {
+  grid-area: chev;
+  flex: none;
+  fill: var(--cds-icon-secondary);
+  transition: transform $duration-fast-02 motion(standard, productive);
+}
+
+.summary[aria-expanded='true'] .chev {
+  transform: rotate(90deg);
+}
+
+/// On a desk the head's parts are cells of the row; on a phone they share its first line.
+.head {
+  display: contents;
+}
+
+.time {
+  flex: none;
+  inline-size: 11ch;
+  color: var(--cds-text-secondary);
+  white-space: nowrap;
+}
+
+/// Wide enough for a model as every client spells it, "sonnet-4-5-20250929" (OV-C184, decision K),
+/// and a longer one ellipsised rather than cut: the full id is in the detail.
+.model {
+  flex: 0 1 22ch;
+  display: inline-flex;
+  align-items: center;
+  gap: $spacing-02;
+  min-inline-size: 0;
+  white-space: nowrap;
+}
+
+.modelName {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/// A model family's swatch; "other" is a hollow ring rather than a fourth fill (OV-C10).
+.swatch {
+  flex: none;
+  inline-size: $spacing-03;
+  block-size: $spacing-03;
+  border-radius: 50%;
+}
+
+.swatch[data-family='other'] {
+  box-shadow: inset 0 0 0 $spacing-01 var(--ar-model-other);
+}
+
+/// The same width on every row, whatever badges it carries, so the columns after it line up.
+.badges {
+  flex: 1 1 20ch;
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: $spacing-02;
+  min-inline-size: 0;
+}
+
+/// A badge is its icon and its word: the word is the fact, so it never lives in a title.
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: $spacing-01;
+  padding-inline: $spacing-02;
+  border: 1px solid var(--cds-border-subtle-01);
+  @include type-style('label-01');
+  white-space: nowrap;
+}
+
+.status {
+  grid-area: status;
+  flex: none;
+  inline-size: 5ch;
+  color: var(--cds-text-secondary);
+  white-space: nowrap;
+}
+
+/// An error wears one mark everywhere: the error icon in the error colour, with its code (OV-C5).
+.error {
+  display: inline-flex;
+  align-items: center;
+  gap: $spacing-01;
+  color: var(--ar-bad);
+  font-weight: 600;
+}
+
+/// This request's prompt against the largest in the filtered set.
+.bar {
+  grid-area: bar;
+  position: relative;
+  flex: 1 1 8ch;
+  block-size: $spacing-02;
+  min-inline-size: 4ch;
+  background: var(--cds-layer-accent-01);
+}
+
+.fill {
+  display: block;
+  min-inline-size: $spacing-01;
+  block-size: 100%;
+  background: var(--ar-tok);
+}
+
+.prompt {
+  grid-area: prompt;
+  flex: none;
+  inline-size: 6ch;
+  font-weight: 600;
+  text-align: end;
+  white-space: nowrap;
+}
+
+.cached {
+  grid-area: cached;
+  inline-size: 10ch;
+}
+
+.out {
+  grid-area: out;
+  inline-size: 18ch;
+}
+
+.ttfb {
+  grid-area: ttfb;
+  inline-size: 18ch;
+}
+
+.cached,
+.out,
+.ttfb {
+  flex: none;
+  color: var(--cds-text-secondary);
+  text-align: end;
+  white-space: nowrap;
+}
+
+/// A phone-first card (OV-C159): time, model, badges and status on the first line; the bar,
+/// prompt, cache and output on the second; the first token moves into the detail. Nothing in it is
+/// wider than the screen: every cell may shrink, and the figures wrap.
+@include breakpoint-down('md') {
+  .summary {
+    display: grid;
+    grid-template-areas:
+      'chev head head head status'
+      '. bar prompt cached out';
+    grid-template-columns: $spacing-05 minmax(0, 1fr) auto auto minmax(0, auto);
+    align-items: center;
+  }
+
+  .status,
+  .prompt,
+  .cached,
+  .out {
+    inline-size: auto;
+  }
+
+  .head {
+    grid-area: head;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: $spacing-02 $spacing-03;
+    min-inline-size: 0;
+  }
+
+  .badges {
+    flex: 1 1 auto;
+  }
+
+  .out {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .ttfb {
+    display: none;
+  }
+}
+
+/// The detail: every fact recorded about the request, each label beside its value.
+.detail {
+  display: grid;
+  gap: $spacing-04;
+  padding: $spacing-02 $spacing-05 $spacing-05 calc(#{$spacing-05} + #{$spacing-06});
+  @include type-style('label-01');
+
+  @include breakpoint-down('md') {
+    padding-inline-start: $spacing-05;
+  }
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, calc(#{$spacing-13} * 1.5)), 1fr));
+  gap: $spacing-02 $spacing-06;
+  margin: 0;
+}
+
+.fact {
+  display: flex;
+  align-items: baseline;
+  gap: $spacing-03;
+  min-inline-size: 0;
+}
+
+.fact[data-wide] {
+  grid-column: 1 / -1;
+}
+
+.fact dt {
+  flex: none;
+  min-inline-size: 10ch;
+  color: var(--cds-text-secondary);
+}
+
+.fact dd {
+  min-inline-size: 0;
+  margin: 0;
+  color: var(--cds-text-primary);
+  overflow-wrap: anywhere;
+}
+
+.fact dd[data-mono] {
+  @include type-style('code-01');
+}
+
+/// The error at full width, with its line breaks (OV-C158).
+.message {
+  margin: 0;
+  color: var(--ar-bad);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+/// A fingertip tall on a touch screen (SH-C45).
+@media (pointer: coarse) {
+  .summary {
+    min-block-size: $spacing-09;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chev {
+    transition: none;
+  }
+}

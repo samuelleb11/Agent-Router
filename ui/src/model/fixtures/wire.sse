@@ -1,0 +1,34 @@
+:
+
+data: {"t":"2026-09-29T11:14:19.178Z","dur_ms":null,"sidechain":false,"role":"user","kind":"text","text":"Is the build green?"}
+
+data: {"t":"2026-09-29T11:14:19.178Z","dur_ms":2810,"sidechain":false,"role":"assistant","kind":"tool_use","name":"Bash","text":"cargo test"}
+
+data: {"t":"2026-09-29T11:14:19.178Z","dur_ms":18112,"sidechain":false,"role":"user","kind":"tool_result","text":"test result: ok. 12 passed"}
+
+event: status
+data: {"state":"idle","detail":"Waiting for you · background shell running","quiet_ms":36123781,"since_ms":1790652155639,"as_of_ms":1790688279420,"queued":0,"activity":"idle","open":true,"tone":"idle"}
+
+event: status
+data: {"state":"working","detail":"Thinking","quiet_ms":0,"since_ms":1790688279420,"as_of_ms":1790688279420,"queued":0,"activity":"generating","open":true,"tone":"busy"}
+
+event: status
+data: {"state":"tool","detail":"Running Bash","quiet_ms":95000,"since_ms":1790688184420,"as_of_ms":1790688279420,"queued":0,"activity":"tool","open":true,"tone":"busy"}
+
+event: status
+data: {"state":"ask","detail":"Bash wants to run","quiet_ms":60000,"since_ms":1790688219420,"as_of_ms":1790688279420,"queued":1,"activity":"waiting","open":true,"waiting_on":{"kind":"permission","tool":"Bash","request_id":"r-wire","tool_use_id":"t-wire","summary":"git push"},"tone":"attention"}
+
+event: status
+data: {"state":"working","detail":"2 background agents running","quiet_ms":300000,"since_ms":1790687979420,"as_of_ms":1790688279420,"queued":0,"activity":"background","open":true,"background":{"agents":2,"workflows":0,"shells":0},"tone":"busy"}
+
+event: status
+data: {"state":"working","detail":"No progress","quiet_ms":700000,"since_ms":1790687579420,"as_of_ms":1790688279420,"queued":0,"activity":"stalled","open":true,"tone":"warn"}
+
+event: status
+data: {"state":"failed","detail":"API error: 529 Overloaded","quiet_ms":60000,"since_ms":1790688219420,"as_of_ms":1790688279420,"queued":0,"activity":"failed","open":true,"tone":"error"}
+
+event: status
+data: {"state":"idle","detail":"Session ended mid-turn","quiet_ms":10800000,"since_ms":1790677479420,"as_of_ms":1790688279420,"queued":0,"activity":"closed","open":false,"tone":"closed","ended_ms":1790677479420}
+
+event: status
+data: {"state":"idle","detail":"Waiting for you","quiet_ms":893924,"queued":0}

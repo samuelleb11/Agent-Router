@@ -144,6 +144,12 @@ Marketplace extensions. Recommendation for a first release: declare the extensio
 `"ui"` kind so it always runs on the Mac, and state that Claude Code sessions in remote
 windows are not proxied yet.
 
+Superseded once the router could be hosted (AGEN-0056): each machine runs only the
+agent, so the extension declares `"workspace"` kind and runs beside Claude Code, on the
+remote in a Remote-SSH window. Claude Code's `claudeProcessWrapper` is machine-scoped:
+written from a `"ui"` extension in a remote window, it would name the client's wrapper
+on the remote.
+
 ## Marketplace policy
 
 No clause names daemons, proxies or wrappers. Three apply: the terms of use forbid

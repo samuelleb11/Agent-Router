@@ -50,6 +50,7 @@ import ca.whnet.agentrouter.api.postEmpty
 import ca.whnet.agentrouter.data.AppState
 import ca.whnet.agentrouter.data.Router
 import ca.whnet.agentrouter.data.RouterState
+import ca.whnet.agentrouter.data.change
 import ca.whnet.agentrouter.push.PushRegistrar
 import kotlinx.coroutines.launch
 
@@ -66,6 +67,10 @@ fun SettingsScreen(app: AppState, router: Router, onBack: () -> Unit, onEdit: ()
     var passwordNotice by remember { mutableStateOf<String?>(null) }
     var projectPath by rememberSaveable { mutableStateOf("") }
     var routeNotice by remember { mutableStateOf<String?>(null) }
+    // What the router said when it refused a switch below, in its words. A switch it
+    // refused only springs back on the next refresh, which on its own says nothing.
+    var setupNotice by remember { mutableStateOf<String?>(null) }
+    var shimNotice by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(router.id) {
         runCatching { state.liveClient?.get<PushStatus>("/api/push") }.onSuccess { push = it }
@@ -162,11 +167,9 @@ fun SettingsScreen(app: AppState, router: Router, onBack: () -> Unit, onEdit: ()
                             enabled = setup != null,
                             onCheckedChange = { on ->
                                 scope.launch {
-                                    runCatching {
-                                        state.liveClient?.post<ConfigToggleBody, OkReply>(
-                                            "/api/setup/config", ConfigToggleBody(enable = on)
-                                        )
-                                    }
+                                    setupNotice = state.liveClient?.change(
+                                        "/api/setup/config", ConfigToggleBody(enable = on)
+                                    )
                                     state.refresh(includeAccounts = true)
                                 }
                             },
@@ -189,16 +192,13 @@ fun SettingsScreen(app: AppState, router: Router, onBack: () -> Unit, onEdit: ()
                             enabled = setup?.service?.supported == true,
                             onCheckedChange = { on ->
                                 scope.launch {
-                                    runCatching {
-                                        state.liveClient?.post<ServiceBody, OkReply>(
-                                            "/api/setup/service", ServiceBody(on)
-                                        )
-                                    }
+                                    setupNotice = state.liveClient?.change("/api/setup/service", ServiceBody(on))
                                     state.refresh(includeAccounts = true)
                                 }
                             },
                         )
                     }
+                    setupNotice?.let { RefusalNotice(it) }
                 }
             }
 
@@ -225,11 +225,7 @@ fun SettingsScreen(app: AppState, router: Router, onBack: () -> Unit, onEdit: ()
                             enabled = shim?.available == true,
                             onCheckedChange = { on ->
                                 scope.launch {
-                                    runCatching {
-                                        state.liveClient?.post<ShimAutoBody, OkReply>(
-                                            "/api/setup/shim/auto", ShimAutoBody(on)
-                                        )
-                                    }
+                                    shimNotice = state.liveClient?.change("/api/setup/shim/auto", ShimAutoBody(on))
                                     state.refresh(includeAccounts = true)
                                 }
                             },
@@ -257,16 +253,13 @@ fun SettingsScreen(app: AppState, router: Router, onBack: () -> Unit, onEdit: ()
                             TextButton(onClick = {
                                 val action = if (t.state == "installed") "remove" else "install"
                                 scope.launch {
-                                    runCatching {
-                                        state.liveClient?.post<ShimBody, OkReply>(
-                                            "/api/setup/shim", ShimBody(t.path, action)
-                                        )
-                                    }
+                                    shimNotice = state.liveClient?.change("/api/setup/shim", ShimBody(t.path, action))
                                     state.refresh(includeAccounts = true)
                                 }
                             }) { Text(if (t.state == "installed") "Remove" else "Install") }
                         }
                     }
+                    shimNotice?.let { RefusalNotice(it) }
                 }
             }
 
@@ -296,11 +289,9 @@ fun SettingsScreen(app: AppState, router: Router, onBack: () -> Unit, onEdit: ()
                             }
                             TextButton(onClick = {
                                 scope.launch {
-                                    runCatching {
-                                        state.liveClient?.post<ConfigToggleBody, OkReply>(
-                                            "/api/setup/config", ConfigToggleBody(enable = false, project = dir)
-                                        )
-                                    }
+                                    routeNotice = state.liveClient?.change(
+                                        "/api/setup/config", ConfigToggleBody(enable = false, project = dir)
+                                    )
                                     state.refresh(includeAccounts = true)
                                 }
                             }) { Text("Stop") }
@@ -416,4 +407,15 @@ fun SettingsScreen(app: AppState, router: Router, onBack: () -> Unit, onEdit: ()
             }
         }
     }
+}
+
+/** What the router said when it refused a switch, under the switches it is about. */
+@Composable
+private fun RefusalNotice(words: String) {
+    Text(
+        words,
+        Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 12.dp),
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.error,
+    )
 }

@@ -1,7 +1,7 @@
 {
   "name": "agent-router",
   "displayName": "Agent Router",
-  "description": "Runs the Agent Router proxy on this machine, keeps it current, points Claude Code at it, and shows your quota in the status bar.",
+  "description": "Runs the Agent Router proxy on your machine, or connects to one hosted on your server; points Claude Code at it and shows your quota in the status bar. What it records (captured requests, accounts) stays on your machine or on your server.",
   "version": "0.1.0",
   "publisher": "whnet",
   "license": "MIT",
@@ -27,7 +27,7 @@
     "quota"
   ],
   "extensionKind": [
-    "ui"
+    "workspace"
   ],
   "activationEvents": [
     "onStartupFinished"
@@ -70,40 +70,69 @@
         "command": "agentRouter.showLog",
         "title": "Show Log",
         "category": "Agent Router"
+      },
+      {
+        "command": "agentRouter.connect",
+        "title": "Connect to a Server…",
+        "category": "Agent Router"
+      },
+      {
+        "command": "agentRouter.disconnect",
+        "title": "Disconnect from the Server",
+        "category": "Agent Router"
       }
     ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "agentRouter.ensure",
+          "when": "!agentRouter.remote && !isWindows"
+        },
+        {
+          "command": "agentRouter.disconnect",
+          "when": "agentRouter.remote"
+        }
+      ]
+    },
     "configuration": {
       "title": "Agent Router",
       "properties": {
+        "agentRouter.server": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "order": 0,
+          "markdownDescription": "A hosted Agent Router's address, such as `https://router.example.com`. **Empty is local mode**: the router runs on your machine, and what it records stays on your machine. **Set, it is remote mode**: no router runs here, Claude Code goes through the server, and what it records stays on your server: the requests Claude Code makes with their responses (your prompts and code), and your accounts and their tokens. This machine then runs only the agent, which lets the phone follow and steer its sessions. Set it with **Agent Router: Connect to a Server…**, which also asks for the password and keeps it in VS Code's secret storage, never in settings. On Windows, only remote mode is available."
+        },
         "agentRouter.port": {
           "type": "number",
           "default": 8787,
           "scope": "machine",
-          "description": "Port the router serves on. Claude Code is pointed at this port."
+          "markdownDescription": "Local mode only; ignored when `#agentRouter.server#` is set. Port the router serves on. Claude Code is pointed at this port."
         },
         "agentRouter.listenOnNetwork": {
           "type": "boolean",
           "default": false,
           "scope": "machine",
-          "description": "Listen on every interface so the phone app can reach the router. Set a router password in the dashboard first; only other devices are ever asked for it."
+          "markdownDescription": "Local mode only; ignored when `#agentRouter.server#` is set. Listen on every interface so the phone app can reach the router. Set a router password in the dashboard first; only other devices are ever asked for it. Leave this alone to let the router keep its own setting, which the dashboard's Listen-on-your-network switch writes; setting it either way here overrides that on every start."
         },
         "agentRouter.manageService": {
           "type": "boolean",
           "default": true,
           "scope": "machine",
-          "description": "Register the router as a login item (launchd on macOS, a systemd user unit on Linux) so it is up before any editor window is."
+          "markdownDescription": "Local mode only; ignored when `#agentRouter.server#` is set. Register the router as a login item (launchd on macOS, a systemd user unit on Linux) so it is up before any editor window is. In remote mode, setting up asks whether the agent starts at login."
         },
         "agentRouter.configureClaudeCode": {
           "type": "boolean",
           "default": true,
           "scope": "machine",
-          "description": "Point Claude Code at the router (ANTHROPIC_BASE_URL in ~/.claude/settings.json) and launch it through the router's wrapper (claudeCode.claudeProcessWrapper), which is what makes sessions followable from the phone."
+          "description": "Point Claude Code at the router and launch it through the router's wrapper (claudeCode.claudeProcessWrapper), which is what makes sessions followable from the phone. Local mode sets ANTHROPIC_BASE_URL in ~/.claude/settings.json to the router on your machine; remote mode sets ANTHROPIC_BASE_URL to the server and ANTHROPIC_AUTH_TOKEN to its password there."
         },
         "agentRouter.showStatusBar": {
           "type": "boolean",
           "default": true,
           "scope": "machine",
-          "description": "Show the 5-hour and 7-day quota in the status bar."
+          "description": "Show the 5-hour and 7-day quota in the status bar. In remote mode it is the server's quota, read with the saved password."
         }
       }
     }
@@ -111,6 +140,7 @@
   "scripts": {
     "compile": "tsc -p .",
     "watch": "tsc -p . --watch",
+    "test": "tsc -p . && node --test out/test/*.test.js",
     "package": "vsce package"
   },
   "devDependencies": {

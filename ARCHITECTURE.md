@@ -22,7 +22,7 @@ the `Authorization` header.
 | Interception | **One endpoint**, `http://127.0.0.1:8787` | Every project points at the same URL. No path prefixes, no per-project routing, no CA cert, no MITM |
 | Opt-in | Per project, via `.claude/settings.local.json` | A project routes through the router only if it carries the file. Nothing global in `~/.claude` |
 | Identity | **`x-claude-code-session-id` request header** | Claude Code labels every request with its session UUID. Exact, synchronous, no inference and no CLI wrapper |
-| Project | Session UUID → `~/.claude/projects/<cwd-slug>/<uuid>.jsonl` | A filename lookup resolves session to working directory. No content parsing |
+| Project | The repository the session's directory is a checkout of, else the directory | One repository is one project on every machine and in every worktree: its `origin` remote, spelt as Northstar's ADR 0028 spells it (`src/repository.rs`), read by the machine itself (`src/places.rs`) |
 | Control surface | **Web UI only** | Accounts, login, the active-account switch and config are managed in the browser. No CLI beyond `agent-router serve` |
 | Credentials | Claude Code's own login flows; tokens in the macOS Keychain | Measured: `claude setup-token` and `claude auth login` emit nothing headlessly, even given a pty — they need a real terminal. So the router orchestrates around that one command rather than reimplementing an OAuth client against Anthropic's endpoints |
 | Account switch | Cached credential, dropped on switch | Takes effect on the next request, mid-session, with nothing restarted |
@@ -36,14 +36,14 @@ the `Authorization` header.
 from Claude Code 2.1.266:
 
 ```
-x-claude-code-session-id: 92807c6a-c3fd-46d6-a9a7-860f20d727c9
+x-claude-code-session-id: 6f708192-0000-4000-8000-00000000000f
 x-claude-code-agent-id:   a9f0d533f6…            (subagent traffic only; absent on the main thread)
 authorization:            sk-ant-oat01-…            (subscription OAuth)
 anthropic-beta:           oauth-2025-04-20,interleaved-thinking-2025-05-14,…
 user-agent:               claude-cli/2.1.266 (external, claude-vscode, agent-sdk/0.3.267)
 x-app:                    cli
 → response headers
-   request-id:                                 req_011Cetg5MiwC75RoJRMWEZa9
+   request-id:                                 req_011C…
    content-encoding:                           gzip
    anthropic-ratelimit-unified-status:         allowed
    anthropic-ratelimit-unified-5h-utilization: 0.04     5h-reset: 1789005000
@@ -60,9 +60,16 @@ So the proxy alone knows: the session, the account it served with, latency, stat
 rate-limit headers, errors, the entrypoint (VSCode vs CLI), and the exact usage in the SSE
 stream. Session attribution needs no correlation at all.
 
-**Project** comes from one filename lookup: the session UUID names a file under
-`~/.claude/projects/<cwd-slug>/<uuid>.jsonl`, and its directory is the working directory.
-Resolved once per session and cached.
+**Project** is the repository a session works in, else its working directory
+(`sessions.project`). The working directory comes from the transcript where there is one
+(the session UUID names `~/.claude/projects/<cwd-slug>/<uuid>.jsonl`), else from the
+environment the request itself carries. The repository is read on the machine the checkout
+is on: every minute a machine reports the sessions it lists, their directories and each
+directory's git remotes (`src/places.rs`; on a hosted router the machine agent posts it to
+`/api/machines/places`). A repository is spelt one way, as Northstar's ADR 0028 spells it:
+the host lowercased, then the path, without scheme, user, port, `.git` or trailing slashes
+(`src/repository.rs`). A clone on one machine, a clone on another and the worktrees beside
+either are then one project.
 
 Subagent traffic is separable from the wire too: Claude Code stamps `x-claude-code-agent-id`
 on Task-tool requests and omits it on the main thread. Measured on a single ordinary turn, a
@@ -146,7 +153,8 @@ Claude Code (VSCode ext / CLI)
 |  capture/   parse SSE usage -> SQLite          |
 |  transcript/ fs watcher over ~/.claude/projects|
 |  join/      request-id correlation + backfill  |
-|  api/       read endpoints + the embedded UI   |
+|  api/       read endpoints                     |
+|  console/   the web console (ui/), embedded    |
 |  guard/     loopback, peer and Host checks     |
 +------------------------------------------------+
   |  Authorization: Bearer <active account token>
@@ -202,7 +210,10 @@ cascade from `requests` no longer reaches them.
 ```
 accounts   (id, label, subject, expires_at, active, created_at)   -- tokens live in Keychain
 projects   (cwd, label, first_seen_at)                            -- discovered, not configured
-sessions   (id, cwd, git_branch, started_at, last_seen_at, label)
+sessions   (id, cwd, git_branch, started_at, last_seen_at, label,
+            machine, repository, project = coalesce(repository, cwd))
+directories (machine, cwd, remotes, repository, changed_at)       -- reported by each machine
+machines   (id, label, platform, last_seen_at)
 requests   (id, request_id, message_id, session_id, account_id, model, path,
             started_at, ended_at, status, latency_ms, streaming, stop_reason,
             is_sidechain, service_tier, error, rate_limit_remaining)
@@ -212,11 +223,43 @@ context    (request_id, component, char_count, est_tokens)        -- system | to
 tool_calls (id, request_id, ordinal, name, input_chars,
             result_chars_true, result_chars_stored, est_tokens)
 bodies     (request_id, direction, content, truncated_at, true_bytes)  -- in bodies_db
+blocks     (id, hash, kind, chars, text)                          -- in bodies_db; the search corpus
+block_sites(block_id, session_id, ordinal, role, request_id, at)  -- in bodies_db; where each copy sat
+blocks_fts (text)                                                 -- in bodies_db; FTS5 over blocks
 model_rate (model, key)                                           -- wire name -> pricing key
 ```
 
 `requests.session_id` is nullable: a request whose transcript does not exist yet lands
 unattributed and is resolved on a later request in the same session.
+
+## Search
+
+`GET /api/search?q=…` finds every session and message whose text matches, over a corpus
+that is extracted rather than captured.
+
+The captured bodies cannot serve this. They are cut at `body_cap`, and because `messages`
+is the first field of the request JSON that cap keeps the *oldest* part of a conversation
+and drops the newest — on a real store, 98.7% of request bodies were truncated, so the
+recent turns of every long session were never stored at all. So the corpus is taken in
+`analyze_request`, from the full body, in the same parse that already measures the context
+split: one parse, two outputs.
+
+What makes indexing the uncapped text affordable is that it is mostly the same text.
+Every request replays the whole conversation, so a session's requests restate each other
+end to end: measured over one store, 51.7 GB of request bytes crossed the wire carrying
+about 0.2 GB of distinct content. `blocks` therefore holds each piece of text once, keyed
+by a hash of its kind and content, and `block_sites` — cheap rows of integers — carries
+the repetition. The index costs less than the truncated copies already do.
+
+`blocks_fts` is an external-content FTS5 index: it stores the terms and reads the text back
+out of `blocks`, so the corpus is never held twice. Blocks are insert-only, so a single
+`AFTER INSERT` trigger is the whole of the synchronisation. The tokenizer keeps `_` inside
+a token, so `body_cap` survives as one term while `analyze.rs` is found by either half.
+
+Typed text is offered to FTS5 verbatim, so `"exact phrase"`, `term*`, `NEAR(a b)` and
+`a OR b` work; anything FTS5 rejects — `don't`, a bare `AND`, an unclosed bracket — is
+retried once as a plain AND of quoted words, which is always valid, so a search box never
+answers a stray apostrophe with an error.
 
 **Why `tool_calls` is keyed by `tool_use_id`.** Every request in a session replays the entire
 conversation, so the same tool result appears in request N, N+1, N+2 and so on. Keying the
@@ -271,11 +314,20 @@ recorded in full by it on the way out.
 
 ## Telling the phone
 
-A session under the wrapper writes every unanswered `can_use_tool` request to
-`/tmp/agent-router-sessions/<id>.pending` as it happens; a session without one reveals
-only an AskUserQuestion, and only through its transcript. `notify` watches both once a
-second and announces each prompt once, keyed by its request id — what is already waiting
-when the router starts is not announced, because a restart is not news. Delivery is
+Whether a session is waiting on a person is the same answer the list gives
+(`live::session_activity`, see "What each session is doing" below), asked once a second of
+every open session. What it waits on decides the key: `req:<request_id>` for a prompt the
+wrapper recorded in `/tmp/agent-router-sessions/<id>.pending` (answerable from the phone);
+`ask:<tool_use_id>` for a question, plan or call the transcript shows open;
+`ask:wait-<session>-<statusUpdatedAt>` when only Claude Code's own registry knows — an
+unwrapped session at a permission prompt, answerable only where it runs. The installed apps
+take down only `req:`/`ask:` banners, which is why every key wears one of those prefixes.
+A key is announced once, after two seconds of waiting without a break (auto mode and hooks
+resolve many prompts within one); what is already waiting when the router starts is not
+announced, because a restart is not news. A `req:` key has to be missing from two sweeps in
+a row before its banner comes down (an older wrapper's file can read empty mid-rewrite), and
+a closed session's banners come down. The same loop clears, once a minute, wrapper sockets
+nothing listens on that no open session holds. Delivery is
 Apple's push service (`apns`): an ES256 provider token minted from the team's `.p8`
 (kept in the secrets file beside the account credentials), reused for fifty minutes, over
 HTTP/2, to every phone that registered through `POST /api/push/register`. A device Apple
@@ -339,7 +391,11 @@ and clears the wrapper setting.
 
 ## Security
 
-- Binds to `127.0.0.1` unless `AGENT_ROUTER_BIND` widens it deliberately — and then every
+- Always binds `127.0.0.1`, and adds a second listener on a wider address only when it is
+  widened deliberately — the dashboard switch, which stores the answer, or
+  `AGENT_ROUTER_BIND`, which overrides it for one run (`network.rs`). `SO_REUSEPORT` lets
+  the two share the port and the kernel steers by most-specific match, so the switch can
+  be thrown mid-session without unbinding anything. Widened, every
   caller that is not on this machine must present the router's password (`auth.rs`): as
   HTTP Basic from a browser, or as `Authorization: Bearer <password>` from an agent, which
   is what a Claude Code elsewhere sends when `ANTHROPIC_AUTH_TOKEN` is set to it. With no
@@ -365,6 +421,58 @@ and clears the wrapper setting.
   Anything else is refused before it reaches Anthropic.
 - The transcript watcher is strictly read-only; it never writes to Claude Code's files.
 - Captured bodies may contain source code. The database is local and gitignored.
+- The web console (`console.rs`) is served under a content security policy that admits this
+  origin alone and no inline script, and that only VS Code's own schemes may frame: it approves
+  prompts and can switch a session to bypass permissions. Every response carries
+  `X-Content-Type-Options: nosniff`.
+
+## Running as a hosted server
+
+`serve --server` is the same binary built for a different premise: it runs in a
+container, and every caller is on another machine. The full design, and the map of
+everything that assumed otherwise, is in
+[docs/hosting-on-kubernetes.md](docs/hosting-on-kubernetes.md).
+
+**Configuration.**
+- Configuration comes from flags (`config::ServeArgs`), so a binary too old to know one
+  refuses to start rather than ignoring it.
+- `config::data_dir()` is the one root for everything the router writes. Before, five
+  places each derived `~/.agent-router` on their own.
+
+**Trust (`guard`, `auth`).**
+- The Host check also admits the names the server was given.
+- Loopback is asked for the password.
+- The password is pinned from the deployment at every start (`Auth::pin`), the pattern
+  of Northstar's ADR 0022.
+
+**Routes and tasks.**
+- The routes that act on the router's own machine are answered by `hosted`, in the
+  shapes the installed phone apps decode, instead of being removed.
+- The background tasks that read the developer's machine are not started: the shim
+  watcher, the wrapper janitor and the prompt sweep.
+
+**Projects.** Attribution falls back to what the request says. Claude Code's environment
+block names the working directory and the branch (`analyze::environment_of`). That also
+covers sessions on other machines and SDK sessions with no transcript on this one.
+
+**Live sessions through the machine agent (`agent`, `tunnel`, `machines`).** What a pod
+cannot do alone is everything under "Reaching a running session" below, so each developer
+machine runs the same binary as `agent-router agent`:
+- The agent dials out to `/_router/agent` over one WebSocket, with the router password,
+  and listens on nothing.
+- The router sends each live request down that socket as framed HTTP (`tunnel`). The
+  agent answers it with the same `live` handlers a local router serves, in-process, and
+  the response comes back the same way, event streams included.
+- `machines` merges every machine's session list and labels each row with its machine.
+  It routes a request to the machine holding that session, keeps the archive shelf, and
+  feeds the prompt notifier with each agent's evidence. A machine that drops reads as
+  offline (503), never as closed.
+- On Windows only the agent runs. The wrapper's control channel there is a named pipe,
+  written to only after the agent has checked that the pipe is served by its own user
+  (`peer::pipe`).
+
+The protocol, the decisions and the Windows port are in
+[docs/hosting-machine-agent.md](docs/hosting-machine-agent.md).
 
 ## Build order
 
@@ -373,7 +481,7 @@ and clears the wrapper setting.
 | 1 | ✅ **Done.** Proxy listener, credential swap, byte-faithful streaming, path/credential guards. Verified end to end from a real project: subscription OAuth works over a custom base URL, and `x-claude-code-session-id` gives exact session attribution for free. |
 | 2 | ✅ **Done.** Capture tee, SQLite schema, SSE usage parsing through gzip, context composition, tool attribution, quota headroom, session→project resolution. Verified against a live tool-using session. |
 | 3 | ✅ **Done.** Account registry with three sources, Keychain storage, live switching, and the accounts page. Verified by switching to a deliberately invalid credential mid-flight (200 → 401 → 200 with nothing restarted). |
-| 4 | ✅ **Done.** Embedded read-only dashboard: quota, projects, sessions, context composition, thread split, tools, requests. A single HTML file compiled into the binary — no build step and no node toolchain, which keeps the "one static binary" promise intact. Account management joins it in Phase 3. |
+| 4 | ✅ **Done.** Embedded read-only dashboard: quota, projects, sessions, context composition, thread split, tools, requests. Account management joins it in Phase 3. At first a single HTML file compiled into the binary; since the clean cut of AGEN-0001, the web console: a React and IBM Carbon app in `ui/`, built with pnpm and Vite and compiled in with `rust-embed` (`console.rs`). The "one static binary" promise holds, and the console loads nothing from the network; building from source now needs Node for the console. |
 
 Each phase after the first is useful on its own.
 
@@ -386,7 +494,16 @@ not by Claude Code.
 by every session, including ones the router never proxied and ones the VSCode
 extension hosts. `live` tails these. It cannot break on a CLI update, because it reads
 a file the CLI has written the same way for its whole life. This is the whole basis of
-the live view, and it is why following works everywhere.
+the live view's *content*, and it is why following works everywhere. What a session is
+*doing* needs more than the transcript can say; see "What each session is doing" below.
+
+**The session registry (read).** Every CLI process registers itself in
+`~/.claude/sessions/<pid>.json` (under `$CLAUDE_CONFIG_DIR` when set): the conversation it
+holds now, and on current builds a `status` of busy, waiting, idle or shell written by the
+CLI's own state machine. `registry` reads the `<pid>.json` files only — never the `.key`
+files beside them, which hold secrets — and counts a record only while its pid is alive and
+is the same process (`proc_pidinfo` start time against the record's `procStart`, read as
+UTC). It never writes there.
 
 **The peer socket (write, best-effort).** Every live session binds
 `/tmp/cc-socks/<pid>.sock` and publishes a token at
@@ -434,17 +551,33 @@ claude (real)
 ```
 
 The wrapper relays both directions byte-for-byte, sniffs only the session id out of the
-`init` message, and publishes a control socket named by that session id. A write on that
+`init` message, and publishes a control socket named by that session id. The CLI emits
+that message at startup, again at once after a `/clear` — naming the new session — and at
+the start of every turn, so the wrapper moves its socket when the id changes (the Sep 12
+build still deployed inside long-running sessions keeps the first). A write on that
 socket becomes the *identical bytes the extension writes when you type* — an ordinary
 user turn, not a peer message. Because the wrapper also sees the downstream side of the
 permission channel, prompts become answerable remotely too.
 
+One write is one line, and a wrapper takes at most 1 MiB of it, newline included. The
+builds deployed inside long-running sessions read in 8 KiB pieces, stop once they hold
+more, and write what they have into the CLI anyway — which exits on the unparseable line,
+and the session with it; the current wrapper refuses such a frame whole. So `peer`
+measures every frame as it would send it and refuses a longer one before connecting; a
+message or an answer that long gets a 413 that says so.
+
 A session is reported as `wrapped` only when its control socket *answers*, not when the
 file exists: the wrapper unlinks its socket on a clean exit but a killed one leaves it
 behind, and a phone showing that session as live is where the mistake costs the most.
-The listing connects to each socket (the wrapper reads EOF, replies `{"ok":false}`, and
-nothing reaches the session) and removes the leftovers of a refused one. `wrapper_alive`
-in `peer.rs` is the one place that rule lives.
+The router connects to the socket (the wrapper reads EOF, replies `{"ok":false}`, and
+nothing reaches the session) and removes the leftovers of a refused one — at most once a
+second per session, and only for sessions a live process holds, since every probe costs
+the wrapper a thread; the notifier's janitor asks the rest once a minute. `wrapper_alive`
+in `peer.rs` is the one place that rule lives. The janitor also takes what a dead wrapper
+leaves beside its socket — the `.ctl` recording, a `.pending.tmp` — and, once ten minutes
+old, records whose socket is already gone and whose session no process holds; the
+per-session probe never touches `.ctl`, since for an open session a refused connect can be
+a full backlog, and the recording is where `set_model` reads its answer.
 
 The same socket changes what the session runs with. `set_model` is a control request
 the CLI's own SDK sends (`{subtype:"set_model", model}`); the CLI answers on its control
@@ -482,19 +615,59 @@ each one is noted in a short in-memory log the Setup section shows, and pushed t
 phone. The switch is server-side on purpose: it is the router that does the work, so it
 is the router that must be told to stop, from any client, without shipping one.
 
-### What "working" means
+### What each session is doing
 
-The live status is a fold over the transcript (`advance` in `live.rs`): a `tool_use`
-opens a pending call, its `tool_result` closes it, and assistant prose with nothing
-pending ends the turn. Two lines the CLI writes are part of that fold and were not at
-first. A user-role line reading `[Request interrupted by user]` (or `… for tool use`) —
-which is what Stop produces, and which is stored as a plain string or a text block
-depending on the CLI's mood — ends the turn outright: the tool it cut short will never
-get a result, and a feed still waiting for one shows Stop lit with nothing to stop. And
-`queue-operation` lines are the CLI's own bookkeeping of messages typed while a turn
-ran (`enqueue` / `dequeue` / `remove`); their count is the status's `queued`. Because
-the session queues on its own, Send is never replaced by Stop: the two sit side by side
-while a turn runs.
+One derivation answers it for every surface — the list, the open view's status line, the
+prompt endpoints, the stop guard and the notifier — and nothing else derives state. It
+used to be four, each reading the transcript on its own, and they disagreed: a session
+generating read `idle` in the list and `Working` in its own view, one running a background
+workflow read idle everywhere, and a closed one read exactly like one waiting for you. The
+evidence behind every rule, with the numbers, is in
+[docs/session-liveness.md](docs/session-liveness.md).
+
+The order of trust is process first, transcript for detail:
+
+  1. **The registry record** (`registry`), verified against the live process, decides
+     whether the session is open at all, and its `status` decides the class when it has a
+     known one: `busy` covers the silent generation the transcript cannot see and the
+     background agents that outlive a turn; `waiting` covers permission prompts the
+     transcript never records.
+  2. **The wrapper's open prompts**, for wrapped sessions: what exactly is being asked,
+     ordered by when the router first saw each, and answerable by request id.
+  3. **The transcript** (`fold`, one incremental fold per file): the turn, the call being
+     run, the question or plan open, retries, API errors, the background tasks launched
+     and not yet reported done, the queue, the exit marker, the title. With no usable
+     registry status it decides the class alone.
+  4. **Subagent transcripts** under `<session>/subagents/`: the heartbeat of background
+     agents, whose parent transcript sits silent after its turn.
+
+`activity::derive` turns that into one of closed, idle, generating, tool, waiting,
+background, failed or stalled, with a header line, a start time, and — for old clients —
+the legacy `state` and `active`. A file's mtime is never evidence of activity: it moves on
+bookkeeping (the exit flush, titles, ledgers, subagents' queue lines) and stands still
+through real work, so `last_activity_ms` is the newest *content*. `live::tracked` keeps
+each transcript's fold, offset and head in memory, so a list call costs a registry
+snapshot (reused for 250 ms), `stat`s, and the bytes appended since the last look.
+
+Three lines the fold has to read carefully. A user-role line reading `[Request interrupted
+by user]` (or `… for tool use`) — which is what Stop produces, stored as a plain string or
+a text block depending on the CLI's mood — ends the turn outright: the tool it cut short
+will never get a result. An assistant message's blocks arrive as separate lines, each
+carrying the message's final `stop_reason`, and a message that calls a tool ends nothing
+whatever that reason says: so when a later line of a closing message turns out to carry a
+call, the close its first line made is undone. And `queue-operation` lines are the CLI's
+own bookkeeping of messages typed while a turn ran (`enqueue` / `dequeue` / `remove`);
+their count is the status's `queued`, less the task notifications subagents route through
+the same queue, and it empties when a crashed session is resumed, as at an exit.
+Because the session queues on its own, Send is never replaced by Stop: the two sit side
+by side while a turn runs. Stop is offered only while the turn itself runs (generating, a
+tool, stalled) — not for background work, where an interrupt could discard what the agents
+report back; the server refuses it there for clients too old to know. Busy after a turn
+is over is told apart by when the registry went busy: stamped after the end, with nothing
+in the background, it is the main loop at work (a `/compact`) and can be stopped; held
+from before the end with nothing to see — a Stop hook, a task no transcript records, a
+turn the CLI carries on by itself — it reads `Working`, claims no background counts, and
+is not.
 
 ### Side questions
 
@@ -513,6 +686,8 @@ a fork needs), run from the session's own directory so the fork lands in the sam
 project, with `--output-format json` for one result object. A fork is a new session id
 with the original untouched — the question and answer never enter the session's
 transcript, nothing is interrupted, nothing is queued — and the id it leaves behind is
-shelved on the spot so the list does not fill with one-question sessions. The price is a
+shelved on the spot so the list does not fill with one-question sessions. While it runs
+the fork registers like any session, but its parent is the router, so the registry reader
+sets it aside: it is never counted as open, and its transcript is left out of the list. The price is a
 replay of the session's context through the proxy, mostly served from cache; three
 minutes is the ceiling before the router gives up.

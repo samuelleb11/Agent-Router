@@ -23,6 +23,9 @@ struct RoutersListView: View {
             .navigationDestination(for: SessionsRoute.self) { route in
                 if let state = store.state(id: route.routerId) { SessionsView(state: state) }
             }
+            .navigationDestination(for: MachinesRoute.self) { route in
+                if let state = store.state(id: route.routerId) { MachinesView(state: state) }
+            }
             .navigationDestination(for: SessionRoute.self) { route in
                 if let state = store.state(id: route.routerId) { SessionView(state: state, session: route.session) }
             }
@@ -41,6 +44,9 @@ struct RoutersListView: View {
             }
             .navigationDestination(for: RequestRoute.self) { route in
                 RequestDetailView(r: route.request)
+            }
+            .navigationDestination(for: SearchRoute.self) { route in
+                if let state = store.state(id: route.routerId) { SearchView(state: state) }
             }
             .navigationDestination(for: AccountsRoute.self) { route in
                 if let state = store.state(id: route.routerId) { AccountsView(state: state) }
@@ -124,6 +130,9 @@ private struct RouterRow: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .monospaced()
+                    // A hosted router's URL is long: one line, keeping its scheme and port.
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
             if let failure = state.failure {
                 Text(failure.errorDescription ?? "Error")
@@ -138,7 +147,15 @@ private struct RouterRow: View {
                     MiniGauge(label: "5h", used: a.fiveHour)
                     MiniGauge(label: "7d", used: a.sevenDay)
                 }
-                if state.activeSessions > 0 {
+                if let c = state.sessionCounts {
+                    // Waiting on you is the one worth colouring: it is the one that needs
+                    // a thumb.
+                    if let live = state.liveSummary {
+                        Label(live, systemImage: "bubble.left.and.bubble.right")
+                            .font(.caption)
+                            .foregroundStyle(c.waiting > 0 ? .orange : .green)
+                    }
+                } else if state.activeSessions > 0 {
                     Label("\(state.activeSessions) active session\(state.activeSessions == 1 ? "" : "s")",
                           systemImage: "bubble.left.and.bubble.right")
                         .font(.caption)

@@ -82,6 +82,14 @@ struct RouterDetailView: View {
                         .accessibilityIdentifier("live-sessions")
                 }
             }
+            // A hosted router's sessions come from the machines connected to it; a local
+            // router takes none.
+            if state.auth?.isHosted == true {
+                NavigationLink(value: MachinesRoute(routerId: state.router.id)) {
+                    Label("Machines", systemImage: "desktopcomputer")
+                        .accessibilityIdentifier("machines")
+                }
+            }
             NavigationLink(value: UsageRoute(routerId: state.router.id, scope: UsageScope())) {
                 LabeledContent {
                     Text(state.forecast.map { Fmt.usd($0.global.cost) } ?? "").foregroundStyle(.secondary)
@@ -90,14 +98,17 @@ struct RouterDetailView: View {
                         .accessibilityIdentifier("usage")
                 }
             }
+            NavigationLink(value: SearchRoute(routerId: state.router.id)) {
+                Label("Search", systemImage: "magnifyingglass")
+                    .accessibilityIdentifier("search")
+            }
         }
     }
 
     private var sessionsSummary: String {
         let n = state.sessions.count
         if n == 0 { return state.forecast == nil ? "" : "none this week" }
-        let live = state.activeSessions
-        return live > 0 ? "\(live) active · \(n) this week" : "\(n) this week"
+        return state.liveSummary.map { "\($0) · \(n) this week" } ?? "\(n) this week"
     }
 
     @ViewBuilder private func burnDownSection(_ a: Forecast.ForecastAccount) -> some View {

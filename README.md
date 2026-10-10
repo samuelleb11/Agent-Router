@@ -10,7 +10,9 @@ A local proxy that sits between Claude Code and Anthropic, so you can
   permission prompt, send a message, switch the model.
 
 Everything is local: one Rust binary, one SQLite file, no cloud, no telemetry, and a
-socket that only ever listens on loopback until you tell it otherwise.
+socket that only ever listens on loopback until you tell it otherwise. The same binary
+can also run as a server you host yourself, behind HTTPS, for several machines at once:
+see [Running it as a server](#running-it-as-a-server).
 
 > **Status:** working, and used daily by its author. Proxy, capture, dashboard,
 > multi-account switching, live sessions, the VS Code extension and both phone apps
@@ -20,13 +22,17 @@ socket that only ever listens on loopback until you tell it otherwise.
 
 | | macOS | Linux | Windows |
 | --- | --- | --- | --- |
-| Router and dashboard | yes | yes | not built |
+| Router and dashboard | yes | yes | — |
 | Credential store | Keychain, via `/usr/bin/security` | `~/.claude/.credentials.json` | — |
 | Run at login | launchd agent | systemd user service | — |
-| VS Code extension | arm64, x64 | x64, arm64 (static musl) | — |
+| VS Code extension | arm64, x64 | x64, arm64 (static musl) | x64, agent only |
+| Hosted server | — | container image (glibc, distroless) | — |
+| Machine agent, for a hosted router | yes, at login through launchd | yes, at login through a systemd user unit | yes, at login from the Startup folder |
 
-Windows is deliberately absent rather than half-written: it would need a per-user logon
-task, and an untested installer that edits the registry is worse than none.
+On Windows only the machine agent runs: it serves a hosted router the sessions on that
+machine, to follow and to steer, and the router itself refuses to start there. The
+Windows build is cross-compiled and has not yet run on Windows; the checklist for its
+first run is in [docs/hosting-machine-agent.md](docs/hosting-machine-agent.md#status).
 
 The phone apps are **iOS 26+** (SwiftUI) and **Android 10+** (API 29, Jetpack Compose).
 Either one can watch any number of routers.
@@ -36,9 +42,16 @@ Either one can watch any number of routers.
 ### From source
 
 ```sh
+(cd ui && pnpm install && pnpm run build)   # the web console, which the binary embeds
 cargo build --release
 ./target/release/agent-router
 ```
+
+The console needs Node 22 or later and pnpm 10 to build (`npm i -g pnpm@10.33.0`); the
+router itself needs only Rust. A release build without `ui/dist` stops and says so, rather
+than ship a router without its console (`AGENT_ROUTER_ALLOW_NO_UI=1` builds one that serves a
+placeholder instead), and a debug build serves that placeholder with a warning. Either way it
+is still one binary: the console is compiled into it.
 
 ### As a VS Code extension
 
@@ -55,6 +68,11 @@ The extension is not the router. Every editor window runs its own copy of the
 extension, so each one only makes sure a current router is serving on this machine —
 `agent-router --ensure` exits when a same-or-newer build already answers, and takes the
 port over without dropping a request when an older one does.
+
+Connected to a hosted router instead (**Agent Router: Connect to a Server…**, which sets
+`agentRouter.server` and keeps the password in the editor's secret storage), it runs the
+machine agent rather than a router, and points Claude Code at the server. That is the
+only way it runs on Windows.
 
 ## Quick start
 
@@ -103,11 +121,12 @@ full, what filled the context window, the main-thread / subagent split, tokens p
 project and per session, which tools flood the context, and every request as an
 expandable row.
 
-Click a project or a session and the whole page rescopes to it; the breadcrumb and the
-time range (1h / 24h / 7d / 30d / all) sit in a sticky bar at the top and are mirrored
-in the URL, so a link keeps its scope. It refreshes every five seconds without flicker
-and is served from the same binary — no build step, no node toolchain, no network, and
-it works down to phone width.
+Click a project or a session and the whole page rescopes to it; the scope and the time
+range (1h / 24h / 7d / 30d / all) are in the URL, so a link keeps its scope. It refreshes
+every five seconds without flicker and works down to phone width. The live sessions are at
+`/live` and the settings under `/settings`, in the same app: a React and IBM Carbon console
+(`ui/`, built with pnpm as above), compiled into the binary and served by it, so there is
+nothing to install beside the router and nothing is loaded from the network.
 
 For anything the dashboard does not answer, the store is plain SQLite:
 
@@ -171,24 +190,94 @@ failures, and a 58-second streaming response begun on the old instance completed
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `AGENT_ROUTER_PORT` | `8787` | Port to listen on |
-| `AGENT_ROUTER_DB` | `~/.agent-router/agent-router.db` | Store location |
+| `AGENT_ROUTER_DATA_DIR` | `~/.agent-router` | Where everything the router writes lives: the store, the secrets file, the archive shelf |
+| `AGENT_ROUTER_DB` | `<data dir>/agent-router.db` | Store location, if it should live elsewhere |
 | `AGENT_ROUTER_BODY_CAP` | `65536` | Bytes of each body kept; true size is always recorded |
 | `AGENT_ROUTER_UPSTREAM` | `https://api.anthropic.com` | Upstream API |
 | `AGENT_ROUTER_ACCESS_TOKEN` | *(unset)* | Use this token instead of the stored one |
 | `AGENT_ROUTER_LOG` | `agent_router=info` | `tracing` filter |
 | `AGENT_ROUTER_DUMP_HEADERS` | `1` | Requests to dump full headers for, at startup |
-| `AGENT_ROUTER_BIND` | *(unset — loopback)* | An IP to listen on instead, to follow sessions from another device. Turns the password on; see below |
+| `AGENT_ROUTER_BIND` | *(unset)* | An IP to also listen on, overriding the stored setting for this run. See below |
+| `AGENT_ROUTER_SERVER_PASSWORD` | *(unset)* | A hosted router's password, pinned at every start. Server mode only |
 
-`agent-router install` registers the login item. `--bind <addr>` writes the listen
-address into it, so a router that serves your phone keeps doing so after a reboot, and
-`--no-config` registers the login item without touching Claude Code's settings.
+`agent-router serve` takes the same settings as flags (`--port`, `--bind`, `--data-dir`,
+`--db`), and flags win over the environment. `agent-router --help` lists them.
+
+### Listening on your network
+
+The router always answers on `127.0.0.1`. To let your phone — or a Claude Code on
+another machine — reach it, turn on **Listen on your network** in the dashboard's
+settings. It adds a second listener beside the loopback one, so it takes effect at
+once: nothing restarts, and no session in flight is cut. The answer is stored, so it
+survives a reboot whatever starts the router next — a login item is handed almost no
+environment, which is why a variable alone was never enough.
+
+A password must be set first; without one, callers from other machines are refused
+anyway. `AGENT_ROUTER_BIND` still works and still wins, for a hand-launch or a dev box,
+but it only lasts as long as that process.
+
+`agent-router install` registers the login item. `--bind <addr>` writes the same stored
+setting the switch does (`127.0.0.1` puts it back), and `--no-config` registers the
+login item without touching Claude Code's settings.
+
+## Running it as a server
+
+`agent-router serve --server` runs the router as a hosted server: in a container,
+behind an HTTPS ingress, for Claude Code on several machines, the phones and a browser.
+
+```
+agent-router serve --server --bind 0.0.0.0 --data-dir /data \
+    --public-url https://agent-router.example.com
+```
+
+**What changes in server mode:**
+- **One listener.** The router listens on `--bind` only. There is no handover, and no
+  network switch.
+- **Names.** It answers to the names it is given (`--public-url`, `--allow-host`) and to
+  IP addresses, and refuses every other name.
+- **The password.** Every caller presents the password, loopback included. It comes from
+  `AGENT_ROUTER_SERVER_PASSWORD` at every start, and the dashboard cannot change it.
+- **Accounts.** Accounts are `claude setup-token` values pasted into the dashboard. The
+  server never runs `claude`.
+- **Nothing of a developer's machine.** No `~/.claude`, no Keychain, no wrapper sockets.
+  The settings that act on a machine (Claude Code setup, start at login, the wrapper) are
+  not offered.
+- **Live sessions come from the machines.** The live view, steering and prompt
+  notifications need the machine a session runs on. Each machine runs the same binary as
+  an agent that dials out to the router over one WebSocket and answers for its sessions;
+  the router lists every machine's sessions, labelled with the machine, and sends each
+  request to the one that holds it. A machine that goes offline reads as offline, not as
+  closed.
+
+**Joining a machine.** The router hands out its own agent. On the machine, run
+`curl -fsSL https://<router>/agent/install.sh | sh` (macOS, Linux) or
+`irm https://<router>/agent/install.ps1 | iex` (Windows); the live page shows both with
+the router's address filled in. The script downloads the agent from the router and runs
+`agent install`, and it installs this extension from the router too, into VS Code and
+into the VS Code Server a Remote - SSH window runs on that machine; the extension takes
+the set-up over and wires the wrapper so sessions can be typed into. See [docs/hosting-machine-agent.md](docs/hosting-machine-agent.md#connecting-a-machine).
+
+`agent-router agent install --server <url>` asks for the password
+and checks it against the server, points Claude Code at the server
+(`ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN` under `env` in `~/.claude/settings.json`,
+or in one project's `.claude/settings.local.json` with `--project <dir>`), and starts the
+agent now and at every login. `agent-router agent uninstall` puts all of it back. The VS
+Code extension does the same from its remote mode. By hand, the two variables are all
+Claude Code needs; the agent is what the live view needs.
+
+**Deploying it.** The image is built from the `Dockerfile`. The Helm chart is in
+`charts/agent-router`. The pipeline that checks, builds, publishes and deploys both is
+`.gitlab-ci.yml`. The design, the decisions behind it and the first-install steps are in
+[docs/hosting-on-kubernetes.md](docs/hosting-on-kubernetes.md); the agent, its protocol
+and the Windows port are in [docs/hosting-machine-agent.md](docs/hosting-machine-agent.md).
 
 ## Security
 
 Agent Router holds a live subscription credential and signs everything it forwards,
 so reaching it is kept as hard as it can be:
 
-1. The socket binds to `127.0.0.1` unless `AGENT_ROUTER_BIND` says otherwise.
+1. The socket binds to `127.0.0.1` only, unless you widen it deliberately — the switch
+   in the dashboard, or `AGENT_ROUTER_BIND`.
 2. The connecting peer must itself be on loopback — again, unless the bind was widened.
 3. The `Host` header must parse as a loopback address, or a bare IP when the bind was
    widened. This is what defeats DNS rebinding — a web page that resolves its own domain
@@ -197,6 +286,15 @@ so reaching it is kept as hard as it can be:
 4. Only `/v1/` paths are proxied, and only for callers that already presented a
    credential of their own, so nothing can borrow the token by simply finding the port.
 5. Anything that is not on this machine must present the **router password**.
+6. A write whose `Origin` names another site is refused. That is a page elsewhere driving
+   your browser, which would otherwise pass every check above with your saved password.
+
+A hosted router changes layers 1, 3 and 5. It listens only where it was told. It answers
+to the names it was given as well as to IP addresses. It asks everyone for the password,
+loopback included, because in a container loopback is a port-forward, not you. Besides
+health, only the agent's installer is open (`/agent/install.sh`, `/agent/install.ps1` and
+the files they fetch): nothing in it is secret, and a machine being connected has nothing
+to present yet.
 
 Inbound `authorization` and `x-api-key` headers are discarded, never stored. Captured
 bodies may contain your source code — the database is local and gitignored.
@@ -398,27 +496,34 @@ Firebase is optional — see Notifications above.
 
 ## Building and packaging
 
-The router builds for four platforms and ships as a VS Code extension per platform, with
+The router builds for five platforms and ships as a VS Code extension per platform, with
 the router and the wrapper inside the package:
 
 ```sh
 scripts/build-target.sh aarch64-apple-darwin        # or x86_64-apple-darwin,
 scripts/package-vsix.sh darwin-arm64                #    x86_64-unknown-linux-musl,
-                                                    #    aarch64-unknown-linux-musl
+                                                    #    aarch64-unknown-linux-musl,
+                                                    #    x86_64-pc-windows-gnu (win32-x64)
 ```
 
-Linux builds are static (musl). From a Mac they cross-build through `cargo zigbuild`
-(`brew install zig && cargo install cargo-zigbuild`) or a musl cross compiler; on Linux
-they build natively.
+`build-target.sh` builds the web console first, once, with pnpm (`ui/dist`, which every
+binary embeds), unless it is already there. Linux builds are static (musl). From a Mac they
+cross-build through `cargo zigbuild` (`brew install zig && cargo install cargo-zigbuild`) or
+a musl cross compiler; on Linux they build natively. Windows builds are the GNU ABI and
+cross-build the same way, through zig or mingw-w64. macOS builds are native on a Mac and
+cross-build from anywhere else through zig, with no Apple SDK: the programs link only
+libSystem and libiconv.
 
 Claude Code is pointed at the router through its settings file and launched through the
 wrapper by way of Claude Code's own `claudeCode.claudeProcessWrapper` setting, so nothing
 inside Anthropic's extension is ever touched.
 
-`.gitlab-ci.yml` does all four on a tag — the Linux job in Docker through zig, the Mac
-job on a shell runner tagged `macos` that has rustup, node and zig — puts the VSIX files
-in the package registry, makes a release, and publishes to the Marketplace and Open VSX
-when the `VSCE_PAT` and `OVSX_PAT` variables are set. The extension's manifest lives in
+`.gitlab-ci.yml` does all of them on a tag — the console once, in its `build:ui` job, which
+hands `ui/dist` to the rest; the Mac, Linux and Windows jobs in Docker on Linux, through
+zig — puts
+the VSIX files in the package registry, makes a release, and publishes to the
+Marketplace and Open VSX when the `VSCE_PAT` and `OVSX_PAT` variables are set. The
+Windows package stays off the marketplaces until it has run on Windows. The extension's manifest lives in
 `vscode/`; its version follows `Cargo.toml`. **Change the `publisher` id in it to your
 own** before publishing — it must match the Marketplace publisher you create.
 
@@ -438,7 +543,12 @@ per finding with its sources.
 * **Context composition is an estimate.** Totals are exact; the split across system /
   tools / history / tool results apportions that exact total by character share,
   because there is no local tokenizer for current Claude models.
-* **No Windows build.** See [Platforms](#platforms).
+* **Windows is untried.** The agent and the wrapper build for Windows and pass their
+  checks on a Mac, and have not run on Windows yet. See [Platforms](#platforms).
+* **The agent is untried on Linux.** It shares its code with macOS and starts at login
+  from a systemd user unit, but has not run on Linux yet. That unit stops at logout
+  unless the user lingers (`loginctl enable-linger`), which a machine reached over SSH
+  needs.
 
 ## License
 

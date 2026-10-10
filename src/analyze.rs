@@ -9,6 +9,7 @@
 //!     window: system prompt, tool definitions, conversation history, tool results.
 
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Usage {
@@ -197,13 +198,45 @@ pub struct RequestShape {
     pub history_chars: i64,
     pub tool_result_chars: i64,
     pub tool_results: Vec<ToolResult>,
+    /// Every distinct piece of text in this request's conversation. The search corpus.
+    pub blocks: Vec<Block>,
+    /// The working directory and git branch Claude Code told the model it runs in. Read
+    /// when no transcript can say: a hosted router, a session on another machine, one
+    /// the CLI never wrote to disk. See `environment_of`.
+    pub cwd: Option<String>,
+    pub git_branch: Option<String>,
 }
+
+/// One content block out of the conversation, as the search index stores it.
+///
+/// `hash` is the identity: the same text in the same kind of block is the same block,
+/// however many requests replay it. `ordinal` and `role` describe where this copy sat,
+/// and travel to `block_sites` rather than into the hash.
+#[derive(Debug, Clone)]
+pub struct Block {
+    pub hash: [u8; 32],
+    pub kind: &'static str,
+    pub role: String,
+    /// Index in this request's `messages` array.
+    pub ordinal: i64,
+    pub text: String,
+    /// Length before `MAX_BLOCK_CHARS` was applied, so a clipped block still says so.
+    pub chars: i64,
+}
+
+/// A single block wider than this is clipped. Nothing legitimate comes close — the
+/// largest real ones are whole-file tool results — and it bounds what one pathological
+/// request can put into the index.
+const MAX_BLOCK_CHARS: usize = 1 << 20;
 
 pub fn analyze_request(body: &[u8]) -> Option<RequestShape> {
     let v: Value = serde_json::from_slice(body).ok()?;
+    let (cwd, git_branch) = environment_of(&v);
     let mut shape = RequestShape {
         model: v.get("model").and_then(Value::as_str).map(str::to_owned),
         streaming: v.get("stream").and_then(Value::as_bool).unwrap_or(false),
+        cwd,
+        git_branch,
         ..Default::default()
     };
 
@@ -267,8 +300,296 @@ pub fn analyze_request(body: &[u8]) -> Option<RequestShape> {
                 _ => {}
             }
         }
+        shape.blocks = extract_blocks(messages);
+    }
+    // The system prompt carries the project's own instructions, so it is worth finding
+    // by its text and not only by its size. It sits ahead of the conversation, at
+    // negative ordinals, because it is not a turn in it.
+    //
+    // Nearly every request in a project repeats the same system prompt word for word,
+    // so this costs one block per distinct version however many requests carry it.
+    // Tool definitions are left out deliberately: they are client boilerplate, the same
+    // in every session of a given Claude Code build, so searching them would match
+    // everything or nothing — and `context` already records their size and count.
+    match v.get("system") {
+        Some(Value::String(text)) => push_block(&mut shape.blocks, "system", "system", -1, text.clone()),
+        Some(Value::Array(parts)) => {
+            for (i, part) in parts.iter().enumerate() {
+                let text = match part {
+                    Value::String(t) => t.clone(),
+                    other => str_field(other, "text"),
+                };
+                push_block(&mut shape.blocks, "system", "system", -(i as i64) - 1, text);
+            }
+        }
+        _ => {}
     }
     Some(shape)
+}
+
+/// Where the session runs, as Claude Code tells the model: its environment block names
+/// the directory (` - Primary working directory: <path>`, or `Working directory: <path>`
+/// from older builds) and its git status the branch (`Current branch: <name>`).
+///
+/// Looked for only where Claude Code puts them — the `system` field, then the opening
+/// turn, the messages before the model's first reply: newer builds carry the same blocks
+/// in the first user message, and since 2.1.292 the environment in a message of its own
+/// with the `system` role — and only as whole lines of those exact shapes. Anywhere later
+/// in a conversation the same words are quoted text: a tool result, a file being edited,
+/// this very comment. A later `system` message, "# Environment update", says the
+/// directory moved ("<new> (was <old>)"), which is not where the session started. The
+/// format is Claude Code's and undocumented, so a miss is a session with no project, as
+/// it was before; a transcript, where there is one, still decides.
+fn environment_of(v: &Value) -> (Option<String>, Option<String>) {
+    let mut texts: Vec<&str> = Vec::new();
+    match v.get("system") {
+        Some(Value::String(t)) => texts.push(t),
+        Some(Value::Array(parts)) => texts.extend(parts.iter().filter_map(|p| p.get("text").and_then(Value::as_str))),
+        _ => {}
+    }
+    let opening = v
+        .get("messages")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .take_while(|m| m.get("role").and_then(Value::as_str) != Some("assistant"));
+    for m in opening {
+        match m.get("content") {
+            Some(Value::String(t)) => texts.push(t),
+            Some(Value::Array(blocks)) => texts.extend(
+                blocks
+                    .iter()
+                    .filter(|b| b.get("type").and_then(Value::as_str) == Some("text"))
+                    .filter_map(|b| b.get("text").and_then(Value::as_str)),
+            ),
+            _ => {}
+        }
+    }
+    environment_in(&texts)
+}
+
+/// The lines themselves, in texts already known to be the opening's: a request's, or
+/// the opening blocks the store kept of a session recorded before they were read
+/// (`db::backfill_session_cwds`).
+pub fn environment_in(texts: &[&str]) -> (Option<String>, Option<String>) {
+    // A note that the directory changed is not where it started, in either shape.
+    let lines = || texts.iter().flat_map(|t| t.lines()).map(str::trim_start).filter(|l| !l.contains(" (was "));
+    let primary = lines().find_map(|l| {
+        let l = l.strip_prefix("- ").unwrap_or(l);
+        l.strip_prefix("Primary working directory: ").and_then(as_path)
+    });
+    // The older line, only when the newer one is not there.
+    let cwd = primary.or_else(|| lines().find_map(|l| l.strip_prefix("Working directory: ").and_then(as_path)));
+    let branch = lines().find_map(|l| {
+        let name = l.strip_prefix("Current branch: ")?.trim();
+        (!name.is_empty() && name.len() <= 255 && !name.contains(char::is_whitespace)).then(|| name.to_string())
+    });
+    (cwd, branch)
+}
+
+/// An absolute path as Claude Code prints one: POSIX, a Windows drive (`C:\…`), or a
+/// UNC share. Anything else — a relative path, a sentence — is not taken.
+fn as_path(raw: &str) -> Option<String> {
+    let p = raw.trim();
+    let b = p.as_bytes();
+    let absolute = p.starts_with('/')
+        || p.starts_with("\\\\")
+        || (b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/'));
+    (absolute && p.len() <= 4096 && !p.chars().any(char::is_control)).then(|| p.to_string())
+}
+
+/// Pull the conversation apart into indexable text.
+///
+/// This runs here, on the full request body, because this is the only place the whole
+/// conversation exists in memory. What reaches the store is capped at `body_cap`, and
+/// since `messages` is the first field of the request JSON that cap keeps the *oldest*
+/// part of a conversation and drops the newest — so the index cannot be built from
+/// what was captured, only from what crossed the wire.
+///
+/// Every request replays the entire history, so a block here is re-extracted once per
+/// request in the session. Deduplication happens at the point of insert, by hash, in
+/// `Db::record`: on a real store the replayed bytes outweigh the distinct ones by about
+/// three hundred to one, which is what makes indexing the uncapped text cheaper than
+/// storing the capped bodies already is.
+///
+/// One block per *content block*, not per message: a turn that thinks, writes and then
+/// calls three tools is five rows, each searchable on its own.
+fn extract_blocks(messages: &[Value]) -> Vec<Block> {
+    let mut out = Vec::new();
+    for (i, m) in messages.iter().enumerate() {
+        let role = m.get("role").and_then(Value::as_str).unwrap_or("unknown").to_string();
+        let ordinal = i as i64;
+        match m.get("content") {
+            Some(Value::String(s)) => push_block(&mut out, "text", &role, ordinal, s.clone()),
+            Some(Value::Array(blocks)) => {
+                for b in blocks {
+                    let (kind, text) = match b.get("type").and_then(Value::as_str) {
+                        Some("text") => ("text", str_field(b, "text")),
+                        Some("thinking") => ("thinking", str_field(b, "thinking")),
+                        // The call's arguments are the searchable part: a shell command,
+                        // a path, a pattern. The name alone would match every Bash call.
+                        Some("tool_use") => (
+                            "tool_use",
+                            format!(
+                                "{} {}",
+                                b.get("name").and_then(Value::as_str).unwrap_or(""),
+                                b.get("input").map(flatten).unwrap_or_default()
+                            ),
+                        ),
+                        Some("tool_result") => {
+                            ("tool_result", b.get("content").map(flatten).unwrap_or_default())
+                        }
+                        // Images, documents and redacted thinking carry no text to index.
+                        _ => continue,
+                    };
+                    push_block(&mut out, kind, &role, ordinal, text);
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Blocks out of a body that may have been cut short, for indexing what was captured
+/// before there was an index. Complete bodies take the ordinary path.
+pub fn blocks_from_stored_body(body: &[u8]) -> Vec<Block> {
+    match analyze_request(body) {
+        Some(shape) => shape.blocks,
+        None => extract_blocks(&recover_messages(body)),
+    }
+}
+
+/// Recover whatever complete messages a truncated request body still holds.
+///
+/// A body captured under `body_cap` is not valid JSON — it stops mid-token — so
+/// `serde_json` refuses the whole of it. But the cut is at the end and `messages` is
+/// the first field, so what survives is a run of complete message objects followed by
+/// one partial one. This walks the array counting braces and hands back every element
+/// that closed before the bytes ran out, dropping the partial tail.
+///
+/// Braces inside strings are text, not structure, so the scan tracks string state and
+/// its escapes; without that a `{` in a shell command or a file path would throw the
+/// depth off and swallow the rest of the conversation.
+pub fn recover_messages(body: &[u8]) -> Vec<Value> {
+    let Some(start) = messages_array_at(body) else { return Vec::new() };
+    let tail = &body[start..];
+    let mut out = Vec::new();
+    let (mut depth, mut in_string, mut escaped) = (0i32, false, false);
+    let mut elem_start = None;
+    for (i, &b) in tail.iter().enumerate() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if b == b'\\' {
+                escaped = true;
+            } else if b == b'"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match b {
+            b'"' => in_string = true,
+            b'{' => {
+                if depth == 0 {
+                    elem_start = Some(i);
+                }
+                depth += 1;
+            }
+            b'[' => depth += 1,
+            b'}' | b']' => {
+                depth -= 1;
+                if depth < 0 {
+                    break; // the messages array itself closed: nothing was truncated
+                }
+                if depth == 0 {
+                    if let Some(from) = elem_start.take() {
+                        if let Ok(v) = serde_json::from_slice(&tail[from..=i]) {
+                            out.push(v);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Offset of the first element of the top-level `messages` array.
+///
+/// A plain search for the key, because in a request body it sits at the top level
+/// within the first few bytes. A conversation that quotes `"messages":[` inside its own
+/// text could mislead it, but only for a body that failed to parse whole — and then the
+/// worst case is recovering from the wrong offset, not corrupting anything.
+fn messages_array_at(body: &[u8]) -> Option<usize> {
+    let key = br#""messages""#;
+    let mut from = 0;
+    while let Some(hit) = body[from..]
+        .windows(key.len())
+        .position(|w| w == key)
+        .map(|p| from + p)
+    {
+        let mut i = hit + key.len();
+        while body.get(i).is_some_and(|b| b.is_ascii_whitespace()) {
+            i += 1;
+        }
+        if body.get(i) == Some(&b':') {
+            i += 1;
+            while body.get(i).is_some_and(|b| b.is_ascii_whitespace()) {
+                i += 1;
+            }
+            if body.get(i) == Some(&b'[') {
+                return Some(i + 1);
+            }
+        }
+        from = hit + key.len();
+    }
+    None
+}
+
+fn str_field(v: &Value, key: &str) -> String {
+    v.get(key).and_then(Value::as_str).unwrap_or("").to_string()
+}
+
+/// Text out of a value that may be a string, a list of blocks, or arbitrary JSON.
+/// Tool results take all three shapes depending on the tool.
+fn flatten(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        Value::Array(items) => {
+            items.iter().map(flatten).collect::<Vec<_>>().join("\n")
+        }
+        Value::Object(map) => match map.get("text").and_then(Value::as_str) {
+            Some(t) => t.to_string(),
+            None => serde_json::to_string(v).unwrap_or_default(),
+        },
+        Value::Null => String::new(),
+        other => other.to_string(),
+    }
+}
+
+fn push_block(out: &mut Vec<Block>, kind: &'static str, role: &str, ordinal: i64, text: String) {
+    if text.trim().is_empty() {
+        return;
+    }
+    let chars = text.chars().count() as i64;
+    let text = match text.char_indices().nth(MAX_BLOCK_CHARS) {
+        Some((cut, _)) => text[..cut].to_string(),
+        None => text,
+    };
+    let mut h = Sha256::new();
+    h.update(kind.as_bytes());
+    h.update([0u8]);
+    h.update(text.as_bytes());
+    out.push(Block {
+        hash: h.finalize().into(),
+        kind,
+        role: role.to_string(),
+        ordinal,
+        text,
+        chars,
+    });
 }
 
 /// Serialized size of a JSON value, as a stand-in for its token weight. Used only
@@ -284,6 +605,229 @@ fn json_chars(v: &Value) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    fn env_of(v: Value) -> (Option<String>, Option<String>) {
+        environment_of(&v)
+    }
+
+    /// Both places Claude Code puts its environment, in the shapes it writes them.
+    #[test]
+    fn the_request_says_where_the_session_runs() {
+        let env = "# Environment\nYou have been invoked in the following environment: \n \
+                   - Primary working directory: /Users/u/code/project\n - Is a git repository: true\n";
+        let git = "gitStatus: ...\n\nCurrent branch: feature/x\n\nMain branch (you will usually use this for PRs): main";
+        let in_system = json!({ "system": [{ "type": "text", "text": env }, { "type": "text", "text": git }], "messages": [] });
+        assert_eq!(
+            env_of(in_system),
+            (Some("/Users/u/code/project".into()), Some("feature/x".into()))
+        );
+        let in_first_message = json!({
+            "system": "You are Claude Code.",
+            "messages": [{ "role": "user", "content": [
+                { "type": "text", "text": format!("<system-reminder>{env}</system-reminder>") },
+                { "type": "text", "text": git },
+                { "type": "text", "text": "fix the tests" },
+            ]}],
+        });
+        assert_eq!(
+            env_of(in_first_message),
+            (Some("/Users/u/code/project".into()), Some("feature/x".into()))
+        );
+        let windows = json!({ "system": " - Primary working directory: C:\\Users\\u\\proj\n", "messages": [] });
+        assert_eq!(env_of(windows).0.as_deref(), Some("C:\\Users\\u\\proj"));
+        let older = json!({ "system": "<env>\nWorking directory: /home/u/p\nIs directory a git repo: Yes\n</env>", "messages": [] });
+        assert_eq!(env_of(older).0.as_deref(), Some("/home/u/p"));
+    }
+
+    /// Claude Code 2.1.292 sends the environment as a message of its own with the
+    /// `system` role, after the first user message; a later one says the directory moved.
+    #[test]
+    fn a_system_message_in_the_opening_turn_says_where_the_session_runs() {
+        let env = "# Environment\nYou have been invoked in the following environment: \n \
+                   - Primary working directory: /home/u/code/project\n - Is a git repository: true\n";
+        let moved = "# Environment update\n - Primary working directory: /home/u/code/project/sub (was /home/u/code/project)";
+        let opening = json!({
+            "system": "You are Claude Code.",
+            "messages": [
+                { "role": "user", "content": [
+                    { "type": "text", "text": "<system-reminder>gitStatus: ...\n\nCurrent branch: dev\n</system-reminder>" },
+                    { "type": "text", "text": "fix the tests" },
+                ]},
+                { "role": "system", "content": [{ "type": "text", "text": env }] },
+                { "role": "assistant", "content": "On it." },
+                { "role": "system", "content": moved },
+            ],
+        });
+        assert_eq!(env_of(opening), (Some("/home/u/code/project".into()), Some("dev".into())));
+
+        let only_later = json!({
+            "system": "You are Claude Code.",
+            "messages": [
+                { "role": "user", "content": "hello" },
+                { "role": "assistant", "content": "Hi." },
+                { "role": "system", "content": env },
+            ],
+        });
+        assert_eq!(env_of(only_later), (None, None), "after the first reply it is not the opening");
+        assert_eq!(environment_in(&[moved]), (None, None), "a move is not where it started");
+    }
+
+    /// The same words anywhere else are text about a directory, not this session's.
+    #[test]
+    fn quoted_or_malformed_lines_are_not_taken() {
+        let later = json!({
+            "system": "You are Claude Code.",
+            "messages": [
+                { "role": "user", "content": "hello" },
+                { "role": "assistant", "content": "Primary working directory: /assistant/said" },
+                { "role": "user", "content": [{ "type": "tool_result", "tool_use_id": "t", "content":
+                    " - Primary working directory: /from/a/tool\nCurrent branch: tool-branch" }] },
+            ],
+        });
+        assert_eq!(env_of(later), (None, None));
+        for bad in [
+            " - Primary working directory: relative/path",
+            " - Primary working directory: ",
+            "The Primary working directory: /in/a/sentence",
+            "Current branch: two words",
+        ] {
+            let v = json!({ "system": bad, "messages": [] });
+            assert_eq!(env_of(v), (None, None), "{bad:?}");
+        }
+        let moved = json!({ "system": "Working directory: /new (was /old)", "messages": [] });
+        assert_eq!(env_of(moved).0, None, "a note that it moved is not where it started");
+    }
+
+    /// One block per content block, carrying where it sat and what kind it was — and
+    /// nothing for the blocks that hold no text.
+    #[test]
+    fn extraction_splits_a_turn_into_its_blocks() {
+        let body = br#"{"model":"m","messages":[
+            {"role":"user","content":[{"type":"text","text":"why is body_cap 64 KB"}]},
+            {"role":"assistant","content":[
+              {"type":"thinking","thinking":"the cap predates the index"},
+              {"type":"text","text":"because nothing read the bodies back"},
+              {"type":"tool_use","name":"Bash","input":{"command":"grep body_cap src/"}}]},
+            {"role":"user","content":[
+              {"type":"tool_result","content":[{"type":"text","text":"src/config.rs:12"}]},
+              {"type":"image","source":{"data":"..."}}]}
+          ]}"#;
+        let blocks = analyze_request(body).unwrap().blocks;
+
+        let got: Vec<_> = blocks.iter().map(|b| (b.kind, b.ordinal, b.role.as_str())).collect();
+        assert_eq!(
+            got,
+            vec![
+                ("text", 0, "user"),
+                ("thinking", 1, "assistant"),
+                ("text", 1, "assistant"),
+                ("tool_use", 1, "assistant"),
+                ("tool_result", 2, "user"),
+            ],
+            "the image carries no text and should not be indexed"
+        );
+        // A tool call is searchable by its arguments, not just its name.
+        assert!(blocks[3].text.contains("grep body_cap src/"));
+        assert_eq!(blocks[4].text, "src/config.rs:12", "a tool result flattens to its text");
+    }
+
+    /// The system prompt is searchable, sits ahead of the conversation, and costs one
+    /// block however many requests repeat it.
+    #[test]
+    fn the_system_prompt_is_indexed_ahead_of_the_turns() {
+        let body = br#"{"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}],
+            "system":[{"type":"text","text":"You are a Claude agent."},
+                      {"type":"text","text":"Always read CLAUDE.md first."}],
+            "tools":[{"name":"Bash","description":"runs a command"}]}"#;
+        let blocks = analyze_request(body).unwrap().blocks;
+        let got: Vec<_> = blocks.iter().map(|b| (b.kind, b.ordinal)).collect();
+        assert_eq!(got, vec![("text", 0), ("system", -1), ("system", -2)]);
+        assert!(
+            !blocks.iter().any(|b| b.text.contains("runs a command")),
+            "tool definitions are client boilerplate and are not indexed"
+        );
+        // Two requests carrying the same system prompt are the same block.
+        let again = analyze_request(body).unwrap().blocks;
+        assert_eq!(blocks[1].hash, again[1].hash);
+    }
+
+    /// The same text is the same block wherever it turns up, which is what lets a
+    /// replayed conversation cost nothing the second time. Different kinds are not.
+    #[test]
+    fn identical_text_hashes_identically() {
+        let one = analyze_request(
+            br#"{"messages":[{"role":"user","content":[{"type":"text","text":"the kestrel"}]}]}"#,
+        )
+        .unwrap()
+        .blocks;
+        let two = analyze_request(
+            br#"{"messages":[
+                 {"role":"assistant","content":[{"type":"text","text":"elsewhere"}]},
+                 {"role":"user","content":[{"type":"text","text":"the kestrel"}]}]}"#,
+        )
+        .unwrap()
+        .blocks;
+        assert_eq!(one[0].hash, two[1].hash, "same text, same block, different position");
+        assert_ne!(one[0].hash, two[0].hash);
+
+        let as_result = analyze_request(
+            br#"{"messages":[{"role":"user","content":[
+                 {"type":"tool_result","content":"the kestrel"}]}]}"#,
+        )
+        .unwrap()
+        .blocks;
+        assert_ne!(
+            one[0].hash, as_result[0].hash,
+            "a tool result is not the same thing as someone typing it"
+        );
+    }
+
+    /// The store is full of bodies cut mid-token by `body_cap`. Everything that closed
+    /// before the cut is still indexable; only the partial tail is lost.
+    #[test]
+    fn a_truncated_body_gives_up_the_messages_that_survived_it() {
+        let whole = br#"{"model":"m","messages":[
+            {"role":"user","content":[{"type":"text","text":"first turn"}]},
+            {"role":"assistant","content":[{"type":"text","text":"second turn"}]},
+            {"role":"user","content":[{"type":"text","text":"third turn"}]}
+          ],"system":[{"type":"text","text":"the standing instructions"}]}"#;
+
+        // Cut in the middle of the third message, as the cap would.
+        let cut = &whole[..whole.len() - 90];
+        assert!(analyze_request(cut).is_none(), "it must really be broken JSON");
+
+        let texts: Vec<_> =
+            blocks_from_stored_body(cut).into_iter().map(|b| b.text).collect();
+        assert_eq!(
+            texts,
+            vec!["first turn", "second turn"],
+            "the partial third turn is dropped, and the system prompt past it was never in these bytes"
+        );
+
+        // Intact, the same body takes the ordinary path and gives everything in it —
+        // the three turns, and the system prompt that sat beyond where the cut fell.
+        let texts: Vec<_> =
+            blocks_from_stored_body(whole).into_iter().map(|b| b.text).collect();
+        assert_eq!(
+            texts,
+            vec!["first turn", "second turn", "third turn", "the standing instructions"]
+        );
+    }
+
+    /// Braces inside a tool call are text. Counting them as structure would throw the
+    /// depth off and swallow every message after the first one that contains a shell
+    /// command — which is most of them.
+    #[test]
+    fn braces_and_quotes_inside_message_text_do_not_confuse_the_scan() {
+        let body = br#"{"messages":[
+            {"role":"user","content":[{"type":"text","text":"run awk '{print $1}' and \"quote\" it"}]},
+            {"role":"assistant","content":[{"type":"text","text":"done ]}"}]},
+            {"role":"user","content":[{"type":"text","text":"tru"#;
+        let texts: Vec<_> =
+            blocks_from_stored_body(body).into_iter().map(|b| b.text).collect();
+        assert_eq!(texts, vec![r#"run awk '{print $1}' and "quote" it"#, "done ]}"]);
+    }
 
     #[test]
     fn scans_usage_across_split_chunks() {

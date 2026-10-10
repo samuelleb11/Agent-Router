@@ -1,0 +1,102 @@
+// New for agent-router: the session state dot and the header's status pill, on Carbon tokens and
+// the --ar-st-* tones (docs/web-console-carbon.md, "Why Carbon, and what it does not cover").
+@use '@carbon/react/scss/spacing' as *;
+@use '@carbon/react/scss/type' as *;
+@use '@carbon/react/scss/motion' as *;
+
+/// A dot is a mark, never words: its words are the text beside it or its accessible name
+/// (SE-C20), in Carbon's text tokens. `--dot` carries the tone, so the halo is drawn in the same
+/// colour as the dot it rings. A tone this console does not know keeps Carbon's neutral icon
+/// colour (SE-C3): a newer router's word is not an error.
+.dot {
+  --dot: var(--cds-icon-secondary);
+  display: inline-block;
+  flex: none;
+  inline-size: $spacing-03;
+  block-size: $spacing-03;
+  border-radius: 50%;
+  background: var(--dot);
+  vertical-align: middle;
+}
+
+/// The phones' palette, in both themes (SE-C4): working green, waiting orange, stalled amber,
+/// failed red, idle grey. Busy pulses, and waiting on you pulses faster (SE-C6): the pulse is the
+/// second cue after colour for what needs looking at.
+.dot[data-tone='busy'] {
+  --dot: var(--ar-st-busy);
+  animation: pulse calc(2 * #{$duration-slow-02}) motion(standard, productive) infinite;
+}
+
+.dot[data-tone='attention'] {
+  --dot: var(--ar-st-wait);
+  animation: pulse calc(2 * #{$duration-slow-01}) motion(standard, productive) infinite;
+}
+
+.dot[data-tone='warn'] {
+  --dot: var(--ar-warn-fill);
+}
+
+.dot[data-tone='error'] {
+  --dot: var(--ar-bad-fill);
+}
+
+.dot[data-tone='idle'] {
+  --dot: var(--ar-st-idle);
+}
+
+/// A live session's halo (SE-C9): whatever tone won the colour, something here is busy or waiting.
+.dot[data-live] {
+  box-shadow: 0 0 0 $spacing-01 color-mix(in srgb, var(--dot) 35%, transparent);
+}
+
+/// A closed session is a hollow ring (SE-C7): nothing is there to be idle. Last, so no halo can
+/// fill it in.
+.dot[data-tone='closed'] {
+  --dot: var(--ar-st-idle);
+  background: transparent;
+  box-shadow: inset 0 0 0 $spacing-01 var(--dot);
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+
+  50% {
+    opacity: 0.35;
+    transform: scale(0.75);
+  }
+}
+
+/// Nothing pulses for a reader who asked for no motion (SE-C6, SH-C40); the words still say it.
+@media (prefers-reduced-motion: reduce) {
+  .dot {
+    animation: none;
+  }
+}
+
+/// The header's pill: the pip and what the session is doing, in words.
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: $spacing-03;
+  min-inline-size: 0;
+  @include type-style('label-01');
+  color: var(--cds-text-primary);
+}
+
+/// The router's words can be long ("API error: 529 Overloaded · 1m"): they wrap rather than widen
+/// a phone (SH-C44).
+.words {
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
+}
+
+/// The stream no longer vouches for what it last said (SE-C61, SE-C64): neutral italics, and a
+/// pip with no tone.
+.pill[data-stale] .words {
+  color: var(--cds-text-secondary);
+  font-style: italic;
+}

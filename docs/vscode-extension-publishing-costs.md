@@ -23,9 +23,9 @@ infrastructure and time, and most of them are already carried.
   quarantine on extracted files, so the bundled binary runs as it is. A Developer ID
   signature, if ever wanted for polish, comes with the Apple Developer Program already
   paid for the iOS app.
-- **Build machines:** the GitLab pipeline needs a Mac for the two Mac packages.
-  Registering an owned Mac as a shell runner is free; rented hosted macOS runners are
-  the paid alternative and are not needed. The Linux job runs in a standard container.
+- **Build machines:** none to buy. Since 2026-10-07 the two Mac packages cross-build on
+  Linux through zig, beside the Linux and Windows ones, so every job runs in a standard
+  container and no Mac runner, owned or rented, is needed.
 - **A public repository is not required.** The manifest's repository link should point
   somewhere reachable or be omitted; the packaging script passes
   `--allow-missing-repository` when there is no remote.

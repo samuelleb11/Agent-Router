@@ -144,7 +144,7 @@ pub struct Target {
 }
 
 fn extensions_root() -> PathBuf {
-    PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".vscode/extensions")
+    crate::setup::home_dir().unwrap_or_default().join(".vscode").join("extensions")
 }
 
 /// Every Claude Code extension on this machine that spawns a native binary.
@@ -158,7 +158,11 @@ pub fn targets() -> Vec<Target> {
         if !name.starts_with("anthropic.claude-code-") {
             continue;
         }
-        let bin = d.path().join("resources/native-binary/claude");
+        let bin = d
+            .path()
+            .join("resources")
+            .join("native-binary")
+            .join(if cfg!(windows) { "claude.exe" } else { "claude" });
         if !bin.is_file() {
             continue;
         }
@@ -172,7 +176,17 @@ pub fn targets() -> Vec<Target> {
     out
 }
 
-fn real_beside(bin: &Path) -> PathBuf {
+/// Where the real binary is parked beside the shim, by the wrapper's own rule
+/// (`wrapper/src/main.rs`, `real_beside`): `claude` -> `claude.real`, and on Windows
+/// `claude.exe` -> `claude.real.exe`, a name that is still a program there.
+pub(crate) fn real_beside(bin: &Path) -> PathBuf {
+    #[cfg(windows)]
+    if let (Some(stem), Some(ext)) = (bin.file_stem(), bin.extension()) {
+        let mut name = stem.to_os_string();
+        name.push(".real.");
+        name.push(ext);
+        return bin.with_file_name(name);
+    }
     let mut p = bin.as_os_str().to_owned();
     p.push(".real");
     PathBuf::from(p)
@@ -191,6 +205,9 @@ pub fn state_of(bin: &Path) -> State {
     }
 }
 
+/// Why nothing can be installed: the router was put somewhere without its wrapper.
+const NO_WRAPPER: &str = "claude-wrapper binary not found beside agent-router";
+
 /// The wrapper binary to install, shipped beside the router.
 fn wrapper_source() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
@@ -208,8 +225,7 @@ fn wrapper_source() -> Option<PathBuf> {
 }
 
 pub fn install(bin: &Path) -> anyhow::Result<()> {
-    let src = wrapper_source()
-        .ok_or_else(|| anyhow::anyhow!("claude-wrapper binary not found beside agent-router"))?;
+    let src = wrapper_source().ok_or_else(|| anyhow::anyhow!(NO_WRAPPER))?;
     let real = real_beside(bin);
 
     match state_of(bin) {
@@ -243,26 +259,44 @@ pub fn remove(bin: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Put `src` at `dst` as a new file — never by writing into the one already there.
+///
+/// `dst` is the binary the extension runs, and once a wrapper is installed every open
+/// session is executing it. Writing into a Mach-O while it is mapped invalidates its code
+/// signature: every later exec of that path dies at once with SIGKILL, and the running
+/// sessions sit on pages that may be read back from the changed file (seen 2026-09-12 with
+/// the router's own binary). A copy beside it, renamed over it, leaves the running ones on
+/// the old file and gives the next session the new one.
 fn copy_executable(src: &Path, dst: &Path) -> std::io::Result<()> {
-    std::fs::copy(src, dst)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(dst, std::fs::Permissions::from_mode(0o755))?;
+    let name = dst.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let tmp = dst.with_file_name(format!(".{name}.agent-router-new"));
+    let placed = std::fs::copy(src, &tmp).and_then(|_| {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
+        }
+        std::fs::rename(&tmp, dst)
+    });
+    if placed.is_err() {
+        std::fs::remove_file(&tmp).ok();
     }
-    Ok(())
+    placed
 }
 
 pub mod api {
     use std::sync::Arc;
 
     use axum::extract::State as AxState;
+    use axum::http::StatusCode;
+    use axum::response::{IntoResponse, Response};
     use axum::Json;
     use serde::Deserialize;
     use serde_json::{json, Value};
 
     use super::*;
     use crate::proxy::AppState;
+    use crate::refusal::{refuse_with_reason, JsonBody};
 
     #[derive(Deserialize)]
     pub struct Body {
@@ -293,33 +327,51 @@ pub mod api {
     }
 
     /// The switch. Turning it on also does the work now rather than in three seconds.
-    pub async fn auto(AxState(state): AxState<Arc<AppState>>, Json(body): Json<AutoBody>) -> Json<Value> {
+    ///
+    /// Refusals answer with an error status (see `refusal`), in this switch's own
+    /// `{ok: false, reason}`.
+    pub async fn auto(AxState(state): AxState<Arc<AppState>>, JsonBody(body): JsonBody<AutoBody>) -> Response {
         match set_auto(&state.config.db_path, body.enabled) {
             Ok(()) => {
                 note(format!("automatic wrapper: turned {}", if body.enabled { "on" } else { "off" }));
-                Json(json!({ "ok": true, "shim": snapshot(&state.config.db_path) }))
+                Json(json!({ "ok": true, "shim": snapshot(&state.config.db_path) })).into_response()
             }
-            Err(e) => Json(json!({ "ok": false, "reason": e.to_string() })),
+            // 500: an on or an off cannot be wrong; the store would not keep it.
+            Err(e) => refuse_with_reason(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
         }
     }
 
-    pub async fn toggle(AxState(state): AxState<Arc<AppState>>, Json(body): Json<Body>) -> Json<Value> {
-        let path = PathBuf::from(&body.path);
-        // Only ever touch a path the listing itself produced.
-        if !targets().iter().any(|t| t.path == body.path) {
-            return Json(json!({ "ok": false, "reason": "Not a known extension binary." }));
-        }
-        let done = match body.action.as_str() {
-            "install" => install(&path),
-            "remove" => remove(&path),
-            other => Err(anyhow::anyhow!("unknown action {other:?}")),
+    /// Refusals answer with an error status, as `auto`'s do.
+    pub async fn toggle(AxState(state): AxState<Arc<AppState>>, JsonBody(body): JsonBody<Body>) -> Response {
+        // The action first: telling a bad one needs nothing read from the disk. 400: there
+        // are two actions, and this is neither.
+        let install_it = match body.action.as_str() {
+            "install" => true,
+            "remove" => false,
+            other => return refuse_with_reason(StatusCode::BAD_REQUEST, format!("unknown action {other:?}")),
         };
+        let path = PathBuf::from(&body.path);
+        // Only ever touch a path the listing itself produced. 409 rather than 400: a client
+        // only ever sends a path the listing gave it, so one that is missing from it now is
+        // a listing that changed underneath — an editor update moves the extension to a new
+        // directory — and reading it again is the fix.
+        if !targets().iter().any(|t| t.path == body.path) {
+            return refuse_with_reason(StatusCode::CONFLICT, "Not a known extension binary.");
+        }
+        // 409: the router has no wrapper of its own to put there. It ships beside the
+        // router's binary, and installing the router with it is the fix.
+        if install_it && wrapper_source().is_none() {
+            return refuse_with_reason(StatusCode::CONFLICT, NO_WRAPPER);
+        }
+        let done = if install_it { install(&path) } else { remove(&path) };
         match done {
             Ok(()) => {
                 tracing::info!(path = %body.path, action = %body.action, "shim changed");
-                Json(json!({ "ok": true, "shim": snapshot(&state.config.db_path) }))
+                Json(json!({ "ok": true, "shim": snapshot(&state.config.db_path) })).into_response()
             }
-            Err(e) => Json(json!({ "ok": false, "reason": e.to_string() })),
+            // 500: a rename or a copy in the extension's directory failed, and a failed
+            // install has already put the real binary back.
+            Err(e) => refuse_with_reason(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
         }
     }
 }
@@ -443,6 +495,33 @@ mod tests {
             "the shim was replaced, not left pinned at the first version"
         );
         assert!(d.join("claude.real").is_file(), "the real binary stays parked");
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_wrapper_is_replaced_by_rename_never_written_in_place() {
+        // Open sessions are executing the installed wrapper: the file under them must stay
+        // exactly as it was, and the next session must find the new one.
+        use std::io::Read;
+        use std::os::unix::fs::MetadataExt;
+        let d = scratch("in-place");
+        let src = d.join("new-wrapper");
+        let dst = d.join("claude");
+        std::fs::write(&src, b"NEW WRAPPER").unwrap();
+        std::fs::write(&dst, b"OLD WRAPPER").unwrap();
+        let running = std::fs::File::open(&dst).unwrap();
+        let old_inode = running.metadata().unwrap().ino();
+        copy_executable(&src, &dst).unwrap();
+        let mut under_them = String::new();
+        (&running).read_to_string(&mut under_them).unwrap();
+        assert_eq!(under_them, "OLD WRAPPER", "written into the file the sessions are running");
+        assert_eq!(std::fs::read(&dst).unwrap(), b"NEW WRAPPER");
+        let now = std::fs::metadata(&dst).unwrap();
+        assert_ne!(now.ino(), old_inode, "a new file, not the old one rewritten");
+        assert_eq!(now.mode() & 0o777, 0o755);
+        let names: Vec<_> = std::fs::read_dir(&d).unwrap().flatten().map(|e| e.file_name()).collect();
+        assert_eq!(names.len(), 2, "no temporary left beside it: {names:?}");
         std::fs::remove_dir_all(&d).ok();
     }
 

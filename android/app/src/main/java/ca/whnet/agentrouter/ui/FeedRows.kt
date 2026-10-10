@@ -246,9 +246,10 @@ fun RichText(text: String) {
         Markdown.blocks(text).forEach { block ->
             when (block) {
                 is Markdown.Block.Paragraph -> Selectable { Text(inline(block.text), style = MaterialTheme.typography.bodyMedium) }
+                // The level the web draws, `#` the third and `##` the fourth (SE-C98).
                 is Markdown.Block.Heading -> Text(
                     inline(block.text),
-                    style = if (block.level <= 2) MaterialTheme.typography.titleMedium else MaterialTheme.typography.titleSmall,
+                    style = if (block.level <= 4) MaterialTheme.typography.titleMedium else MaterialTheme.typography.titleSmall,
                     modifier = Modifier.padding(top = 2.dp),
                 )
                 is Markdown.Block.Bullets -> Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {

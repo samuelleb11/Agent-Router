@@ -5,3 +5,4 @@ out/**/*.map
 bin/.gitkeep
 .gitignore
 package.json.orig
+out/test/**

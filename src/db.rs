@@ -14,7 +14,20 @@ use crate::analyze::RequestShape;
 
 pub struct Db {
     conn: Connection,
+    /// Conversation blocks already written by this process, keyed by where they sat.
+    ///
+    /// Every request replays the whole history, so without this each of a session's
+    /// several hundred requests would re-offer every block that came before it — a few
+    /// hundred thousand no-op statements a day. Correctness never rests on it: the
+    /// unique hash and the site primary key reject a duplicate either way, and a miss
+    /// only costs the statement it would have skipped. Bounded, and cleared wholesale
+    /// rather than evicted, because a cold cache is merely slower for a moment.
+    seen_blocks: std::collections::HashSet<u64>,
 }
+
+/// How many block sites to remember before starting over. At roughly forty bytes a
+/// entry this is a few tens of megabytes at worst, against a store measured in gigabytes.
+const SEEN_BLOCKS_MAX: usize = 1_000_000;
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS accounts (
@@ -43,6 +56,26 @@ CREATE TABLE IF NOT EXISTS sessions (
   started_at   INTEGER NOT NULL,
   last_seen_at INTEGER NOT NULL,
   label        TEXT
+);
+
+-- Where a machine has a checkout, and the repository its remotes name (`places`,
+-- `repository`). `machine` is '' for a local router's own machine; `remotes` is JSON
+-- [{name, url, repository}], every URL without its credentials.
+CREATE TABLE IF NOT EXISTS directories (
+  machine    TEXT NOT NULL,
+  cwd        TEXT NOT NULL,
+  remotes    TEXT NOT NULL,
+  repository TEXT,
+  changed_at INTEGER NOT NULL,
+  PRIMARY KEY (machine, cwd)
+);
+
+-- The machines that have reported their places, by the id their agent keeps.
+CREATE TABLE IF NOT EXISTS machines (
+  id           TEXT PRIMARY KEY,
+  label        TEXT,
+  platform     TEXT,
+  last_seen_at INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS requests (
@@ -154,7 +187,7 @@ CREATE TABLE IF NOT EXISTS push_devices (
 "#;
 
 /// Where the bodies live: beside the main store, under its own name.
-fn bodies_path(main: &Path) -> PathBuf {
+pub fn bodies_path(main: &Path) -> PathBuf {
     let stem = main.file_stem().and_then(|s| s.to_str()).unwrap_or("agent-router");
     main.with_file_name(format!("{stem}-bodies.db"))
 }
@@ -170,7 +203,7 @@ fn bodies_path(main: &Path) -> PathBuf {
 /// The row loses its `REFERENCES requests(id) ON DELETE CASCADE`: a foreign key cannot
 /// span two database files. Nothing deletes a request today, so there is no cascade to
 /// lose — but anything that starts deleting them has to clear both files.
-fn attach_bodies(conn: &Connection, main: &Path) -> Result<()> {
+pub(crate) fn attach_bodies(conn: &Connection, main: &Path) -> Result<()> {
     let side = bodies_path(main);
     conn.execute(
         "ATTACH DATABASE ?1 AS bodies_db",
@@ -195,6 +228,58 @@ fn create_bodies_table(conn: &Connection) -> Result<()> {
            true_bytes   INTEGER NOT NULL,
            PRIMARY KEY (request_id, direction)
          );",
+    )?;
+    create_search_tables(conn)?;
+    Ok(())
+}
+
+/// The search index, in the sidecar because it is content, not structure.
+///
+/// `blocks` holds each distinct piece of conversation text exactly once; `block_sites`
+/// says where every copy of it appeared. That split is the whole design: a session's
+/// requests replay the same history end to end, so the text is written once and the
+/// sites — cheap rows of integers — carry the repetition.
+///
+/// `blocks_fts` is an external-content index: it stores the terms and reads the text
+/// back out of `blocks`, so the corpus is not held twice. Blocks are only ever inserted,
+/// never updated or deleted, which is why one `AFTER INSERT` trigger is the whole of the
+/// synchronisation — there is no `_bd`/`_bu` pair to keep honest.
+///
+/// The tokenizer keeps `_` inside a token so `body_cap` and `seen_blocks` survive as
+/// single terms; `.` and `-` stay separators, so `analyze.rs` is found by the phrase
+/// "analyze rs" and by either half on its own.
+fn create_search_tables(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        r#"CREATE TABLE IF NOT EXISTS bodies_db.blocks (
+             id    INTEGER PRIMARY KEY,
+             hash  BLOB NOT NULL UNIQUE,
+             kind  TEXT NOT NULL,
+             chars INTEGER NOT NULL,
+             text  TEXT NOT NULL
+           );
+
+           CREATE TABLE IF NOT EXISTS bodies_db.block_sites (
+             block_id   INTEGER NOT NULL,
+             session_id TEXT NOT NULL,
+             ordinal    INTEGER NOT NULL,
+             role       TEXT NOT NULL,
+             request_id INTEGER NOT NULL,
+             at         INTEGER NOT NULL,
+             PRIMARY KEY (block_id, session_id, ordinal)
+           );
+           CREATE INDEX IF NOT EXISTS bodies_db.block_sites_session
+             ON block_sites(session_id, ordinal);
+
+           CREATE VIRTUAL TABLE IF NOT EXISTS bodies_db.blocks_fts USING fts5(
+             text,
+             content='blocks',
+             content_rowid='id',
+             tokenize="unicode61 remove_diacritics 2 tokenchars '_'"
+           );
+
+           CREATE TRIGGER IF NOT EXISTS bodies_db.blocks_ai AFTER INSERT ON blocks BEGIN
+             INSERT INTO blocks_fts(rowid, text) VALUES (new.id, new.text);
+           END;"#,
     )?;
     Ok(())
 }
@@ -285,13 +370,24 @@ impl Db {
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)
             .with_context(|| format!("opening {}", path.display()))?;
+        // A router starting beside the one it replaces — a handover on a laptop, a rolling
+        // update in a pod — opens and migrates the store while the other is writing to it.
+        // Wait as the other connections on this file do, not rusqlite's 5 s.
+        conn.busy_timeout(std::time::Duration::from_secs(30))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.execute_batch(SCHEMA)?;
+        crate::library::store::ensure(&conn)?;
         // Lightweight forward migration so an existing store upgrades in place.
         ensure_column(&conn, "requests", "agent_id", "TEXT")?;
         ensure_column(&conn, "requests", "account_email", "TEXT")?;
+        // The machine that listed a session and the repository it worked in (`places`), and
+        // the key every read takes a project by: its repository, else its directory.
+        ensure_column(&conn, "sessions", "machine", "TEXT")?;
+        ensure_column(&conn, "sessions", "repository", "TEXT")?;
+        ensure_column(&conn, "sessions", "project", "TEXT GENERATED ALWAYS AS (coalesce(repository, cwd)) VIRTUAL")?;
+        conn.execute_batch("CREATE INDEX IF NOT EXISTS sessions_project ON sessions(project)")?;
         // Every phone registered before there was a second push service was an iPhone,
         // which is exactly what the default backfills.
         ensure_column(&conn, "push_devices", "platform", "TEXT NOT NULL DEFAULT 'apns'")?;
@@ -308,17 +404,41 @@ impl Db {
         ] {
             ensure_column(&conn, "accounts", col, ty)?;
         }
-        Ok(Self { conn })
+        Ok(Self { conn, seen_blocks: Default::default() })
     }
 
     /// Record the account Claude Code is already logged into. Called once at startup;
     /// it never steals `active` from an account the user has chosen.
+    ///
+    /// It is always Claude Code's own login. Adding an account under its name once wrote
+    /// over it — a new "Default" made it a token account, signing with the token that add
+    /// stored under its id — and adding no longer can (`accounts::Store::add`), but a store
+    /// an add had reached stayed that way: this put back only its name and who it is. Its
+    /// source and profile directory are put back as well, and a token stored under its id
+    /// is forgotten, its usage key kept. Nothing signs with that token once the account is
+    /// Claude Code's again, and nothing could remove it: the built-in account cannot be
+    /// removed, nor its token replaced. Every other account is left as it is.
     pub fn upsert_default_account(
         &self,
         id: &str,
         label: &str,
         status: &crate::accounts::AuthStatus,
     ) -> Result<()> {
+        let restored = self.conn.execute(
+            "UPDATE accounts SET source = 'keychain', profile_dir = NULL
+              WHERE id = ?1 AND (source != 'keychain' OR profile_dir IS NOT NULL)",
+            [id],
+        )?;
+        if restored > 0 {
+            tracing::warn!(account = id, "the built-in account had been turned into another kind by an add under its name; it is Claude Code's login again");
+        }
+        if crate::accounts::has_token(id) {
+            // Not a reason to stop: the router signs as it should without this.
+            match crate::accounts::forget_token(id) {
+                Ok(()) => tracing::warn!(account = id, "forgot the token an add under the built-in account's name stored; add it again under another name if it is still wanted"),
+                Err(e) => tracing::warn!(account = id, "could not forget the token an add under the built-in account's name stored: {e:#}"),
+            }
+        }
         self.conn.execute(
             "INSERT INTO accounts (id, label, source, email, org_name, subscription_type,
                                    active, created_at)
@@ -476,29 +596,275 @@ impl Db {
             )?;
         }
 
-        for (direction, body) in [("request", &ev.request_body), ("response", &ev.response_body)] {
-            tx.execute(
-                "INSERT INTO bodies_db.bodies
-                     (request_id, direction, content, truncated_at, true_bytes)
-                 VALUES (?1,?2,?3,?4,?5)",
-                params![
-                    row_id,
-                    direction,
-                    body.stored.as_slice(),
-                    if body.truncated { Some(body.stored.len() as i64) } else { None },
-                    body.true_bytes,
-                ],
-            )?;
+        // The conversation, split into blocks and stored once each. Skipped when the
+        // request carries no session: a block with nowhere to have been is not findable
+        // and not worth a row.
+        // The uses of the Library's items are taken from the same placing: a block placed
+        // here for the first time is a use the requests repeating it will not count again.
+        if let (Some(shape), Some(session_id)) = (&ev.shape, ev.session_id.as_deref()) {
+            let placed = write_blocks(&tx, &mut self.seen_blocks, &shape.blocks, session_id, row_id, ev.started_at_ms)?;
+            crate::library::usage::note(&tx, &shape.blocks, &placed, session_id, ev.started_at_ms)?;
         }
+
+        // Only the response. The request body used to be kept here capped at
+        // `body_cap`, which — because `messages` is its first field — preserved the
+        // oldest part of a conversation and dropped the newest, and which nothing ever
+        // read back. What was worth keeping in it is now in `blocks`, uncapped and
+        // stored once instead of once per replay, and `requests.request_bytes` still
+        // records the size. Rows written by older builds stay where they are.
+        let body = &ev.response_body;
+        tx.execute(
+            "INSERT INTO bodies_db.bodies
+                 (request_id, direction, content, truncated_at, true_bytes)
+             VALUES (?1,'response',?2,?3,?4)",
+            params![
+                row_id,
+                body.stored.as_slice(),
+                if body.truncated { Some(body.stored.len() as i64) } else { None },
+                body.true_bytes,
+            ],
+        )?;
 
         tx.commit()?;
         Ok(())
     }
 }
 
+/// Write a request's blocks and the places they sat, and answer the blocks placed for the
+/// first time: each one's index in `blocks`, and its id.
+///
+/// Shared by the live capture path and the backfill so the two cannot drift on what a
+/// block is or how a repeat is refused. Neither correctness nor completeness rests on
+/// `seen`: the unique hash and the site primary key reject a duplicate anyway, and a
+/// cache miss costs only the statement it would have saved.
+fn write_blocks(
+    tx: &Connection,
+    seen: &mut std::collections::HashSet<u64>,
+    blocks: &[crate::analyze::Block],
+    session_id: &str,
+    request_row_id: i64,
+    at: i64,
+) -> Result<Vec<(usize, i64)>> {
+    if seen.len() > SEEN_BLOCKS_MAX {
+        seen.clear();
+    }
+    let mut placed = Vec::new();
+    for (index, b) in blocks.iter().enumerate() {
+        if !seen.insert(site_key(session_id, b.ordinal, &b.hash)) {
+            continue; // this exact block, at this spot, is already in
+        }
+        let fresh = tx.execute(
+            "INSERT INTO bodies_db.blocks (hash, kind, chars, text)
+             VALUES (?1,?2,?3,?4) ON CONFLICT(hash) DO NOTHING",
+            params![&b.hash[..], b.kind, b.chars, b.text],
+        )?;
+        // `last_insert_rowid` is only this block's when the insert took; on a conflict
+        // it still holds whatever was written before it.
+        let block_id: i64 = if fresh == 1 {
+            tx.last_insert_rowid()
+        } else {
+            tx.query_row(
+                "SELECT id FROM bodies_db.blocks WHERE hash = ?1",
+                params![&b.hash[..]],
+                |r| r.get(0),
+            )?
+        };
+        let sited = tx.execute(
+            "INSERT INTO bodies_db.block_sites
+                 (block_id, session_id, ordinal, role, request_id, at)
+             VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT DO NOTHING",
+            params![block_id, session_id, b.ordinal, b.role, request_row_id, at],
+        )?;
+        if sited == 1 {
+            placed.push((index, block_id));
+        }
+    }
+    Ok(placed)
+}
+
+/// How far the backfill has read. Kept in `settings` so it survives a restart and can
+/// pick up where it stopped rather than starting the whole store again.
+const BACKFILL_KEY: &str = "blocks_backfill_after";
+
+/// Index the request bodies that were captured before there was an index.
+///
+/// **Must run while those bodies still exist.** They are the only record of the older
+/// conversations; once request bodies stop being stored there is nothing left to read.
+///
+/// Most of what it reads is truncated — on a real store, 98.7% of request bodies were
+/// cut at `body_cap` — so it goes through `blocks_from_stored_body`, which recovers the
+/// messages that closed before the cut and drops the partial tail. That makes this a
+/// partial recovery by nature: the opening of every session comes back, and with it
+/// nearly all assistant text, since each reply is replayed in the following request.
+/// The middles of long sessions were never captured and cannot be conjured.
+///
+/// Resumable and idempotent. It runs in small transactions on its own connection with a
+/// busy timeout and a pause between batches, because the capture task is writing to the
+/// same file for live traffic and must not be made to wait behind housekeeping.
+pub fn backfill_blocks(path: &Path) -> Result<()> {
+    let conn = Connection::open(path)?;
+    conn.busy_timeout(std::time::Duration::from_secs(30))?;
+    attach_bodies(&conn, path)?;
+
+    let mut after: i64 = conn
+        .query_row("SELECT value FROM settings WHERE key = ?1", [BACKFILL_KEY], |r| {
+            r.get::<_, String>(0)
+        })
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+
+    let ceiling: i64 = conn.query_row(
+        "SELECT coalesce(max(request_id), 0) FROM bodies_db.bodies WHERE direction = 'request'",
+        [],
+        |r| r.get(0),
+    )?;
+    if after >= ceiling {
+        return Ok(());
+    }
+    tracing::info!(from = after, to = ceiling, "indexing the bodies captured before the index");
+
+    let started = std::time::Instant::now();
+    let mut seen = std::collections::HashSet::new();
+    let (mut done, blocks_before) = (0i64, current_block_count(&conn)?);
+    loop {
+        let batch: Vec<(i64, Option<String>, i64, Vec<u8>)> = {
+            let mut stmt = conn.prepare(
+                "SELECT b.request_id, r.session_id, r.started_at, b.content
+                   FROM bodies_db.bodies b
+                   JOIN main.requests r ON r.id = b.request_id
+                  WHERE b.direction = 'request' AND b.request_id > ?1 AND b.request_id <= ?2
+                  ORDER BY b.request_id LIMIT 200",
+            )?;
+            let rows = stmt
+                .query_map(params![after, ceiling], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get::<_, Vec<u8>>(3)?))
+                })?
+                .collect::<std::result::Result<_, _>>()?;
+            rows
+        };
+        if batch.is_empty() {
+            break;
+        }
+
+        // Unchecked because the read above borrows `conn` to prepare its statement;
+        // there is no nesting here, only one transaction open at a time.
+        let tx = conn.unchecked_transaction()?;
+        for (request_id, session_id, at, content) in &batch {
+            after = (*request_id).max(after);
+            // A request with no session has nowhere to be found, and an empty body has
+            // nothing in it; both still move the watermark past themselves.
+            let Some(session_id) = session_id.as_deref() else { continue };
+            if content.is_empty() {
+                continue;
+            }
+            let blocks = crate::analyze::blocks_from_stored_body(content);
+            write_blocks(&tx, &mut seen, &blocks, session_id, *request_id, *at)?;
+        }
+        tx.execute(
+            "INSERT INTO settings (key, value, updated_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+            params![BACKFILL_KEY, after.to_string(), now_ms()],
+        )?;
+        tx.commit()?;
+
+        done += batch.len() as i64;
+        if done % 5000 == 0 {
+            tracing::info!(done, at = after, "backfill progress");
+        }
+        // Housekeeping yields to live traffic: the capture task writes to this same
+        // file, and a writer that never pauses makes every capture wait behind it.
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    tracing::info!(
+        requests = done,
+        blocks_added = current_block_count(&conn)? - blocks_before,
+        secs = started.elapsed().as_secs(),
+        "backfill complete"
+    );
+    Ok(())
+}
+
+const SESSION_CWDS_KEY: &str = "session_cwds_from_opening";
+
+/// Put right the directory of the sessions recorded before the router read Claude Code
+/// 2.1.292's environment, which arrives in a `system` message of its own
+/// (`analyze::environment_of`). Until then such a session had none, or whatever a request
+/// that is not one of its turns quoted (`capture::speaks_for_its_session`). Their opening
+/// blocks are in the index, uncapped, so the directory is read from there with the same
+/// rules: from the main thread's requests, before the first reply. Once: from this build
+/// on, every turn writes what its opening says. Runs after `backfill_blocks`, whose blocks
+/// these are.
+pub fn backfill_session_cwds(path: &Path) -> Result<usize> {
+    let conn = Connection::open(path)?;
+    conn.busy_timeout(std::time::Duration::from_secs(30))?;
+    attach_bodies(&conn, path)?;
+    let done = conn.query_row("SELECT 1 FROM settings WHERE key = ?1", [SESSION_CWDS_KEY], |_| Ok(())).is_ok();
+    if done {
+        return Ok(0);
+    }
+
+    // The `system` blocks of each session's opening turn, in order: in the messages
+    // (ordinal 0 and up), placed by the main thread, and before its first reply.
+    let rows: Vec<(String, String)> = {
+        let mut stmt = conn.prepare(
+            "SELECT s.id, b.text
+               FROM main.sessions s
+               JOIN bodies_db.block_sites bs ON bs.session_id = s.id AND bs.role = 'system' AND bs.ordinal >= 0
+               JOIN main.requests r ON r.id = bs.request_id AND r.agent_id IS NULL
+               JOIN bodies_db.blocks b ON b.id = bs.block_id
+              WHERE bs.ordinal < coalesce((SELECT min(a.ordinal)
+                                             FROM bodies_db.block_sites a
+                                             JOIN main.requests ra ON ra.id = a.request_id AND ra.agent_id IS NULL
+                                            WHERE a.session_id = s.id AND a.role = 'assistant'), 9223372036854775807)
+              ORDER BY s.id, bs.ordinal",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<std::result::Result<_, _>>()?;
+        rows
+    };
+    let mut changed = 0;
+    for opening in rows.chunk_by(|a, b| a.0 == b.0) {
+        let session = &opening[0].0;
+        let texts: Vec<&str> = opening.iter().map(|(_, t)| t.as_str()).collect();
+        let Some(cwd) = crate::analyze::environment_in(&texts).0 else { continue };
+        conn.execute(
+            "INSERT INTO projects (cwd, first_seen_at)
+             SELECT ?1, started_at FROM sessions WHERE id = ?2
+             ON CONFLICT(cwd) DO NOTHING",
+            params![cwd, session],
+        )?;
+        changed += conn.execute("UPDATE sessions SET cwd = ?1 WHERE id = ?2 AND cwd IS NOT ?1", params![cwd, session])?;
+    }
+    conn.execute(
+        "INSERT INTO settings (key, value, updated_at) VALUES (?1, ?2, ?3)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+        params![SESSION_CWDS_KEY, changed.to_string(), now_ms()],
+    )?;
+    if changed > 0 {
+        tracing::info!(sessions = changed, "put right the directory of the sessions recorded before their environment was read");
+    }
+    Ok(changed)
+}
+
+fn current_block_count(conn: &Connection) -> Result<i64> {
+    Ok(conn.query_row("SELECT count(*) FROM bodies_db.blocks", [], |r| r.get(0))?)
+}
+
+/// Identity of one block *at one spot in one session*, for the replay cache. A hash of
+/// a hash: collisions cost a redundant `INSERT OR IGNORE`, never a lost or wrong row.
+fn site_key(session_id: &str, ordinal: i64, hash: &[u8; 32]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    session_id.hash(&mut h);
+    ordinal.hash(&mut h);
+    hash.hash(&mut h);
+    h.finish()
+}
+
 /// Add a column if the table predates it. Cheap, idempotent, no migration table.
+/// `table_xinfo`, because `table_info` leaves out a generated column.
 fn ensure_column(conn: &Connection, table: &str, column: &str, ty: &str) -> Result<()> {
-    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let mut stmt = conn.prepare(&format!("PRAGMA table_xinfo({table})"))?;
     let existing: Vec<String> = stmt
         .query_map([], |row| row.get::<_, String>(1))?
         .collect::<std::result::Result<_, _>>()?;
@@ -587,15 +953,146 @@ mod tests {
             usage: Default::default(),
             tool_calls: Vec::new(),
             shape: None,
-            request_body: crate::capture::StoredBody {
+            response_body: crate::capture::StoredBody {
                 stored: b"{\"hello\":1}".to_vec(),
                 truncated: false,
                 true_bytes: 11,
             },
-            response_body: Default::default(),
             request_bytes: 11,
             response_bytes: 0,
         }
+    }
+
+    /// The replay problem in miniature. Two requests one turn apart: the second resends
+    /// everything the first did. The text must be written once, the positions twice, and
+    /// the whole thing must come back out of the index.
+    #[test]
+    fn a_replayed_conversation_is_stored_once_and_stays_searchable() {
+        let dir = std::env::temp_dir().join(format!("ar-search-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut db = Db::open(&dir.join("store.db")).unwrap();
+        crate::pricing::ensure_table(&db.conn).unwrap();
+
+        // The third message repeats the first word for word — same block, second site.
+        let first = br#"{"messages":[
+            {"role":"user","content":[{"type":"text","text":"where does the kestrel roost"}]}]}"#;
+        let again = br#"{"messages":[
+            {"role":"user","content":[{"type":"text","text":"where does the kestrel roost"}]},
+            {"role":"assistant","content":[{"type":"text","text":"on the cliff ledge, near body_cap"}]},
+            {"role":"user","content":[{"type":"text","text":"where does the kestrel roost"}]}]}"#;
+
+        for (n, body) in [(1, &first[..]), (2, &again[..])] {
+            let mut ev = an_event("claude-opus-5");
+            ev.request_id = Some(format!("req-{n}"));
+            ev.shape = crate::analyze::analyze_request(body);
+            db.record(&ev).unwrap();
+        }
+
+        fn count(db: &Db, sql: &str) -> i64 { db.conn.query_row(sql, [], |r| r.get(0)).unwrap() }
+        assert_eq!(count(&db, "SELECT count(*) FROM bodies_db.blocks"), 2, "two distinct texts");
+        assert_eq!(
+            count(&db, "SELECT count(*) FROM bodies_db.block_sites"),
+            3,
+            "three places they sat, across both requests"
+        );
+
+        // The index must see the block, and find it by a word from the middle of it.
+        assert_eq!(
+            count(&db, "SELECT count(*) FROM bodies_db.blocks_fts WHERE blocks_fts MATCH 'kestrel'"),
+            1
+        );
+        // An identifier survives the tokenizer whole rather than splitting at the `_`.
+        assert_eq!(
+            count(&db, "SELECT count(*) FROM bodies_db.blocks_fts WHERE blocks_fts MATCH 'body_cap'"),
+            1
+        );
+        // And the text really is readable back through the external-content index.
+        let snip: String = db
+            .conn
+            .query_row(
+                "SELECT snippet(blocks_fts, 0, '[', ']', '…', 8) FROM bodies_db.blocks_fts
+                 WHERE blocks_fts MATCH 'cliff'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(snip.contains("[cliff]"), "snippet should mark the hit, got {snip:?}");
+
+        // A third request replaying the same two turns adds nothing at all.
+        let mut ev = an_event("claude-opus-5");
+        ev.request_id = Some("req-3".into());
+        ev.shape = crate::analyze::analyze_request(again);
+        db.record(&ev).unwrap();
+        assert_eq!(count(&db, "SELECT count(*) FROM bodies_db.blocks"), 2);
+        assert_eq!(count(&db, "SELECT count(*) FROM bodies_db.block_sites"), 3);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A session recorded before its `system`-message environment was read gets the
+    /// directory its main thread's opening names: in place of none, and in place of a
+    /// quoted one. One told only after the first reply, a subagent's own opening, and a
+    /// session from an older build are no evidence, and it is done once.
+    #[test]
+    fn sessions_recorded_without_a_directory_get_it_from_their_opening() {
+        let dir = std::env::temp_dir().join(format!("ar-cwds-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("store.db");
+        let mut db = Db::open(&path).unwrap();
+        crate::pricing::ensure_table(&db.conn).unwrap();
+
+        let env = |p: &str| format!("# Environment\nYou have been invoked in the following environment: \n - Primary working directory: {p}\n");
+        let opening = |p: &str| serde_json::json!([
+            { "role": "user", "content": "fix it" },
+            { "role": "system", "content": [{ "type": "text", "text": env(p) }] },
+            { "role": "assistant", "content": "On it." },
+        ]);
+        let quoted = "/Users/u/code/project\\n - Is a git repository: true\\n\";";
+        // (session, stored directory, subagent, messages)
+        let requests = [
+            ("missed", None, None, opening("/home/u/code/p")),
+            ("quoted", Some(quoted), None, opening("/home/u/code/q")),
+            ("too-late", None, None, serde_json::json!([
+                { "role": "user", "content": "hello" },
+                { "role": "assistant", "content": "Hi." },
+                { "role": "system", "content": env("/home/u/elsewhere") },
+            ])),
+            ("forked", None, None, opening("/home/u/code/r")),
+            ("forked", None, Some("a1"), opening("/home/u/code/r/.claude/worktrees/a1")),
+            ("older", Some("/kept/as/is"), None, serde_json::json!([{ "role": "user", "content": "hi" }])),
+        ];
+        for (n, (session, cwd, agent, messages)) in requests.iter().enumerate() {
+            db.touch_session(session, *cwd, None, None).unwrap();
+            let mut ev = an_event("claude-opus-5");
+            ev.request_id = Some(format!("req-{n}"));
+            ev.session_id = Some(session.to_string());
+            ev.agent_id = agent.map(str::to_owned);
+            ev.shape = crate::analyze::analyze_request(serde_json::json!({ "messages": messages }).to_string().as_bytes());
+            db.record(&ev).unwrap();
+        }
+
+        assert_eq!(backfill_session_cwds(&path).unwrap(), 3);
+        let cwd = |id: &str| -> Option<String> {
+            db.conn.query_row("SELECT cwd FROM sessions WHERE id = ?1", [id], |r| r.get(0)).unwrap()
+        };
+        assert_eq!(cwd("missed").as_deref(), Some("/home/u/code/p"));
+        assert_eq!(cwd("quoted").as_deref(), Some("/home/u/code/q"));
+        assert_eq!(cwd("too-late"), None);
+        assert_eq!(cwd("forked").as_deref(), Some("/home/u/code/r"), "the main thread's, not the subagent's");
+        assert_eq!(cwd("older").as_deref(), Some("/kept/as/is"));
+        let listed: i64 = db
+            .conn
+            .query_row("SELECT count(*) FROM projects WHERE cwd = '/home/u/code/p'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(listed, 1, "and its project is listed");
+
+        db.conn.execute("UPDATE sessions SET cwd = NULL WHERE id = 'missed'", []).unwrap();
+        assert_eq!(backfill_session_cwds(&path).unwrap(), 0, "once");
+        assert_eq!(cwd("missed"), None);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A store written before bodies had their own file still has them in the main one.
@@ -707,13 +1204,25 @@ mod tests {
         let (content, bytes): (Vec<u8>, i64) = db
             .conn
             .query_row(
-                "SELECT content, true_bytes FROM bodies_db.bodies WHERE direction = 'request'",
+                "SELECT content, true_bytes FROM bodies_db.bodies WHERE direction = 'response'",
                 [],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .unwrap();
         assert_eq!(content, b"{\"hello\":1}".to_vec());
         assert_eq!(bytes, 11);
+
+        // The request body is no longer kept: what was worth reading in it is indexed
+        // as blocks, and the capped copy this used to store was never read back.
+        let requests: i64 = db
+            .conn
+            .query_row(
+                "SELECT count(*) FROM bodies_db.bodies WHERE direction = 'request'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(requests, 0, "no request body should be written");
 
         // And it is genuinely a separate file on disk, not a table under another name.
         assert!(dir.join("store-bodies.db").exists(), "sidecar file should exist");
@@ -749,5 +1258,116 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(u.prompt_tokens(), 132);
+    }
+
+    /// A store reached by an add under the built-in account's name, from before adds stopped
+    /// replacing accounts: a new "Default" made it a token account, its token stored under
+    /// the account's id, and a profile add made it a profile account. The next start makes it
+    /// Claude Code's login again, exactly as it was, and forgets the token that add stored,
+    /// keeping its usage key, which is its own. No other account changes.
+    ///
+    /// The built-in account's id is this test's own rather than "default": the secrets file,
+    /// which every test in the process shares (`accounts::secrets`), never holds a token
+    /// under "default" for another test to find.
+    #[test]
+    fn built_in_account_restored_at_startup_and_no_other_account_changes() {
+        use crate::accounts::{self, Account, AuthStatus, Source, Store};
+        use rusqlite::types::Value;
+
+        // None of these is a credential.
+        const STRAY: &str = "sk-ant-oat01-stray-QZ9JX8QZ9JX8QZ9JX8QZ9JX8QZ9JX8QZ9JX8QZ9JX8QZ9JX8QZ9JX8QZ9JX8QZ9JX8QZ9JX8QZ9JX8QZ9";
+        const WORK: &str = "sk-ant-oat01-work-JX8QZ9JX8QZ9JX8QZ9JX8QZ9JX8QZ9JX8QZ9JX8QZ9JX8QZ9JX8QZ9JX8QZ9JX8QZ9JX8QZ9JX8QZ9JX8";
+        const BUILT_IN_USAGE: &str = "sk-ant-sid01-built-in-QZ9JX8";
+        const WORK_USAGE: &str = "sk-ant-sid01-work-JX8QZ9";
+
+        let dir = std::env::temp_dir().join(format!("ar-built-in-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("agent-router.db");
+        let db = Db::open(&path).unwrap();
+        let store = Store::new(path.clone());
+        let id = "built-in-restored-default";
+        let me = AuthStatus {
+            logged_in: true,
+            email: Some("me@example.com".into()),
+            subscription_type: Some("max".into()),
+            ..Default::default()
+        };
+
+        // Every column of the accounts this filter picks, in id order.
+        let rows = |filter: &str| -> Vec<Vec<Value>> {
+            let mut stmt = db.conn.prepare(&format!("SELECT * FROM accounts WHERE {filter} ORDER BY id")).unwrap();
+            let n = stmt.column_count();
+            stmt.query_map([id], |r| (0..n).map(|i| r.get::<_, Value>(i)).collect())
+                .unwrap()
+                .map(Result::unwrap)
+                .collect()
+        };
+        // The token the router would sign with for a token account with this id, and the
+        // account's usage key.
+        let secrets = |of: &str| {
+            let as_token = Account { id: of.into(), label: String::new(), source: Source::Token, profile_dir: None, email: None };
+            (accounts::resolve(&as_token).ok().map(|r| r.token), accounts::usage_token(of))
+        };
+
+        // The first start, and an account of each other kind beside the built-in one, which
+        // is no longer the active one. Its usage key, as `quota::set_usage_token` records it.
+        db.upsert_default_account(id, "me@example.com", &me).unwrap();
+        store
+            .add("built-in-restored-work", "Work", Source::Token, None, &AuthStatus::default(), || {
+                accounts::store_token("built-in-restored-work", WORK)
+            })
+            .unwrap();
+        accounts::store_usage_token("built-in-restored-work", WORK_USAGE).unwrap();
+        let home = "/nowhere/accounts/built-in-restored-home";
+        store.add("built-in-restored-home", "Home", Source::Profile, Some(home), &AuthStatus::default(), || Ok(())).unwrap();
+        store.activate("built-in-restored-work").unwrap();
+        accounts::store_usage_token(id, BUILT_IN_USAGE).unwrap();
+        db.conn.execute("UPDATE accounts SET usage_key = 1 WHERE id = ?1", [id]).unwrap();
+
+        let built_in = rows("id = ?1");
+        let others = rows("id != ?1");
+        assert_eq!(others.len(), 2);
+        let theirs = [secrets("built-in-restored-work"), secrets("built-in-restored-home")];
+        assert_eq!(theirs[0], (Some(WORK.to_string()), Some(WORK_USAGE.to_string())));
+
+        let profile = "/nowhere/accounts/built-in-restored-default";
+        for (source, profile_dir) in [("token", None), ("profile", Some(profile))] {
+            // The add from before, as it wrote over an account whose id it took: the token
+            // stored first, then the row upserted over the one there.
+            if source == "token" {
+                accounts::store_token(id, STRAY).unwrap();
+            }
+            db.conn
+                .execute(
+                    "INSERT INTO accounts (id, label, source, profile_dir, email, org_name,
+                                           subscription_type, active, created_at)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,0,?8)
+                     ON CONFLICT(id) DO UPDATE SET
+                       label = ?2, source = ?3, profile_dir = ?4,
+                       email = COALESCE(?5, email), org_name = COALESCE(?6, org_name),
+                       subscription_type = COALESCE(?7, subscription_type)",
+                    params![id, "Default", source, profile_dir, None::<String>, None::<String>, None::<String>, now_ms()],
+                )
+                .unwrap();
+            assert_eq!(store.get(id).unwrap().unwrap().source.as_str(), source, "the add wrote over it");
+
+            // The next start.
+            db.upsert_default_account(id, "me@example.com", &me).unwrap();
+            assert_eq!(rows("id = ?1"), built_in, "{source}: Claude Code's login again, as it was");
+            assert_eq!(secrets(id), (None, Some(BUILT_IN_USAGE.to_string())), "{source}: no token of the add's, its own usage key");
+            assert_eq!(rows("id != ?1"), others, "{source}: no other account changed");
+            assert_eq!([secrets("built-in-restored-work"), secrets("built-in-restored-home")], theirs, "{source}");
+        }
+
+        // A start with nothing to put back changes nothing.
+        db.upsert_default_account(id, "me@example.com", &me).unwrap();
+        assert_eq!(rows("id = ?1"), built_in);
+        assert_eq!(secrets(id), (None, Some(BUILT_IN_USAGE.to_string())));
+        assert_eq!(rows("id != ?1"), others);
+        accounts::forget_usage_token(id).unwrap();
+        accounts::forget_token("built-in-restored-work").unwrap();
+        accounts::forget_usage_token("built-in-restored-work").unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

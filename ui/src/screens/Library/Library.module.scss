@@ -1,0 +1,217 @@
+// New for agent-router: the Library screen's layout, on Carbon's tokens.
+@use '@carbon/react/scss/spacing' as *;
+@use '@carbon/react/scss/theme' as *;
+@use '@carbon/react/scss/type' as *;
+
+.local,
+.none {
+  @include type-style('body-01');
+  color: $text-secondary;
+  max-width: 60ch;
+}
+
+.muted {
+  @include type-style('helper-text-01');
+  color: $text-secondary;
+}
+
+.stale {
+  @include type-style('helper-text-01');
+  color: $text-error;
+}
+
+.list {
+  margin-block-start: $spacing-05;
+}
+
+.row {
+  :global(.cds--contained-list-item__content) {
+    display: grid;
+    gap: $spacing-02;
+  }
+  &[data-open] {
+    background: $layer-selected-01;
+  }
+}
+
+.open {
+  @include type-style('heading-compact-01');
+  color: $link-primary;
+  text-decoration: none;
+}
+
+.kind {
+  @include type-style('label-01');
+  color: $text-secondary;
+  text-transform: uppercase;
+}
+
+.description {
+  @include type-style('body-01');
+  max-width: 80ch;
+}
+
+.facts {
+  @include type-style('helper-text-01');
+  color: $text-secondary;
+  display: flex;
+  flex-wrap: wrap;
+  gap: $spacing-03;
+}
+
+.waiting {
+  color: $support-warning;
+  font-weight: 600;
+}
+
+.archived {
+  color: $text-secondary;
+  font-style: italic;
+}
+
+// An item nobody used in 30 days: the one to consider archiving (LB-C15).
+.unused {
+  color: $support-warning;
+}
+
+.cost {
+  display: grid;
+  gap: $spacing-03;
+  margin-block-end: $spacing-05;
+  max-width: 60rem;
+}
+
+.costLine {
+  @include type-style('body-02');
+}
+
+.use {
+  display: grid;
+  gap: $spacing-04;
+  max-width: 60rem;
+}
+
+.splits {
+  display: grid;
+  gap: $spacing-05;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr));
+}
+
+.h4 {
+  @include type-style('heading-01');
+  margin-block-end: $spacing-03;
+}
+
+.said {
+  @include type-style('body-01');
+  margin-block: $spacing-04;
+}
+
+.confirm {
+  display: flex;
+  gap: $spacing-03;
+}
+
+.h3 {
+  @include type-style('heading-02');
+  margin-block: $spacing-06 $spacing-03;
+}
+
+.main {
+  border-inline-start: 2px solid $border-subtle-01;
+  padding-inline-start: $spacing-05;
+  max-width: 90ch;
+}
+
+.files,
+.versions {
+  list-style: none;
+  padding: 0;
+  display: grid;
+  gap: $spacing-02;
+
+  li {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: $spacing-03;
+  }
+}
+
+.number {
+  @include type-style('code-02');
+}
+
+.state {
+  @include type-style('label-01');
+  text-transform: uppercase;
+}
+
+.versions li[data-state='live'] .state {
+  color: $support-success;
+}
+
+.versions li[data-state='pending'] .state {
+  color: $support-warning;
+}
+
+.acts {
+  display: flex;
+  gap: $spacing-02;
+}
+
+.text,
+.diff {
+  @include type-style('code-01');
+  background: $layer-01;
+  padding: $spacing-04;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  max-height: 32rem;
+}
+
+.added {
+  color: $support-success;
+}
+
+.removed {
+  color: $support-error;
+  text-decoration: line-through;
+}
+
+.same {
+  color: $text-secondary;
+}
+
+.upload {
+  display: grid;
+  gap: $spacing-05;
+  max-width: 40rem;
+}
+
+.picks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: $spacing-05;
+}
+
+.pick {
+  display: grid;
+  gap: $spacing-02;
+  @include type-style('label-01');
+}
+
+.chosen {
+  @include type-style('body-01');
+}
+
+.sync {
+  display: grid;
+  gap: $spacing-03;
+  margin-block-end: $spacing-04;
+}
+
+.told {
+  @include type-style('body-01');
+  padding-inline-start: $spacing-05;
+}

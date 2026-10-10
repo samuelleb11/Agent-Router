@@ -1,0 +1,22 @@
+{{- if not .Values.persistence.existingClaim }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "agent-router.data.claimName" . }}
+  labels:
+    {{- include "agent-router.labels" . | nindent 4 }}
+  annotations:
+    # The store, the token file and the push keys. Uninstalling the release must not
+    # delete them.
+    helm.sh/resource-policy: keep
+spec:
+  # One pod writes the store, and SQLite wants block storage under it, never NFS.
+  accessModes:
+    - ReadWriteOnce
+  {{- with .Values.persistence.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.size }}
+{{- end }}

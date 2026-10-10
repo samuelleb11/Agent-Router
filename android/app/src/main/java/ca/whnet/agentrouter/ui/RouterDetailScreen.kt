@@ -35,6 +35,8 @@ import androidx.compose.ui.unit.dp
 import ca.whnet.agentrouter.data.AppState
 import ca.whnet.agentrouter.data.Projection
 import ca.whnet.agentrouter.data.Router
+import ca.whnet.agentrouter.data.RouterState
+import ca.whnet.agentrouter.data.SessionCounts
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
@@ -48,6 +50,7 @@ fun RouterDetailScreen(
     onUsage: () -> Unit,
     onAccounts: () -> Unit,
     onSettings: () -> Unit,
+    onSearch: () -> Unit,
 ) {
     val state = app.state(router)
     val scope = rememberCoroutineScope()
@@ -85,7 +88,7 @@ fun RouterDetailScreen(
             state.failure?.let { f ->
                 SettingsSection(footer = "Everything below is whatever was last seen.") {
                     Text(
-                        f.message ?: "unreachable",
+                        RouterState.describe(f, state.isHosted),
                         Modifier.padding(16.dp),
                         color = MaterialTheme.colorScheme.error,
                     )
@@ -99,8 +102,7 @@ fun RouterDetailScreen(
                         when {
                             !state.sessionsLoaded -> if (state.failure == null) "connecting…" else "no data"
                             state.sessions.isEmpty() -> "none this week"
-                            state.activeSessions > 0 -> "${state.activeSessions} active · ${state.sessions.size} this week"
-                            else -> "${state.sessions.size} this week"
+                            else -> SessionCounts.weekLine(state.sessions)
                         },
                         onSessions,
                     )
@@ -116,6 +118,12 @@ fun RouterDetailScreen(
                         "Accounts",
                         state.activeAccount?.title ?: "${state.accounts.size} configured",
                         onAccounts,
+                    )
+                    HorizontalDivider()
+                    NavRow(
+                        "Search",
+                        "Every message, tool call and result ever recorded",
+                        onSearch,
                     )
                 }
             }

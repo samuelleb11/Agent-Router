@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["image", "server", "terminationGracePeriodSeconds", "auth", "persistence", "service", "ingress"],
+  "properties": {
+    "image": {
+      "type": "object",
+      "required": ["repository"],
+      "properties": {
+        "repository": { "type": "string", "minLength": 1 },
+        "tag": { "type": "string" },
+        "pullPolicy": { "enum": ["Always", "IfNotPresent", "Never"] }
+      }
+    },
+    "server": {
+      "type": "object",
+      "required": ["drainSeconds"],
+      "properties": {
+        "publicUrl": {
+          "type": "string",
+          "description": "Empty, or http(s)://host[:port][/path] whose host is a name, as the router's --public-url accepts.",
+          "pattern": "^$|^https?://[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?\\.?(:[0-9]{1,5})?(/[^\\s]*)?$"
+        },
+        "allowHosts": {
+          "type": "array",
+          "description": "Bare host names: no scheme, no port, no path.",
+          "items": { "type": "string", "pattern": "^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$" }
+        },
+        "drainSeconds": { "type": "integer", "minimum": 0 },
+        "extraArgs": { "type": "array", "items": { "type": "string" } },
+        "extraEnv": { "type": "array" }
+      }
+    },
+    "terminationGracePeriodSeconds": { "type": "integer", "minimum": 1 },
+    "auth": {
+      "type": "object",
+      "properties": {
+        "password": { "type": "string" },
+        "existingSecret": { "type": "string" },
+        "passwordKey": { "type": "string", "minLength": 1 }
+      }
+    },
+    "push": {
+      "type": "object",
+      "properties": {
+        "existingSecret": { "type": "string" }
+      }
+    },
+    "persistence": {
+      "type": "object",
+      "properties": {
+        "size": { "type": "string", "minLength": 1 },
+        "storageClass": { "type": "string" },
+        "existingClaim": { "type": "string" }
+      }
+    },
+    "service": {
+      "type": "object",
+      "properties": {
+        "type": { "enum": ["ClusterIP", "NodePort", "LoadBalancer"] },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+      }
+    },
+    "ingress": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "className": { "type": "string" },
+        "host": {
+          "type": "string",
+          "description": "Empty only while the ingress is off: the chart refuses an enabled ingress without a host, in a sentence.",
+          "pattern": "^$|^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$"
+        },
+        "annotations": { "type": "object" },
+        "tls": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "secretName": { "type": "string" }
+          }
+        }
+      }
+    }
+  }
+}

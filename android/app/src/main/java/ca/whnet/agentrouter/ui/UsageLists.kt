@@ -254,7 +254,7 @@ fun RequestDetailScreen(request: RequestRow, onBack: () -> Unit) {
                 request.ttfbMs?.let { Field("First byte", Fmt.duration(it)) }
                 request.durationMs?.let { Field("Took", Fmt.duration(it)) }
                 if (request.isSubagent) Field("Thread", "subagent ${request.agentId ?: ""}")
-                request.project?.let { Field("Project", it.substringAfterLast('/')) }
+                if (request.project != null) Field("Project", request.projectName)
             }
         }
 

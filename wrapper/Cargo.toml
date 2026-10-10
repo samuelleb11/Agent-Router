@@ -6,3 +6,20 @@ edition = "2021"
 # No dependencies, deliberately. This process sits in the critical path of every
 # Claude Code session in the editor; there is nothing here to break on an update.
 [dependencies]
+
+# Windows only: the named pipe, its owner-only security, the job object and the console
+# handler have no std API. Raw bindings with nothing behind them but the system's own DLLs;
+# every other platform builds with no dependencies at all.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+    "Win32_System_IO",
+    "Win32_System_JobObjects",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+    "Win32_System_WindowsProgramming",
+] }

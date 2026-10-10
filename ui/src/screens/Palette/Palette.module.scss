@@ -1,0 +1,77 @@
+// Copied from Northstar ui/src/screens/Palette/Palette.module.scss at e9c1589.
+// Changed: the modal's frame only: where it sits, and the column its body fills. In a hand the overlay starts under the topbar as well as the sheet, so a tap on the topbar reaches it, and the sheet runs to the foot of the screen whatever it holds. The rules for what it holds are in Body.module.scss, which arrives with the body rather than with every page.
+@use '@carbon/react/scss/spacing' as *;
+@use '@carbon/react/scss/type' as *;
+@use '@carbon/react/scss/breakpoint' as *;
+
+// The sheet starts where the shell's header ends, so the palette never covers the header's own
+// facts and actions: Carbon's 3rem bar, taller under a phone's notch (--ar-shell-header,
+// styles.scss).
+$ar-header-height: var(--ar-shell-header);
+
+// The palette sits near the top of the viewport on a desk — where the eye already is
+// after ⌘K — rather than centred like a transactional modal. The offset is a spacing
+// token, the nearest to the tenth-of-a-screen the brief describes, so no length is
+// written here.
+//
+// In a hand the OVERLAY starts under the topbar too, not only the sheet. Carbon's overlay
+// covers the whole viewport, so a topbar left visible above the sheet would still be under
+// it: dimmed, and a tap on its menu, its search action or its theme switch would land on the
+// overlay and only close the palette. Starting the overlay where the topbar ends leaves the
+// topbar's facts readable and its actions working while the palette is open (SH-C51).
+.modal:global(.cds--modal) {
+  align-items: flex-start;
+  padding-block-start: $spacing-12;
+
+  @include breakpoint-down('md') {
+    inset-block: $ar-header-height 0;
+    block-size: auto;
+    padding-block-start: 0;
+  }
+}
+
+.container:global(.cds--modal-container) {
+  overflow: hidden;
+
+  // Below md Carbon pins the container to the top of the viewport and lets it take the
+  // whole screen, which buries the topbar under the palette. The sheet starts under the
+  // topbar instead and runs to the foot of the screen whatever it holds: a full-height
+  // sheet, which is what a hand expects, and the desk palette's own content inside it.
+  @include breakpoint-down('md') {
+    inset-block: $ar-header-height 0;
+    block-size: auto;
+    max-block-size: none;
+  }
+}
+
+// Carbon's container is a grid of `auto 1fr auto` capped at a fraction of the viewport,
+// and its body wrapper is `display: contents`, so this is a grid item. It takes the
+// middle row and is a column whose RESULTS are the one part that scrolls: the field and
+// the scope line stay put, whatever stands where the hits would scrolls between them, and
+// no height is written here.
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-05;
+  grid-row: 2 / -2;
+  min-block-size: 0;
+  min-inline-size: 0;
+  // Block padding only. The inline gutter belongs to each child, so that a row's hover
+  // fill and a section's rule run the full width of the sheet while every word in the
+  // palette — the field, a group's label, a hit's label, a sentence, the scope line — starts
+  // at the SAME left edge, one $spacing-05 in.
+  padding-block: $spacing-05;
+
+  // The foot of a phone's screen may be its home indicator's.
+  @include breakpoint-down('md') {
+    padding-block-end: max(#{$spacing-05}, env(safe-area-inset-bottom));
+  }
+}
+
+// What the frame says while its body arrives, the first time it opens.
+.opening {
+  @include type-style('helper-text-01');
+  color: var(--cds-text-secondary);
+  margin: 0;
+  padding-inline: $spacing-05;
+}

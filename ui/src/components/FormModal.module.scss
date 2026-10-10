@@ -1,0 +1,32 @@
+// Copied from Northstar ui/src/components/FormModal.module.scss at e9c1589.
+// Changed: on a phone the fields take body-02, which is 16px; Northstar's body-01 compiles to 14px, under the size iOS zooms into, while its comment promised 16.
+@use '@carbon/react/scss/spacing' as *;
+@use '@carbon/react/scss/type' as *;
+@use '@carbon/react/scss/breakpoint' as *;
+
+// On a desk a small dialog; in a hand the whole screen, so a form with five fields is not
+// typed into a letterbox (docs/13 §7).
+.container {
+  @include breakpoint-down('md') {
+    inline-size: 100%;
+    max-inline-size: 100%;
+    block-size: 100%;
+    max-block-size: 100%;
+  }
+}
+
+.form {
+  display: grid;
+  gap: $spacing-05;
+  align-content: start;
+
+  @include breakpoint-down('md') {
+    // No field under 16px: iOS zooms into a smaller one and never zooms back out. `body-02`
+    // is the 1rem step of the type scale; `body-01` is 0.875rem.
+    :global(.cds--text-input),
+    :global(.cds--text-area),
+    :global(.cds--select-input) {
+      @include type-style('body-02');
+    }
+  }
+}

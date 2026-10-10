@@ -1,0 +1,90 @@
+// New for agent-router: a tooltip for data that a tap can pin, on Carbon tokens
+// (docs/web-console-carbon.md, "Why Carbon, and what it does not cover"). Drawn from the
+// dashboard's `#tt` (assets/index.html).
+@use '@carbon/react/scss/spacing' as *;
+@use '@carbon/react/scss/type' as *;
+@use '@carbon/react/scss/utilities/focus-outline' as *;
+@use '@carbon/react/scss/utilities/z-index' as *;
+
+/// What carries the tip. It takes the keyboard's focus, which a bare chart or bar never could
+/// (SH-C30), and shows where the focus is (OV-C201).
+.target {
+  position: relative;
+  min-inline-size: 0;
+  cursor: default;
+
+  &:focus-visible {
+    @include focus-outline('outline');
+  }
+}
+
+/// A fingertip tall on a touch screen (SH-C45): a bar or a strip thinner than a finger is still
+/// one tap to pin.
+@media (pointer: coarse) {
+  .target {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    min-block-size: $spacing-09;
+  }
+}
+
+/// Over everything, the header and a modal included: a tip under the header is no tip. It is
+/// drawn on the surfaces the --ar-* keys were validated on ($layer-01 on $background), never on an
+/// inverse surface where a series' key would vanish. It takes no pointer events, so it never steals
+/// the hover from what it explains (SH-C32).
+.tip {
+  position: fixed;
+  z-index: z('dropdown');
+  display: grid;
+  gap: $spacing-01;
+  max-inline-size: calc(#{$spacing-13} * 2);
+  padding: $spacing-03 $spacing-04;
+  border: 1px solid var(--cds-border-subtle-01);
+  background: var(--cds-layer-01);
+  box-shadow: 0 $spacing-01 $spacing-03 var(--cds-shadow);
+  color: var(--cds-text-primary);
+  pointer-events: none;
+  @include type-style('label-01');
+}
+
+.title {
+  @include type-style('heading-compact-01');
+  overflow-wrap: anywhere;
+}
+
+/// Key, figure and label, each row on one baseline (SH-C34).
+.row {
+  display: grid;
+  grid-template-columns: $spacing-04 auto minmax(0, 1fr);
+  align-items: center;
+  gap: $spacing-03;
+}
+
+.value {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.label {
+  color: var(--cds-text-secondary);
+  overflow-wrap: anywhere;
+}
+
+/// The series' key in its own colour and mark: a square for a bar, a line for a line. A row with
+/// no series keeps the column, so every figure lines up (SH-C34).
+.key {
+  justify-self: center;
+  inline-size: $spacing-03;
+  block-size: $spacing-03;
+}
+
+.key[data-mark='line'] {
+  inline-size: $spacing-04;
+  block-size: $spacing-01;
+}
+
+.key[data-mark='none'] {
+  visibility: hidden;
+}

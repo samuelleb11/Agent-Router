@@ -1,0 +1,71 @@
+// Copied from Northstar ui/src/components/Card.module.scss at e9c1589.
+// Changed: the grid takes no third column at xlg: the console switches its layout at one breakpoint, md (SH-C43).
+@use '@carbon/react/scss/spacing' as *;
+@use '@carbon/react/scss/type' as *;
+@use '@carbon/react/scss/breakpoint' as *;
+
+.card {
+  display: grid;
+  align-content: start;
+  gap: $spacing-05;
+  min-inline-size: 0;
+  block-size: 100%;
+  color: var(--cds-text-primary);
+  text-decoration: none;
+}
+
+/// Title left, count right, on one line. The title wraps inside its own box rather than
+/// pushing the count off the card.
+.head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: $spacing-04;
+  min-inline-size: 0;
+}
+
+.title {
+  @include type-style('heading-compact-02');
+  min-inline-size: 0;
+  color: var(--cds-text-primary);
+}
+
+/// Counts are read down a column of cards, so they keep tabular figures.
+.count {
+  @include type-style('heading-03');
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: var(--cds-text-primary);
+}
+
+.body {
+  display: grid;
+  align-content: start;
+  gap: $spacing-04;
+  min-inline-size: 0;
+}
+
+.footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: $spacing-02 $spacing-04;
+  @include type-style('helper-text-01');
+  color: var(--cds-text-secondary);
+}
+
+.grid {
+  display: grid;
+  gap: $spacing-05;
+  align-items: stretch;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  min-inline-size: 0;
+
+  @include breakpoint-down('md') {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  > * {
+    min-inline-size: 0;
+  }
+}

@@ -39,12 +39,47 @@ final class DashboardTests: XCTestCase {
         XCTAssertEqual(b[3].errors, 1)
     }
 
+    /// The search reply, as the router spells it. Counts arrive as integers and are
+    /// read as Doubles; the snippet keeps its markers for the view to split on.
+    func testSearchResultsDecode() throws {
+        let json = #"""
+        {"query":"body_cap","expression":"body_cap",
+         "sessions":[{"session_id":"2b3c4d5e-0000-4000-8000-00000000000b","project":"/code/agent-router",
+                      "session_label":null,"git_branch":"dev","started_at":1790000000000,
+                      "blocks":3,"hits":4,"first_at":1790000000000,"last_at":1790000009000}],
+         "hits":[{"block_id":41,"kind":"tool_use","chars":120,
+                  "session_id":"2b3c4d5e-0000-4000-8000-00000000000b","role":"assistant","ordinal":7,
+                  "request_id":48761,"at":1790000009000,"project":"/code/agent-router",
+                  "session_label":null,"snippet":"why is \#u{2039}body_cap\#u{203A} 64 KB","rank":-8.04}]}
+        """#
+        let r = try JSONDecoder().decode(SearchResults.self, from: Data(json.utf8))
+        XCTAssertEqual(r.sessions.first?.shortId, "2b3c4d5e")
+        XCTAssertEqual(r.sessions.first?.projectName, "agent-router")
+        XCTAssertEqual(r.sessions.first?.hits, 4)
+
+        let hit = try XCTUnwrap(r.hits.first)
+        XCTAssertEqual(hit.kindName, "tool call", "the wire's vocabulary is not the reader's")
+        XCTAssertEqual(hit.id, "2b3c4d5e-0000-4000-8000-00000000000b-41-7",
+                       "a block can appear at several places, so the block alone is not an identity")
+        XCTAssertTrue(hit.snippet.contains("\u{2039}"), "the markers survive for the view to split on")
+    }
+
+    /// A nullable project and a missing label must not fail the whole reply: the join
+    /// behind them is a LEFT JOIN, and a request whose transcript never arrived has
+    /// neither.
+    func testSearchToleratesMissingProjectAndLabel() throws {
+        let json = #"{"query":"x","expression":"x","sessions":[],"hits":[{"block_id":1,"kind":"text","chars":3,"session_id":"s","role":"user","ordinal":0,"request_id":2,"at":1790000000000,"project":null,"session_label":null,"snippet":"x","rank":-1.0}]}"#
+        let r = try JSONDecoder().decode(SearchResults.self, from: Data(json.utf8))
+        XCTAssertEqual(r.hits.first?.projectName, "—")
+        XCTAssertTrue(r.sessions.isEmpty)
+    }
+
     func testListsDecode() throws {
         let projects = try JSONDecoder().decode([ProjectRow].self, from: Data(#"[{"project":"/code/project-b","sessions":3,"requests":40,"prompt_tokens":5000000,"cost":12.5,"output_tokens":40000,"cache_read_tokens":4800000,"subagent_tokens":100000,"errors":0,"models":"claude-opus-5,claude-haiku-4-5","first_seen":1,"last_seen":2}]"#.utf8))
         XCTAssertEqual(projects[0].name, "project-b")
-        let sessions = try JSONDecoder().decode([ProxySessionRow].self, from: Data(#"[{"id":"2631369d-0980-4930-b3d1-3fd7396c4a20","project":"/code/project-b","git_branch":"main","entrypoint":"claude-cli/2.1.269 (external, claude-vscode)","started_at":1,"last_seen_at":2,"requests":4,"prompt_tokens":1000,"cost":0.1,"output_tokens":10,"cache_read_tokens":900,"subagent_tokens":0,"errors":0,"subagents":0,"models":"claude-opus-5","first_request_at":1,"last_request_at":2}]"#.utf8))
+        let sessions = try JSONDecoder().decode([ProxySessionRow].self, from: Data(#"[{"id":"1a2b3c4d-0000-4000-8000-00000000000a","project":"/code/project-b","git_branch":"main","entrypoint":"claude-cli/2.1.269 (external, claude-vscode)","started_at":1,"last_seen_at":2,"requests":4,"prompt_tokens":1000,"cost":0.1,"output_tokens":10,"cache_read_tokens":900,"subagent_tokens":0,"errors":0,"subagents":0,"models":"claude-opus-5","first_request_at":1,"last_request_at":2}]"#.utf8))
         XCTAssertEqual(sessions[0].client, "VS Code")
-        XCTAssertEqual(sessions[0].shortId, "2631369d")
+        XCTAssertEqual(sessions[0].shortId, "1a2b3c4d")
         let requests = try JSONDecoder().decode([RequestRow].self, from: Data(#"[{"id":7,"request_id":"req_1","session_id":"s","project":"/code/project-b","model":"claude-opus-5","status":200,"ttfb_ms":812,"duration_ms":4000,"stop_reason":"tool_use","is_sidechain":0,"agent_id":null,"started_at":1789200000000,"error":null,"prompt_tokens":100000,"input_tokens":10,"output_tokens":500,"thinking_tokens":100,"cost":0.06,"cache_read_tokens":99000,"cache_creation_5m_tokens":990,"cache_creation_1h_tokens":0,"cache_write_tokens":990,"tools":"Bash,Read","context":"system:1000,tools:20000,history:79000"}]"#.utf8))
         XCTAssertEqual(requests[0].toolList, ["Bash", "Read"])
         XCTAssertEqual(requests[0].contextSplit.map(\.0), ["system", "tools", "history"])

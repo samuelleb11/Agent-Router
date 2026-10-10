@@ -1,0 +1,18 @@
+// Copied from Northstar ui/src/components/ShortnameIcon.module.scss at e9c1589.
+// Changed: the box is the icon's own 16px ($spacing-05) and the type is label-01, both tokens.
+@use '@carbon/react/scss/spacing' as *;
+@use '@carbon/react/scss/type' as *;
+
+/// Two capitals in the 16px a Carbon icon occupies, so the link's text starts where every
+/// other link's does. Two letters of label-01 are a hair wider than the box; they overflow it
+/// evenly rather than pushing the text.
+.initials {
+  @include type-style('label-01');
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  inline-size: $spacing-05;
+  overflow: visible;
+  white-space: nowrap;
+}

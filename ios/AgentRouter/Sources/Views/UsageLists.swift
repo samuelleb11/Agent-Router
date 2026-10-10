@@ -1,14 +1,17 @@
 import SwiftUI
 
-/// Projects the router has served, in this scope. Tap one to narrow the page to it.
+/// Projects the router has served, in this scope. Tap one to narrow the page to it — the
+/// sessions with no directory included, by their row's key, as the web console does (OV-C136).
 struct ProjectsView: View {
     let usage: UsageState
     var body: some View {
         List(usage.projects) { p in
-            NavigationLink(value: UsageRoute(routerId: usage.router.router.id, scope: UsageScope(account: usage.scope.account, project: p.project))) {
+            NavigationLink(value: UsageRoute(routerId: usage.router.router.id, scope: UsageScope(account: usage.scope.account, project: p.id))) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(p.name).font(.headline)
-                    Text(p.project).font(.caption2).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.head)
+                    if let path = p.project {
+                        Text(path).font(.caption2).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.head)
+                    }
                     Text("\(Fmt.count(p.sessions)) sessions · \(Fmt.count(p.requests)) req · \(Fmt.compact(p.promptTokens)) read · \(Fmt.usd(p.cost))")
                         .font(.caption).foregroundStyle(.secondary)
                     HStack(spacing: 6) {

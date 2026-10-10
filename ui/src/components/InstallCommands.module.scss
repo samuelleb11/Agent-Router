@@ -1,0 +1,53 @@
+// New for agent-router: how a machine connects to a hosted router, on Carbon tokens. Moved here from the
+// Sessions screen's stylesheet with the component (MA-C2).
+@use '@carbon/react/scss/spacing' as *;
+@use '@carbon/react/scss/type' as *;
+@use '@carbon/react/scss/theme' as *;
+
+/// The sentence, each platform's command under its label, then what else the script installs. As
+/// wide as a command needs, and never wider than the page.
+.connect {
+  display: grid;
+  gap: $spacing-05;
+  inline-size: min(40rem, 100%);
+  min-inline-size: 0;
+}
+
+.install {
+  display: grid;
+  gap: $spacing-03;
+  min-inline-size: 0;
+  text-align: start;
+}
+
+.installLabel {
+  @include type-style('heading-compact-01');
+  margin: 0;
+}
+
+/// A command and its copy button on one line while they fit; the command scrolls in its own box
+/// rather than widen a phone.
+.installRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: $spacing-03;
+  min-inline-size: 0;
+
+  > :global(.cds--snippet) {
+    flex: 1 1 14rem;
+  }
+}
+
+/// What to run, over the commands.
+.connectHow {
+  @include type-style('body-01');
+  margin: 0;
+}
+
+/// What else the script installs, said under the commands in the page's secondary words.
+.connectNote {
+  @include type-style('body-01');
+  color: $text-secondary;
+  margin: 0;
+}

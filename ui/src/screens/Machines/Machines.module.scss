@@ -1,0 +1,102 @@
+// New for agent-router: the Machines screen, on Carbon tokens: the commands that connect a machine,
+// then each machine the router has seen as one item of a list, read at a glance (MA-C2, MA-C3).
+@use '@carbon/react/scss/spacing' as *;
+@use '@carbon/react/scss/type' as *;
+@use '@carbon/react/scss/theme' as *;
+
+/// What a local router says, and what an empty list says: one sentence each (MA-C5, MA-C7).
+.local,
+.none {
+  @include type-style('body-01');
+  margin: 0;
+  max-inline-size: 60ch;
+}
+
+.muted,
+.stale {
+  @include type-style('helper-text-01');
+  color: $text-secondary;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/// Words a screen reader hears between an item's parts; the eye has their places.
+.said {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/// As wide as a machine's two lines need, and never wider than the page.
+.list {
+  max-inline-size: 48rem;
+  min-inline-size: 0;
+}
+
+.machine {
+  min-inline-size: 0;
+
+  :global(.cds--contained-list-item__content) {
+    min-inline-size: 0;
+  }
+}
+
+.body {
+  display: grid;
+  gap: $spacing-01;
+  min-inline-size: 0;
+}
+
+/// Its dot, its label and its platform on one line; a long label is cut short rather than widen a
+/// phone, and the platform keeps its room.
+.top {
+  display: flex;
+  align-items: center;
+  gap: $spacing-03;
+  min-inline-size: 0;
+}
+
+.name {
+  @include type-style('heading-compact-01');
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.platform {
+  @include type-style('label-01');
+  flex: none;
+  color: $text-secondary;
+}
+
+.presence,
+.build {
+  @include type-style('helper-text-01');
+  color: $text-secondary;
+  overflow-wrap: anywhere;
+}
+
+/// Another build than the router's needs a reader, so it wears the warning colour; the same build
+/// stays quiet (MA-C4).
+.build:not([data-same]) {
+  color: var(--ar-warn);
+}
+
+// Where its Library stands: quiet when well, marked when it wants something done (LB-C11).
+.library {
+  color: $text-secondary;
+  &[data-library='needs'] {
+    color: $support-warning;
+  }
+}
+
+.sync {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: $spacing-03;
+}

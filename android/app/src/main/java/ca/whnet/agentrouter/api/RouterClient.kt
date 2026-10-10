@@ -1,12 +1,14 @@
-// One router, one password. Plain HTTP on the LAN — the router's own trust model.
+// One router, one password. Plain HTTP on the LAN — the router's own trust model — or
+// HTTPS to a hosted router; the base URL says which, and nothing here depends on it.
 
 package ca.whnet.agentrouter.api
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.flow
-import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -28,10 +30,25 @@ sealed class RouterFailure(message: String) : Exception(message) {
     /** 401: the router has a password and this is not it. */
     data object Unauthorized : RouterFailure("Wrong password for this router")
 
-    /** 403 with the router's own message: nobody has set a password on it yet. */
+    /**
+     * 403 with the router's own message: nobody has set a password on it yet. The message
+     * is for a router on a Mac; [HOSTED] says it for a hosted one, wherever
+     * [ca.whnet.agentrouter.data.RouterState.describe] is told the router is.
+     */
     data object NoPasswordSet :
-        RouterFailure("This router has no password yet — set one on its dashboard, on the Mac")
+        RouterFailure("This router has no password yet — set one on its dashboard, on the Mac") {
+        /** A hosted router's password is never set from a dashboard: only its deployment sets it. */
+        const val HOSTED = "This router has no password yet — a hosted router's password is set by its deployment"
+    }
 
+    /**
+     * An error status that says why in the router's own words — `error`, or the live
+     * endpoints' `reason` — which are the message as they are. A refused change answers this
+     * way: a password too short, a key that does not sign, a sign-in already running.
+     */
+    class Refused(val code: Int, val words: String) : RouterFailure(words)
+
+    /** An error status with nothing to say for itself: a guard's plain text, a proxy's page. */
     class Status(val code: Int, val body: String) :
         RouterFailure("Router returned $code" + if (body.isEmpty()) "" else ": $body")
 
@@ -74,13 +91,39 @@ class RouterClient(baseUrl: String, private val password: String?) {
             .build()
 
         /**
-         * The live endpoints refuse with `{"ok":false,"reason":…}` and the read API with
-         * `{"error":…}`; either is better than the raw body.
+         * The live endpoints refuse with `{"ok":false,"reason":…}` and the rest with
+         * `{"error":…}` (the wrapper switches send both); either is better than the raw body.
          */
         fun reasonIn(body: String): String? = runCatching {
             val o = routerJson.parseToJsonElement(body) as? JsonObject ?: return null
             (o["reason"] ?: o["error"])?.jsonPrimitive?.content
         }.getOrNull()
+
+        /**
+         * What an error status stands for, read the same way from a call's reply and from a
+         * stream's: the router's own words when the body carries them ([RouterFailure.Refused]),
+         * and otherwise the status it sent with what little the body says. A stream once
+         * threw the bare status without reading the body at all, so a hosted router's "the
+         * machine running this session (…) is offline" reached the screen as "Router
+         * returned 503".
+         *
+         * A refusal arrives as an error status with its reason inside — a router from before
+         * that answered the same refusal as a 200 carrying `error`, which is why
+         * [OkReply.problem] still looks there. Either way the screen shows those words.
+         */
+        fun failure(code: Int, body: String): RouterFailure {
+            val trimmed = body.trim()
+            val words = reasonIn(body)?.takeIf { it.isNotEmpty() }
+            return when {
+                code == 401 -> RouterFailure.Unauthorized
+                code == 403 && trimmed.contains("no password set") -> RouterFailure.NoPasswordSet
+                words != null -> RouterFailure.Refused(code, words)
+                else -> RouterFailure.Status(code, trimmed.take(160))
+            }
+        }
+
+        /** More than any refusal's few words, and all of an error body a stream reads. */
+        private const val ERROR_BODY_MAX = 16_384L
 
         private val JSON = "application/json".toMediaTypeOrNull()
     }
@@ -101,13 +144,8 @@ class RouterClient(baseUrl: String, private val password: String?) {
         }
         response.use {
             val body = it.body?.string().orEmpty()
-            val trimmed = body.trim()
             if (it.isSuccessful) return body
-            when {
-                it.code == 401 -> throw RouterFailure.Unauthorized
-                it.code == 403 && trimmed.contains("no password set") -> throw RouterFailure.NoPasswordSet
-                else -> throw RouterFailure.Status(it.code, reasonIn(body) ?: trimmed.take(160))
-            }
+            throw failure(it.code, body)
         }
     }
 
@@ -135,33 +173,53 @@ class RouterClient(baseUrl: String, private val password: String?) {
      * Server-sent events from [path], until the connection ends or the collector stops.
      * Bytes are split into lines here rather than by a line reader — see [SseLineSplitter]
      * for why that is load-bearing and not a detail.
+     *
+     * The read blocks inside the socket, where coroutine cancellation cannot reach it, so
+     * a collector that stops cancels the call itself. Without that, a stream abandoned on
+     * a link that died quietly — the Mac asleep, the phone off the LAN — held its reader
+     * until the 45 s read timeout, and the feed's retry waited behind it the whole time.
      */
-    fun events(path: String): Flow<SseEvent> = flow {
+    fun events(path: String): Flow<SseEvent> = callbackFlow {
         val b = Request.Builder().url(base + path).header("accept", "text/event-stream")
         if (!password.isNullOrEmpty()) b.header("authorization", authorization(password))
-        val response = try {
-            streams.newCall(b.get().build()).execute()
-        } catch (e: IOException) {
-            coroutineContext.ensureActive()
-            throw RouterFailure.Unreachable(e.message ?: "no route")
-        }
-        response.use {
-            when {
-                it.isSuccessful -> Unit
-                it.code == 401 -> throw RouterFailure.Unauthorized
-                it.code == 403 -> throw RouterFailure.NoPasswordSet
-                else -> throw RouterFailure.Status(it.code, "")
+        val call = streams.newCall(b.get().build())
+        launch(Dispatchers.IO) {
+            val response = try {
+                call.execute()
+            } catch (e: IOException) {
+                ensureActive()
+                throw RouterFailure.Unreachable(e.message ?: "no route")
             }
-            val source = it.body?.source() ?: throw RouterFailure.Unreachable("no body")
-            val splitter = SseLineSplitter()
-            val parser = SseParser()
-            while (!source.exhausted()) {
-                coroutineContext.ensureActive()
-                val line = splitter.feed(source.readByte().toInt() and 0xff) ?: continue
-                emit(parser.feed(line) ?: continue)
+            try {
+                response.use {
+                    // Refused: the body says why, as any call's does, in a few words. A body
+                    // that cannot be read still leaves the status that was sent.
+                    if (!it.isSuccessful) {
+                        val why = runCatching { it.peekBody(ERROR_BODY_MAX).string() }.getOrDefault("")
+                        throw failure(it.code, why)
+                    }
+                    val source = it.body?.source() ?: throw RouterFailure.Unreachable("no body")
+                    val splitter = SseLineSplitter()
+                    val parser = SseParser()
+                    while (!source.exhausted()) {
+                        ensureActive()
+                        val line = splitter.feed(source.readByte().toInt() and 0xff) ?: continue
+                        send(parser.feed(line) ?: continue)
+                    }
+                }
+            } catch (e: IOException) {
+                // Cancelling the call is how a collector that stopped closes the socket, and
+                // the blocked read reports that as an IOException. That is the stop working,
+                // not the router failing, so it ends as the cancellation it is; a real
+                // failure mid-stream goes to the collector as it always did.
+                ensureActive()
+                throw e
             }
+            // The router ended the stream: the flow ends with it, normally.
+            channel.close()
         }
-    }.flowOn(Dispatchers.IO)
+        awaitClose { call.cancel() }
+    }
 }
 
 /** Decode a reply, turning a shape mismatch into something the UI can show. */

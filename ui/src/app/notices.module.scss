@@ -1,0 +1,19 @@
+// Copied from Northstar ui/src/app/notices.module.scss at e9c1589.
+// Changed: nothing.
+@use '@carbon/react/scss/spacing' as *;
+@use '@carbon/react/scss/breakpoint' as *;
+
+.host {
+  position: fixed;
+  right: $spacing-05;
+  bottom: $spacing-05;
+  z-index: 9000;
+  display: grid;
+  gap: $spacing-03;
+  max-width: calc(100vw - #{$spacing-05 * 2});
+
+  @include breakpoint-down('md') {
+    left: $spacing-05;
+    right: $spacing-05;
+  }
+}
