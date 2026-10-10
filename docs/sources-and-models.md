@@ -125,6 +125,25 @@ window's reset, the same state a Claude account's `rejected` status shows. The c
 at the provider's metered rates, so "what this would have cost" stays comparable: Kimi's
 models at Moonshot's Open Platform rates, cited with their date in the pricing seed.
 
+### Kimi Code rates (read 2026-10-10)
+
+From Moonshot's Open Platform pricing page, platform.kimi.ai/docs/pricing/chat, which shows
+no date of its own. US dollars per million tokens, as the seed in `src/pricing.rs` holds them:
+
+| Model | Input | Cache write 5 min | Cache write 1 h | Cache read | Output | Priced as |
+| --- | --- | --- | --- | --- | --- | --- |
+| `k3` | 3.00 | 3.00 | 6.00 | 0.30 | 15.00 | `kimi-k3` |
+| `k3-256k` | 3.00 | 3.00 | 6.00 | 0.30 | 15.00 | `kimi-k3`, in a smaller window |
+| `kimi-for-coding` | 0.95 | 0.95 | 0.95 | 0.19 | 4.00 | `kimi-k2.7-code` |
+| `kimi-for-coding-highspeed` | 1.90 | 1.90 | 1.90 | 0.38 | 8.00 | `kimi-k2.7-code-highspeed` |
+
+- `kimi-for-coding` is K2.8 Preview today, upgraded in place, and the page does not list it.
+  K2.7 Code is the nearest model it does list, so its figures are an estimate.
+- The K2 series charges nothing for writing to the cache, so a write is priced as an
+  uncached input.
+- A rate is edited in the `pricing` table and survives upgrades. Every request is re-priced
+  from it at the next start.
+
 ### Still to measure
 
 These need a Kimi Code key and decide details of the items below. Each answer goes in a
