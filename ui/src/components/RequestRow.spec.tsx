@@ -164,6 +164,34 @@ describe('RequestRow', () => {
   });
 });
 
+describe('RequestRow and its provider', () => {
+  it('OV-C231: given the provider that served it, the card wears its mark alone, named by it, and the detail names the provider and the account in words', () => {
+    render(<Held provider="kimi" account="Kimi · kimi-acc" model="k3" modelShort="k3" family="kimi" />);
+    const mark = within(summary()).getByRole('img', { name: 'Kimi Code' });
+    // After the time, before the model: the card's name reads the provider with the model it served.
+    expect(summary()).toHaveAccessibleName(/^14:05:12 Kimi Code k3 /);
+    // Its tooltip is its name said again, never a fact of its own (SH-C30).
+    expect(mark).toHaveAttribute('title', 'Kimi Code');
+    fireEvent.click(summary());
+    const facts = within(region()).getAllByRole('term').map((dt) => [dt.textContent, dt.nextElementSibling!.textContent]);
+    expect(facts.slice(0, 5)).toEqual([
+      ['at', 'Oct 5, 2026, 14:05:12'],
+      ['model', 'k3'],
+      ['provider', 'Kimi Code'],
+      ['account', 'Kimi · kimi-acc'],
+      ['first token', '3.4 s'],
+    ]);
+    // In the detail, the mark and the name together.
+    expect(within(region()).getByText('Kimi Code').closest('[data-provider]')).toHaveAttribute('data-provider', 'kimi');
+  });
+
+  it('OV-C231: a card given no provider draws none, as before', () => {
+    render(<RequestRow {...BASE} open />);
+    expect(document.querySelector('[data-provider]')).toBeNull();
+    expect(within(region()).queryByText('provider')).toBeNull();
+  });
+});
+
 describe('RequestRow without a hover', () => {
   /// The dashboard gave the full time and model id as titles, the slow badge's meaning as a title, and
   /// the request's split as the bar's tooltip.

@@ -18,8 +18,10 @@ import {
   held,
   HOSTED,
   LOCAL,
+  MIN,
   NOW,
   ok,
+  partsOf,
   project,
   PROJECTS,
   refused,
@@ -544,7 +546,9 @@ describe('all accounts', () => {
     show();
     await loaded();
     const card = within(document.querySelector<HTMLElement>('[data-account-card="kimi"]')!);
-    expect(card.getByText(/^Kimi Code · last request 5 min ago/)).toBeInTheDocument();
+    // Named by its provider's tag beside the account's name (OV-C231), and not again on its line.
+    expect(card.getByText('Kimi Code').closest('[data-provider]')).toHaveAttribute('data-provider', 'kimi');
+    expect(card.getByText(/^last request 5 min ago/)).toBeInTheDocument();
     expect(card.getByText('5-hour')).toBeInTheDocument();
     expect(card.getByText('Month')).toBeInTheDocument();
     expect(card.queryByText('7-day')).toBeNull();
@@ -679,6 +683,88 @@ describe('the requests', () => {
     expect(within(panel('Requests')).getAllByRole('listitem')).toHaveLength(30);
     fireEvent.click(within(screen.getByRole('group', { name: 'Stop reasons' })).getByRole('button', { name: /^tool_use/ }));
     await waitFor(() => expect(within(panel('Requests')).getAllByRole('listitem')).toHaveLength(20));
+  });
+});
+
+describe('each provider', () => {
+  it('OV-C231: the Accounts list and every All accounts card tag an account with its provider, and "active" says for which provider', async () => {
+    const kimi = { id: 'kimi-acc', label: 'Kimi', provider: 'kimi', active: 1, requests: 12, prompt_tokens: 40_000, cost: 0, output_tokens: 900, sessions: 1, last_seen: NOW - 5 * MIN };
+    const byAccount = [...(summary().by_account ?? []), kimi];
+    router((path, query) => (path === '/api/summary' ? ok(partsOf(summary({ by_account: byAccount }), query.get('parts'))) : undefined));
+    show('/?range=all&tab=projects');
+    await loaded();
+    const list = await screen.findByRole('list', { name: 'Accounts' }, { timeout: 10_000 });
+    const row = (name: string) => within(list).getByRole('button', { name });
+    // An Anthropic account and a Kimi Code account can both be active: each says for which provider.
+    expect(row('secondary@example.test')).toHaveTextContent('active for Anthropic');
+    expect(row('Kimi')).toHaveTextContent('active for Kimi Code');
+    expect(row('Kimi').querySelector('[data-provider="kimi"] [data-glyph="kimi"]')).not.toBeNull();
+    expect(row('primary@example.test').querySelector('[data-provider="anthropic"] [data-glyph="anthropic"]')).not.toBeNull();
+    expect(row('primary@example.test')).toHaveTextContent('Anthropic');
+    expect(row('primary@example.test')).not.toHaveTextContent(/active/);
+    // All accounts: every card tagged, the serving one's tag saying for which provider.
+    const card = (id: string) => within(document.querySelector<HTMLElement>(`[data-account-card="${id}"]`)!);
+    expect(card('secondary').getByText('active for Anthropic').closest('[data-provider]')).toHaveAttribute('data-provider', 'anthropic');
+    expect(card('primary').getByText('Anthropic').closest('[data-provider]')).toHaveAttribute('data-provider', 'anthropic');
+    expect(card('primary').queryByText(/^active/)).toBeNull();
+  });
+
+  it('OV-C231: a request’s card wears its provider’s mark, and its detail names the provider and the account that served it', async () => {
+    router((path) =>
+      path === '/api/requests'
+        ? ok([request(1, { provider: 'kimi', account_id: 'kimi-acc', model: 'k3' }), request(2, { account_id: 'retired' })])
+        : path === '/api/accounts'
+          ? ok([...ACCOUNTS, { id: 'kimi-acc', label: 'Kimi', email: null, source: 'token', provider: 'kimi', active: 1 }])
+          : undefined,
+    );
+    show('/?range=all&tab=requests');
+    await loaded();
+    const list = await screen.findByRole('list', { name: 'Requests, newest first' }, { timeout: 10_000 });
+    const [kimi, older] = within(list).getAllByRole('listitem') as [HTMLElement, HTMLElement];
+    // On the card, the mark alone, named by its provider; a request recorded with none is Anthropic's.
+    expect(within(kimi).getByRole('img', { name: 'Kimi Code' })).toBeInTheDocument();
+    expect(within(older).getByRole('img', { name: 'Anthropic' })).toBeInTheDocument();
+    const fact = (item: HTMLElement, label: string) => within(item).getByText(label, { selector: 'dt' }).nextElementSibling?.textContent;
+    fireEvent.click(within(kimi).getByRole('button'));
+    await waitFor(() => expect(fact(kimi, 'account')).toBe('Kimi · kimi-acc'), { timeout: 10_000 });
+    expect(fact(kimi, 'provider')).toBe('Kimi Code');
+    // An account the router no longer holds is its id.
+    fireEvent.click(within(older).getByRole('button'));
+    await waitFor(() => expect(fact(older, 'account')).toBe('retired'), { timeout: 10_000 });
+    expect(fact(older, 'provider')).toBe('Anthropic');
+  });
+
+  it('OV-C231: By model tags each model with the provider that served it, by its mark and name', async () => {
+    const models = [
+      ...summary().models,
+      { model: 'k3', provider: 'kimi', requests: 2, prompt_tokens: 400, cost: 0, output_tokens: 10, thinking_tokens: 0, cache_read_tokens: 0, errors: 0, subagent_requests: 0 },
+    ];
+    router((path, query) => (path === '/api/summary' ? ok(partsOf(summary({ models }), query.get('parts'))) : undefined));
+    show('/?range=all&tab=context');
+    await loaded();
+    const rows = within(await screen.findByRole('list', { name: 'By model' }, { timeout: 10_000 })).getAllByRole('listitem');
+    expect(rows.map((r) => r.querySelector('[data-provider]')?.getAttribute('data-provider'))).toEqual(['anthropic', 'anthropic', 'kimi']);
+    expect(rows[0]).toHaveTextContent('Anthropic');
+    expect(rows[2]).toHaveTextContent('Kimi Code');
+  });
+
+  it('SE-C242: the Overview’s session rows mark the providers of their requests beside their client, each its mark alone', async () => {
+    router((path) =>
+      path === '/api/sessions'
+        ? ok([session(S1, { providers: ['anthropic', 'kimi'] }), session(S2, { providers: ['kimi'], entrypoint: 'kimi-code-cli/2.1.1', client: 'kimi-code-cli' })])
+        : undefined,
+    );
+    show('/?range=all&tab=projects');
+    await loaded();
+    const list = await screen.findByRole('list', { name: 'Sessions' }, { timeout: 10_000 });
+    const marks = (name: string) => [...within(list).getByRole('button', { name }).querySelectorAll('[role="img"]')].map((m) => [m.getAttribute('aria-label'), m.getAttribute('title')]);
+    expect(marks('aaaaaaaa')).toEqual([
+      ['Anthropic', 'Anthropic'],
+      ['Kimi Code', 'Kimi Code'],
+    ]);
+    expect(marks('bbbbbbbb')).toEqual([['Kimi Code', 'Kimi Code']]);
+    // Beside its client, in the client's chip.
+    expect(within(list).getByRole('button', { name: 'bbbbbbbb' }).querySelector('[data-providers]')).toHaveTextContent(/^Kimi Code CLI$/);
   });
 });
 

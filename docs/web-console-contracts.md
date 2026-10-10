@@ -65,7 +65,9 @@ Sessions holds 233. The same day the burn-down gained a short-term trend beside 
 OV-C223 (AGEN-0121), so the Overview holds 223. Also on 2026-10-10 Kimi Code became a client of the
 console (AGEN-0116): its sessions' labels and controls, SE-C234 to SE-C238, and starting a hosted
 one, SE-C239 to SE-C241, so Sessions holds 241; and each machine's clients, MA-C8 to MA-C10, so
-Machines holds 10.
+Machines holds 10. The same day each provider's own mark and name came to stand beside what it
+concerns (AGEN-0127): the mark itself, SH-C56, so the Shell holds 56; accounts, requests and models,
+OV-C231, so the Overview holds 224; and sessions, SE-C242, so Sessions holds 242.
 
 ## Shell
 
@@ -360,6 +362,23 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
   one glyph. *Regression:* no. *Source:* `docs/web-console-carbon.md:140-143`,
   `assets/index.html:369-392`. *Today:* broken — the Settings dialog's title wears the
   account glyph (`assets/index.html:528`).
+- **SH-C56** A provider — Anthropic, Kimi Code — is shown by one shared component, in one of two
+  forms: its mark and its name, wherever there is room; or, in a dense row, its mark alone, whose
+  name is its accessible name and, said again, its tooltip. A mark beside words that already name
+  its provider ("Kimi Code web") is hidden from a screen reader, which would otherwise hear the
+  name twice. The marks are the owners' own files in `ui/src/assets/providers`, as published and
+  unaltered, their digests in its README: Anthropic's, which has no colour of its own, is drawn
+  in the text colour — black on the light theme, white on the dark — whatever colour the words
+  around it wear; Kimi's is the file for the surface it sits on, its black K on a light theme and
+  its white K on a dark one, each with its blue dot. Each is about the height of the text beside
+  it, with a little space between. A provider the console has no mark for is named in words, and
+  a row that names none is Anthropic's, as a request recorded before providers was. *Why:* the
+  owner's decision (2026-10-10, AGEN-0127): one router now serves more than one provider, and each
+  provider's own mark says at a glance whose an account, a request, a model or a session is. The
+  owners' terms forbid altering a mark, so a mark is sized and never recoloured or reshaped. The
+  tooltip is the mark's name said again, never a fact of its own (SH-C30): the mark itself is on
+  the page. *Regression:* no. *Source:* `ui/src/components/ProviderMark.tsx`,
+  `ui/src/assets/providers/README.md`.
 - **SH-C40** When reduced motion is asked for, nothing transitions, nothing pulses and
   nothing scrolls smoothly, and no state is carried by motion alone. *Why:* both pages honour
   it today — transitions off, the busy and waiting pulses off, back-to-top jumps.
@@ -544,6 +563,22 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
   `<svg>`, which then takes a 300×150 box. *Regression:* yes — the comments at
   `assets/index.html:35-36` and `assets/index.html:363-365` record both. *Source:*
   `assets/index.html:35-37`, `assets/index.html:363-367`.
+- **OV-C231** Every account, request and model the Overview names wears its provider (SH-C56). A
+  request's card carries the mark alone, after its time; its detail names, after the model, the
+  provider by its mark and name and the account that served it — its email, else its label, else
+  its router id, with that id beside it (OV-C17) — an account the router no longer holds by its id,
+  and a request recorded before accounts by "—". The account picker marks each account before its
+  name and names its provider on the second line; the Accounts list and each All accounts card tag
+  the account with its provider's mark and name. "active" says for which provider — "active for
+  Anthropic", "active for Kimi Code" — since an account of each provider can be active at once.
+  By model tags each model with the provider that served it, by its mark and name. *Why:* the
+  owner's decision (2026-10-10, AGEN-0127): with two providers on one router, an account, a request
+  or a model whose provider goes unsaid reads as Anthropic's, and "active" alone could not say
+  which of two active accounts signs what. *Regression:* no. *Source:* `src/api.rs` (the summary's
+  `models` and `by_account`, `requests_of`); `ui/src/screens/Overview/panels.ts` (`accountRows`,
+  `modelRows`, `providerWords`), `ui/src/screens/Overview/scopeOptions.ts` (`accountOptions`),
+  `ui/src/screens/Overview/requestList.ts` (`servedBy`), `ui/src/components/RequestRow.tsx`,
+  `ui/src/model/forecast.ts` (`allAccounts`).
 
 ### Scope
 
@@ -580,7 +615,9 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
   its meaningful tail. A session's second line is its branch, its project (unless one is scoped) and
   its start; an account's is its router id and "active". *Why:* the comment on `.menu .mname`.
   *Regression:* no. *Source:* `assets/index.html:88-96`, `assets/index.html:1039-1074`,
-  `assets/index.html:1086-1093`.
+  `assets/index.html:1086-1093`. *Amended:* an account's second line names its provider, "active
+  for" it while it is active, and its mark stands before its name; a session's providers are
+  marked before its id (OV-C231, SE-C242).
 - **OV-C17** An account is shown with its router-side id beside its label, in the picker and in the
   Accounts list. *Why:* "Two rows can carry the same identity (the discovered Keychain login and a
   token for the same person), so the router-side id is what tells them apart." *Regression:* no.
@@ -994,7 +1031,8 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
   meter with percentage and reset, or "—" for a window rolled over or never read; each window's
   forecast line; and a footer of cost, tokens read and requests. *Why:* the quota panel's facts for
   every account at once. *Regression:* no. *Source:* `assets/index.html:1406-1436`.
-  *Amended:* a Kimi Code account's card, OV-C218 to OV-C221.
+  *Amended:* a Kimi Code account's card, OV-C218 to OV-C221; the provider's tag in place of the
+  "active" tag, "active for" its provider while it is active (OV-C231).
 - **OV-C95** Accounts that share a quota say "shares a quota with <names>" on every card in the
   pool, and the line follows the pool as soon as it changes. *Why:* "Say so rather than letting the
   page read as two independent allowances"; check "two credentials on one quota are named as sharing
@@ -1015,7 +1053,9 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
   `seven_day`, a legacy plan's — each with its meter and its forecast line as any card's. *Why:*
   Kimi Code's second window is a monthly total on newer plans, and drawn as "7-day" it would misname
   the quota it measures. *Regression:* no. *Source:* `src/api.rs` (`reading_windows`),
-  `src/forecast.rs` (`MONTH`), [Sources](sources-and-models.md), "Kimi Code".
+  `src/forecast.rs` (`MONTH`), [Sources](sources-and-models.md), "Kimi Code". *Amended:* "Kimi Code"
+  is said by the provider's tag beside the account's name, as every card's provider is, and no
+  longer opens its line (OV-C231).
 - **OV-C219** A spent window — `spent: true`, the provider having refused a request for it — reads
   as spent until its reset ("spent until it resets in 2h 10m, at …") in the error tone, under a full
   meter, with no projection and no basis. *Why:* a 403 that names the window says it is spent until
@@ -1175,7 +1215,8 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
   short name with the full id one press away, a bar in the family colour, and "N req · out · %
   cached · cost", with subagent requests and errors when there are any; empty, it says "No requests
   in scope." *Why:* the models that read the most lead. *Regression:* no. *Source:*
-  `assets/index.html:1629-1643`, `src/api.rs:387-406`.
+  `assets/index.html:1629-1643`, `src/api.rs:387-406`. *Amended:* each row is tagged with its
+  provider (OV-C231).
 - **OV-C127** Main thread vs subagents is exactly two parts, main and subagents, as a share bar in
   slate and the subagent colour with their icons; requests from before agent ids were recorded count
   as main, never as a third, nameless thread. *Why:* `src/api.rs:407-408`. *Regression:* no.
@@ -1211,6 +1252,8 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
 - **OV-C134** An account row shows the account icon, its label and router id, an "active" tag while
   it serves, a bar of prompt tokens, and "N sessions · N req · out · <last seen>". *Why:* the facts
   that tell two accounts apart. *Regression:* no. *Source:* `assets/index.html:1684-1694`.
+  *Amended:* the provider's tag in place of the "active" tag, "active for" its provider while it
+  serves (OV-C231).
 - **OV-C135** A project row: the project icon in the project colour, its name, its key — the
   repository, else the directory (OV-C214) — one swatch per model family it used (four at most), a
   bar of prompt tokens with the subagent share laid over its end and labelled "N% subagents", and "N
@@ -1245,7 +1288,8 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
   was launched from and its model families, a bar with the subagent share laid over it, and "N req ·
   cost · out · N subagents · errors · started <time> · <duration>". *Why:* enough to recognise a
   session without opening it. *Regression:* no. *Source:* `assets/index.html:1747-1762`. *Phones:*
-  `testListsDecode`.
+  `testListsDecode`. *Amended:* the providers of its requests are marked beside its client
+  (SE-C242).
 - **OV-C138** The Sessions caption names the scope and the count, and says "200 most recent" when
   the router's cap is reached. *Why:* truncation is loud. *Regression:* no. *Source:*
   `assets/index.html:1745`, `src/api.rs:608`.
@@ -1351,7 +1395,7 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
   with "×N" for repeats, the error at full width with its line breaks, and the request's context
   window as a share bar with each component's percentage. *Why:* everything recorded about one
   request. *Regression:* no. *Source:* `assets/index.html:1909-1931`, `assets/index.html:262-269`.
-  *Phones:* `testListsDecode`.
+  *Phones:* `testListsDecode`. *Amended:* the provider and the account that served it (OV-C231).
 - **OV-C159** On a phone a request is a two-line card — time, model, badges and status over the bar,
   prompt, cache and output — that never widens the page, the first-token time moving into the
   detail. *Why:* the plan's phone-first `RequestRow`. *Regression:* no. *Source:*
@@ -2501,7 +2545,8 @@ defect.
   included, its output and cached tokens, its turns ("1 turn", "2 turns") and its cost when it is
   priced. *Why:* what a session is and what it is costing, at a glance; a total without cache reads
   would say a long session cost nothing. *Regression:* no. *Source:*
-  `assets/live.html:303-311, 1192-1199`.
+  `assets/live.html:303-311, 1192-1199`. *Amended:* a Kimi Code session's client, with its
+  provider's mark (SE-C242).
 - **SE-C132** The project's own total — sessions, tokens, turns and cost — sits apart on the same
   strip, and only when the project has more than one session. *Why:* it answers a different
   question: what is this costing me overall. *Regression:* no. *Source:*
@@ -3002,6 +3047,7 @@ the router refuses a control on any other in its own words (`src/kimi/live.rs`).
   *Why:* whether a session can be typed into decides what its controls can do, and for Kimi Code
   that is whether the router hosts it, not the wrapper. *Regression:* no. *Source:*
   `src/kimi/session.rs` (`discover_in`, `row`); `ui/src/model/session.ts` (`rowView`, `drives`).
+  *Amended:* Kimi Code's mark before its client (SE-C242).
 - **SE-C236** A Kimi Code session the router only watches (`hosted: false`) takes no control from
   here: the composer and Send, Stop, the permission card's buttons, the question form, and the model
   and mode switchers are drawn disabled, and the router's own sentence says why beside the composer,
@@ -3028,6 +3074,21 @@ the router refuses a control on any other in its own words (`src/kimi/live.rs`).
   refuses every other, `plan` included, with a 400, so Claude Code's six would offer three that can
   only be refused. YOLO is Kimi Code's bypass. *Regression:* no. *Source:* `src/kimi/live.rs`
   (`mode_of`, `set_mode`), `src/kimi/web.rs` (`set_mode`).
+- **SE-C242** A session's row shows the providers of its requests beside its client, each by its
+  mark (SH-C56), wherever the row says them, and so do the open session's facts. The Overview's
+  session lists — Sessions under Projects & sessions, and the session picker — read them from
+  `/api/sessions`' `providers`, Anthropic's first: a session that moved between providers through
+  `/model` wears both, each its mark alone and named by it, and a row that lists none is
+  Anthropic's. The live list knows a Kimi Code session by its client (`client: "kimi-code"`): its
+  row wears Kimi Code's mark before "Kimi Code web" or "Kimi Code", and its facts strip says the
+  same — or, before the list has listed it, Kimi Code's mark and name. A Claude Code row carries no
+  `client` and no provider, and its requests go to Anthropic or, through `/model`, to Kimi Code, so
+  its row and its facts strip name neither client nor provider, as before, rather than guess.
+  *Why:* the owner's decision (2026-10-10, AGEN-0127) to name the provider wherever a session is
+  named; a mark the row cannot back would be invented. *Regression:* no. *Source:* `src/api.rs`
+  (`sessions_of`), `src/kimi/session.rs`; `ui/src/screens/Overview/panels.ts` (`providersOf`),
+  `ui/src/model/session.ts` (`rowProvider`), `ui/src/screens/Sessions/List.tsx`,
+  `ui/src/screens/Sessions/Facts.tsx`.
 
 ### Starting a session
 

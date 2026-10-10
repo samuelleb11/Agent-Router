@@ -21,7 +21,7 @@ import type { MachineRef, ProjectRow } from '~/data/router';
 import { POLL_MS } from '~/lib/freshness';
 import type { Forecast } from '~/model/forecast';
 import { sinceMs, type Level, type OverviewTab, type Scope } from '~/model/scope';
-import type { Account, Auth } from '~/model/settings';
+import type { Account, Auth, Provider } from '~/model/settings';
 
 // ---------------------------------------------------------------- the router's answers
 
@@ -83,6 +83,8 @@ export interface ContextRow {
 
 export interface ModelRow {
   readonly model: string;
+  /// The provider that served it: `anthropic`, `kimi` (OV-C231).
+  readonly provider?: Provider | null;
   readonly requests: number | null;
   readonly prompt_tokens: number | null;
   readonly cost: number | null;
@@ -119,6 +121,9 @@ export interface AccountSplitRow {
   readonly id: string;
   /// Its email, else its label, else its id (src/api.rs).
   readonly label: string | null;
+  /// Its own provider, else the one its requests were signed for (OV-C231).
+  readonly provider?: Provider | null;
+  /// Signs its provider's new requests: one account per provider can (OV-C231).
   readonly active: number | boolean | null;
   readonly requests: number | null;
   readonly prompt_tokens: number | null;
@@ -216,6 +221,9 @@ export interface SessionRow {
   readonly subagents: number | null;
   /// The models seen, comma-separated.
   readonly models: string | null;
+  /// The providers its requests went to, Anthropic's first: one session can move between them
+  /// through `/model` (SE-C242).
+  readonly providers?: readonly Provider[] | null;
   readonly first_request_at: number | null;
   readonly last_request_at: number | null;
 }
@@ -251,6 +259,10 @@ export interface RequestRecord {
   readonly session_id: string | null;
   readonly project: string | null;
   readonly model: string | null;
+  /// The provider and the account that served it; a request recorded before providers is
+  /// Anthropic's (OV-C231).
+  readonly provider?: Provider | null;
+  readonly account_id?: string | null;
   readonly status: number | null;
   readonly ttfb_ms: number | null;
   readonly duration_ms: number | null;

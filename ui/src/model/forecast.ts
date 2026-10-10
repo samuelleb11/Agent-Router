@@ -23,6 +23,7 @@
 // the router could not price it (OV-C218 to OV-C221).
 
 import { DASH, ago, compact, count, duration, hours, plural, relative, tod, usd, when } from './format';
+import { providerOf, type Provider } from './settings';
 
 export interface Duty {
   readonly low: number;
@@ -373,10 +374,12 @@ export interface CardWindow {
 export interface AccountCard {
   readonly id: string;
   readonly name: string;
-  /// Serving new requests.
+  /// Its provider, Anthropic's for an account the router names none for, tagged beside its name by
+  /// its mark and name (OV-C218, OV-C231).
+  readonly provider: Provider;
+  /// Serving its provider's new requests.
   readonly active: boolean;
-  /// Its provider when it is not Anthropic, its plan, when it was last seen, and any quota it
-  /// shares.
+  /// Its plan, when it was last seen, and any quota it shares.
   readonly sub: string;
   /// The 5-hour window, then the second: 7-day, or a Kimi Code account's month (OV-C218).
   readonly windows: readonly [CardWindow, CardWindow];
@@ -490,13 +493,14 @@ export function allAccounts(fc: Forecast | null | undefined, now: number = Date.
   });
   const cards = list.map((a): AccountCard => {
     const shared = a.pool == null ? [] : (pools.get(String(a.pool)) ?? []).filter((x) => x !== nameOf(a));
-    const provider = a.provider === 'kimi' ? 'Kimi Code' : null;
-    const sub = [provider, a.plan, seenWords(a, now), shared.length ? `shares a quota with ${shared.join(', ')}` : null].filter(Boolean).join(' · ');
+    // The provider is the tag beside the name, every card's (OV-C231), so the line does not say it again.
+    const sub = [a.plan, seenWords(a, now), shared.length ? `shares a quota with ${shared.join(', ')}` : null].filter(Boolean).join(' · ');
     const u = a.usage ?? {};
     const second = secondWindow(a);
     return {
       id: a.id,
       name: nameOf(a),
+      provider: providerOf(a),
       active: a.active === true || num(a.active) > 0,
       sub,
       windows: [cardWindow('five_hour', '5-hour', a.five_hour), cardWindow(second.key, second.label, second.window)],

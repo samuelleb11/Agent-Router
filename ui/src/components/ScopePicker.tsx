@@ -5,7 +5,7 @@
 // input inside it (`openMenu`, assets/index.html).
 import { ChevronDown } from '@carbon/icons-react';
 import { Popover, PopoverContent, Search } from '@carbon/react';
-import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
+import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { CONCEPTS, paint } from '~/lib/concepts';
 import { useCoarse } from '~/lib/viewport';
 import styles from './ScopePicker.module.scss';
@@ -17,6 +17,9 @@ export interface ScopeOption {
   /// What choosing it sets the scope to.
   readonly key: string;
   readonly name: string;
+  /// Drawn before the name: an account's provider's mark, a session's providers' (OV-C231, SE-C242).
+  /// Words it carries are part of the row's name; the filter reads `name` and `sub` only.
+  readonly mark?: ReactNode;
   /// A session's short id is set in monospace.
   readonly mono?: boolean;
   /// The second line: a project's path, a session's branch and start, an account's router id.
@@ -242,6 +245,11 @@ export function ScopePicker({
                   >
                     {/* Spaces between the cells, so the row's name reads as words, not "agent-router/Users/…". */}
                     <span className={styles.name} data-mono={o.mono ? '' : undefined}>
+                      {o.mark && (
+                        <>
+                          <span className={styles.mark}>{o.mark}</span>{' '}
+                        </>
+                      )}
                       {o.name}
                     </span>
                     {o.sub && (

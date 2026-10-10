@@ -1,7 +1,9 @@
 // New for agent-router: All accounts (assets/index.html, `renderAllAccounts`): every account at once,
 // whatever the page is scoped to (OV-C87), and nothing at all when the forecast lists none (OV-C86). A
-// Kimi Code account's card draws its second window under its real name (OV-C218).
+// Kimi Code account's card draws its second window under its real name (OV-C218), and every card names
+// its provider by its mark and name beside the account's (OV-C231).
 import { Tile } from '@carbon/react';
+import { ProviderMark } from '~/components/ProviderMark';
 import { StatGrid } from '~/components/StatGrid';
 import { StatTile, type Tone } from '~/components/StatTile';
 import { UsageMeter } from '~/components/UsageMeter';
@@ -9,6 +11,7 @@ import type { Reading } from '~/data/overview';
 import { CONCEPTS, paint } from '~/lib/concepts';
 import { relative, when } from '~/model/format';
 import { allAccounts, fcLine, type Forecast, type Tone as LineTone, type Window } from '~/model/forecast';
+import { providerWords } from './panels';
 import { ForecastLine, Panel } from './parts';
 import styles from './Overview.module.scss';
 
@@ -52,7 +55,8 @@ export function AllAccounts({ forecast, now, busy }: { forecast: Reading<Forecas
             <p className={styles.cardName}>
               <Person aria-hidden="true" style={{ fill: paint(CONCEPTS.account.colour) }} />
               {c.name}
-              {c.active && <span className={styles.activeTag}>active</span>}
+              {/* Its provider, and while it signs that provider's new requests, "active for" it (OV-C231). */}
+              <ProviderMark provider={c.provider} words={providerWords(c.provider, c.active)} className={c.active ? styles.activeTag : styles.chip} />
             </p>
             <p className={styles.note}>{c.sub}</p>
             {c.windows.map((w, i) => (

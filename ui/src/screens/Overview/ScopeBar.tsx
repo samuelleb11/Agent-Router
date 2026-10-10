@@ -5,6 +5,7 @@
 import { Close } from '@carbon/icons-react';
 import { Button, ContentSwitcher, Switch } from '@carbon/react';
 import { useState } from 'react';
+import { ProviderMark } from '~/components/ProviderMark';
 import { ScopePicker, type ScopeOption } from '~/components/ScopePicker';
 import { usePickers, type Snapshot } from '~/data/overview';
 import { CONCEPTS, paint } from '~/lib/concepts';
@@ -39,7 +40,16 @@ export function ScopeBar({ scope, snapshot, now, onScope }: { scope: Scope; snap
   };
   const toggled = (level: Level) => (open: boolean) => setOpened((was) => (open ? level : was === level ? null : was));
   const Scoped = CONCEPTS.scope.icon;
-  const accounts: ScopeOption[] = lists.account.data ? accountOptions(byAccount) : [{ key: ALL, name: 'All accounts' }];
+  // An account's provider is marked before its name, and named on its second line, so the mark is not
+  // heard twice (OV-C231); a session's providers are marked alone, each named by its mark (SE-C242).
+  const accounts: ScopeOption[] = lists.account.data
+    ? accountOptions(byAccount).map(({ provider, ...o }) => (provider ? { ...o, mark: <ProviderMark provider={provider} decorative /> } : o))
+    : [{ key: ALL, name: 'All accounts' }];
+  const sessionChoices: ScopeOption[] = lists.session.data
+    ? sessionOptions(sessions, scope, now).map(({ providers, ...o }) =>
+        providers ? { ...o, mark: providers.map((p) => <ProviderMark key={p} provider={p} alone />) } : o,
+      )
+    : [{ key: ALL, name: 'All sessions' }];
 
   return (
     <div className={styles.scopeBar} role="region" aria-label="Scope" data-scope-bar="">
@@ -76,7 +86,7 @@ export function ScopeBar({ scope, snapshot, now, onScope }: { scope: Scope; snap
           crumb={c.session.label}
           set={c.session.set}
           value={scope.session ?? ALL}
-          options={lists.session.data ? sessionOptions(sessions, scope, now) : [{ key: ALL, name: 'All sessions' }]}
+          options={sessionChoices}
           note={reading(lists.session, 'sessions') ?? (sessions.length >= SESSION_CAP ? `the ${count(SESSION_CAP)} most recent sessions` : undefined)}
           onPick={pick('session')}
           onOpenChange={toggled('session')}

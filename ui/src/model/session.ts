@@ -266,6 +266,9 @@ export interface RowView {
   /// The client it runs in when it is not Claude Code's, "Kimi Code web" or "Kimi Code"; null for
   /// Claude Code's, which name none (SE-C235).
   readonly client: string | null;
+  /// The provider of its requests where the row says it, marked beside its client: Kimi Code's for a
+  /// Kimi Code session; null for a Claude Code row, which does not say (SE-C242).
+  readonly provider: 'kimi' | null;
   readonly age: string;
   readonly title: string | null;
   readonly line: string | null;
@@ -292,6 +295,7 @@ export function rowView(r: SessionRow, now: number): RowView {
     name: r.title ? r.git_branch || id8(id) : projectOf(r),
     reach: drives(r) ? 'live' : 'view',
     client: rowClient(r),
+    provider: rowProvider(r),
     age: ageOf(quietFor(r, now)),
     title: r.title || null,
     line: line || null,
@@ -1039,6 +1043,14 @@ export function drives(r: Pick<SessionRow, 'session_id' | 'client' | 'hosted' | 
 export function rowClient(r: Pick<SessionRow, 'client' | 'hosted'>): string | null {
   if (r.client !== KIMI_CODE) return null;
   return r.hosted === true ? clientLabel('kimi-code-web') : productName(KIMI_CODE);
+}
+
+/// The provider of a live session's requests, where its row says it: Kimi Code's for a Kimi Code
+/// session, known by its client. A Claude Code row says none: its requests go to Anthropic, or
+/// through `/model` to Kimi Code, and the live row does not say which, so nothing is marked rather
+/// than a guess (SE-C242).
+export function rowProvider(r: Pick<SessionRow, 'client'>): 'kimi' | null {
+  return r.client === KIMI_CODE ? 'kimi' : null;
 }
 
 /// What an open session's controls can do from here, and why not, in the router's words, where

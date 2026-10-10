@@ -21,6 +21,7 @@ import type { ProjectDirectory, ProjectRow } from '~/data/router';
 import type { AccountSplitRow, ContextRow, ModelRow, SessionRow, ThreadRow, ToolCallRow, ToolOutputRow, Totals } from '~/data/overview';
 import { DASH, ago, client, compact, count, duration, family, id8, pct, plural, projectName, shortModel, tod, usd, UNRESOLVED, type Family } from '~/model/format';
 import { SESSION_CAP, type Scope } from '~/model/scope';
+import { providerName, providerOf, type Provider } from '~/model/settings';
 
 const n = (v: number | null | undefined): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
 const has = (v: number | null | undefined): v is number => typeof v === 'number' && Number.isFinite(v);
@@ -146,12 +147,13 @@ export const unpricedModel = (m: Pick<ModelRow, 'cost' | 'prompt_tokens' | 'outp
 
 /// By model: one row per model in the router's order, prompt tokens read, the family's colour, and
 /// "N req · out · % cached · cost", with subagent requests and errors when there are any (OV-C126).
-/// The full id is the row's second line.
-export function modelRows(models: readonly ModelRow[]): BarRow[] {
+/// The full id is the row's second line, and its provider is tagged beside it (OV-C231).
+export function modelRows(models: readonly ModelRow[]): (BarRow & { readonly provider: Provider })[] {
   return models.map((m) => {
     const f = family(m.model);
     return {
       key: m.model,
+      provider: providerOf(m),
       name: shortModel(m.model),
       path: m.model,
       value: m.prompt_tokens,
@@ -207,15 +209,32 @@ export function accountSplit(list: readonly AccountSplitRow[]): AccountSplitRow[
   return served.length > 1 ? served : null;
 }
 
+/// Whether an account signs its provider's new requests: one account per provider can (OV-C231).
+export const isActive = (a: Pick<AccountSplitRow, 'active'>): boolean => a.active === true || n(a.active as number | null) > 0;
+
+/// What an account's provider tag says beside its mark: the provider's name, and while the account
+/// signs that provider's new requests, "active for" it, since an Anthropic account and a Kimi Code
+/// account can both be active at once (OV-C231).
+export const providerWords = (provider: Provider, active: boolean): string => (active ? `active for ${providerName(provider)}` : providerName(provider));
+
+/// The providers a session's requests went to, Anthropic's first as the router lists them; Anthropic's
+/// alone for a row that lists none, recorded before providers were (SE-C242).
+export function providersOf(s: Pick<SessionRow, 'providers'>): Provider[] {
+  const listed = [...new Set((s.providers ?? []).map((p) => providerOf({ provider: p })))];
+  return listed.length ? listed : ['anthropic'];
+}
+
 /// An account row: its icon, its label and router id, "active" while it serves, a bar of prompt
-/// tokens and "N sessions · N req · out · <last seen>" (OV-C134, OV-C17).
-export function accountRows(list: readonly AccountSplitRow[], now: number = Date.now()): (BarRow & { readonly active: boolean })[] {
+/// tokens and "N sessions · N req · out · <last seen>" (OV-C134, OV-C17), and its provider, whose
+/// tag says "active for" it while it serves (OV-C231).
+export function accountRows(list: readonly AccountSplitRow[], now: number = Date.now()): (BarRow & { readonly active: boolean; readonly provider: Provider })[] {
   return list.map((a) => ({
     key: a.id,
     name: a.label || a.id,
     path: a.id,
     concept: 'account',
-    active: a.active === true || n(a.active as number | null) > 0,
+    active: isActive(a),
+    provider: providerOf(a),
     value: a.prompt_tokens,
     figure: compact(a.prompt_tokens),
     meta: [plural(n(a.sessions), 'session', 'sessions'), `${count(a.requests)} req`, `${compact(a.output_tokens)} out`, ago(a.last_seen, now)].join(' · '),
@@ -304,14 +323,16 @@ export interface SessionChips {
 
 /// A session row: its icon, its first eight characters, chips for its branch, its project when none
 /// is scoped, its client and its families, a bar with the subagent share over it, and "N req · cost ·
-/// out · N subagents · started <time> · <duration>" (OV-C137).
-export function sessionRows(list: readonly SessionRow[], scope: Scope, now: number = Date.now()): (BarRow & { readonly chipsOf: SessionChips })[] {
+/// out · N subagents · started <time> · <duration>" (OV-C137); the providers of its requests are
+/// marked beside its client (SE-C242).
+export function sessionRows(list: readonly SessionRow[], scope: Scope, now: number = Date.now()): (BarRow & { readonly chipsOf: SessionChips; readonly providers: readonly Provider[] })[] {
   return list.map((s) => {
     const prompt = s.prompt_tokens;
     const sub = s.subagent_tokens;
     const ran = client(s.entrypoint, s.client);
     return {
       key: s.id,
+      providers: providersOf(s),
       name: id8(s.id),
       mono: true,
       concept: 'session',

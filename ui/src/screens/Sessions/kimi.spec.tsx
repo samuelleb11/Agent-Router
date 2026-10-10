@@ -11,7 +11,8 @@ import { UNSCOPED } from '~/model/scope';
 import { KIMI_NO_ASIDE, KIMI_NO_EFFORT, KIMI_QUESTION, KIMI_WATCHED, controlsOf, rowView, startMachines } from '~/model/session';
 import { session as overviewSession, S1 } from '~/screens/Overview/fixtures';
 import { sessionRows } from '~/screens/Overview/panels';
-import { press } from '~/test-utils';
+import { press, renderScreen } from '~/test-utils';
+import { Facts } from './Facts';
 import { FakeEventSource } from './fakes';
 import { A, AT, drain, json, renderSessions, session, SESSIONS, streamOf, stubRouter, working, type Asked } from './kit';
 import { NO_MACHINE, NO_MODEL, START, START_TITLE } from './StartSession';
@@ -121,6 +122,50 @@ describe('a session’s client', () => {
     // The help beside the list says what they mean for each.
     await press(screen.getByRole('button', { name: 'What live and view mean' }));
     expect(await screen.findByText(/A Kimi Code session is/)).toHaveTextContent('when this router hosts it');
+  });
+});
+
+describe('a session’s providers', () => {
+  it('SE-C242: a Kimi Code row wears Kimi Code’s mark beside its client, which names it, so the mark is not heard again; a Claude Code row names no provider, rather than guess', async () => {
+    kimiRouter();
+    renderSessions();
+    await waitFor(() => rowOf(WATCHED), { timeout: 10_000 });
+    for (const [id, words] of [
+      [HOSTED, 'Kimi Code web'],
+      [WATCHED, 'Kimi Code'],
+    ] as const) {
+      const client = rowOf(id).querySelector<HTMLElement>('[data-client]')!;
+      expect(client.querySelector('[data-provider="kimi"] [data-glyph="kimi"]'), id).not.toBeNull();
+      expect(client.querySelector('[data-provider="kimi"]'), id).toHaveAttribute('aria-hidden', 'true');
+      // The client's words are as they were (SE-C235).
+      expect(client).toHaveTextContent(new RegExp(`^${words}$`));
+    }
+    // A Claude Code row says neither its client nor a provider: its requests can go to either.
+    expect(rowOf(A).querySelector('[data-provider]')).toBeNull();
+    expect(rowView(kimi(HOSTED, true), AT).provider).toBe('kimi');
+    expect(rowView(session(A), AT).provider).toBeNull();
+  });
+
+  it('SE-C242: an open Kimi Code session’s facts say its client with Kimi Code’s mark, or before the list has listed it Kimi Code’s mark and name; a Claude Code session’s name no provider', async () => {
+    kimiRouter();
+    const hosted = renderSessions(`/live?session=${HOSTED}`);
+    await opened(HOSTED);
+    const client = await facts().findByText('Kimi Code web', {}, { timeout: 10_000 });
+    expect(client.querySelector('[data-provider="kimi"]')).toHaveAttribute('aria-hidden', 'true');
+    hosted.unmount();
+
+    // Just started, not yet listed: known as Kimi Code's by its id, and said by its mark and name.
+    const unlisted = renderScreen(<Facts session={WATCHED} row={null} />);
+    const named = await facts().findByText('Kimi Code', {}, { timeout: 10_000 });
+    expect(named.closest('[data-provider]')).toHaveAttribute('data-provider', 'kimi');
+    expect(named.closest('[data-provider]')?.querySelector('[data-glyph="kimi"]')).not.toBeNull();
+    unlisted.unmount();
+
+    kimiRouter();
+    renderSessions(`/live?session=${A}`);
+    await opened(A);
+    await waitFor(() => expect(facts().getByText('opus-4-1')).toBeInTheDocument(), { timeout: 10_000 });
+    expect(screen.getByRole('region', { name: 'This session’s totals and settings' }).querySelector('[data-provider]')).toBeNull();
   });
 });
 

@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { snapshotPaths } from '~/data/overview';
 import { projectKey } from '~/data/projects';
 import { routes } from '~/lib/routes';
+import { allAccounts } from '~/model/forecast';
 import { UNSCOPED, type Scope } from '~/model/scope';
 import {
   accountRows,
@@ -17,6 +18,8 @@ import {
   projectKeyOf,
   projectPlaces,
   projectRows,
+  providersOf,
+  providerWords,
   readPanel,
   sessionRows,
   sessionsCaption,
@@ -25,7 +28,9 @@ import {
   toolOutputRows,
   unattributed,
 } from './panels';
-import { NOW, project, session, totals, S1, MIN, HOUR } from './fixtures';
+import { NOW, forecast, forecastAccount, project, request, session, totals, S1, S2, MIN, HOUR } from './fixtures';
+import { servedBy } from './requestList';
+import { accountOptions, sessionOptions } from './scopeOptions';
 
 const scoped = (over: Partial<Scope>): Scope => ({ ...UNSCOPED, ...over });
 
@@ -240,5 +245,70 @@ describe('the lists', () => {
     expect(emptyWords('read', scoped({ project: '/code/a', range: '1h' }))).toBe('Nothing read in this scope in the last 1h.');
     // "Yet" only where nothing at all is recorded.
     expect(emptyWords('toolCalls', scoped({ range: '30d' }))).not.toMatch(/yet/);
+  });
+});
+
+describe('each provider', () => {
+  const split = (id: string, over: object = {}) => ({ id, label: `${id}@example.test`, active: 0, requests: 3, prompt_tokens: 1_000, cost: 0, output_tokens: 10, sessions: 1, last_seen: NOW, ...over });
+
+  it('OV-C231: an account carries its provider, Anthropic’s where the router names none, and "active" says for which provider', () => {
+    const rows = accountRows([split('work', { active: 1 }), split('kimi', { provider: 'kimi', active: 1 }), split('spare', { provider: 'anthropic' })], NOW);
+    expect(rows.map((r) => [r.key, r.provider, r.active])).toEqual([
+      ['work', 'anthropic', true],
+      ['kimi', 'kimi', true],
+      ['spare', 'anthropic', false],
+    ]);
+    // An account of each provider can be active at once, so "active" names whose.
+    expect(rows.map((r) => providerWords(r.provider, r.active))).toEqual(['active for Anthropic', 'active for Kimi Code', 'Anthropic']);
+    // The picker names the provider on the account's second line, beside its router id (OV-C17).
+    expect(accountOptions([split('work', { active: true }), split('kimi', { provider: 'kimi' })]).map((o) => [o.key, o.sub, 'provider' in o ? o.provider : null])).toEqual([
+      ['*', undefined, null],
+      ['work', 'work · active for Anthropic', 'anthropic'],
+      ['kimi', 'kimi · Kimi Code', 'kimi'],
+    ]);
+  });
+
+  it('OV-C231: every All accounts card carries its provider, and its line no longer says Kimi Code: the tag beside its name does', () => {
+    const cards = allAccounts(forecast([forecastAccount('secondary'), forecastAccount('kimi', { provider: 'kimi', plan: null, pool: null })]), NOW)?.cards ?? [];
+    expect(cards.map((c) => [c.id, c.provider, c.active])).toEqual([
+      ['secondary', 'anthropic', true],
+      ['kimi', 'kimi', false],
+    ]);
+    expect(cards.map((c) => c.sub).join(' | ')).not.toMatch(/Kimi Code|Anthropic/);
+  });
+
+  it('OV-C231: By model tags each model with the provider that served it', () => {
+    const rows = modelRows([
+      { model: 'claude-opus-5-20260115', requests: 3, prompt_tokens: 900, cost: 1, output_tokens: 20, thinking_tokens: 0, cache_read_tokens: 0, errors: 0, subagent_requests: 0 },
+      { model: 'k3', provider: 'kimi', requests: 2, prompt_tokens: 400, cost: 0, output_tokens: 10, thinking_tokens: 0, cache_read_tokens: 0, errors: 0, subagent_requests: 0 },
+    ]);
+    expect(rows.map((r) => [r.key, r.provider])).toEqual([
+      ['claude-opus-5-20260115', 'anthropic'],
+      ['k3', 'kimi'],
+    ]);
+  });
+
+  it('OV-C231: a request names the account that served it as the lists do, its router id beside it; one the router no longer holds by its id, and none by "—"', () => {
+    const accounts = [
+      { id: 'kimi-acc', label: 'Kimi', email: null },
+      { id: 'work', label: 'work', email: 'work@example.test' },
+      { id: 'bare', label: null, email: null },
+    ];
+    expect(servedBy(request(1, { account_id: 'kimi-acc' }), accounts)).toBe('Kimi · kimi-acc');
+    expect(servedBy(request(2, { account_id: 'work' }), accounts)).toBe('work@example.test · work');
+    expect(servedBy(request(3, { account_id: 'bare' }), accounts)).toBe('bare');
+    expect(servedBy(request(4, { account_id: 'retired' }), accounts)).toBe('retired');
+    expect(servedBy(request(5, { account_id: 'work' }), null), 'the accounts not read: its id').toBe('work');
+    expect(servedBy(request(6, { account_id: null }), accounts)).toBe('—');
+  });
+
+  it('SE-C242: the Overview’s session rows and picker carry the providers of the session’s requests, Anthropic’s first as the router lists them, and Anthropic’s for a row that lists none', () => {
+    const both = session(S1, { providers: ['anthropic', 'kimi'] });
+    const kimiOnly = session(S2, { providers: ['kimi'], entrypoint: 'kimi-code-cli/2.1.1', client: 'kimi-code-cli' });
+    const before = session('cccccccc-3333-4333-8333-333333333333');
+    expect(sessionRows([both, kimiOnly, before], UNSCOPED, NOW).map((r) => r.providers)).toEqual([['anthropic', 'kimi'], ['kimi'], ['anthropic']]);
+    expect(providersOf({ providers: [] })).toEqual(['anthropic']);
+    expect(providersOf({ providers: ['anthropic', null as unknown as string, 'kimi'] })).toEqual(['anthropic', 'kimi']);
+    expect(sessionOptions([both, kimiOnly], UNSCOPED, NOW).map((o) => ('providers' in o ? o.providers : null))).toEqual([null, ['anthropic', 'kimi'], ['kimi']]);
   });
 });

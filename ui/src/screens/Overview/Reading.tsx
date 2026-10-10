@@ -2,6 +2,7 @@
 // Main thread vs subagents (assets/index.html, `renderRead`, `renderContext`, `renderModels`,
 // `renderThreads`).
 import { BarList } from '~/components/BarList';
+import { ProviderMark } from '~/components/ProviderMark';
 import { ShareBar } from '~/components/ShareBar';
 import type { Summary, TabPart } from '~/data/overview';
 import { family } from '~/model/format';
@@ -31,7 +32,8 @@ export function Reading({ summary, part, scope, busy }: { summary: Summary; part
       <div className={styles.two} data-two="">
         <Panel concept="model" title="By model" caption="prompt tokens read" busy={busy}>
           {models.length ? (
-            <BarList label="By model" rows={models.map((m) => ({ ...m, mark: <Swatch family={family(m.key)} /> }))} />
+            // Each model tagged with the provider that served it, by its mark and name (OV-C231).
+            <BarList label="By model" rows={models.map((m) => ({ ...m, mark: <Swatch family={family(m.key)} />, chips: <ProviderMark provider={m.provider} className={styles.chip} /> }))} />
           ) : (
             <p className={styles.empty}>No requests in scope.</p>
           )}

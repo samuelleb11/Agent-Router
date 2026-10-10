@@ -410,6 +410,11 @@ $ar-tab-rule: 0.125rem;
   color: $text-secondary;
 }
 
+/// Its provider's mark before the client's words, a little space after it (SE-C242).
+.rowProvider {
+  margin-inline-end: $spacing-02;
+}
+
 .rowAge {
   @include type-style('label-01');
   flex: none;

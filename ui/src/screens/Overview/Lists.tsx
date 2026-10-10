@@ -6,6 +6,7 @@ import { Button } from '@carbon/react';
 import { Fragment, useState } from 'react';
 import { Link } from 'react-router';
 import { BarList } from '~/components/BarList';
+import { ProviderMark } from '~/components/ProviderMark';
 import type { TabPart, Tools as ToolsRead } from '~/data/overview';
 import { CONCEPTS, paint } from '~/lib/concepts';
 import { settingsPath } from '~/lib/routes';
@@ -21,6 +22,7 @@ import {
   LIST_PAGE,
   nothingRecorded,
   projectRows,
+  providerWords,
   scopingCaption,
   sessionRows,
   sessionsCaption,
@@ -131,7 +133,9 @@ export function Lists({
             label="Accounts"
             rows={accountRows(split, now).map((a) => ({
               ...a,
-              chips: a.active ? <span className={styles.activeTag}>active</span> : undefined,
+              // Its provider's mark and name, and while it signs that provider's new requests, "active
+              // for" it: an Anthropic account and a Kimi Code account can both be active (OV-C231).
+              chips: <ProviderMark provider={a.provider} words={providerWords(a.provider, a.active)} className={a.active ? styles.activeTag : styles.chip} />,
             }))}
             selected={scope.account}
             onSelect={(key) => onScope(toggle(scope, 'account', key))}
@@ -187,7 +191,13 @@ export function Lists({
                         {s.chipsOf.project.name}
                       </span>
                     )}
-                    {s.chipsOf.client && <span className={styles.chip}>{s.chipsOf.client.name}</span>}
+                    {/* The providers of its requests, each its mark alone, beside its client (SE-C242). */}
+                    <span className={styles.chip} data-providers="">
+                      {s.providers.map((p) => (
+                        <ProviderMark key={p} provider={p} alone />
+                      ))}
+                      {s.chipsOf.client?.name}
+                    </span>
                     {s.chipsOf.families.map((f) => (
                       <Fragment key={f.family}>
                         <Swatch family={f.family} />

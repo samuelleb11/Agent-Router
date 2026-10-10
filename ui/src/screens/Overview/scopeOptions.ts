@@ -5,7 +5,8 @@ import type { AccountSplitRow, SessionRow } from '~/data/overview';
 import type { ProjectRow } from '~/data/router';
 import { compact, count, id8, projectName, tod, usd } from '~/model/format';
 import { sessionsHeld, type Scope } from '~/model/scope';
-import { projectKeyOf } from './panels';
+import { providerOf, type Provider } from '~/model/settings';
+import { isActive, projectKeyOf, providersOf, providerWords } from './panels';
 
 /// The key of "All …" in every picker.
 export const ALL = '*';
@@ -16,12 +17,17 @@ const n = (v: number | null | undefined): number => (typeof v === 'number' && Nu
 const figures = (r: { prompt_tokens: number | null; requests: number | null; cost: number | null }) => `${compact(r.prompt_tokens)} · ${count(r.requests)} req · ${usd(r.cost)}`;
 
 /// The account picker: every account that served in the range, by its label with its router id on
-/// the second line (OV-C16, OV-C17). Never narrowed by the level it picks (OV-C131).
-export function accountOptions(list: readonly AccountSplitRow[]): ScopeOption[] {
+/// the second line (OV-C16, OV-C17), and its provider, named there — "active for" it while the
+/// account signs that provider's new requests — and marked before the name (OV-C231). Never narrowed
+/// by the level it picks (OV-C131).
+export function accountOptions(list: readonly AccountSplitRow[]): (ScopeOption & { readonly provider?: Provider })[] {
   const all = list.reduce((a, x) => a + n(x.requests), 0);
   return [
     { key: ALL, name: 'All accounts', meta: `${count(all)} req` },
-    ...list.map((a) => ({ key: a.id, name: a.label || a.id, sub: `${a.id}${n(a.active as number | null) || a.active === true ? ' · active' : ''}`, meta: figures(a) })),
+    ...list.map((a) => {
+      const provider = providerOf(a);
+      return { key: a.id, name: a.label || a.id, provider, sub: `${a.id} · ${providerWords(provider, isActive(a))}`, meta: figures(a) };
+    }),
   ];
 }
 
@@ -35,13 +41,15 @@ export function projectOptions(list: readonly ProjectRow[], requests: number | n
 }
 
 /// The session picker: each session by its first eight characters, with its branch, its project
-/// unless one is scoped, and its start (OV-C16).
-export function sessionOptions(list: readonly SessionRow[], scope: Scope, now: number): ScopeOption[] {
+/// unless one is scoped, and its start (OV-C16), and the providers of its requests marked before it
+/// (SE-C242).
+export function sessionOptions(list: readonly SessionRow[], scope: Scope, now: number): (ScopeOption & { readonly providers?: readonly Provider[] })[] {
   return [
     { key: ALL, name: scope.project ? `All sessions in ${projectName(scope.project)}` : 'All sessions', meta: sessionsHeld(list.length) },
     ...list.map((x) => ({
       key: x.id,
       name: id8(x.id),
+      providers: providersOf(x),
       mono: true,
       sub: [x.git_branch, scope.project ? null : projectName(x.project), tod(x.started_at, now)].filter(Boolean).join(' · '),
       meta: figures(x),

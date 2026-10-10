@@ -134,7 +134,10 @@ describe('forecast', () => {
 
   it('OV-C218: a Kimi Code account’s card names Kimi Code and shows its two windows, the second under its real name, a month or a week', () => {
     const card = allAccounts(only(KIMI), NOW)?.cards[0];
-    expect(card?.sub).toMatch(/^Kimi Code · /);
+    // Kimi Code is named by the provider's tag beside the account's name, as every card's provider is
+    // (OV-C231), and its line does not say it again.
+    expect(card?.provider).toBe('kimi');
+    expect(card?.sub).not.toMatch(/Kimi Code/);
     expect(card?.windows.map((w) => [w.key, w.label, w.meter.text])).toEqual([
       ['five_hour', '5-hour', '30% used · resets in 2h 00m'],
       ['month', 'Month', '12% used · resets in 20d 0h'],
@@ -161,9 +164,9 @@ describe('forecast', () => {
 
   it('OV-C220: an account that served requests is never "never seen", and a Kimi Code account’s usage reading reads as one', () => {
     const sub = (a: ForecastAccount) => allAccounts(only(a), NOW)?.cards[0]?.sub;
-    expect(sub(KIMI)).toBe('Kimi Code · last request 5 min ago · usage read 2 min ago');
-    expect(sub({ ...KIMI, seen_at: null })).toBe('Kimi Code · last request 5 min ago');
-    expect(sub({ ...KIMI, seen_at: null, usage: { ...KIMI.usage, last_seen: null } })).toBe('Kimi Code · never seen');
+    expect(sub(KIMI)).toBe('last request 5 min ago · usage read 2 min ago');
+    expect(sub({ ...KIMI, seen_at: null })).toBe('last request 5 min ago');
+    expect(sub({ ...KIMI, seen_at: null, usage: { ...KIMI.usage, last_seen: null } })).toBe('never seen');
     // An Anthropic account with no rate-limit reading still served its requests.
     const claude: ForecastAccount = { id: 'work', label: 'work', plan: 'max', seen_at: null, usage: { requests: 3, last_seen: NOW - 3 * 60e3 } };
     expect(sub(claude)).toBe('max · last request 3 min ago');

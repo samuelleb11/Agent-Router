@@ -7,6 +7,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Modal, Select, SelectItem, SelectItemGroup, TextInput, Toggletip, ToggletipButton, ToggletipContent } from '@carbon/react';
 import { Information } from '@carbon/icons-react';
 import { FormModal } from '~/components/FormModal';
+import { ProviderMark } from '~/components/ProviderMark';
 import { liveKeys, postLive, readOptions, readProject, readStats, type Stats } from '~/data/live';
 import { refusalText } from '~/lib/errors';
 import {
@@ -17,6 +18,7 @@ import {
   liveProjectKey,
   notice,
   OTHER_MODEL,
+  rowClient,
   switcherOptions,
   switcherSections,
   switchNotice,
@@ -52,7 +54,8 @@ const item = (o: SwitchOption) => <SelectItem key={`${o.value}|${o.label}`} valu
 /// session under the wrapper, or a Kimi Code one, the three switchers (SE-C131, SE-C132, SE-C137).
 /// A Kimi Code session's are held back where the router refuses them, saying why in its words
 /// (SE-C236, SE-C237). Totals are read once each time the session opens, never pushed with every
-/// event (SE-C133).
+/// event (SE-C133). A Kimi Code session's client is said with its provider's mark, as its row says
+/// it; a Claude Code session's strip names neither, as its row does not (SE-C242).
 export function Facts({ session, row }: { session: string; row: SessionRow | null }) {
   const once = { staleTime: 0, refetchOnWindowFocus: false, refetchOnReconnect: false, retry: false } as const;
   const stats = useQuery({ queryKey: liveKeys.stats(session), queryFn: ({ signal }) => readStats(session, signal), ...once });
@@ -67,6 +70,7 @@ export function Facts({ session, row }: { session: string; row: SessionRow | nul
   // A Kimi Code session is switched through the router that hosts it, never through the wrapper,
   // so its switchers are drawn whatever its `wrapped`, and held back where they cannot act (SE-C236).
   const kimi = isKimi(session, row);
+  const client = row ? rowClient(row) : null;
   const why = controls.held ?? controls.effort;
   return (
     <section className={styles.facts} aria-label="This session’s totals and settings">
@@ -82,6 +86,20 @@ export function Facts({ session, row }: { session: string; row: SessionRow | nul
               {f}
             </span>
           ))
+        )}
+        {kimi && (
+          // Its client's words name the provider, so beside them the mark is not heard again; before the
+          // list has listed it, the provider alone, by its mark and name (SE-C242).
+          <span className={styles.fact} data-client-fact="">
+            {client ? (
+              <>
+                <ProviderMark provider="kimi" decorative className={styles.rowProvider} />
+                {client}
+              </>
+            ) : (
+              <ProviderMark provider="kimi" />
+            )}
+          </span>
         )}
         {total && <span className={styles.projectTotal}>{total}</span>}
       </p>

@@ -11,8 +11,9 @@
 import type { Fact } from '~/components/RequestRow';
 import type { Part } from '~/components/ShareBar';
 import type { RequestRecord } from '~/data/overview';
-import { compact, count, family, hm, id8, monthDay, ms, pct, plural, projectName, shortModel, usd, when, type Family } from '~/model/format';
+import { DASH, compact, count, family, hm, id8, monthDay, ms, pct, plural, projectName, shortModel, usd, when, type Family } from '~/model/format';
 import type { RequestFilters, RequestKind, Scope } from '~/model/scope';
+import type { Account } from '~/model/settings';
 import { CONTEXT } from './panels';
 
 /// The list holds the 300 newest requests in scope (src/api.rs).
@@ -175,6 +176,17 @@ export function detail(r: RequestRecord, scope: Scope): { facts: Fact[]; error?:
       ? CONTEXT.map((c) => ({ key: c.key, label: c.label, value: ctx[c.key] ?? 0, colour: c.colour, concept: c.concept, figure: compact(ctx[c.key] ?? 0) }))
       : undefined;
   return { facts, ...(r.error ? { error: r.error } : {}), ...(context ? { context } : {}) };
+}
+
+/// The account that served a request, as the lists name an account — its email, else its label, else
+/// its id — with its router id beside it (OV-C17, OV-C231). An account the router no longer holds is
+/// its id, and a request recorded before accounts were is "—".
+export function servedBy(r: Pick<RequestRecord, 'account_id'>, accounts: readonly Pick<Account, 'id' | 'label' | 'email'>[] | null | undefined): string {
+  const id = r.account_id;
+  if (!id) return DASH;
+  const a = accounts?.find((x) => x.id === id);
+  const name = a?.email || a?.label || id;
+  return name === id ? id : `${name} · ${id}`;
 }
 
 /// The full date and time a request started, for its detail.

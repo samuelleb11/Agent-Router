@@ -125,8 +125,8 @@ export default function Overview() {
   const read = useOverview(scope, tab);
   const auth = useAuth();
   // The accounts every 30 s, beside the snapshot and never failing it (OV-C166), with no credential
-  // checked (OV-C167).
-  useAccounts();
+  // checked (OV-C167). They name the account that served a request (OV-C231).
+  const accounts = useAccounts();
   // The page as this load first drew it, before the reader has gone anywhere: only from there does
   // the console interrupt (ST-C7). Kept per load, so a remount does not move it.
   const [first] = useState(() => (firstDrawn ??= location.key));
@@ -217,6 +217,7 @@ export default function Overview() {
         return (
           <Requests
             requests={part.requests}
+            accounts={accounts.value}
             p95={snapshot.summary.latency?.ttfb_p95 ?? null}
             scope={scope}
             filters={filters}
