@@ -225,6 +225,9 @@ pub struct LiveSession {
     pub tone: &'static str,
     /// "registry" when the CLI's own status decided, "transcript" when inferred.
     pub source: &'static str,
+    /// The client running it, when it is not Claude Code: `kimi-code` (`kimi::session`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client: Option<&'static str>,
     /// The router's clock when this was worked out, so a client whose own clock is off
     /// still shows the right elapsed times.
     pub as_of_ms: i64,
@@ -234,7 +237,12 @@ pub struct LiveSession {
 /// quiet, and then the most recently active of the rest, up to `MAX_LISTED`.
 pub fn discover() -> Vec<LiveSession> {
     let reg = crate::registry::snapshot();
-    discover_in(&Roots::system(), &reg, &archived_set(), now_ms())
+    let (archived, now) = (archived_set(), now_ms());
+    let mut rows = discover_in(&Roots::system(), &reg, &archived, now);
+    // Kimi Code's, from its own files and hooks (`kimi::session`).
+    rows.extend(crate::kimi::session::discover(&archived, now));
+    rows.sort_by_key(|r| std::cmp::Reverse(r.last_activity_ms));
+    rows
 }
 
 fn discover_in(
@@ -355,6 +363,7 @@ fn list_row(
         background: a.background,
         tone: a.tone(),
         source: a.source,
+        client: None,
         as_of_ms: o.as_of_ms,
     }
 }
@@ -1310,7 +1319,7 @@ fn first_event_ms(path: &Path) -> Option<i64> {
 }
 
 /// What a session has spent, and how it is configured.
-#[derive(Serialize, Default)]
+#[derive(Serialize, Default, Clone)]
 pub struct Stats {
     pub model: Option<String>,
     pub effort: Option<String>,
@@ -1336,10 +1345,21 @@ pub struct Stats {
 /// The transcript is used rather than the router's own capture because it covers every
 /// session, including ones that never went through the proxy.
 pub async fn stats(Query(q): Query<StreamQuery>) -> Response {
-    let Some(path) = transcript_path(&q.session) else {
-        return bad(axum::http::StatusCode::NOT_FOUND, "No such session.");
+    let out = tokio::task::spawn_blocking(move || {
+        // Kimi Code's sessions are read from its own files (`kimi::session`).
+        if let Some(kimi) = crate::kimi::session::find(&q.session) {
+            let mut st = kimi.stats();
+            st.cost = price(&st);
+            return Some(st);
+        }
+        transcript_path(&q.session).map(|path| scan_stats(&path))
+    })
+    .await;
+    let out = match out {
+        Ok(Some(st)) => Ok(st),
+        Ok(None) => return bad(axum::http::StatusCode::NOT_FOUND, "No such session."),
+        Err(e) => Err(e),
     };
-    let out = tokio::task::spawn_blocking(move || scan_stats(&path)).await;
     match out {
         Ok(st) => Json(st).into_response(),
         Err(e) => bad(axum::http::StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),

@@ -4,6 +4,7 @@
 
 pub mod config;
 pub mod registry;
+pub mod session;
 
 use std::path::{Path, PathBuf};
 

@@ -517,7 +517,7 @@ pub fn kimi_spent_window(message: &str) -> Option<&'static str> {
 }
 
 /// Epoch seconds in RFC 3339, UTC.
-fn iso(at: i64) -> String {
+pub(crate) fn iso(at: i64) -> String {
     let days = at.div_euclid(86_400);
     let secs = at.rem_euclid(86_400);
     // Days since 1970-01-01 to a civil date (Howard Hinnant's algorithm).
