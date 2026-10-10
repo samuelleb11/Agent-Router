@@ -304,6 +304,21 @@ stands here. That is one of:
 that machine's agent never writes into `~/.claude` nor asks the router for the Library.
 `agent install --library` takes it back. `agent status` says which.
 
+**Kimi Code (2026-10-10, AGEN-0114).** On a machine with Kimi Code, each sync runs a second
+time for it, from the same manifest, with a ledger of its own under `<data-dir>/kimi/`:
+- skills go to `$KIMI_CODE_HOME/skills/<name>/` as they are, since Kimi Code reads the same
+  `SKILL.md`;
+- subagents go to `$KIMI_CODE_HOME/agents/<name>.md` in Kimi Code's form (`src/library/kimi.rs`):
+  `description` kept and `whenToUse` said from it, `tools` mapped to Kimi Code's names, `*`
+  when none is named, and the prompt as it is;
+- commands do not: Kimi Code has no folder for them, and they reach it as a plugin
+  (AGEN-0115).
+
+The ledger keeps the digest of what was written as well, so a converted subagent reads as in
+step. An item edited there is put back and the edited copy kept, as under `~/.claude`. The
+router hears Claude Code's report; Kimi Code's is in the agent's log until each client's
+state is reported (AGEN-0115).
+
 ### Push
 
 - **The tunnel's route list grows by exactly one**, `POST /agent/library/sync`. It runs a

@@ -14,6 +14,10 @@
 //!
 //! An item the manifest no longer lists is removed only where the ledger
 //! (`<data-dir>/library/ledger.json`) says this agent placed it.
+//!
+//! On a machine with Kimi Code the same sync runs again for it (`Places::kimi`), with a ledger
+//! of its own: its skills and subagents in its home, a subagent converted to its form
+//! (`library::kimi`), and the ledger keeping the digest of what was written as well.
 
 use std::collections::{BTreeMap, HashSet};
 use std::future::Future;
@@ -35,15 +39,49 @@ pub const EVERY: Duration = Duration::from_secs(15 * 60);
 /// Where a sync reads and writes.
 #[derive(Clone, Debug)]
 pub struct Places {
-    /// Claude Code's directory: `$CLAUDE_CONFIG_DIR`, or `~/.claude`.
+    /// The client's directory: Claude Code's, `$CLAUDE_CONFIG_DIR` or `~/.claude`; for
+    /// `Form::Kimi`, Kimi Code's home.
     pub claude: PathBuf,
-    /// The agent's data directory, `~/.agent-router`.
+    /// The agent's data directory, `~/.agent-router`; Kimi Code's ledger is under `kimi/`.
     pub data: PathBuf,
+    pub form: Form,
+    /// Kimi Code's home, synced after this one (`run_once`), on a machine with Kimi Code.
+    pub kimi: Option<PathBuf>,
+}
+
+/// Which client a sync places for, and so which kinds it takes and in what form.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Form {
+    #[default]
+    Claude,
+    /// Skills as they are, subagents converted, no commands (`library::kimi`).
+    Kimi,
+}
+
+impl Form {
+    fn takes(self, kind: Kind) -> bool {
+        match self {
+            Form::Claude => true,
+            Form::Kimi => super::kimi::takes(kind),
+        }
+    }
+
+    fn shape(self, bundle: Bundle) -> Result<Bundle> {
+        match self {
+            Form::Claude => Ok(bundle),
+            Form::Kimi => super::kimi::shape(bundle).map_err(|why| anyhow!("{why}")),
+        }
+    }
 }
 
 impl Places {
     pub fn system(data: PathBuf) -> Places {
-        Places { claude: crate::registry::claude_dir(), data }
+        Places { claude: crate::registry::claude_dir(), data, form: Form::Claude, kimi: crate::kimi::home() }
+    }
+
+    /// Kimi Code's, on a machine with it: its home, and a ledger of its own.
+    pub fn kimi(data: &Path, home: PathBuf) -> Places {
+        Places { claude: home, data: data.join("kimi"), form: Form::Kimi, kimi: None }
     }
 
     /// Where Claude Code reads an item of this kind.
@@ -110,7 +148,18 @@ struct Placed {
     name: String,
     version: i64,
     digest: String,
+    /// The digest of what was written, when the client's form made it differ from the
+    /// item's (a subagent converted for Kimi Code).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    written: Option<String>,
     at_ms: i64,
+}
+
+impl Placed {
+    /// What this agent's own copy at the item's place reads as.
+    fn on_disk(&self) -> &str {
+        self.written.as_deref().unwrap_or(&self.digest)
+    }
 }
 
 fn key(kind: Kind, name: &str) -> String {
@@ -126,8 +175,10 @@ impl Ledger {
         write_json(&places.ledger(), self)
     }
 
-    fn record(&mut self, item: &Wanted, now: i64) {
-        let placed = Placed { kind: item.kind, name: item.name.clone(), version: item.version, digest: item.digest.clone(), at_ms: now };
+    fn record(&mut self, item: &Wanted, written: Option<String>, now: i64) {
+        let written = written.filter(|w| *w != item.digest);
+        let placed =
+            Placed { kind: item.kind, name: item.name.clone(), version: item.version, digest: item.digest.clone(), written, at_ms: now };
         self.items.insert(key(item.kind, &item.name), placed);
     }
 }
@@ -193,7 +244,8 @@ fn here(places: &Places, kind: Kind, name: &str) -> Here {
 /// per data directory: the agent's and `agent-router library sync`'s wait for each other.
 pub fn sync(places: &Places, source: &dyn Source, now: i64) -> Result<Report> {
     let _one = one_at_a_time(places)?;
-    let wanted = source.manifest().context("reading the router's manifest")?;
+    let wanted: Vec<Wanted> =
+        source.manifest().context("reading the router's manifest")?.into_iter().filter(|w| places.form.takes(w.kind)).collect();
     let mut ledger = Ledger::load(places);
     let mut items = Vec::new();
     for item in &wanted {
@@ -222,18 +274,25 @@ pub fn sync(places: &Places, source: &dyn Source, now: i64) -> Result<Report> {
 fn place(places: &Places, ledger: &mut Ledger, source: &dyn Source, item: &Wanted, now: i64) -> Result<Line> {
     let line = |outcome| Line::of(item.kind, &item.name, item.version, outcome);
     let found = here(places, item.kind, &item.name);
-    if matches!(&found, Here::Copy(Some(digest)) if *digest == item.digest) {
-        ledger.record(item, now);
-        return Ok(line(Outcome::InStep));
+    // This agent's own copy of this very version: what the ledger says it wrote for it.
+    let mine = ledger.items.get(&key(item.kind, &item.name)).filter(|p| p.digest == item.digest).map(|p| p.on_disk().to_string());
+    if let Here::Copy(Some(digest)) = &found {
+        if *digest == item.digest || Some(digest) == mine.as_ref() {
+            let written = mine.clone();
+            ledger.record(item, written, now);
+            return Ok(line(Outcome::InStep));
+        }
     }
     let blob = source.blob(&item.digest).context("downloading it")?;
     if bundle::digest(&blob) != item.digest {
         bail!("what the router sent does not match its digest, so it was not placed");
     }
     let bundle = Bundle::unpack(item.kind, &item.name, &blob).map_err(|why| anyhow!("{why}"))?;
+    let bundle = places.form.shape(bundle)?;
+    let written = bundle::digest(&bundle.pack());
     let staged = stage(places, &bundle)?;
     let target = places.target(item.kind, &item.name);
-    let ours = ledger.items.get(&key(item.kind, &item.name)).map(|p| p.digest.clone());
+    let ours = ledger.items.get(&key(item.kind, &item.name)).map(|p| p.on_disk().to_string());
     let swapped = (|| {
         let kept = match found {
             Here::Nothing => None,
@@ -249,7 +308,7 @@ fn place(places: &Places, ledger: &mut Ledger, source: &dyn Source, item: &Wante
     let kept = swapped.inspect_err(|_| {
         let _ = remove(&staged);
     })?;
-    ledger.record(item, now);
+    ledger.record(item, Some(written), now);
     Ok(match kept {
         Some(kept) => Line { kept: Some(kept), ..line(Outcome::Replaced) },
         None => line(Outcome::Placed),
@@ -262,7 +321,7 @@ fn withdraw(places: &Places, ledger: &mut Ledger, placed: &Placed) -> Result<Lin
     let target = places.target(placed.kind, &placed.name);
     let kept = match here(places, placed.kind, &placed.name) {
         Here::Nothing => None,
-        Here::Copy(Some(digest)) if digest == placed.digest => {
+        Here::Copy(Some(digest)) if digest == placed.on_disk() => {
             remove(&target)?;
             None
         }
@@ -534,8 +593,25 @@ pub async fn run_once(places: Places, router: Arc<Router>, library: Option<bool>
         return Ok(None);
     }
     let handle = tokio::runtime::Handle::current();
-    let report =
-        tokio::task::spawn_blocking(move || sync(&places, &Blocking { router: &router, handle }, crate::db::now_ms())).await??;
+    let report = tokio::task::spawn_blocking(move || {
+        let source = Blocking { router: &router, handle };
+        let now = crate::db::now_ms();
+        let report = sync(&places, &source, now)?;
+        // Kimi Code's, from the same manifest, with a ledger of its own. Said in the log: the
+        // router hears Claude Code's report.
+        if let Some(home) = places.kimi.clone() {
+            match sync(&Places::kimi(&places.data, home), &source, now) {
+                Ok(kimi) => {
+                    for line in kimi.items.iter().filter(|l| l.outcome != Outcome::InStep) {
+                        tracing::info!(kind = %line.kind, name = %line.name, version = line.version, outcome = ?line.outcome, kept = ?line.kept, why = ?line.why, "the Library, for Kimi Code");
+                    }
+                }
+                Err(e) => tracing::warn!("the Library could not be placed for Kimi Code: {e:#}"),
+            }
+        }
+        anyhow::Ok(report)
+    })
+    .await??;
     Ok(Some(report))
 }
 
@@ -698,7 +774,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("ar-sync-{label}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
-        Places { claude: root.join("claude"), data: root.join("data") }
+        Places { claude: root.join("claude"), data: root.join("data"), form: Form::Claude, kimi: None }
     }
 
     fn done(places: &Places) {
@@ -795,6 +871,50 @@ mod tests {
 
     fn outcomes(report: &Report) -> Vec<(String, Outcome)> {
         report.items.iter().map(|l| (l.name.clone(), l.outcome)).collect()
+    }
+
+    /// A machine with Kimi Code: its skills and subagents in its home, a subagent in its form,
+    /// no commands, and an item edited there put back with the edited copy kept.
+    #[test]
+    fn the_library_places_skills_and_subagents_for_kimi_code() {
+        let claude = scratch("kimi");
+        let places = Places::kimi(&claude.data, claude.claude.parent().unwrap().join("kimi-home"));
+        let home = places.claude.clone();
+        let shelf = Shelf::of(vec![
+            (skill("release", "Ships a build.", vec![file("scripts/ship.sh", "echo ship\n")]), 3),
+            (command("deploy", "Deploys."), 1),
+            (subagent("code-reviewer"), 2),
+        ]);
+
+        let first = sync(&places, &shelf, 1).unwrap();
+        assert_eq!(outcomes(&first), [("release".into(), Outcome::Placed), ("code-reviewer".into(), Outcome::Placed)]);
+        assert_eq!(tree(&home), ["agents/code-reviewer.md", "skills/release/SKILL.md", "skills/release/scripts/ship.sh"]);
+        assert_eq!(read(&home.join("skills/release/SKILL.md")), skill_md("release", "Ships a build."), "a skill as it is");
+        let agent = read(&home.join("agents/code-reviewer.md"));
+        assert!(agent.contains("\nwhenToUse: \"Reviews a diff.\"\ntools: \"*\"\n---\nYou review.\n"), "{agent}");
+        assert!(!home.join("commands").exists(), "Kimi Code takes no commands from here");
+        assert!(!claude.claude.exists(), "nothing of Claude Code's is touched");
+
+        // In step: nothing fetched again, a converted subagent included.
+        let fetched = shelf.fetched.lock().unwrap().len();
+        let again = sync(&places, &shelf, 2).unwrap();
+        assert_eq!(outcomes(&again), [("release".into(), Outcome::InStep), ("code-reviewer".into(), Outcome::InStep)]);
+        assert_eq!(shelf.fetched.lock().unwrap().len(), fetched);
+
+        // Edited here: the Library wins, and the edited copy is kept.
+        std::fs::write(home.join("agents/code-reviewer.md"), "---\nname: code-reviewer\ndescription: Mine now.\n---\nMine.\n").unwrap();
+        let back = sync(&places, &shelf, 3).unwrap();
+        let line = back.items.iter().find(|l| l.name == "code-reviewer").unwrap();
+        assert_eq!(line.outcome, Outcome::Replaced);
+        assert_eq!(read(&home.join("agents/code-reviewer.md")), agent, "put back");
+        assert!(read(Path::new(line.kept.as_ref().unwrap())).contains("Mine now."), "the edited copy kept");
+
+        // Withdrawn from the Library: this agent's own copy goes.
+        let fewer = Shelf::of(vec![(skill("release", "Ships a build.", vec![file("scripts/ship.sh", "echo ship\n")]), 3)]);
+        let gone = sync(&places, &fewer, 4).unwrap();
+        assert!(gone.items.iter().any(|l| l.name == "code-reviewer" && l.outcome == Outcome::Removed));
+        assert!(!home.join("agents/code-reviewer.md").exists());
+        done(&claude);
     }
 
     #[test]

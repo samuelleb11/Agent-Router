@@ -21,6 +21,7 @@ pub mod bundle;
 pub mod cli;
 pub mod forge;
 pub mod hooks;
+pub mod kimi;
 pub mod push;
 pub mod sources;
 pub mod store;

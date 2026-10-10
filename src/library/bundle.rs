@@ -696,6 +696,11 @@ fn credential(line: &str, next: Option<&str>) -> Option<&'static str> {
     None
 }
 
+/// A Markdown file's frontmatter, as `frontmatter` reads it: for `kimi`, which converts it.
+pub(crate) fn frontmatter_fields(file: &File) -> Result<Vec<(String, String)>, Refused> {
+    frontmatter(file)
+}
+
 /// The top-level `key: value` pairs of a Markdown file's frontmatter: the block between its
 /// first line, `---`, and the next `---`. A value may be plain, quoted, or a `|` or `>`
 /// block, and a plain value may run on over indented lines, as YAML allows. Nested keys are

@@ -2073,7 +2073,7 @@ mod tests {
 
         let root = std::env::temp_dir().join(format!("ar-opted-out-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        let places = crate::library::sync::Places { claude: root.join("claude"), data: root.join("data") };
+        let places = crate::library::sync::Places { claude: root.join("claude"), data: root.join("data"), form: Default::default(), kimi: None };
         // No router answers there: a machine that asked anything would fail.
         let router = Arc::new(crate::library::sync::Router::new("http://127.0.0.1:9", "unused").unwrap());
         let report = crate::library::sync::run_once(places.clone(), router.clone(), Some(false)).await.unwrap();
@@ -2103,7 +2103,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("ar-agent-library-route-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let library = Library {
-            places: crate::library::sync::Places { claude: root.join("claude"), data: root.join("data") },
+            places: crate::library::sync::Places { claude: root.join("claude"), data: root.join("data"), form: Default::default(), kimi: None },
             router: Arc::new(crate::library::sync::Router::new(&format!("http://{addr}"), lab.password.unwrap()).unwrap()),
             machine: "m".into(),
             label: "the test's machine".into(),
