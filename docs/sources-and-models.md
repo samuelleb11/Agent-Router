@@ -261,8 +261,10 @@ Claude Code login as its Anthropic one. One conversation, resumed turn by turn:
 ### Not measured
 
 - **A spent window's 403.** It cannot be had without using up the owner's 5-hour window, which
-  Kimi Code's own apps share. The body AGEN-0088 classifies is the one in Kimi's error
-  reference until the router records a real one.
+  Kimi Code's own apps share. The owner chose to accept Kimi's documented bodies instead
+  (2026-10-10): `fixtures/kimi/*.documented.json`, the measured error envelope with the
+  message from Kimi's error reference. AGEN-0088 classifies those until the router records a
+  real one.
 - **The concurrency 403.** Kimi applies it by risk control, and appeals are by email, so it
   is not provoked on purpose.
 
