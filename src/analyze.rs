@@ -31,6 +31,18 @@ impl Usage {
         self.cache_creation_5m_tokens + self.cache_creation_1h_tokens
     }
 
+    /// This usage as Anthropic counts it, whichever provider reported it, so every rollup,
+    /// the context panels and the cost view read one meaning. Anthropic's `input_tokens`
+    /// leaves out what was read from cache; Kimi Code's holds it (measured 2026-10-10,
+    /// docs/sources-and-models.md), so its fresh input is what is left once the cache reads
+    /// are taken out.
+    pub fn in_anthropic_terms(mut self, provider: crate::accounts::Provider) -> Self {
+        if provider == crate::accounts::Provider::Kimi {
+            self.input_tokens = (self.input_tokens - self.cache_read_tokens).max(0);
+        }
+        self
+    }
+
     fn merge_from(&mut self, u: &Value) {
         let n = |k: &str| u.get(k).and_then(Value::as_i64).unwrap_or(0);
         // message_start carries the prompt side; message_delta carries the final

@@ -290,7 +290,7 @@ impl Drop for Tee {
             service_tier: self.scanner.service_tier.clone(),
             error: self.transport_error.clone().or_else(|| self.scanner.error.clone()),
             rl: p.rl,
-            usage: self.scanner.usage.clone(),
+            usage: self.scanner.usage.clone().in_anthropic_terms(p.provider),
             tool_calls: self.scanner.tool_calls.clone(),
             response_body: StoredBody::streamed(std::mem::take(&mut self.raw), self.plain_bytes),
             request_bytes: p.request_bytes,
@@ -434,5 +434,96 @@ mod tests {
         .unwrap();
         assert!(classifier.cwd.is_some(), "it does look like an environment");
         assert!(!speaks_for_its_session(None, &classifier), "but it offers no tools");
+    }
+
+    /// Kimi Code's `input_tokens` holds its cache reads, so a request recorded as it came
+    /// would count them twice: once as input and once as cache reads, and price both.
+    #[tokio::test]
+    async fn kimi_cached_tokens_are_counted_once() {
+        let dir = std::env::temp_dir().join(format!("ar-kimi-usage-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("agent-router.db");
+        let mut db = crate::db::Db::open(&db_path).unwrap();
+        crate::pricing::ensure_table(&rusqlite::Connection::open(&db_path).unwrap()).unwrap();
+        rustls::crypto::ring::default_provider().install_default().ok();
+        let config = crate::config::Config {
+            server: false,
+            bind: std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
+            upstream: "https://upstream.invalid".into(),
+            db_path: db_path.clone(),
+            body_cap: 64 * 1024,
+            dump_headers: 0,
+            allow_hosts: Vec::new(),
+            public_url: None,
+            push_keys_dir: None,
+            agents_dir: None,
+            drain: std::time::Duration::from_secs(1),
+            stop_delay: std::time::Duration::ZERO,
+        };
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        let (network, _) = crate::network::switch();
+        let state = crate::proxy::AppState::new(config, tx, network).unwrap();
+
+        // The last `k3` request of AGEN-0097's session, as Kimi Code streamed its usage.
+        let sse = concat!(
+            "event:message_start\n",
+            r#"data:{"type":"message_start","message":{"id":"msg_k","type":"message","role":"assistant","content":[],"model":"k3","usage":{"input_tokens":18880,"cache_creation_input_tokens":0,"cache_read_input_tokens":18432,"output_tokens":0}}}"#,
+            "\n\nevent:message_delta\n",
+            r#"data:{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":18880,"cache_creation_input_tokens":0,"cache_read_input_tokens":18432,"output_tokens":50}}"#,
+            "\n\nevent:message_stop\n",
+            r#"data:{"type":"message_stop"}"#,
+            "\n\n",
+        );
+        let mut events = Vec::new();
+        for (id, provider) in [("req-kimi", crate::accounts::Provider::Kimi), ("req-claude", crate::accounts::Provider::Anthropic)] {
+            let pending = Pending {
+                request_id: Some(id.into()),
+                session_id: None,
+                agent_id: None,
+                account_id: provider.as_str().into(),
+                account_email: None,
+                provider,
+                entrypoint: None,
+                method: "POST".into(),
+                path: "/v1/messages?beta=true".into(),
+                started_at_ms: 1_760_000_000_000,
+                ttfb_ms: 1,
+                status: 200,
+                streaming_requested: true,
+                rl: Default::default(),
+                shape: None,
+                request_bytes: 10,
+            };
+            let mut tee = Tee::new(state.clone(), pending, None, true, 64 * 1024, std::time::Instant::now());
+            tee.feed(sse.as_bytes());
+            drop(tee);
+            events.push(rx.recv().await.expect("the capture event"));
+        }
+        for ev in &events {
+            db.record(ev).unwrap();
+        }
+
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        let row = |id: &str| -> (i64, i64, i64, f64) {
+            conn.query_row(
+                "SELECT u.input_tokens, u.cache_read_tokens, u.prompt_tokens, c.cost
+                 FROM requests r JOIN usage u ON u.request_id = r.id JOIN request_cost c ON c.request_id = r.id
+                 WHERE r.request_id = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap()
+        };
+        let (input, cached, prompt, cost) = row("req-kimi");
+        assert_eq!((input, cached, prompt), (448, 18_432, 18_880), "each token of the 18.9K context once");
+        let k3 = 448.0 * 3.0 + 18_432.0 * 0.30 + 50.0 * 15.0;
+        assert!((cost - k3 / 1_000_000.0).abs() < 1e-9, "priced once at K3's rates: {cost}");
+        // Anthropic's input_tokens already leaves its cache reads out: recorded as it came.
+        let (input, cached, prompt, _) = row("req-claude");
+        assert_eq!((input, cached, prompt), (18_880, 18_432, 37_312));
+        drop(conn);
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
