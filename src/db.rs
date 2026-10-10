@@ -42,6 +42,12 @@ CREATE TABLE IF NOT EXISTS accounts (
   created_at        INTEGER NOT NULL
 );
 
+-- Which account a model's requests go to, when not its provider's active one (`models`).
+CREATE TABLE IF NOT EXISTS model_assignments (
+  model      TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS projects (
   cwd           TEXT PRIMARY KEY,
   label         TEXT,

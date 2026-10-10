@@ -89,6 +89,14 @@ impl Provider {
         }
     }
 
+    /// The article its name takes: "an Anthropic account", "a Kimi Code account".
+    pub fn article(self) -> &'static str {
+        match self {
+            Provider::Anthropic => "an",
+            Provider::Kimi => "a",
+        }
+    }
+
     /// Where an account of this provider sends its requests when it names no base URL of
     /// its own. An Anthropic account has none here: it goes to the router's `upstream`.
     pub fn default_base_url(self) -> Option<&'static str> {
@@ -766,6 +774,8 @@ impl Store {
             })
             .optional()?;
         conn.execute("DELETE FROM accounts WHERE id = ?1", [id])?;
+        // Its models go back to their provider's active account.
+        conn.execute("DELETE FROM model_assignments WHERE account_id = ?1", [id])?;
         let _ = forget_token(id);
         let _ = forget_usage_token(id);
         if let Some(provider) = was_active {

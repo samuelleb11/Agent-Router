@@ -35,6 +35,7 @@ mod peer;
 mod places;
 mod pricing;
 mod login;
+mod models;
 mod notify;
 mod proxy;
 mod quota;
@@ -524,6 +525,10 @@ fn app_with(state: Arc<proxy::AppState>, console: console::Files) -> Router {
         .route("/api/quota/raw", get(quota::raw_usage))
         .route("/api/usage-token", post(quota::set_usage_token))
         .route("/api/live/options", get(live::options))
+        .route("/api/models", get(models::list))
+        .route("/api/models/assign", post(models::assign_route))
+        // Answered from the catalogue, never forwarded (`models::v1_models`).
+        .route("/v1/models", get(models::v1_models))
         .route("/_router/health", get(api::health));
     let routes = if state.config.server { hosted::routes(common) } else { machine_routes(common) };
     routes

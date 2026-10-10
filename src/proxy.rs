@@ -59,6 +59,15 @@ const MAX_REQUEST_BODY: usize = 64 * 1024 * 1024;
 
 pub const ACCOUNT_ID: &str = "default";
 
+/// The refusal for an API call that presents no credential of its own, in the proxy's
+/// words. Every `/v1/` path asks for one, the ones the router answers itself as well.
+pub(crate) fn no_credential(headers: &HeaderMap) -> Option<axum::response::Response> {
+    if headers.contains_key("authorization") || headers.contains_key("x-api-key") {
+        return None;
+    }
+    Some((StatusCode::UNAUTHORIZED, "agent-router: no credential presented\n").into_response())
+}
+
 /// The credential currently being signed with, cached between requests.
 pub struct Active {
     pub account_id: String,
@@ -251,11 +260,9 @@ async fn forward(state: Arc<AppState>, req: Request<Body>) -> anyhow::Result<Res
         tracing::warn!(path = %path_and_query, "refused: not an API path");
         return Ok((StatusCode::NOT_FOUND, "agent-router: not an API path\n").into_response());
     }
-    if !parts.headers.contains_key("authorization") && !parts.headers.contains_key("x-api-key") {
+    if let Some(refused) = no_credential(&parts.headers) {
         tracing::warn!(path = %path_and_query, "refused: caller presented no credential");
-        return Ok(
-            (StatusCode::UNAUTHORIZED, "agent-router: no credential presented\n").into_response(),
-        );
+        return Ok(refused);
     }
 
     // Exact session identity, straight off the wire — Claude Code labels every request.
