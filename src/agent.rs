@@ -381,21 +381,40 @@ fn picker_rows_for(settings: &Path, server: &str, catalogue: &[Value]) -> Result
     crate::setup::sync_picker_rows(settings, &rows)
 }
 
-/// Ask the router for its catalogue, and keep the picker's rows in step with it. A router
-/// from before the catalogue answers 404, and there is nothing to keep.
-async fn keep_picker_rows(router: &crate::library::sync::Router, server: &str) -> Result<()> {
+/// The router's catalogue, `GET /api/models`. None from a router from before it, which
+/// answers 404.
+async fn catalogue_of(router: &crate::library::sync::Router, server: &str) -> Result<Option<Vec<Value>>> {
     let (status, _, body) = router.send(axum::http::Method::GET, "/api/models", Vec::new(), Bytes::new()).await?;
     if status == axum::http::StatusCode::NOT_FOUND {
-        return Ok(());
+        return Ok(None);
     }
     if !status.is_success() {
         bail!("{server} answered {status} for its models");
     }
-    let catalogue: Vec<Value> = serde_json::from_slice(&body).context("the router's models were not a list")?;
+    Ok(Some(serde_json::from_slice(&body).context("the router's models were not a list")?))
+}
+
+/// What keeping this machine's clients in step changed.
+struct ClientsKept {
+    /// Kimi Code's `config.toml`: None when there was nothing to set up.
+    kimi: Option<bool>,
+}
+
+/// Keep this machine's clients in step with the router's catalogue: Claude Code's `/model`
+/// rows (`picker_rows_for`), and Kimi Code's `config.toml` (`kimi::config`), set up the first
+/// time on `install` and put back at every sync after, since Kimi Code updates itself.
+async fn keep_clients(router: &crate::library::sync::Router, server: &str, password: &str, install: bool) -> Result<ClientsKept> {
+    let Some(catalogue) = catalogue_of(router, server).await? else { return Ok(ClientsKept { kimi: None }) };
     let settings = crate::setup::settings_path(None)?;
-    let server = server.to_string();
-    tokio::task::spawn_blocking(move || picker_rows_for(&settings, &server, &catalogue)).await??;
-    Ok(())
+    let (server, password) = (server.to_string(), password.to_string());
+    tokio::task::spawn_blocking(move || -> Result<ClientsKept> {
+        picker_rows_for(&settings, &server, &catalogue)?;
+        let consented = crate::setup::base_url_in(&settings)?
+            .is_some_and(|url| url.trim_end_matches('/') == server.trim_end_matches('/'));
+        let kimi = crate::kimi::config::here(&server, &password, &catalogue, install, consented)?;
+        Ok(ClientsKept { kimi })
+    })
+    .await?
 }
 
 /// What is waiting on a person here, named the way a banner names it.
@@ -1133,17 +1152,20 @@ async fn work(args: RunArgs, dir: PathBuf, stopping: crate::lifecycle::Stopping)
         }));
     }
 
-    // Claude Code's /model picker: a row for each of the router's non-Claude models, at every
-    // connection and every fifteen minutes between, so a model the router gains or loses is
-    // offered or taken away without a reinstall (`keep_picker_rows`).
+    // The clients, at every connection and every fifteen minutes between (`keep_clients`):
+    // Claude Code's /model picker gets a row for each of the router's non-Claude models, so a
+    // model the router gains or loses is offered or taken away without a reinstall, and Kimi
+    // Code's config.toml gets the router's entries back after Kimi Code updates itself.
     {
         let router = Arc::new(crate::library::sync::Router::new(&server, &password)?);
-        let server = server.clone();
+        let (server, password) = (server.clone(), password.clone());
         tokio::spawn(crate::library::sync::keep_in_step(connected.subscribe(), crate::library::sync::EVERY, move || {
-            let (router, server) = (router.clone(), server.clone());
+            let (router, server, password) = (router.clone(), server.clone(), password.clone());
             async move {
-                if let Err(e) = keep_picker_rows(&router, &server).await {
-                    tracing::warn!("Claude Code's /model rows could not be kept in step: {e:#}");
+                match keep_clients(&router, &server, &password, false).await {
+                    Ok(ClientsKept { kimi: Some(true) }) => tracing::info!("Kimi Code's config.toml: the router's entries put back"),
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!("the clients could not be kept in step: {e:#}"),
                 }
             }
         }));
@@ -1393,11 +1415,18 @@ async fn install(args: &[String]) -> Result<()> {
         println!("config    ANTHROPIC_BASE_URL={server} and ANTHROPIC_AUTH_TOKEN");
         println!("          {} ({scope}); uninstall puts back what was there", path.display());
         let offered = match crate::library::sync::Router::new(&server, &password) {
-            Ok(router) => keep_picker_rows(&router, &server).await,
+            Ok(router) => keep_clients(&router, &server, &password, true).await,
             Err(e) => Err(e),
         };
-        if let Err(e) = offered {
-            println!("picker    Claude Code's /model rows left alone ({e:#}); the agent tries again when it connects");
+        match offered {
+            Ok(ClientsKept { kimi: Some(_) }) => {
+                println!("kimi      Kimi Code's config.toml: the router's provider, its Kimi models and hooks");
+                println!("          uninstall takes them out and puts back the default model")
+            }
+            Ok(ClientsKept { kimi: None }) => {}
+            Err(e) => {
+                println!("clients   Claude Code's /model rows and Kimi Code's config left alone ({e:#}); the agent tries again when it connects")
+            }
         }
     }
 
@@ -1459,6 +1488,11 @@ fn uninstall(args: &[String]) -> Result<()> {
             crate::setup::Reverted::NotManaged => {}
         }
         println!("          {file}");
+    }
+    match crate::kimi::config::take_out() {
+        Ok(Some(true)) => println!("kimi      the router's entries taken out of Kimi Code's config.toml"),
+        Ok(_) => {}
+        Err(e) => println!("kimi      Kimi Code's config.toml left alone ({e:#})"),
     }
     crate::setup::agent_service::uninstall()?;
     // launchd stops what it started; anything else still running (the editor's, or one

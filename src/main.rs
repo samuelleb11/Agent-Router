@@ -27,6 +27,7 @@ mod fold;
 mod forecast;
 mod guard;
 mod hosted;
+mod kimi;
 mod library;
 mod lifecycle;
 mod live;
@@ -140,6 +141,7 @@ async fn main() -> anyhow::Result<()> {
         Some("install") => return cmd_install(&args[1..]),
         Some("uninstall") => return cmd_uninstall(),
         Some("status") => return cmd_status(),
+        Some("hook") => return kimi::hook(&args[1..]),
         Some("-h") | Some("--help") | Some("help") => {
             print!("{USAGE}");
             return Ok(());
@@ -259,21 +261,56 @@ fn cmd_install(args: &[String]) -> anyhow::Result<()> {
         Ok(n) => println!("picker    {n} model(s) of other providers offered in Claude Code's /model"),
         Err(e) => println!("picker    left alone ({e:#})"),
     }
+    match local_kimi_config(&url, true) {
+        Ok(Some(_)) => {
+            println!("kimi      Kimi Code's config.toml: the router's provider, its Kimi models and hooks");
+            println!("          uninstall takes them out and puts back the default model")
+        }
+        Ok(None) => {}
+        Err(e) => println!("kimi      Kimi Code's config.toml left alone ({e:#})"),
+    }
     println!("\ndashboard {url}");
     Ok(())
+}
+
+/// The router's catalogue, from this machine's own store; empty for a store not made yet.
+fn local_catalogue() -> anyhow::Result<Vec<serde_json::Value>> {
+    let db = config::db_path()?;
+    if !db.exists() {
+        return Ok(Vec::new());
+    }
+    let conn = rusqlite::Connection::open(&db)?;
+    Ok(models::catalogue(&conn)?.iter().map(models::row).collect())
+}
+
+/// This machine's Kimi Code pointed at the local router at `url` (`kimi::config::here`). A
+/// local router takes requests from loopback without a password, so the key is a name.
+fn local_kimi_config(url: &str, install: bool) -> anyhow::Result<Option<bool>> {
+    let consented = setup::base_url_in(&setup::settings_path(None)?)?
+        .is_some_and(|set| set.trim_end_matches('/') == url.trim_end_matches('/'));
+    kimi::config::here(url, "agent-router", &local_catalogue()?, install, consented)
+}
+
+/// Kimi Code's entries put back after it updates itself, every fifteen minutes, as an agent
+/// does for a hosted router's (`agent::keep_clients`).
+async fn keep_local_kimi_config(url: String) {
+    loop {
+        let url = url.clone();
+        match tokio::task::spawn_blocking(move || local_kimi_config(&url, false)).await {
+            Ok(Ok(Some(true))) => tracing::info!("Kimi Code's config.toml: the router's entries put back"),
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => tracing::warn!("Kimi Code's config.toml could not be kept: {e:#}"),
+            Err(e) => tracing::warn!("Kimi Code's config.toml could not be kept: {e}"),
+        }
+        tokio::time::sleep(library::sync::EVERY).await;
+    }
 }
 
 /// Offer the router's non-Claude models in Claude Code's `/model` picker, from this
 /// machine's own store: rows of `modelPicker.options` in the user's settings
 /// (`setup::sync_picker_rows`). A store not made yet has no other provider to offer.
 fn local_picker_rows() -> anyhow::Result<usize> {
-    let db = config::db_path()?;
-    if !db.exists() {
-        return Ok(0);
-    }
-    let conn = rusqlite::Connection::open(&db)?;
-    let catalogue: Vec<serde_json::Value> = models::catalogue(&conn)?.iter().map(models::row).collect();
-    let rows = setup::picker_models(&catalogue);
+    let rows = setup::picker_models(&local_catalogue()?);
     setup::sync_picker_rows(&setup::settings_path(None)?, &rows)?;
     Ok(rows.len())
 }
@@ -298,6 +335,11 @@ fn cmd_uninstall() -> anyhow::Result<()> {
             }
             setup::Reverted::NotManaged => {}
         }
+    }
+    match kimi::config::take_out() {
+        Ok(Some(true)) => println!("kimi      the router's entries taken out of Kimi Code's config.toml"),
+        Ok(_) => {}
+        Err(e) => println!("kimi      Kimi Code's config.toml left alone ({e:#})"),
     }
     setup::service::uninstall()?;
     println!("service   unregistered");
@@ -486,6 +528,7 @@ async fn serve_here(args: config::ServeArgs) -> anyhow::Result<()> {
     // This machine's places, every minute, as an agent reports its own to a hosted router:
     // which repository each session works in.
     tokio::spawn(places::keep_here(db_path.clone()));
+    tokio::spawn(keep_local_kimi_config(format!("http://127.0.0.1:{}", loopback_addr().port())));
 
     // The wider listener, when there is to be one, serves this same app from a second
     // socket. Started last, once loopback is about to be accepted on and the incumbent

@@ -126,7 +126,7 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-fn write_atomic(path: &Path, text: impl AsRef<[u8]>) -> Result<()> {
+pub(crate) fn write_atomic(path: &Path, text: impl AsRef<[u8]>) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }

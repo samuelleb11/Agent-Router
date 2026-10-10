@@ -189,6 +189,13 @@ another account of its provider. The plan is [docs/sources-and-models.md](docs/s
   Claude, set `ANTHROPIC_DEFAULT_HAIKU_MODEL` to a Claude model id in your settings' `env`.
 * Anthropic does not support Claude Code against non-Claude models through a gateway; Kimi
   Code's own guide points Claude Code at it directly, and it works in practice.
+* **Kimi Code's own client.** On a machine with Kimi Code, the installer and the machine
+  agent also add the router to its `config.toml` (under `KIMI_CODE_HOME`, `~/.kimi-code` by
+  default): an `agent-router` provider, a model for each of the router's Kimi Code models
+  (`agent-router/k3`, shown as "K3 via Agent Router" in its `/model`), K3 as the default
+  model, and hooks that tell the agent which sessions are live. Your own providers, models,
+  services and hooks are left as they are. The agent puts these entries back after Kimi
+  Code updates itself, and uninstalling takes them out and puts your default model back.
 
 ## Upgrading without dropping sessions
 

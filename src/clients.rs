@@ -110,7 +110,7 @@ pub fn here() -> Vec<Client> {
 /// The clients found at `at`, Claude Code first; a client with none of its parts is left out.
 pub fn find(at: &Places) -> Vec<Client> {
     let claude_home = at.home.join(".claude");
-    let kimi_home = at.kimi_home.clone().unwrap_or_else(|| at.home.join(".kimi-code"));
+    let kimi_home = crate::kimi::home_in(&at.home, at.kimi_home.clone());
     let claude = Client {
         client: CLAUDE_CODE.into(),
         cli: command(at, "claude", &[at.home.join(".claude/local")]),
