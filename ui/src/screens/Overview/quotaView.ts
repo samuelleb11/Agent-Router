@@ -167,6 +167,9 @@ export function burnOf(w: Window | null | undefined): Burn | null {
   if (!w || w.expired || w.window_start == null || w.reset_at == null) return null;
   // The cone only when the band has width, as the model's own burn-down decides it (OV-C83).
   const band = !!w.duty && w.duty.low !== w.duty.high;
+  // The short trend beside the long one, when the router could weigh the recent load (OV-C223).
+  const r = w.recent;
+  const recent = r && Number.isFinite(r.load) && r.load > 0 ? { crossing: r.exhausts_at ?? null, end: r.projected_end_util, load: r.load, hours: r.measured_active_hours, until: r.measured_until } : null;
   return {
     start: w.window_start * 1000,
     reset: w.reset_at * 1000,
@@ -182,5 +185,6 @@ export function burnOf(w: Window | null | undefined): Burn | null {
         }
       : null,
     expired: false,
+    recent,
   };
 }

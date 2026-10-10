@@ -61,7 +61,8 @@ reading only the open tab: OV-C215 to OV-C217, so the Overview holds 217. On 202
 `sources` milestone ([Sources](sources-and-models.md), AGEN-0092) gave the console Kimi Code accounts
 and the Models page, ST-C117 to ST-C123, so Settings holds 123; a Kimi Code account's card and the
 `kimi` family, OV-C218 to OV-C222, so the Overview holds 222; and the picker by provider, SE-C233, so
-Sessions holds 233.
+Sessions holds 233. The same day the burn-down gained a short-term trend beside the long one,
+OV-C223 (AGEN-0121), so the Overview holds 223.
 
 ## Shell
 
@@ -908,7 +909,7 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
   the right, observed usage left of now and a dashed projection right of it, with rules at 0 and 100
   % and a faint line at now. *Why:* "The dashed ray is the whole point — where it meets the ceiling
   is the answer." *Regression:* no. *Source:* `assets/index.html:1285-1321`,
-  `assets/index.html:1338-1339`.
+  `assets/index.html:1338-1339`. *Amended:* a second, dotted ray for the short trend, OV-C223.
 - **OV-C81** The projection is always drawn: to its crossing on the 100 % line when there is one,
   otherwise to the reset at the level it ends; a crossing, and only a crossing, gets the one marker.
   *Why:* check "the burn-down chart draws for every state that has a window". *Regression:* no.
@@ -933,6 +934,19 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
 - **OV-C85** Two burn-downs sit side by side only when both fit at 250 px, otherwise they stack, and
   each is drawn at the width it is shown so its text never scales. *Why:* the comment on the grid's
   width. *Regression:* no. *Source:* `assets/index.html:118-121`, `assets/index.html:1329-1337`.
+- **OV-C223** A window whose forecast carries `recent` — the short trend, at the load of the last
+  half hour of work — draws it as a second ray from now, dotted, in the window's own colour (OV-C62),
+  to its crossing on the 100 % line, else to the reset at the level it ends. It never wears the
+  verdict's colour, gets no marker, and leaves the long trend's ray, cone, marker and words as they
+  were. Under the chart, in its accessible name and in its tip it reads "at the load of the last N
+  min of work (L× the window's), it reaches 100% <time>" (else "it ends ≈P% at the reset"); a stretch
+  that ended more than five minutes ago adds ", to <time>", because an idle account's short trend is
+  the load it last worked at. A window without `recent` — no fit on this window, nothing priced, a
+  Kimi Code window — draws no dotted ray and no line for it. *Why:* the long trend is fitted across
+  the whole window, so a session opened or closed mid-window barely moves it; the owner asked on
+  2026-10-10 for a short trend beside it "so we can have a good idea of the load change whenever
+  users close or open new sessions". *Regression:* no. *Source:* `src/forecast.rs` (`Recent`,
+  `recent_load`), `src/api.rs` (`window_readings`).
 
 ### All accounts
 

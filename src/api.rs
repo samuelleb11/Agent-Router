@@ -1116,12 +1116,14 @@ fn reading_windows(
             continue;
         }
         let from_ms = (reset - kind.span_ms / 1000).saturating_mul(1000);
+        // No costs: these readings are of Kimi Code's usage, not of the requests that spent
+        // it, so there is no load to weigh and the window carries no short trend.
         let mut readings: Vec<crate::forecast::Reading> = {
             let mut stmt = conn.prepare(
                 "SELECT started_at FROM requests WHERE account_id = ?1 AND started_at >= ?2 ORDER BY started_at",
             )?;
             let work = stmt
-                .query_map(rusqlite::params![id, from_ms], |r| Ok(crate::forecast::Reading { at_ms: r.get(0)?, util: None }))?
+                .query_map(rusqlite::params![id, from_ms], |r| Ok(crate::forecast::Reading { at_ms: r.get(0)?, util: None, cost: 0.0 }))?
                 .collect::<Result<Vec<_>, _>>()?;
             work
         };
@@ -1132,7 +1134,7 @@ fn reading_windows(
             ))?;
             let taken = stmt
                 .query_map(rusqlite::params![id, reset, from_ms], |r| {
-                    Ok(crate::forecast::Reading { at_ms: r.get(0)?, util: Some(r.get(1)?) })
+                    Ok(crate::forecast::Reading { at_ms: r.get(0)?, util: Some(r.get(1)?), cost: 0.0 })
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
             readings.extend(taken);
@@ -1140,7 +1142,7 @@ fn reading_windows(
         // What the provider said outweighs a reading taken before or after it.
         if let Some((at, _)) = spent_here {
             readings.retain(|r| r.util.is_none());
-            readings.push(crate::forecast::Reading { at_ms: at, util: Some(1.0) });
+            readings.push(crate::forecast::Reading { at_ms: at, util: Some(1.0), cost: 0.0 });
         }
         readings.sort_by_key(|r| r.at_ms);
         let win = Win { kind, reset_col: "", util_col: "", session_duty };
@@ -1164,16 +1166,19 @@ fn window_readings(
     reset: i64,
     from_ms: i64,
 ) -> anyhow::Result<Vec<crate::forecast::Reading>> {
+    // Each request's cost is its weight in the load the short trend compares; one the
+    // router could not price weighs nothing rather than counting as free work.
     let mut stmt = conn.prepare(&format!(
-        "SELECT r.started_at, CASE WHEN r.{reset} = ?2 THEN r.{util} END
-         FROM requests r WHERE r.account_id = ?1 AND r.started_at >= ?3
+        "SELECT r.started_at, CASE WHEN r.{reset} = ?2 THEN r.{util} END, coalesce(c.cost, 0)
+         FROM requests r LEFT JOIN request_cost c ON c.request_id = r.id
+         WHERE r.account_id = ?1 AND r.started_at >= ?3
          ORDER BY r.started_at",
         reset = win.reset_col,
         util = win.util_col,
     ))?;
     let out = stmt
         .query_map(rusqlite::params![account, reset, from_ms], |row| {
-            Ok(crate::forecast::Reading { at_ms: row.get(0)?, util: row.get(1)? })
+            Ok(crate::forecast::Reading { at_ms: row.get(0)?, util: row.get(1)?, cost: row.get(2)? })
         })?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(out)
@@ -2838,5 +2843,52 @@ mod tests {
         // no rate is unpriced, and the priced one still has its cost.
         assert_eq!((&card["usage"]["requests"], &card["usage"]["unpriced"]), (&json!(3), &json!(1)), "{card}");
         assert!(card["usage"]["cost"].as_f64().unwrap() > 0.0);
+    }
+
+    /// Three hours of one session, then half an hour of three: the 7-day window's short
+    /// trend carries the new load, weighed by what the requests cost, beside the long one.
+    #[tokio::test]
+    async fn the_forecast_gives_a_short_trend() {
+        let lab = crate::api_refusals::Lab::local("forecast-recent");
+        let conn = Connection::open(&lab.state.config.db_path).unwrap();
+        crate::pricing::ensure_table(&conn).unwrap();
+        conn.execute_batch("INSERT INTO accounts (id, label, source, active, created_at) VALUES ('work', 'Work', 'token', 1, 1);")
+            .unwrap();
+        let now = crate::db::now_ms();
+        let (five_reset, week_reset) = (now / 1000 + 2 * 3600, now / 1000 + 3 * 86_400);
+        let start = now - 210 * 60_000;
+        // One request a minute for three hours, then one every twenty seconds; each the same
+        // size, so cost follows the request count. The meter climbs a percent every 18 minutes.
+        let times: Vec<i64> =
+            (0..180).map(|i| start + i * 60_000).chain((0..90).map(|i| start + 180 * 60_000 + i * 20_000)).collect();
+        for (i, at) in times.iter().enumerate() {
+            let week = 0.10 + (at - start) as f64 / (18.0 * 60_000.0) * 0.01;
+            conn.execute(
+                "INSERT INTO requests (request_id, account_id, model, method, path, started_at,
+                                       rl_status, rl_5h_utilization, rl_5h_reset, rl_7d_utilization, rl_7d_reset)
+                 VALUES (?1, 'work', 'claude-opus-5-5', 'POST', '/v1/messages', ?2, 'allowed', 0.2, ?3, ?4, ?5)",
+                params![format!("r{i}"), at, five_reset, (week * 100.0).floor() / 100.0, week_reset],
+            )
+            .unwrap();
+        }
+        conn.execute_batch("INSERT INTO usage (request_id, input_tokens, output_tokens) SELECT id, 1000, 100 FROM requests;")
+            .unwrap();
+        crate::pricing::resolve_models(&conn).unwrap();
+
+        let everything = Filter { project: None, session: None, account: None, since: None, until: None, tz: None };
+        let got = forecast_inner(&lab.state, &everything).unwrap();
+        let card = got["accounts"].as_array().unwrap().iter().find(|a| a["id"] == "work").unwrap().clone();
+        let week = &card["seven_day"];
+        assert_eq!(week["basis"], "this-window", "{week}");
+        let recent = &week["recent"];
+        let load = recent["load"].as_f64().unwrap_or_else(|| panic!("no short trend: {week}"));
+        // Three times the requests in the last half hour, against a long stretch that
+        // includes it: about 2.6×.
+        assert!((2.2..3.0).contains(&load), "load {load}");
+        let (long, short) = (week["burn_per_active_hour"].as_f64().unwrap(), recent["burn_per_active_hour"].as_f64().unwrap());
+        assert!((short - long * load).abs() < 1e-9);
+        assert_eq!(recent["measured_until"], json!(times.last().unwrap()));
+        // A flat 5-hour meter has no slope, so no long trend and no short one beside it.
+        assert_eq!(card["five_hour"]["recent"], Value::Null, "{}", card["five_hour"]);
     }
 }

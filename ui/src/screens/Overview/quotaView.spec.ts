@@ -116,4 +116,12 @@ describe('the quota panel', () => {
     expect(burnOf({ ...w, duty: { low: 0.4, mid: 0.4, high: 0.4 } })!.band).toBeNull();
     expect([burnOf({ ...w, expired: true }), burnOf({ ...w, window_start: null }), burnOf(null)]).toEqual([null, null, null]);
   });
+
+  it('OV-C223: a window carries its short trend to the burn-down when the router weighed the recent load, and none otherwise', () => {
+    const w: Window = { used: 0.5, reset_at: secs(NOW + HOUR), window_start: secs(NOW - HOUR), exhausts_at: null, projected_end_util: 0.8 };
+    const recent = { load: 2.6, burn_per_active_hour: 0.3, measured_active_hours: 0.5, measured_from: NOW - HOUR / 2, measured_until: NOW, exhausts_at: NOW + HOUR / 2, projected_end_util: 1 };
+    expect(burnOf({ ...w, recent })!.recent).toEqual({ crossing: NOW + HOUR / 2, end: 1, load: 2.6, hours: 0.5, until: NOW });
+    expect(burnOf(w)!.recent).toBeNull();
+    expect(burnOf({ ...w, recent: { ...recent, load: 0 } })!.recent).toBeNull();
+  });
 });

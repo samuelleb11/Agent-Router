@@ -97,6 +97,21 @@
   stroke: var(--cds-icon-secondary);
 }
 
+/// The short trend (OV-C223): dotted, in the window's own colour, because it is what was seen carried
+/// on at the load of the last half hour of work. It never wears a verdict: the long trend's ray does.
+.recent {
+  fill: none;
+  stroke: var(--cds-interactive);
+  stroke-width: $spacing-01;
+  stroke-linecap: round;
+  stroke-dasharray: 0 $spacing-02;
+  vector-effect: non-scaling-stroke;
+}
+
+.recent[data-tone='slate'] {
+  stroke: var(--ar-tok);
+}
+
 /// Between a quiet week and a busy one (OV-C83): red-tinted when the verdict crosses, grey
 /// otherwise. A ray alone reads as a prediction; the cone says how sure it is.
 .cone {
@@ -140,7 +155,8 @@
   color: var(--cds-text-secondary);
 }
 
-/// One line for this pace, and one for the quiet and the busy week when there is a band.
+/// One line for this pace, one for the quiet and the busy week when there is a band, and one for the
+/// short trend when there is one.
 .facts {
   display: grid;
   gap: $spacing-01;

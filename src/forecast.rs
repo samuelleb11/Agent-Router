@@ -38,6 +38,25 @@
 //! One known limitation: the burn rate depends on the model — Opus eats a window far
 //! faster than Haiku — and this does not weight by model family. The traffic it was
 //! fitted on was almost entirely Opus.
+//!
+//! ## Why there is a second, short trend
+//!
+//! The burn is fitted once across the whole window, so a session opened or closed this
+//! afternoon barely moves a slope fitted on four days. That is right for the verdict and
+//! wrong for anyone watching the load they just added. The obvious fix — fit the last
+//! half hour of readings — does not survive the quantisation: on a 7-day window one
+//! session moves the meter 1% every 30–50 minutes of work, so the last half hour holds
+//! zero steps or one.
+//!
+//! So [`Recent`] does not fit utilisation at all. It measures *load* — what the requests
+//! cost at API rates, per hour of work — over the last half hour of work, and divides it
+//! by the same figure over the stretch the long trend was fitted on. Three sessions where
+//! one ran is three times the load, and three times the burn. Cost already weights a
+//! cache read against an output token and Opus against Haiku, and only its proportions
+//! are used, so the price list's absolute level never matters. The short trend keeps the
+//! long one's central duty: the two rays differ by load and nothing else, which is
+//! exactly what opening and closing sessions changes, and it moves on the next request
+//! rather than on the next percent step.
 
 /// A gap longer than this is idle, not work. Claude Code's turns are seconds apart;
 /// five minutes is well clear of thinking time and well under a coffee break.
@@ -71,6 +90,9 @@ pub const MONTH: WindowKind = WindowKind { name: "month", span_ms: 30 * 86_400_0
 pub struct Reading {
     pub at_ms: i64,
     pub util: Option<f64>,
+    /// What the request cost at API rates, 0 when the router could not price it: its
+    /// weight in the load the short trend compares (see [`Recent`]).
+    pub cost: f64,
 }
 
 /// Where the burn estimate came from, so the UI can say so rather than presenting a
@@ -135,6 +157,27 @@ pub enum Verdict {
     ResetsFirst,
 }
 
+/// The window at the load of your last stretch of work, beside the long trend.
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+pub struct Recent {
+    /// The last stretch's load ÷ the load the long trend was fitted on: 3.0 when three
+    /// sessions run where one did on average.
+    pub load: f64,
+    /// The long trend's burn at that load.
+    pub burn_per_active_hour: f64,
+    /// The work the load was measured over, in hours, and when it began and ended, epoch
+    /// **milliseconds**. The end is the newest request, so an idle account's short trend
+    /// is the load it last worked at, and says when that was.
+    pub measured_active_hours: f64,
+    pub measured_from: i64,
+    pub measured_until: i64,
+    /// Epoch **milliseconds**, or `None` when the window resets first, at the long
+    /// trend's central duty.
+    pub exhausts_at: Option<i64>,
+    /// Where the window ends at this load. Capped at 1.0.
+    pub projected_end_util: f64,
+}
+
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct Forecast {
     /// 0..1, as last reported.
@@ -171,6 +214,9 @@ pub struct Forecast {
     /// The hours of work the estimate was fitted on, for the UI to disclose.
     pub measured_active_hours: f64,
     pub readings: usize,
+    /// The short trend. `None` without a fit on this window — a borrowed rate has no load
+    /// of its own to compare against — and without priced requests to weigh.
+    pub recent: Option<Recent>,
 }
 
 /// Time spent working, from a series of request times: every gap, capped at the point
@@ -203,6 +249,44 @@ pub fn burn_from(readings: &[Reading]) -> Option<(f64, f64)> {
     }
     let hours = act as f64 / HOUR_MS;
     Some((delta / hours, hours))
+}
+
+/// How much work the short trend looks back over. Half an hour is a few hundred requests
+/// on a busy session, so one long turn does not swing it, and short enough that a
+/// session opened or closed shows inside it.
+const RECENT_ACTIVE_MS: i64 = 30 * 60_000;
+
+/// Load per hour of work across some requests, with the work it was measured over:
+/// what they cost, over the active time between them. Each request is counted against
+/// the gap that led up to it, so the first, which closes no gap, is left out — otherwise
+/// half an hour of one request a minute weighs 31 against 30 minutes and reads busier
+/// than the same pace over a day.
+fn load_of(rs: &[Reading]) -> Option<(f64, i64)> {
+    let times: Vec<i64> = rs.iter().map(|r| r.at_ms).collect();
+    let act = active_ms(&times);
+    let cost: f64 = rs.iter().skip(1).map(|r| r.cost).sum();
+    (act > 0 && cost > 0.0).then(|| (cost / (act as f64 / HOUR_MS), act))
+}
+
+/// The load of the last [`RECENT_ACTIVE_MS`] of work against the load across the
+/// stretch `burn_from` fits — the first utilisation reading to the last — with the
+/// stretch it measured: (ratio, active ms, first request, last request).
+fn recent_load(readings: &[Reading]) -> Option<(f64, i64, i64, i64)> {
+    let first = readings.iter().position(|r| r.util.is_some())?;
+    let last = readings.iter().rposition(|r| r.util.is_some())?;
+    let (fitted, _) = load_of(&readings[first..=last])?;
+
+    // Walk back from the newest request until half an hour of work is behind it. Gaps
+    // are capped exactly as `active_ms` caps them, so a night off is not half an hour.
+    let mut start = readings.len().checked_sub(1)?;
+    let mut act = 0;
+    while start > 0 && act < RECENT_ACTIVE_MS {
+        act += (readings[start].at_ms - readings[start - 1].at_ms).clamp(0, IDLE_GAP_MS);
+        start -= 1;
+    }
+    let stretch = &readings[start..];
+    let (recent, act) = load_of(stretch)?;
+    Some((recent / fitted, act, stretch[0].at_ms, stretch[stretch.len() - 1].at_ms))
 }
 
 /// One duty cycle, carried to the reset: when the window would cross 100%, and where
@@ -277,6 +361,7 @@ pub fn forecast(
         basis,
         measured_active_hours: measured,
         readings: readings.len(),
+        recent: None,
     };
 
     if used >= 1.0 {
@@ -319,6 +404,24 @@ pub fn forecast(
         (false, false) => Verdict::ResetsFirst,
         (false, true) => Verdict::Tight,
     };
+
+    // The short trend: the same window at the load of your last half hour of work, and
+    // the same central duty, so the two rays part only where the load has changed.
+    if basis == Basis::ThisWindow {
+        out.recent = recent_load(readings).map(|(load, act, from, until)| {
+            let burn = burn * load;
+            let (at, end) = project(used, burn, duty.mid, now_ms, reset_ms);
+            Recent {
+                load,
+                burn_per_active_hour: burn,
+                measured_active_hours: act as f64 / HOUR_MS,
+                measured_from: from,
+                measured_until: until,
+                exhausts_at: at,
+                projected_end_util: end,
+            }
+        });
+    }
     out
 }
 
@@ -328,13 +431,15 @@ mod tests {
 
     const MIN: i64 = 60_000;
 
-    /// Requests every `step` from `start`, walking utilisation `from`→`to` linearly.
+    /// Requests every `step` from `start`, walking utilisation `from`→`to` linearly, each
+    /// costing the same.
     fn run(start: i64, step: i64, n: usize, from: f64, to: f64) -> Vec<Reading> {
         (0..n)
             .map(|i| Reading {
                 at_ms: start + i as i64 * step,
                 // Quantised to whole percent, exactly as the header reports it.
                 util: Some(((from + (to - from) * i as f64 / (n - 1) as f64) * 100.0).round() / 100.0),
+                cost: 1.0,
             })
             .collect()
     }
@@ -541,11 +646,11 @@ mod tests {
             let (t1, _) = w[1];
             let mut t = t0;
             while t < t1 {
-                rs.push(Reading { at_ms: t * 1000, util: Some(u0) });
+                rs.push(Reading { at_ms: t * 1000, util: Some(u0), cost: 1.0 });
                 t += 20;
             }
         }
-        rs.push(Reading { at_ms: steps[6].0 * 1000, util: Some(0.96) });
+        rs.push(Reading { at_ms: steps[6].0 * 1000, util: Some(0.96), cost: 1.0 });
 
         let (burn, hours) = burn_from(&rs).expect("a slope");
         assert!(hours > 3.0, "fitted on {hours:.1} h of work");
@@ -555,5 +660,65 @@ mod tests {
         // 4% of the window left. Actual: it took 1.8 more hours of work to reach 100%.
         let left = (1.0 - 0.96) / burn;
         assert!((left - 1.8).abs() < 1.0, "predicted {left:.2} h of work left, actual 1.8 h");
+    }
+    /// Two more sessions opened for the last half hour: three requests where one went, each
+    /// costing the same. A slope fitted on ten hours barely notices; the short trend
+    /// carries the new load.
+    #[test]
+    fn a_short_trend_follows_sessions_opened_mid_window() {
+        // Ten hours of one session, 0 → 20%, then half an hour at three times the pace.
+        let mut rs = run(0, MIN, 601, 0.00, 0.20);
+        let then = 600 * MIN;
+        rs.extend(run(then + MIN / 3, MIN / 3, 90, 0.20, 0.23));
+        let now = then + 30 * MIN;
+        let f = forecast(&rs, SEVEN_DAY, 604_800, now, None, Duty::flat(0.3));
+        let r = f.recent.expect("a short trend");
+
+        // Not quite 3×: the long trend's own stretch includes the last half hour.
+        assert!((2.5..3.1).contains(&r.load), "load {:.2}", r.load);
+        assert!((r.burn_per_active_hour - f.burn_per_active_hour * r.load).abs() < 1e-12);
+        assert!((r.measured_active_hours - 0.5).abs() < 0.01, "measured {:.2} h", r.measured_active_hours);
+        assert_eq!(r.measured_until, rs.last().unwrap().at_ms);
+
+        // Both cross a week this busy; at the new load it comes days sooner.
+        let (long, short) = (f.exhausts_at.expect("long crosses"), r.exhausts_at.expect("short crosses"));
+        assert!(short < long);
+        assert!((long - short) as f64 / HOUR_MS > 48.0, "only {:.0} h sooner", (long - short) as f64 / HOUR_MS);
+    }
+
+    #[test]
+    fn a_short_trend_eases_when_sessions_close() {
+        // Three hours of three sessions, 0 → 18%, then half an hour of one.
+        let mut rs = run(0, MIN / 3, 541, 0.00, 0.18);
+        let then = 180 * MIN;
+        rs.extend(run(then + MIN, MIN, 30, 0.18, 0.19));
+        let now = then + 30 * MIN;
+        let f = forecast(&rs, SEVEN_DAY, 604_800, now, None, Duty::flat(0.3));
+        let r = f.recent.expect("a short trend");
+
+        assert!(r.load < 0.5, "load {:.2}", r.load);
+        assert!(r.burn_per_active_hour < f.burn_per_active_hour);
+        assert!(r.exhausts_at.expect("short crosses") > f.exhausts_at.expect("long crosses"));
+    }
+
+    #[test]
+    fn a_short_trend_needs_a_fit_of_its_own_and_a_price() {
+        // A window too young for a slope borrows a rate, and a borrowed rate has no load of
+        // its own to compare the last half hour with.
+        let young = run(0, MIN, 21, 0.00, 0.01);
+        let f = forecast(&young, FIVE_HOUR, 18_000, 20 * MIN, Some(0.06), Duty::flat(0.9));
+        assert_eq!(f.basis, Basis::TrailingWindows);
+        assert!(f.recent.is_none());
+
+        // Nothing priced, nothing to weigh: the long trend stands alone.
+        let unpriced: Vec<Reading> = run(0, MIN, 121, 0.50, 0.80).into_iter().map(|r| Reading { cost: 0.0, ..r }).collect();
+        let g = forecast(&unpriced, FIVE_HOUR, 18_000, 120 * MIN, None, Duty::flat(1.0));
+        assert_eq!(g.basis, Basis::ThisWindow);
+        assert!(g.recent.is_none());
+
+        // One steady session: the two trends agree.
+        let steady = run(0, MIN, 121, 0.50, 0.80);
+        let h = forecast(&steady, FIVE_HOUR, 18_000, 120 * MIN, None, Duty::flat(1.0));
+        assert!((h.recent.expect("a short trend").load - 1.0).abs() < 0.02);
     }
 }

@@ -63,6 +63,19 @@ export interface Window {
   readonly spent?: boolean | null;
   /// Readings across the window, epoch milliseconds and a fraction used.
   readonly series?: readonly { readonly t: number; readonly u: number }[] | null;
+  /// The short trend: the window at the load of the last half hour of work (OV-C223). Null
+  /// without a fit on this window and priced requests to weigh.
+  readonly recent?: {
+    /// That stretch's load ÷ the load the long trend was fitted on.
+    readonly load: number;
+    readonly burn_per_active_hour: number;
+    readonly measured_active_hours: number;
+    /// Epoch milliseconds, as are the two after it.
+    readonly measured_from: number;
+    readonly measured_until: number;
+    readonly exhausts_at: number | null;
+    readonly projected_end_util: number;
+  } | null;
 }
 
 export type WindowKey = 'five_hour' | 'seven_day';

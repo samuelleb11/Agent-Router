@@ -130,6 +130,16 @@ worth trusting; it borrows the account's own recent average and `basis` says so.
 depends on the model — Opus eats a window far faster than Haiku — and is not weighted for it.
 Per `Token estimates are estimates`, the UI discloses what each projection was fitted on.
 
+That slope is fitted across the whole window, so a session opened or closed this afternoon
+barely moves it — right for the verdict, wrong for anyone watching the load they just added.
+Each window therefore carries a second, short trend (`recent`). Fitting the last half hour of
+readings would not work: on a 7-day window one session moves the meter 1% every 30–50 minutes
+of work, so that half hour holds zero steps or one. Instead it measures *load* — request cost
+at API rates per hour of work — over the last 30 minutes of work, divides it by the same figure
+across the long fit's stretch, and scales the long burn by that ratio, at the long trend's
+central duty. The two rays then part only where the load has changed, and the short one moves
+on the next request rather than the next percent step. It never sets the verdict.
+
 Quota is per account, so the cross-account rollup adds spend, tokens and requests but never
 percentages; combined headroom is totalled in hours of work, and two credentials onto one
 Anthropic account (same 7-day reset) count once. It is a reporting figure — the router still

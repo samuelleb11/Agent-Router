@@ -1,6 +1,6 @@
 // New for agent-router: one quota window's burn-down. Custom because the dashed projection ray, the
-// single crossing marker and the quiet-to-busy cone carry the chart's meaning, and Carbon Charts
-// draws none of them (docs/web-console-carbon.md, "Why Carbon, and what it does not cover"). Drawn
+// single crossing marker, the quiet-to-busy cone and the short trend's dotted ray carry the chart's
+// meaning, and Carbon Charts draws none of them (docs/web-console-carbon.md, "Why Carbon, and what it does not cover"). Drawn
 // from the dashboard's `runwaySvg` and `renderRunway` (assets/index.html).
 import { DataTip, type Tip } from './DataTip';
 import styles from './BurnDown.module.scss';
@@ -15,6 +15,17 @@ export interface Landing {
   readonly crossing: number | null;
   /// Where it ends at the reset, 0–1, when it does not cross.
   readonly end: number | null;
+}
+
+/// The short trend: the same window at the load of the last stretch of work, beside the long one
+/// fitted across the whole window, so a session opened or closed shows at once (OV-C223).
+export interface Recent extends Landing {
+  /// That stretch's load ÷ the window's: 3 when three sessions run where one did.
+  readonly load: number;
+  /// The work it was measured over, in hours.
+  readonly hours: number;
+  /// When it ended, epoch milliseconds: the newest request.
+  readonly until: number;
 }
 
 /// One window of the forecast, in milliseconds and fractions of the limit.
@@ -34,10 +45,16 @@ export interface Burn extends Landing {
   readonly band?: { readonly quiet: Landing; readonly busy: Landing } | null;
   /// The window has rolled over: nothing current to draw (OV-C72).
   readonly expired?: boolean;
+  /// Absent without a fit on this window and priced requests to weigh (OV-C223).
+  readonly recent?: Recent | null;
 }
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 const pct = (u: number) => `${Math.round(clamp(u, 0, 1) * 100)}%`;
+/// A load as a multiple: "2.6×", "12×".
+const times = (v: number) => `${v < 10 ? v.toFixed(1) : Math.round(v)}×`;
+/// A stretch that ended longer ago than a pause is the load you last worked at, and says when.
+const PAUSE_MS = 300_000;
 const time = (ms: number) => new Date(ms).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 
 /// One window drawn across its own life: what was seen left of now, and a dashed projection right
@@ -91,12 +108,18 @@ export function BurnDown({
       })()
     : null;
 
+  // The short trend leaves from the same point and differs from the long one only by load (OV-C223).
+  const recent = burn.recent ?? null;
+  const short = recent ? land(recent) : null;
+  const stretch = recent ? `last ${Math.max(1, Math.round(recent.hours * 60))} min of work${now - recent.until > PAUSE_MS ? `, to ${formatTime(recent.until)}` : ''}` : null;
+  const shortSaid = recent ? `at the load of the ${stretch} (${times(recent.load)} the window's), it ${said(recent)}` : null;
+
   const opened = formatTime(start);
   const resets = `resets ${formatTime(reset)}`;
   const usedNow = `${pct(burn.used)} used now`;
   const ray = said(burn);
   const weeks = burn.band ? `a quiet week ${said(burn.band.quiet)}, a busy one ${said(burn.band.busy)}` : null;
-  const named = `${label} · burn-down: opened ${opened}, ${resets}; ${usedNow}, ${ray}${weeks ? `; ${weeks}` : ''}`;
+  const named = `${label} · burn-down: opened ${opened}, ${resets}; ${usedNow}, ${ray}${weeks ? `; ${weeks}` : ''}${shortSaid ? `; ${shortSaid}` : ''}`;
 
   const tip = (): Tip => ({
     title: `${label} — burn-down`,
@@ -104,6 +127,7 @@ export function BurnDown({
       { value: pct(burn.used), label: 'used now', colour: tone === 'slate' ? '--ar-tok' : '--cds-interactive', mark: 'line' },
       { value: ray, label: 'projection', colour: verdict === 'crosses' ? '--ar-bad-fill' : verdict === 'tight' ? '--ar-warn-fill' : '--cds-icon-secondary', mark: 'line' },
       weeks ? { value: weeks, label: '' } : null,
+      recent ? { value: said(recent), label: `short trend, ${times(recent.load)} the window's load`, colour: tone === 'slate' ? '--ar-tok' : '--cds-interactive', mark: 'line' } : null,
       { value: opened, label: 'window opened' },
       { value: formatTime(reset), label: 'window resets' },
     ],
@@ -126,6 +150,7 @@ export function BurnDown({
               <line className={styles.now} x1={x(at)} x2={x(at)} y1={0} y2={100} />
               <path className={styles.seen} data-tone={tone} d={seenPath} />
               <path className={styles.ray} data-verdict={verdict} d={`M${from}L${target[0].toFixed(2)},${target[1].toFixed(2)}`} />
+              {short && <path className={styles.recent} data-trend="recent" data-tone={tone} d={`M${from}L${short[0].toFixed(2)},${short[1].toFixed(2)}`} />}
             </svg>
             {burn.crossing !== null && (
               <span className={styles.marker} data-verdict={verdict} style={{ insetInlineStart: `${target[0]}%`, insetBlockStart: `${target[1]}%` }} />
@@ -140,6 +165,7 @@ export function BurnDown({
       <p className={styles.facts}>
         <span>{`${usedNow} · ${ray}`}</span>
         {weeks && <span>{weeks}</span>}
+        {shortSaid && <span data-trend="recent">{shortSaid}</span>}
       </p>
     </figure>
   );

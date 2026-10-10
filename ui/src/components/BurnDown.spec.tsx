@@ -174,6 +174,47 @@ describe('BurnDown', () => {
   });
 });
 
+/// 2026-10-10: a slope fitted across the whole window barely moves when a session opens or closes, so
+/// the chart carries a second ray at the load of the last half hour of work.
+describe('BurnDown with the short trend', () => {
+  const busier: Burn = { ...base, recent: { crossing: T0 + 120 * HOUR, end: null, load: 2.6, hours: 0.5, until: NOW } };
+  const short = (c: HTMLElement) => c.querySelector('path[data-trend="recent"]');
+
+  it('OV-C223: draws the short trend as a dotted ray from now in the window’s colour, beside the long one', () => {
+    const { container } = show(busier);
+    expect(short(container)).toHaveAttribute('d', 'M50.00,51.00L71.43,0.00');
+    expect(short(container)).toHaveAttribute('data-tone', 'slate');
+    // The long trend's ray, its verdict and its words are as they were.
+    expect(ray(container)).toHaveAttribute('d', 'M50.00,51.00L100.00,29.00');
+    expect(ray(container)).toHaveAttribute('data-verdict', 'resets-first');
+    expect(marker(container)).toBeNull();
+    expect(block(scss, '\n.recent {')).toMatch(/stroke-dasharray:/);
+    expect(block(scss, ".recent[data-tone='slate']")).toMatch(/stroke:\s*var\(--ar-tok\);/);
+    expect(block(scss, '\n.recent {')).not.toMatch(/--ar-bad-fill|--ar-warn-fill/);
+  });
+
+  it('OV-C223: says the recent load and where it lands, as text, in its name and in its tip', () => {
+    show(busier);
+    const said = "at the load of the last 30 min of work (2.6× the window's), it reaches 100% d120h";
+    expect(screen.getByText(said)).toBeVisible();
+    expect(screen.getByText(/used now/)).toHaveTextContent(/^49% used now · ends ≈71% at the reset$/);
+    expect(chart()).toHaveAccessibleName(`7-day window · burn-down: opened d0h, resets d168h; 49% used now, ends ≈71% at the reset; ${said}`);
+    fireEvent.focus(chart());
+    expect(screen.getByRole('tooltip')).toHaveTextContent("short trend, 2.6× the window's load");
+  });
+
+  it('OV-C223: an idle account’s short trend is the load it last worked at, and says when that ended', () => {
+    show({ ...busier, recent: { crossing: null, end: 0.6, load: 0.4, hours: 0.5, until: NOW - 2 * HOUR } });
+    expect(screen.getByText("at the load of the last 30 min of work, to d82h (0.4× the window's), it ends ≈60% at the reset")).toBeVisible();
+  });
+
+  it('OV-C223: with no short trend there is no dotted ray and no line for it', () => {
+    const { container } = show(base);
+    expect(short(container)).toBeNull();
+    expect(container.querySelector('span[data-trend]')).toBeNull();
+  });
+});
+
 describe('BurnDown without a hover', () => {
   /// When the window opened, the use now and the reset were in the burn-down's tooltip only.
   it('OV-C63, SH-C30: says when the window opened, the use now, where it lands and when it resets, as text', () => {
