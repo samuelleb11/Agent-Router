@@ -1357,6 +1357,10 @@ pub(crate) fn forecast_inner(state: &AppState, f: &Filter) -> anyhow::Result<Val
                     coalesce(sum(u.prompt_tokens),0)  AS prompt_tokens,
                     coalesce(sum(u.output_tokens),0)  AS output_tokens,
                     coalesce(sum(c.cost),0)           AS cost,
+                    -- Requests with usage the router could not price: a cost of 0 beside them
+                    -- is not free, and the dashboard says so rather than showing $0.
+                    coalesce(sum(CASE WHEN u.request_id IS NOT NULL AND c.request_id IS NULL
+                                      THEN 1 ELSE 0 END),0) AS unpriced,
                     max(r.started_at)                 AS last_seen
              FROM requests r
              LEFT JOIN usage u        ON u.request_id = r.id
@@ -2805,5 +2809,30 @@ mod tests {
         assert_eq!(card["five_hour"]["expired"], json!(false));
         assert_eq!((&card["month"]["used"], &card["month"]["reset_at"]), (&json!(0.35), &json!(month_reset)));
         assert_eq!(card["seven_day"], Value::Null, "a monthly plan has no weekly window");
+    }
+
+    #[tokio::test]
+    async fn the_forecast_counts_an_accounts_unpriced_requests() {
+        let lab = crate::api_refusals::Lab::local("forecast-unpriced");
+        let conn = Connection::open(&lab.state.config.db_path).unwrap();
+        crate::pricing::ensure_table(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO accounts (id, label, source, active, created_at) VALUES ('work', 'Work', 'token', 1, 1);
+             INSERT INTO requests (request_id, account_id, model, method, path, started_at)
+             VALUES ('priced', 'work', 'claude-opus-5-5', 'POST', '/v1/messages', 1000),
+                    ('unpriced', 'work', 'gpt-9', 'POST', '/v1/messages', 2000),
+                    ('refused', 'work', 'claude-opus-5-5', 'POST', '/v1/messages', 3000);
+             INSERT INTO usage (request_id, input_tokens, output_tokens)
+             SELECT id, 1000, 100 FROM requests WHERE request_id IN ('priced', 'unpriced');",
+        )
+        .unwrap();
+        crate::pricing::resolve_models(&conn).unwrap();
+        let everything = Filter { project: None, session: None, account: None, since: None, until: None, tz: None };
+        let got = forecast_inner(&lab.state, &everything).unwrap();
+        let card = got["accounts"].as_array().unwrap().iter().find(|a| a["id"] == "work").unwrap().clone();
+        // A request with no usage (refused) has nothing to price; only the one with usage and
+        // no rate is unpriced, and the priced one still has its cost.
+        assert_eq!((&card["usage"]["requests"], &card["usage"]["unpriced"]), (&json!(3), &json!(1)), "{card}");
+        assert!(card["usage"]["cost"].as_f64().unwrap() > 0.0);
     }
 }
