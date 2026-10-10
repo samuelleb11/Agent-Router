@@ -74,13 +74,13 @@ const SCOPE: &str = concat!(
 /// `Provider`'s closed set, and a sixth bound parameter would renumber every read that binds
 /// its own after the scope's five.
 fn scope_sql(f: &Filter) -> String {
-    format!("{SCOPE}{}", provider_test(f))
+    format!("{SCOPE}{}", provider_test(f.provider))
 }
 
 /// The provider half of `scope_sql`, for a read that writes the rest of its scope itself:
 /// nothing when the scope names no provider.
-fn provider_test(f: &Filter) -> String {
-    match f.provider {
+fn provider_test(provider: Option<crate::accounts::Provider>) -> String {
+    match provider {
         Some(provider) => format!("\n                     AND coalesce(r.provider, 'anthropic') = '{}'", provider.as_str()),
         None => String::new(),
     }
@@ -634,7 +634,7 @@ fn summary_parts_of(conn: &Connection, f: &Filter, parts: &[&str]) -> anyhow::Re
              WHERE (?1 IS NULL OR r.started_at >= ?1)
                AND (?2 IS NULL OR r.started_at < ?2){provider}
              GROUP BY r.account_id ORDER BY prompt_tokens DESC",
-                provider = provider_test(f),
+                provider = provider_test(f.provider),
             ),
             &[&f.since, &f.until],
         )?;
@@ -880,7 +880,7 @@ fn projects_of(conn: &Connection, f: &Filter) -> anyhow::Result<Value> {
            AND (?2 IS NULL OR r.account_id = ?2)
            AND (?3 IS NULL OR r.started_at < ?3){provider}
          GROUP BY s.project ORDER BY prompt_tokens DESC",
-            provider = provider_test(f),
+            provider = provider_test(f.provider),
         ),
         &[&f.since, &f.account, &f.until],
     )?;
@@ -1001,6 +1001,13 @@ pub struct SearchQuery {
     pub kind: Option<String>,
     pub since: Option<i64>,
     pub limit: Option<i64>,
+    /// The rest of the page's scope, which Search follows like every other panel (AGEN-0132):
+    /// the account and the provider that served the request a match came from, and the end
+    /// of the time range.
+    pub account: Option<String>,
+    pub until: Option<i64>,
+    #[serde(default)]
+    pub provider: Option<crate::accounts::Provider>,
 }
 
 /// Find every session and every message whose text matches.
@@ -1067,15 +1074,19 @@ fn hits_for(
          JOIN bodies_db.blocks b       ON b.id  = blocks_fts.rowid
          JOIN bodies_db.block_sites st ON st.block_id = b.id
          LEFT JOIN main.sessions s     ON s.id  = st.session_id
+         LEFT JOIN main.requests r     ON r.id  = st.request_id
          WHERE blocks_fts MATCH ?1
            AND {project}
            AND (?3 IS NULL OR st.session_id = ?3)
            AND (?4 IS NULL OR b.kind = ?4)
            AND (?5 IS NULL OR st.at >= ?5)
+           AND (?7 IS NULL OR r.account_id = ?7)
+           AND (?8 IS NULL OR st.at < ?8){provider}
          ORDER BY rank LIMIT ?6",
         project = in_project!(2),
+        provider = provider_test(f.provider),
     );
-    rows(conn, &sql, &[&expr, &f.project, &f.session, &f.kind, &f.since, &limit])
+    rows(conn, &sql, &[&expr, &f.project, &f.session, &f.kind, &f.since, &limit, &f.account, &f.until])
 }
 
 /// The same matches rolled up per session — "which conversations talk about this".
@@ -1090,16 +1101,20 @@ fn sessions_for(conn: &Connection, expr: &str, f: &SearchQuery) -> anyhow::Resul
          JOIN bodies_db.blocks b       ON b.id  = blocks_fts.rowid
          JOIN bodies_db.block_sites st ON st.block_id = b.id
          LEFT JOIN main.sessions s     ON s.id  = st.session_id
+         LEFT JOIN main.requests r     ON r.id  = st.request_id
          WHERE blocks_fts MATCH ?1
            AND {project}
            AND (?3 IS NULL OR st.session_id = ?3)
            AND (?4 IS NULL OR b.kind = ?4)
            AND (?5 IS NULL OR st.at >= ?5)
+           AND (?6 IS NULL OR r.account_id = ?6)
+           AND (?7 IS NULL OR st.at < ?7){provider}
          GROUP BY st.session_id
          ORDER BY hits DESC, last_at DESC LIMIT 200",
         project = in_project!(2),
+        provider = provider_test(f.provider),
     );
-    rows(conn, &sql, &[&expr, &f.project, &f.session, &f.kind, &f.since])
+    rows(conn, &sql, &[&expr, &f.project, &f.session, &f.kind, &f.since, &f.account, &f.until])
 }
 
 /// Every word as a literal term, all of them required. `"` is FTS5's own escape for a
@@ -1193,7 +1208,7 @@ fn tools_of(conn: &Connection, f: &Filter) -> anyhow::Result<Value> {
                AND (?5 IS NULL OR tc.seen_at < ?5){provider}
              GROUP BY tc.name ORDER BY est_tokens DESC",
             project = in_project!(1),
-            provider = provider_test(f),
+            provider = provider_test(f.provider),
         ),
         &scope_params(f),
     )?;
@@ -2980,6 +2995,50 @@ mod tests {
         let bare_2 = BTreeMap::from([("Bash".to_string(), 1), ("Read".to_string(), 1)]);
         assert_eq!(tally(&tools["called"], "calls"), bare_2);
         assert_eq!(tally(&tools["produced"], "results"), bare_2);
+    }
+
+    /// Search follows the rest of the page's scope like every other panel: the account and
+    /// the provider that served the request a match came from, and the end of the range
+    /// (AGEN-0132).
+    #[test]
+    fn search_follows_the_scope() {
+        let store = store("search-scope");
+        let side = crate::db::bodies_path(&store.dir.join("agent-router.db"));
+        store.conn.execute("ATTACH DATABASE ?1 AS bodies_db", [side.to_str().unwrap()]).unwrap();
+        // The same words, said in a session served by Anthropic and in one served by Kimi Code.
+        store
+            .conn
+            .execute_batch(
+                "INSERT INTO sessions (id, cwd, started_at, last_seen_at) VALUES ('claude-1', '/code/a', 1, 2), ('kimi-1', '/code/a', 3, 4);
+                 INSERT INTO requests (id, request_id, session_id, account_id, method, path, started_at, provider)
+                   VALUES (1, 'a', 'claude-1', 'work', 'POST', '/v1/messages', 10, 'anthropic'),
+                          (2, 'k', 'kimi-1', 'kimi', 'POST', '/v1/messages', 20, 'kimi');
+                 INSERT INTO bodies_db.blocks (id, hash, kind, chars, text)
+                   VALUES (1, x'01', 'text', 27, 'the heron waits at the weir');
+                 INSERT INTO bodies_db.block_sites (block_id, session_id, ordinal, role, request_id, at)
+                   VALUES (1, 'claude-1', 0, 'user', 1, 10), (1, 'kimi-1', 0, 'user', 2, 20);",
+            )
+            .unwrap();
+        let conn = store.reads.get().unwrap();
+        let found = |scope: &str| -> [Vec<String>; 2] {
+            let uri: axum::http::Uri = format!("/api/search?q=heron{scope}").parse().unwrap();
+            let f = Query::<SearchQuery>::try_from_uri(&uri).unwrap().0;
+            let ids = |list: Value| -> Vec<String> {
+                let mut ids: Vec<String> =
+                    list.as_array().unwrap().iter().map(|h| h["session_id"].as_str().unwrap().to_owned()).collect();
+                ids.sort();
+                ids
+            };
+            [ids(hits_for(&conn, &f.q, &f, 60).unwrap()), ids(sessions_for(&conn, &f.q, &f).unwrap())]
+        };
+        let both = vec!["claude-1".to_string(), "kimi-1".to_string()];
+        assert_eq!(found(""), [both.clone(), both]);
+        let kimi = vec!["kimi-1".to_string()];
+        let claude = vec!["claude-1".to_string()];
+        assert_eq!(found("&provider=kimi"), [kimi.clone(), kimi.clone()]);
+        assert_eq!(found("&provider=anthropic"), [claude.clone(), claude.clone()]);
+        assert_eq!(found("&account=kimi"), [kimi.clone(), kimi]);
+        assert_eq!(found("&until=15"), [claude.clone(), claude], "the end of the range too");
     }
 
     /// Search is asked with the page's project too (the console's search panel sends it), and
