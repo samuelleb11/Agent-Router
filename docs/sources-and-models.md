@@ -332,9 +332,9 @@ its epic, and "waits on" is a `blocks` edge drawn from the item that waits.
 | AGEN-0084 | Routing `/v1/messages` and `count_tokens` by model, signed the provider's way | 0082, 0083 |
 | AGEN-0085 | No Anthropic-only call with another provider's key | 0082 |
 | **AGEN-0079** | Epic: Kimi Code as a source | |
-| AGEN-0086 | Measure what Kimi Code's endpoint accepts, with a real key | 0084 |
-| AGEN-0087 | Kimi Code's quota windows from `/coding/v1/usages` | 0082, 0085, 0086 |
-| AGEN-0088 | A Kimi Code 403 marks the account spent until its window resets | 0084, 0086 |
+| AGEN-0096 | Measure what Kimi Code's endpoint accepts, with a real key (refiles AGEN-0086) | 0084 |
+| AGEN-0087 | Kimi Code's quota windows from `/coding/v1/usages` | 0082, 0085, 0096 |
+| AGEN-0088 | A Kimi Code 403 marks the account spent until its window resets | 0084, 0096 |
 | AGEN-0089 | Kimi Code's models priced at Moonshot's Open Platform rates | |
 | **AGEN-0080** | Epic: every client picks a source by picking a model | |
 | AGEN-0090 | The session model picker offers every provider's models | 0083 |
@@ -342,8 +342,8 @@ its epic, and "waits on" is a `blocks` edge drawn from the item that waits.
 | AGEN-0092 | Console: Kimi Code accounts, the Models page, the picker, the cards | 0082, 0083, 0087, 0090 |
 | AGEN-0093 | iOS: the same | 0082, 0087, 0090 |
 | AGEN-0094 | Android: the same | 0082, 0087, 0090 |
-| AGEN-0095 | End to end on the hosted router: `/model k3`, then back to Claude | 0084, 0085, 0086, 0091, 0092 |
+| AGEN-0095 | End to end on the hosted router: `/model k3`, then back to Claude | 0084, 0085, 0096, 0091, 0092 |
 
-AGEN-0083 and AGEN-0084 also relate to AGEN-0086: its findings settle Kimi Code's model list
-and which headers pass. The measuring itself starts as soon as there is a Kimi Code key in the
-vault. Only its last part, a conversation moving between providers, needs AGEN-0084.
+AGEN-0083 and AGEN-0084 also relate to AGEN-0096: its findings settle Kimi Code's model list
+and which headers pass. AGEN-0086 was withdrawn on 2026-10-10 and refiled as AGEN-0096, when the
+owner accepted Kimi's documented 403 body rather than spend the shared 5-hour window to record one.
