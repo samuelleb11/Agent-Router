@@ -224,6 +224,25 @@ pub struct RequestShape {
     /// the CLI never wrote to disk. See `environment_of`.
     pub cwd: Option<String>,
     pub git_branch: Option<String>,
+    /// The session a Kimi Code request names in its body, `metadata.user_id`, which is
+    /// `session_<uuid>` on every request, its subagents' included (docs/kimi-client.md).
+    /// Claude Code's own `metadata.user_id` is another shape and is never taken.
+    pub body_session: Option<String>,
+}
+
+/// The client a User-Agent names, as the dashboards label it: Claude Code's terminal and
+/// VS Code, Kimi Code's terminal, VS Code and web. `None` for any other caller.
+pub fn client_of(user_agent: &str) -> Option<&'static str> {
+    let ua = user_agent.trim();
+    if let Some(rest) = ua.strip_prefix("kimi-code-cli/") {
+        Some(if rest.contains("(web)") { "kimi-code-web" } else { "kimi-code-cli" })
+    } else if ua.starts_with("kimi-code-vscode/") {
+        Some("kimi-code-vscode")
+    } else if ua.starts_with("claude-cli/") {
+        Some(if ua.contains("claude-vscode") { "claude-code-vscode" } else { "claude-code-cli" })
+    } else {
+        None
+    }
 }
 
 /// One content block out of the conversation, as the search index stores it.
@@ -256,6 +275,12 @@ pub fn analyze_request(body: &[u8]) -> Option<RequestShape> {
         streaming: v.get("stream").and_then(Value::as_bool).unwrap_or(false),
         cwd,
         git_branch,
+        body_session: v
+            .get("metadata")
+            .and_then(|m| m.get("user_id"))
+            .and_then(Value::as_str)
+            .filter(|id| id.starts_with("session_") && id.len() <= 128)
+            .map(str::to_owned),
         ..Default::default()
     };
 
@@ -399,6 +424,13 @@ pub fn environment_in(texts: &[&str]) -> (Option<String>, Option<String>) {
     });
     // The older line, only when the newer one is not there.
     let cwd = primary.or_else(|| lines().find_map(|l| l.strip_prefix("Working directory: ").and_then(as_path)));
+    // Kimi Code says it in a sentence of its own: "The current working directory is `<path>`".
+    let cwd = cwd.or_else(|| {
+        texts.iter().find_map(|t| {
+            let (_, rest) = t.split_once("The current working directory is `")?;
+            as_path(rest.split_once('`')?.0)
+        })
+    });
     let branch = lines().find_map(|l| {
         let name = l.strip_prefix("Current branch: ")?.trim();
         (!name.is_empty() && name.len() <= 255 && !name.contains(char::is_whitespace)).then(|| name.to_string())

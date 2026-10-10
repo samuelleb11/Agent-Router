@@ -774,7 +774,7 @@ fn sessions_inner(state: &AppState, f: &Filter) -> anyhow::Result<Value> {
 /// Scoped by `SCOPE` itself, so a project lists the sessions the summary counts for it,
 /// `(unresolved)` included. The one bound it never takes is the session: the list is how
 /// a session is picked, so that place in the scope is bound empty.
-fn sessions_of(conn: &Connection, f: &Filter) -> anyhow::Result<Value> {
+pub(crate) fn sessions_of(conn: &Connection, f: &Filter) -> anyhow::Result<Value> {
     let sql = format!(
         "SELECT s.id, s.project, s.cwd, s.repository, s.machine AS machine_id, m.label AS machine_label,
                 s.git_branch, s.entrypoint, s.started_at, s.last_seen_at,
@@ -809,6 +809,9 @@ fn sessions_of(conn: &Connection, f: &Filter) -> anyhow::Result<Value> {
                 _ => Value::Null,
             };
             row.insert("machine".into(), machine);
+            // Which client it was, from the User-Agent its requests carried.
+            let client = row.get("entrypoint").and_then(Value::as_str).and_then(crate::analyze::client_of);
+            row.insert("client".into(), json!(client));
         }
     }
     Ok(listed)

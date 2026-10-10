@@ -104,6 +104,12 @@ pub(crate) enum Route {
     NoSource(String),
 }
 
+/// The session a request belongs to: Claude Code's `x-claude-code-session-id`, else the one
+/// a Kimi Code request names in its body (`RequestShape::body_session`).
+pub(crate) fn session_of(header: Option<String>, shape: Option<&crate::analyze::RequestShape>) -> Option<String> {
+    header.or_else(|| shape.and_then(|s| s.body_session.clone()))
+}
+
 /// Whether a path carries a model to route by. Every other `/v1/` path goes to the active
 /// Anthropic account, as every path did before there was a second provider.
 fn routed_by_model(path_and_query: &str) -> bool {
@@ -350,6 +356,7 @@ async fn forward(state: Arc<AppState>, req: Request<Body>) -> anyhow::Result<Res
     // latency-sensitive direction — the response stream — is never buffered.
     let request_bytes = axum::body::to_bytes(body, MAX_REQUEST_BODY).await?;
     let shape = analyze_request(&request_bytes);
+    let session_id = session_of(session_id, shape.as_ref());
 
     // The account the request goes to, by the model it asks for.
     let model = shape.as_ref().and_then(|s| s.model.clone());

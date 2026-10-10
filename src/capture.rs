@@ -526,4 +526,131 @@ mod tests {
         drop(db);
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// A Kimi Code request as it reaches the router: no Claude Code session header, the
+    /// session in `metadata.user_id`, the directory in a sentence of the system prompt.
+    fn kimi_body(session: &str, cwd: &str) -> String {
+        serde_json::json!({
+            "model": "k3", "max_tokens": 32000, "stream": true,
+            "metadata": { "user_id": session },
+            "system": [{ "type": "text", "text": format!("You are Kimi Code.\nThe current working directory is `{cwd}`. Use it."), "cache_control": { "type": "ephemeral" } }],
+            "tools": [{ "name": "Bash", "input_schema": { "type": "object" } }],
+            "messages": [{ "role": "user", "content": "hi" }],
+        })
+        .to_string()
+    }
+
+    /// Run the capture task over a store of its own with one event, as the proxy hands it on.
+    async fn captured(tag: &str, ev: CaptureEvent) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("ar-kimi-capture-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("agent-router.db");
+        crate::db::Db::open(&db).unwrap();
+        crate::pricing::ensure_table(&rusqlite::Connection::open(&db).unwrap()).unwrap();
+        let (tx, task) = spawn(db.clone());
+        tx.send(ev).await.unwrap();
+        drop(tx);
+        task.await.unwrap();
+        db
+    }
+
+    fn kimi_event(session: Option<String>, body: &str, user_agent: &str) -> CaptureEvent {
+        CaptureEvent {
+            request_id: Some(format!("req-{}", user_agent.len())),
+            message_id: None,
+            session_id: session,
+            account_email: None,
+            agent_id: None,
+            account_id: "kimi".into(),
+            provider: crate::accounts::Provider::Kimi,
+            entrypoint: Some(user_agent.into()),
+            model: Some("k3".into()),
+            method: "POST".into(),
+            path: "/v1/messages?beta=true".into(),
+            started_at_ms: 1_760_000_000_000,
+            ttfb_ms: 1,
+            duration_ms: 2,
+            status: 200,
+            streaming: true,
+            stop_reason: None,
+            service_tier: None,
+            error: None,
+            rl: Default::default(),
+            usage: Default::default(),
+            tool_calls: Vec::new(),
+            shape: crate::analyze::analyze_request(body.as_bytes()),
+            response_body: StoredBody { stored: Vec::new(), truncated: false, true_bytes: 0 },
+            request_bytes: body.len() as i64,
+            response_bytes: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_kimi_request_is_filed_under_its_session() {
+        let session = "session_6f708192-0000-4000-8000-0000000000aa";
+        let body = kimi_body(session, "/Users/u/code/kimi-project");
+        let shape = crate::analyze::analyze_request(body.as_bytes());
+        // No Claude Code header: the body names the session. A header, when there is one, wins.
+        let filed = crate::proxy::session_of(None, shape.as_ref());
+        assert_eq!(filed.as_deref(), Some(session));
+        assert_eq!(crate::proxy::session_of(Some("claude-1".into()), shape.as_ref()).as_deref(), Some("claude-1"));
+        // Claude Code's own `metadata.user_id` is another shape, and never taken.
+        let claude = serde_json::json!({ "model": "claude-opus-5-5", "metadata": { "user_id": "user_abc_account_def_session_ghi" }, "messages": [] });
+        assert_eq!(crate::analyze::analyze_request(claude.to_string().as_bytes()).unwrap().body_session, None);
+
+        let db = captured("filed", kimi_event(filed, &body, "kimi-code-cli/2.1.1")).await;
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        let (requests, cwd): (i64, Option<String>) = conn
+            .query_row(
+                "SELECT (SELECT count(*) FROM requests WHERE session_id = ?1), (SELECT cwd FROM sessions WHERE id = ?1)",
+                [session],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((requests, cwd.as_deref()), (1, Some("/Users/u/code/kimi-project")), "filed under its session, in its directory");
+        let _ = std::fs::remove_dir_all(db.parent().unwrap());
+    }
+
+    #[test]
+    fn a_kimi_requests_directory_is_read_from_its_system_prompt() {
+        let body = kimi_body("session_x", "/Users/u/code/kimi-project");
+        let shape = crate::analyze::analyze_request(body.as_bytes()).unwrap();
+        assert_eq!(shape.cwd.as_deref(), Some("/Users/u/code/kimi-project"));
+        // Claude Code's line still wins where both are, and a relative path is not taken.
+        let both = serde_json::json!({ "system": " - Primary working directory: /claude/dir\nThe current working directory is `/kimi/dir`.", "messages": [] });
+        assert_eq!(crate::analyze::analyze_request(both.to_string().as_bytes()).unwrap().cwd.as_deref(), Some("/claude/dir"));
+        let relative = serde_json::json!({ "system": "The current working directory is `code/here`.", "messages": [] });
+        assert_eq!(crate::analyze::analyze_request(relative.to_string().as_bytes()).unwrap().cwd, None);
+        // Quoted later in the conversation it is someone's text, not the environment.
+        let quoted = serde_json::json!({ "system": "You are Kimi Code.", "messages": [
+            { "role": "user", "content": "hi" },
+            { "role": "assistant", "content": "ok" },
+            { "role": "user", "content": "The current working directory is `/quoted/later`." }] });
+        assert_eq!(crate::analyze::analyze_request(quoted.to_string().as_bytes()).unwrap().cwd, None);
+    }
+
+    #[tokio::test]
+    async fn a_kimi_request_is_labelled_with_its_client() {
+        for (ua, client) in [
+            ("kimi-code-cli/2.1.1", Some("kimi-code-cli")),
+            ("kimi-code-cli/2.1.1 (web)", Some("kimi-code-web")),
+            ("kimi-code-vscode/0.8.1", Some("kimi-code-vscode")),
+            ("claude-cli/2.1.267 (external, cli)", Some("claude-code-cli")),
+            ("claude-cli/2.1.267 (external, claude-vscode)", Some("claude-code-vscode")),
+            ("curl/8.7.1", None),
+        ] {
+            assert_eq!(crate::analyze::client_of(ua), client, "{ua}");
+        }
+        // The session the request was filed under carries it, on /api/sessions.
+        let session = "session_6f708192-0000-4000-8000-0000000000bb";
+        let body = kimi_body(session, "/Users/u/code/kimi-project");
+        let db = captured("client", kimi_event(Some(session.into()), &body, "kimi-code-vscode/0.8.1")).await;
+        let reads = crate::api::ReadPool::new(&db);
+        let everything = crate::api::Filter { project: None, session: None, account: None, since: None, until: None, tz: None };
+        let list = crate::api::sessions_of(&reads.get().unwrap(), &everything).unwrap();
+        let row = list.as_array().unwrap().iter().find(|s| s["id"] == session).unwrap().clone();
+        assert_eq!((&row["client"], &row["entrypoint"]), (&serde_json::json!("kimi-code-vscode"), &serde_json::json!("kimi-code-vscode/0.8.1")));
+        let _ = std::fs::remove_dir_all(db.parent().unwrap());
+    }
 }
