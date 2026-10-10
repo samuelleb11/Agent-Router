@@ -26,11 +26,51 @@ use http_body_util::BodyExt;
 use rusqlite::Connection;
 use serde_json::{json, Value};
 
+use crate::accounts::{Account, Provider, Store};
 use crate::db::now_ms;
 use crate::proxy::AppState;
 use crate::refusal::{failed, refuse, JsonBody};
 
 const UPSTREAM_PATH: &str = "/api/oauth/usage";
+
+/// Anthropic's usage readings — `/api/oauth/usage` and claude.ai's — are asked with the
+/// account's own credential, so only an Anthropic account's may go to them: another
+/// provider's key sent there would be handed to a third party. Each fetch checks this
+/// itself, before it builds a request, so no caller can get it wrong.
+#[derive(Debug)]
+pub struct NotAnthropic {
+    id: String,
+    provider: Provider,
+}
+
+impl std::fmt::Display for NotAnthropic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{:?} is a {} account, and Anthropic's usage readings are never asked with its key",
+            self.id,
+            self.provider.name()
+        )
+    }
+}
+
+impl std::error::Error for NotAnthropic {}
+
+fn anthropic_only(account: &Account) -> anyhow::Result<()> {
+    if account.provider != Provider::Anthropic {
+        return Err(NotAnthropic { id: account.id.clone(), provider: account.provider }.into());
+    }
+    Ok(())
+}
+
+/// The account with this id, read from the store.
+async fn account_of(state: &AppState, id: &str) -> anyhow::Result<Account> {
+    let (db, id) = (state.config.db_path.clone(), id.to_string());
+    tokio::task::spawn_blocking(move || {
+        Store::new(db).get(&id)?.ok_or_else(|| anyhow::anyhow!("no account with id {id:?}"))
+    })
+    .await?
+}
 const CACHE_MS: i64 = 45_000;
 
 pub struct Cached {
@@ -128,7 +168,11 @@ pub async fn raw_usage(State(state): State<Arc<AppState>>) -> impl IntoResponse 
         Ok((id, _)) => id,
         Err(err) => return Json(json!({ "error": err.to_string() })),
     };
-    match fetch_claude_ai_raw(&state, &account_id).await {
+    let account = match account_of(&state, &account_id).await {
+        Ok(account) => account,
+        Err(err) => return Json(json!({ "error": err.to_string() })),
+    };
+    match fetch_claude_ai_raw(&state, &account).await {
         Ok(v) => Json(v),
         Err(e) => Json(json!({ "error": e.to_string() })),
     }
@@ -166,9 +210,10 @@ async fn get_json(
 }
 
 /// Fetch usage from claude.ai with the account's session key, discovering the
-/// organisation id on the way.
-async fn fetch_claude_ai_raw(state: &AppState, account_id: &str) -> anyhow::Result<Value> {
-    let id = account_id.to_string();
+/// organisation id on the way. Never for another provider's account (`NotAnthropic`).
+async fn fetch_claude_ai_raw(state: &AppState, account: &Account) -> anyhow::Result<Value> {
+    anthropic_only(account)?;
+    let id = account.id.clone();
     let key = tokio::task::spawn_blocking(move || crate::accounts::usage_token(&id))
         .await?
         .ok_or_else(|| anyhow::anyhow!("no claude.ai session key stored for this account"))?;
@@ -190,8 +235,8 @@ async fn fetch_claude_ai_raw(state: &AppState, account_id: &str) -> anyhow::Resu
 }
 
 pub async fn quota(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let account_id = match state.signing_credential().await {
-        Ok((id, _)) => id,
+    let (account_id, token) = match state.signing_credential().await {
+        Ok(signing) => signing,
         Err(err) => return Json(json!({ "error": err.to_string() })),
     };
 
@@ -204,7 +249,11 @@ pub async fn quota(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         None => {}
     }
 
-    match fetch_upstream(&state).await {
+    let fetched = match account_of(&state, &account_id).await {
+        Ok(account) => fetch_upstream(&state, &account, &token).await,
+        Err(err) => Err(err),
+    };
+    match fetched {
         Ok(value) => {
             let value = value_for(&account_id, value, "usage-api");
             *state.quota_cache.write().await = Some(Cached {
@@ -275,8 +324,10 @@ fn value_for(account_id: &str, mut value: Value, source: &str) -> Value {
     value
 }
 
-async fn fetch_upstream(state: &AppState) -> anyhow::Result<Value> {
-    let (_, token) = state.signing_credential().await?;
+/// Anthropic's own reading of `account`'s windows, asked with `token`, its credential.
+/// Never for another provider's account (`NotAnthropic`).
+async fn fetch_upstream(state: &AppState, account: &Account, token: &str) -> anyhow::Result<Value> {
+    anthropic_only(account)?;
     let uri: axum::http::Uri = format!("{}{UPSTREAM_PATH}", state.config.upstream).parse()?;
 
     let mut req = axum::http::Request::builder()
@@ -441,5 +492,48 @@ mod tests {
 
         drop(conn);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn account(id: &str, provider: Provider) -> Account {
+        Account {
+            id: id.into(),
+            label: id.into(),
+            source: crate::accounts::Source::Token,
+            provider,
+            base_url: provider.default_base_url().map(str::to_owned),
+            profile_dir: None,
+            email: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn quota_never_sends_a_kimi_key_to_anthropic() {
+        let lab = crate::api_refusals::Lab::local("quota-kimi");
+        let kimi = account("quota-kimi", Provider::Kimi);
+        let refused = fetch_upstream(&lab.state, &kimi, "sk-kimi-not-a-credential").await.unwrap_err();
+        assert!(refused.downcast_ref::<NotAnthropic>().is_some(), "refused before any request: {refused:#}");
+        assert!(anthropic_only(&account("work", Provider::Anthropic)).is_ok(), "an Anthropic account's is asked");
+
+        // A router whose only account is a Kimi Code one: /api/quota has no Anthropic account
+        // to read for, and says so rather than reading for the Kimi Code one.
+        let lab = crate::api_refusals::Lab::hosted("quota-kimi-only").await;
+        let add = json!({ "label": "Quota Kimi only", "source": "token", "provider": "kimi", "token": "sk-kimi-not-a-credential" });
+        assert_eq!(lab.post("/api/accounts", &add.to_string()).await.0, StatusCode::OK);
+        let answer = quota(State(lab.state.clone())).await.into_response();
+        let answer: Value =
+            serde_json::from_slice(&axum::body::to_bytes(answer.into_body(), 1 << 20).await.unwrap()).unwrap();
+        assert!(answer["error"].as_str().unwrap_or_default().contains("no account to sign with"), "{answer}");
+        assert!(answer.get("source").is_none(), "{answer}");
+    }
+
+    #[tokio::test]
+    async fn the_claude_ai_fallback_skips_a_kimi_account() {
+        let lab = crate::api_refusals::Lab::local("quota-kimi-sid");
+        let kimi = account("quota-kimi-sid", Provider::Kimi);
+        // Even with a claude.ai session key stored under it, nothing goes to claude.ai.
+        crate::accounts::store_usage_token(&kimi.id, "sk-ant-sid01-not-a-credential").unwrap();
+        let refused = fetch_claude_ai_raw(&lab.state, &kimi).await.unwrap_err();
+        crate::accounts::forget_usage_token(&kimi.id).unwrap();
+        assert!(refused.downcast_ref::<NotAnthropic>().is_some(), "refused before any request: {refused:#}");
     }
 }

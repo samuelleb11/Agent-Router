@@ -1853,6 +1853,16 @@ pub async fn accounts_probe(
         let Some(account) = store.get(&id).map_err(failure)? else {
             return Err((StatusCode::CONFLICT, Conflict::NoAccount(id).to_string()));
         };
+        // `claude auth status` is Claude Code's, and says who is logged in to Anthropic.
+        if account.provider != Provider::Anthropic {
+            return Err((
+                StatusCode::CONFLICT,
+                format!(
+                    "{id:?} is a {} account, so it has no Claude Code login to check",
+                    account.provider.name()
+                ),
+            ));
+        }
         let Some(dir) = account.profile_dir else {
             return Err((
                 StatusCode::CONFLICT,
@@ -2649,5 +2659,17 @@ mod tests {
         assert_eq!(crate::accounts::resolve(&kimi).unwrap().token, KIMI_KEY, "the refused one was not stored");
         assert_eq!(lab.post("/api/accounts/edit", &rotate("sk-kimi-rotated")).await.0, StatusCode::OK);
         assert_eq!(crate::accounts::resolve(&kimi).unwrap().token, "sk-kimi-rotated");
+    }
+
+    #[tokio::test]
+    async fn the_profile_probe_skips_a_kimi_account() {
+        use crate::api_refusals::{words, Lab};
+        let lab = Lab::local("probe-kimi");
+        let kimi = add_kimi(&lab, "Kimi probe", None).await;
+        let refused = lab.post("/api/accounts/probe", &json!({ "id": kimi.id }).to_string()).await;
+        assert_eq!(
+            words(refused, StatusCode::CONFLICT),
+            r#""kimi-probe" is a Kimi Code account, so it has no Claude Code login to check"#
+        );
     }
 }
