@@ -7,8 +7,12 @@ import {
   bucketName,
   client,
   compact,
+  costNote,
+  costSum,
+  costWhy,
   count,
   duration,
+  ESTIMATED_WHY,
   factTokens,
   factUsd,
   family,
@@ -20,11 +24,13 @@ import {
   plural,
   projectName,
   relative,
+  requestCost,
   resetAt,
   rowDuration,
   share,
   shortModel,
   span,
+  UNPRICED_WHY,
   usd,
 } from './format';
 
@@ -47,6 +53,44 @@ describe('format', () => {
 
   it('OV-C177: dollars, and a cost that could not be priced is never free', () => {
     expect([usd(1234.5), usd(4.567), usd(0.1234), usd(0.00123), usd(0), usd(null)]).toEqual([`$${(1235).toLocaleString()}`, '$4.57', '$0.123', '$0.0012', '$0', '—']);
+  });
+
+  it('OV-C229: a cost sum reads as its priced part, marked with how many requests it leaves out, the reason its tooltip; "$0" never stands for unknown', () => {
+    expect(costSum({ cost: 3.1, unpriced: 4 })).toEqual({ text: '$3.10 + 4 unpriced', marks: [{ kind: 'unpriced', value: '4 unpriced', label: UNPRICED_WHY }] });
+    expect(costSum({ cost: 1234.5, unpriced: 1200 }).text).toBe(`$${(1235).toLocaleString()} + ${(1200).toLocaleString()} unpriced`);
+    // Nothing priced beside requests the router could not price is not free.
+    expect(costSum({ cost: 0, unpriced: 4 }).text).toBe('not priced');
+    expect(costSum({ cost: null, unpriced: 4 }).text).toBe('not priced');
+    // With nothing left out: the dollars, "$0" for a zero the router measured and "—" for none given.
+    expect([costSum({ cost: 3.1 }), costSum({ cost: 0, unpriced: 0 }), costSum({ cost: null })]).toEqual([
+      { text: '$3.10', marks: [] },
+      { text: '$0', marks: [] },
+      { text: '—', marks: [] },
+    ]);
+    // One request: "not priced" with usage and no cost, "—" with no usage to price.
+    expect(requestCost({ cost: null, prompt_tokens: 30_000 })).toEqual({ text: 'not priced', marks: [{ kind: 'unpriced', value: 'not priced', label: 'no rate for its model in the pricing table' }] });
+    expect(requestCost({ cost: null, prompt_tokens: null, output_tokens: null }).text).toBe('—');
+    expect(requestCost({ cost: 0.05, prompt_tokens: 30_000 })).toEqual({ text: '$0.050', marks: [] });
+    // The reasons as one sentence, for a row's title, and said once under a list as text (SH-C30).
+    expect(costWhy(costSum({ cost: 3.1, unpriced: 4 }))).toBe(`4 unpriced: ${UNPRICED_WHY}.`);
+    expect(costWhy(costSum({ cost: 3.1 }))).toBeNull();
+    expect(costNote([costSum({ cost: 3.1 }), costSum({ cost: 0, unpriced: 2 })])).toBe(`Unpriced: ${UNPRICED_WHY}.`);
+    expect(costNote([costSum({ cost: 3.1 })])).toBeNull();
+  });
+
+  it('OV-C232: a cost sum that rests on estimated tokens reads "≈" before it, the reason its tooltip; nothing priced has no figure to mark', () => {
+    expect(costSum({ cost: 3.1, estimated: 2 })).toEqual({ text: '≈$3.10', marks: [{ kind: 'estimated', value: '2 estimated', label: ESTIMATED_WHY }] });
+    expect(costSum({ cost: 3.1, unpriced: 4, estimated: 2 })).toEqual({
+      text: '≈$3.10 + 4 unpriced',
+      marks: [
+        { kind: 'unpriced', value: '4 unpriced', label: UNPRICED_WHY },
+        { kind: 'estimated', value: '2 estimated', label: ESTIMATED_WHY },
+      ],
+    });
+    expect(costSum({ cost: 0, unpriced: 4, estimated: 2 })).toEqual({ text: 'not priced', marks: [{ kind: 'unpriced', value: '4 unpriced', label: UNPRICED_WHY }] });
+    expect(ESTIMATED_WHY).toMatch(/Kimi Code/);
+    expect(costWhy(costSum({ cost: 3.1, unpriced: 4, estimated: 2 }))).toBe(`4 unpriced: ${UNPRICED_WHY}. 2 estimated: ${ESTIMATED_WHY}.`);
+    expect(costNote([costSum({ cost: 3.1, estimated: 2 })])).toBe(`≈ estimated: ${ESTIMATED_WHY}.`);
   });
 
   it('OV-C179, OV-C61: a share has one decimal under 10 %, "—" with nothing to divide by, and a missing reading is never 0 %', () => {

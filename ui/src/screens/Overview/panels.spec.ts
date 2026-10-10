@@ -6,6 +6,7 @@ import { snapshotPaths } from '~/data/overview';
 import { projectKey } from '~/data/projects';
 import { routes } from '~/lib/routes';
 import { allAccounts } from '~/model/forecast';
+import { ESTIMATED_WHY, UNPRICED_WHY, costNote } from '~/model/format';
 import { UNSCOPED, type Scope } from '~/model/scope';
 import {
   accountRows,
@@ -30,7 +31,7 @@ import {
 } from './panels';
 import { NOW, forecast, forecastAccount, project, request, session, totals, S1, S2, MIN, HOUR } from './fixtures';
 import { servedBy } from './requestList';
-import { accountOptions, sessionOptions } from './scopeOptions';
+import { accountOptions, pickerNote, projectOptions, sessionOptions } from './scopeOptions';
 
 const scoped = (over: Partial<Scope>): Scope => ({ ...UNSCOPED, ...over });
 
@@ -76,9 +77,9 @@ describe('the context window', () => {
     expect(CONTEXT).toHaveLength(4);
   });
 
-  it('OV-C122: the split is labelled an estimate, with the note that totals are exact and the split apportions by character share', () => {
+  it('OV-C122, OV-C230: the split is labelled an estimate, with the note that totals are exact and the split apportions by character share, for either provider’s models', () => {
     expect(CONTEXT_NOTE).toMatch(/^Totals are exact\. The split apportions the API's exact prompt-token count by character share/);
-    expect(CONTEXT_NOTE).toMatch(/no local tokenizer for current Claude models/);
+    expect(CONTEXT_NOTE).toMatch(/no local tokenizer for current Claude or Kimi models/);
     expect(CONTEXT_NOTE).toMatch(/ratios as reliable and absolutes as approximate/);
   });
 
@@ -97,10 +98,10 @@ describe('the context window', () => {
 });
 
 describe('models and threads', () => {
-  it('OV-C126: one row per model in the router’s order, its short name with the full id, the family colour, and its figures, errors apart', () => {
+  it('OV-C126, OV-C229: one row per model in the router’s order, its short name with the full id, the family colour, and its figures, errors apart', () => {
     const rows = modelRows([
-      { model: 'claude-opus-5-20260115', requests: 300, prompt_tokens: 9_000_000, cost: 38, output_tokens: 220_000, thinking_tokens: 0, cache_read_tokens: 7_600_000, errors: 2, subagent_requests: 20 },
-      { model: 'mystery-1', requests: 4, prompt_tokens: 40_000, cost: 0, output_tokens: 900, thinking_tokens: 0, cache_read_tokens: 0, errors: 0, subagent_requests: 0 },
+      { model: 'claude-opus-5-20260115', requests: 300, prompt_tokens: 9_000_000, cost: 38, unpriced: 0, estimated: 0, output_tokens: 220_000, thinking_tokens: 0, cache_read_tokens: 7_600_000, errors: 2, subagent_requests: 20 },
+      { model: 'mystery-1', requests: 4, prompt_tokens: 40_000, cost: 0, unpriced: 4, estimated: 0, output_tokens: 900, thinking_tokens: 0, cache_read_tokens: 0, errors: 0, subagent_requests: 0 },
     ]);
     expect(rows.map((r) => [r.key, r.name, r.path, r.colour])).toEqual([
       ['claude-opus-5-20260115', 'opus-5-20260115', 'claude-opus-5-20260115', '--ar-model-opus'],
@@ -108,8 +109,10 @@ describe('models and threads', () => {
     ]);
     expect(rows[0]!.meta).toBe('300 req · 220k out · 84% cached · $38.00 · 20 by subagents');
     expect(rows[0]!.errors).toBe('2 errors');
-    // A model the router could not price is not free.
+    // A model the router could not price is not free, and says why as its row's tooltip (OV-C229).
     expect(rows[1]!.meta).toBe('4 req · 900 out · 0% cached · not priced');
+    expect(rows[1]!.metaTip).toBe(`4 unpriced: ${UNPRICED_WHY}.`);
+    expect(rows[0]!.metaTip).toBeUndefined();
     expect(rows[1]!.errors).toBeUndefined();
   });
 
@@ -128,6 +131,19 @@ describe('models and threads', () => {
     ]);
     expect(parts.map((p) => p.detail)).toEqual(['385 req · 280k out · $37.00 · 85% cached', '27 req · 30k out · $4.20 · 79% cached · 6 agents']);
     expect(threadParts([])[1]!.detail).toBe('none in scope');
+  });
+
+  it('OV-C229, OV-C232: a thread’s cost is its priced part, marked with how many it leaves out and "≈" for estimated tokens, each reason in its tip, and an unknown cost is "—", never "$0"', () => {
+    const parts = threadParts([
+      { thread: 'main', requests: 385, prompt_tokens: 11_000_000, cost: 37, unpriced: 2, estimated: 0, output_tokens: 280_000, cache_read_tokens: 9_300_000, agents: 0 },
+      { thread: 'subagent', requests: 27, prompt_tokens: 1_400_000, cost: 4.2, unpriced: 0, estimated: 3, output_tokens: 30_000, cache_read_tokens: 1_100_000, agents: 6 },
+    ]);
+    expect(parts.map((p) => p.detail)).toEqual(['385 req · 280k out · $37.00 + 2 unpriced · 85% cached', '27 req · 30k out · ≈$4.20 · 79% cached · 6 agents']);
+    expect(parts.map((p) => p.tip)).toEqual([[{ value: '2 unpriced', label: UNPRICED_WHY }], [{ value: '3 estimated', label: ESTIMATED_WHY }]]);
+    // Nothing priced beside requests the router could not price, and a cost it did not give.
+    const none = threadParts([{ thread: 'main', requests: 4, prompt_tokens: 100, cost: 0, unpriced: 4, output_tokens: 10, cache_read_tokens: 0, agents: 0 }]);
+    expect(none[0]!.detail).toBe('4 req · 10 out · not priced · 0% cached');
+    expect(threadParts([{ thread: 'main', requests: 4, prompt_tokens: 100, cost: null, output_tokens: 10, cache_read_tokens: 0, agents: 0 }])[0]!.detail).toBe('4 req · 10 out · — · 0% cached');
   });
 });
 
@@ -196,6 +212,7 @@ describe('the lists', () => {
       families: [{ family: 'opus', model: 'claude-opus-5-20260115' }],
     });
     expect(row!.meta).toMatch(/^200 req · \$20\.00 · 150k out · 3 subagents · started .+ · 2h 58m$/);
+    expect(row!.metaTip).toBeUndefined();
     // Its project chip only when no project is scoped.
     expect(sessionRows([session(S1)], scoped({ project: '/code/agent-router' }), NOW)[0]!.chipsOf.project).toBeNull();
   });
@@ -220,10 +237,30 @@ describe('the lists', () => {
     expect(unattributed(null, 'session', UNSCOPED)).toBeNull();
   });
 
-  it('OV-C142: the row explains itself beside it, and says these requests are in the totals above', () => {
+  it('OV-C142, OV-C230: the row explains itself beside it, naming each client, and says these requests are in the totals above', () => {
     expect(unattributed(4, 'project', UNSCOPED)?.why).toBe(
-      'Claude Code labels a request with its session id; the project comes from the transcript file, which can appear a moment later. These requests are counted in the totals above.',
+      "Claude Code and Kimi Code each label a request with its session's id; the project comes from the session's own files, which can appear a moment later. These requests are counted in the totals above.",
     );
+  });
+
+  it('OV-C229, OV-C232: a project’s and a session’s cost, and a picker’s, are marked, the reasons the row’s tooltip and said once under the list', () => {
+    const p = projectRows([project('/code/agent-router', 9_000_000, { cost: 30, unpriced: 4, estimated: 2 })], NOW)[0]!;
+    expect(p.meta).toMatch(/ · ≈\$30\.00 \+ 4 unpriced · /);
+    expect(p.metaTip).toBe(`4 unpriced: ${UNPRICED_WHY}. 2 estimated: ${ESTIMATED_WHY}.`);
+    const s = sessionRows([session(S1, { cost: 0, unpriced: 200 })], UNSCOPED, NOW)[0]!;
+    // A session the router could not price at all is never "$0".
+    expect(s.meta).toMatch(/^200 req · not priced · 150k out/);
+    expect(s.metaTip).toBe(`200 unpriced: ${UNPRICED_WHY}.`);
+    // The list says once, as text, what its marks mean: a row is a button, whose tooltip only a mouse reaches (SH-C30).
+    expect(costNote([p.cost, s.cost])).toBe(`Unpriced: ${UNPRICED_WHY}. ≈ estimated: ${ESTIMATED_WHY}.`);
+    expect(costNote([s.cost])).toBe(`Unpriced: ${UNPRICED_WHY}.`);
+    expect(costNote(projectRows([project('/code/northstar', 1_000)], NOW).map((r) => r.cost))).toBeNull();
+    // The pickers' figures mark the cost the same way, the reason the figures' tooltip and the picker's note.
+    const [, option] = projectOptions([project('/code/agent-router', 9_000_000, { cost: 30, unpriced: 4 })], 200);
+    expect(option).toMatchObject({ meta: '9.00M · 200 req · $30.00 + 4 unpriced', metaTip: `4 unpriced: ${UNPRICED_WHY}.` });
+    expect(projectOptions([project('/code/northstar', 3_000_000)], 200)[1]).not.toHaveProperty('metaTip');
+    expect(pickerNote([project('/code/agent-router', 9_000_000, { cost: 30, unpriced: 4 })])).toBe(`Unpriced: ${UNPRICED_WHY}.`);
+    expect(pickerNote([project('/code/northstar', 3_000_000)])).toBeUndefined();
   });
 
   it('OV-C143: tool output has one row per tool by estimated tokens, "N results · ≈X each · ≥$cost", and "N failed" in the error mark', () => {
@@ -238,7 +275,9 @@ describe('the lists', () => {
   });
 
   it('OV-C145: every empty panel says which empty it is: nothing recorded at all with how to start, nothing in the range, nothing in this scope', () => {
-    expect(emptyWords('projects', UNSCOPED)).toBe('No projects yet — point Claude Code at this router and run it.');
+    // Each client by its name (OV-C230).
+    expect(emptyWords('projects', UNSCOPED)).toBe('No projects yet — point Claude Code or Kimi Code at this router and run it.');
+    expect(emptyWords('sessions', UNSCOPED)).toBe('No sessions yet — point Claude Code or Kimi Code at this router and run it.');
     expect(emptyWords('projects', scoped({ range: '24h' }))).toBe('No project sent a request in the last 24h.');
     expect(emptyWords('sessions', scoped({ range: '7d' }))).toBe('No session ran in the last 7d.');
     expect(emptyWords('toolOutput', scoped({ account: 'primary' }))).toBe('No tool results in this scope.');

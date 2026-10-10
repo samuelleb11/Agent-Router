@@ -31,6 +31,10 @@ export interface Totals {
   readonly requests: number | null;
   readonly prompt_tokens: number | null;
   readonly cost: number | null;
+  /// Requests with usage the router could not price, which `cost` leaves out, and those whose tokens
+  /// were estimated rather than read from their stored response (OV-C229, OV-C232).
+  readonly unpriced?: number | null;
+  readonly estimated?: number | null;
   /// Uncached input: what was paid in full.
   readonly input_tokens: number | null;
   readonly output_tokens: number | null;
@@ -127,6 +131,10 @@ export interface ModelRow {
   readonly requests: number | null;
   readonly prompt_tokens: number | null;
   readonly cost: number | null;
+  /// Requests with usage the router could not price, which `cost` leaves out, and those whose tokens
+  /// were estimated rather than read from their stored response (OV-C229, OV-C232).
+  readonly unpriced?: number | null;
+  readonly estimated?: number | null;
   readonly output_tokens: number | null;
   readonly thinking_tokens: number | null;
   readonly cache_read_tokens: number | null;
@@ -139,6 +147,10 @@ export interface ThreadRow {
   readonly requests: number | null;
   readonly prompt_tokens: number | null;
   readonly cost: number | null;
+  /// Requests with usage the router could not price, which `cost` leaves out, and those whose tokens
+  /// were estimated rather than read from their stored response (OV-C229, OV-C232).
+  readonly unpriced?: number | null;
+  readonly estimated?: number | null;
   readonly output_tokens: number | null;
   readonly cache_read_tokens: number | null;
   /// Distinct agent ids.
@@ -167,6 +179,10 @@ export interface AccountSplitRow {
   readonly requests: number | null;
   readonly prompt_tokens: number | null;
   readonly cost: number | null;
+  /// Requests with usage the router could not price, which `cost` leaves out, and those whose tokens
+  /// were estimated rather than read from their stored response (OV-C229, OV-C232).
+  readonly unpriced?: number | null;
+  readonly estimated?: number | null;
   readonly output_tokens: number | null;
   readonly sessions: number | null;
   readonly last_seen: number | null;
@@ -180,6 +196,10 @@ export interface TimelineRow {
   readonly requests: number | null;
   readonly prompt_tokens: number | null;
   readonly cost: number | null;
+  /// Requests with usage the router could not price, which `cost` leaves out, and those whose tokens
+  /// were estimated rather than read from their stored response (OV-C229, OV-C232).
+  readonly unpriced?: number | null;
+  readonly estimated?: number | null;
   readonly output_tokens: number | null;
   readonly cache_read_tokens: number | null;
   readonly subagent_tokens: number | null;
@@ -248,6 +268,10 @@ export interface SessionRow {
   readonly requests: number | null;
   readonly prompt_tokens: number | null;
   readonly cost: number | null;
+  /// Requests with usage the router could not price, which `cost` leaves out, and those whose tokens
+  /// were estimated rather than read from their stored response (OV-C229, OV-C232).
+  readonly unpriced?: number | null;
+  readonly estimated?: number | null;
   readonly output_tokens: number | null;
   readonly cache_read_tokens: number | null;
   readonly subagent_tokens: number | null;

@@ -11,7 +11,7 @@ import type { TabPart, Tools as ToolsRead } from '~/data/overview';
 import { CONCEPTS, paint } from '~/lib/concepts';
 import { settingsPath } from '~/lib/routes';
 import { useCoarse } from '~/lib/viewport';
-import { count } from '~/model/format';
+import { costNote, count, type CostFigure } from '~/model/format';
 import { toggle, type Scope } from '~/model/scope';
 import { isHosted, settingsPages, type Auth } from '~/model/settings';
 import {
@@ -50,25 +50,44 @@ function NotYetAttributed({ row }: { row: Unattributed }) {
   );
 }
 
-/// How to start, where the router says how: Settings → Claude Code on a router that runs on this
-/// Mac, the Router page's connection snippet on a hosted one. Nothing until the router has said
-/// which it is, so the page never assumes a Mac (OV-C203).
+/// How to start, each client by its name and its own way, side by side (OV-C230): for Claude Code,
+/// Settings → Claude Code on a router that runs on this Mac, the Router page's connection snippet on
+/// a hosted one; for Kimi Code, the two commands that point it here. Nothing until the router has
+/// said which it is, so the page never assumes a Mac (OV-C203).
 function HowToStart({ auth }: { auth: Auth | null }) {
   if (!auth) return null;
   const local = settingsPages(auth).includes('claude-code');
   return (
-    <p className={styles.note}>
-      {local ? (
-        <>
-          <Link to={settingsPath('claude-code')}>Settings → Claude Code</Link> routes every project through it.
-        </>
-      ) : (
-        <>
-          <Link to={settingsPath('router')}>Settings → Router</Link> has the line that points a Claude Code at {isHosted(auth) ? 'this deployment' : 'it'}.
-        </>
-      )}
-    </p>
+    <ul className={styles.howToStart} aria-label="How to start" data-how-to-start="">
+      <li className={styles.note} data-client="claude-code">
+        <strong>Claude Code</strong>{' '}
+        {local ? (
+          <>
+            <Link to={settingsPath('claude-code')}>Settings → Claude Code</Link> routes every project through it.
+          </>
+        ) : (
+          <>
+            <Link to={settingsPath('router')}>Settings → Router</Link> has the line that points a Claude Code at {isHosted(auth) ? 'this deployment' : 'it'}.
+          </>
+        )}
+      </li>
+      <li className={styles.note} data-client="kimi-code">
+        <strong>Kimi Code</strong> <code className={styles.mono}>agent-router install</code> writes the router into Kimi Code’s config.toml, and{' '}
+        <code className={styles.mono}>agent-router kimi</code> starts a hosted session from a terminal.
+      </li>
+    </ul>
   );
+}
+
+/// What the marks on a list's costs mean, once, under the list: its rows are buttons, whose tooltip
+/// is only a title (OV-C229, OV-C232, SH-C30).
+function CostNote({ rows }: { rows: readonly { readonly cost: CostFigure }[] }) {
+  const note = costNote(rows.map((r) => r.cost));
+  return note ? (
+    <p className={styles.note} data-cost-note="">
+      {note}
+    </p>
+  ) : null;
 }
 
 function ShowMore({ total, shown, onMore, onFewer }: { total: number; shown: number; onMore: () => void; onFewer: () => void }) {
@@ -167,6 +186,7 @@ export function Lists({
             {start && <HowToStart auth={auth} />}
           </>
         )}
+        <CostNote rows={projects} />
         {orphanProjects && <NotYetAttributed row={orphanProjects} />}
       </Panel>
 
@@ -213,6 +233,7 @@ export function Lists({
               }}
             />
             <ShowMore total={sessions.length} shown={shown} onMore={() => setPaging({ key: scopeKey, shown: shown + LIST_PAGE })} onFewer={() => setPaging({ key: scopeKey, shown: LIST_PAGE })} />
+            <CostNote rows={sessions.slice(0, shown)} />
           </>
         ) : (
           <p className={styles.empty}>{emptyWords('sessions', scope)}</p>

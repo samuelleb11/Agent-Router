@@ -20,12 +20,14 @@
 // A Kimi Code account reports its windows through its own usage API rather than rate-limit headers:
 // its card shows the 5-hour window and the second under its real name, a month or a week, a spent
 // window as spent until its reset, its last request whenever it served one, and "not priced" where
-// the router could not price it (OV-C218 to OV-C221).
+// the router could not price it (OV-C218 to OV-C221). Every cost here is a cost sum: its priced part,
+// marked with the requests it leaves out and "≈" where it rests on estimated tokens, the reasons in
+// its tooltip (OV-C229, OV-C232).
 //
 // Headroom is each provider's own, in that provider's quota block: no figure compares one
 // provider's windows with another's, Anthropic's 7-day with Kimi Code's month (OV-C225).
 
-import { DASH, ago, compact, count, duration, hours, plural, relative, tod, usd, when } from './format';
+import { DASH, ago, compact, costSum, count, duration, hours, plural, relative, tod, when, type CostMark } from './format';
 import { providerOf, type Provider } from './settings';
 
 export interface Duty {
@@ -113,6 +115,8 @@ export interface ForecastAccount {
     readonly cost?: number | null;
     /// Requests with usage the router could not price: a cost of 0 beside them is not free.
     readonly unpriced?: number | null;
+    /// Requests whose tokens were estimated rather than read from their stored response (OV-C232).
+    readonly estimated?: number | null;
     /// Epoch milliseconds of its newest request in the range.
     readonly last_seen?: number | null;
   } | null;
@@ -157,6 +161,10 @@ export interface Forecast {
     readonly providers?: Readonly<Record<string, Headroom>> | null;
     readonly pace_30d?: {
       readonly cost?: number | null;
+      /// The week's requests the router could not price, which its cost leaves out, and those whose
+      /// tokens were estimated (OV-C229, OV-C232).
+      readonly unpriced?: number | null;
+      readonly estimated?: number | null;
       readonly prompt_tokens?: number | null;
       readonly basis?: string | null;
     } | null;
@@ -378,6 +386,8 @@ export interface Tile {
   readonly value: string;
   readonly sub: string;
   readonly tone: Tone;
+  /// A cost's marks, each with its reason, for the value's tooltip (OV-C229, OV-C232).
+  readonly marks?: readonly CostMark[];
 }
 
 export interface CardWindow {
@@ -402,6 +412,8 @@ export interface AccountCard {
   /// The 5-hour window, then the second: 7-day, or a Kimi Code account's month (OV-C218).
   readonly windows: readonly [CardWindow, CardWindow];
   readonly cost: string;
+  /// Its cost's marks, each with its reason, for the cost's tooltip (OV-C229, OV-C232).
+  readonly costMarks: readonly CostMark[];
   readonly read: string;
   readonly requests: string;
 }
@@ -492,14 +504,6 @@ function seenWords(a: ForecastAccount, now: number): string {
   return at ? `last request ${ago(at, now)}` : 'never seen';
 }
 
-/// What an account cost (OV-C221): a cost of 0 beside requests the router could not price is not
-/// free, so it reads "not priced", never "$0"; a priced cost with some it could not price says how
-/// many it leaves out.
-function costWords(u: NonNullable<ForecastAccount['usage']>): string {
-  const unpriced = num(u.unpriced);
-  if (!unpriced) return usd(u.cost);
-  return num(u.cost) > 0 ? `${usd(u.cost)} + ${count(unpriced)} not priced` : 'not priced';
-}
 
 /// Every account at once, whatever the page is scoped to (OV-C87); null — the panel, its heading
 /// and its tiles gone — when the forecast lists no account or could not be read (OV-C86). Spend,
@@ -531,6 +535,10 @@ export function allAccounts(fc: Forecast | null | undefined, now: number = Date.
     // The provider is the tag beside the name, every card's (OV-C231), so the line does not say it again.
     const sub = [a.plan, seenWords(a, now), shared.length ? `shares a quota with ${shared.join(', ')}` : null].filter(Boolean).join(' · ');
     const u = a.usage ?? {};
+    // What it cost (OV-C221, OV-C229): a cost of 0 beside requests the router could not price is not
+    // free, so it reads "not priced", never "$0", and a priced cost with some it could not price
+    // says how many it leaves out.
+    const cost = costSum({ cost: u.cost, unpriced: u.unpriced, estimated: u.estimated });
     const second = secondWindow(a);
     return {
       id: a.id,
@@ -539,28 +547,36 @@ export function allAccounts(fc: Forecast | null | undefined, now: number = Date.
       active: a.active === true || num(a.active) > 0,
       sub,
       windows: [cardWindow('five_hour', '5-hour', a.five_hour), cardWindow(second.key, second.label, second.window)],
-      cost: costWords(u),
+      cost: cost.text,
+      costMarks: cost.marks,
       read: `${compact(u.prompt_tokens)} read`,
       requests: `${count(u.requests)} req`,
     };
   });
 
-  // The requests no account's cost includes: a total over them is not their price (OV-C221).
-  const unpriced = list.reduce((sum, a) => sum + num(a.usage?.unpriced), 0);
-  const leaves = unpriced ? ` · leaves out ${plural(unpriced, 'request', 'requests')} the router could not price` : '';
+  // The requests no account's cost includes, and those whose tokens are estimates: a total over them
+  // is marked, never read as their price (OV-C221, OV-C229, OV-C232).
+  const spend = costSum({
+    cost: g.cost,
+    unpriced: list.reduce((sum, a) => sum + num(a.usage?.unpriced), 0),
+    estimated: list.reduce((sum, a) => sum + num(a.usage?.estimated), 0),
+  });
+  const paced = costSum({ cost: pace.cost, unpriced: pace.unpriced, estimated: pace.estimated });
   return {
     caption: `${plural(list.length, 'account', 'accounts')} · spend and tokens add up, quota does not`,
     spend: {
       label: 'Spend, every account',
-      value: unpriced && !(num(g.cost) > 0) ? DASH : usd(g.cost),
-      sub: `across ${plural(g.accounts, 'account', 'accounts')}, at API rates${leaves}`,
+      value: spend.text,
+      sub: `across ${plural(g.accounts, 'account', 'accounts')}, at API rates`,
       tone: 'plain',
+      marks: spend.marks,
     },
     tokens: { label: 'Tokens read', value: compact(g.prompt_tokens), sub: `${compact(g.output_tokens)} written back`, tone: 'plain' },
     requests: { label: 'Requests', value: count(g.requests), sub: 'in the selected range', tone: 'plain' },
     // A pace is only meaningful against a fixed horizon: the last seven days scaled to thirty,
     // whatever range the page shows (OV-C91).
-    pace: { label: '30-day pace', value: usd(pace.cost), sub: `${compact(pace.prompt_tokens)} tokens · from ${pace.basis || 'recent spend'}`, tone: 'plain' },
+    // Its week's unpriced and estimated requests mark it as they mark any cost sum (OV-C229, OV-C232).
+    pace: { label: '30-day pace', value: paced.text, sub: `${compact(pace.prompt_tokens)} tokens · from ${pace.basis || 'recent spend'}`, tone: 'plain', marks: paced.marks },
     cards,
   };
 }

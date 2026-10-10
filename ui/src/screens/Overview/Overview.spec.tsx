@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useNavigate } from 'react-router';
 import { keys } from '~/app/query';
 import type { AccountSplitRow } from '~/data/overview';
+import { UNPRICED_WHY } from '~/model/format';
 import { identityNote, notes, noteText } from '~/model/settings';
 import { renderScreen } from '~/test-utils';
 import Overview from './index';
@@ -1035,6 +1036,35 @@ describe('the provider in the scope, and each total by provider', () => {
     await loaded();
     expect(document.querySelector('[data-provider-split]')).toBeNull();
   });
+
+  it('OV-C229: a provider’s spend the router could not price reads "not priced", and focusing it gives the reason in its tip', async () => {
+    both();
+    show();
+    await loaded();
+    const kimi = within(tile('Spend')).getByRole('group', { name: 'Spend, Kimi Code: not priced' });
+    expect(kimi).toHaveTextContent(/^not priced$/);
+    fireEvent.focus(kimi);
+    const tip = await screen.findByRole('tooltip');
+    expect(tip).toHaveTextContent('12 unpriced');
+    expect(tip).toHaveTextContent(UNPRICED_WHY);
+    fireEvent.blur(kimi);
+    await waitFor(() => expect(screen.queryByRole('tooltip')).toBeNull());
+    // A figure with no mark has no tip of its own, and so no tab stop.
+    expect(within(tile('Spend')).queryByRole('group', { name: /^Spend, Anthropic/ })).toBeNull();
+  });
+
+  it('OV-C228: Cache writes says what happened, and each provider’s own rates are in its tip, a focus away', async () => {
+    both();
+    show();
+    await loaded();
+    expect(tile('Cache writes')).not.toHaveTextContent(/1\.25×|2× for an hour/);
+    const rates = within(tile('Cache writes')).getByRole('group', { name: /^Cache rates: / });
+    fireEvent.focus(rates);
+    const tip = await screen.findByRole('tooltip');
+    expect(tip).toHaveTextContent('Anthropic · written to cache, 5 minutes');
+    expect(tip).toHaveTextContent('Kimi Code · written to cache');
+    expect(tip).toHaveTextContent('Kimi Code · read from cache, by model');
+  });
 });
 
 describe('reading the router', () => {
@@ -1218,6 +1248,18 @@ describe('a hosted router', () => {
     await screen.findByRole('heading', { level: 2, name: 'Projects' });
     await new Promise((done) => setTimeout(done, 50));
     expect(within(panel('Projects')).queryByRole('link')).toBeNull();
+  });
+
+  it('OV-C230: with nothing recorded, how to start names each client and gives each its own setup, side by side', async () => {
+    router((path) => empty(path) ?? (path === '/api/auth' ? ok(LOCAL) : undefined));
+    show('/?range=all&tab=projects');
+    await loaded();
+    await screen.findByRole('heading', { level: 2, name: 'Projects' });
+    expect(await within(panel('Projects')).findByText('No projects yet — point Claude Code or Kimi Code at this router and run it.')).toBeInTheDocument();
+    const how = await within(panel('Projects')).findByRole('list', { name: 'How to start' });
+    const [claude, kimi] = within(how).getAllByRole('listitem') as [HTMLElement, HTMLElement];
+    expect(claude).toHaveTextContent(/^Claude Code Settings → Claude Code routes every project through it\.$/);
+    expect(kimi).toHaveTextContent(/^Kimi Code agent-router install writes the router into Kimi Code’s config\.toml, and agent-router kimi starts a hosted session from a terminal\.$/);
   });
 
   it('OV-C208: a hosted router speaks of its deployment, and a local one in its own words', async () => {

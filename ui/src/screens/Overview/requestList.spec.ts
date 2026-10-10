@@ -96,7 +96,16 @@ describe('the request list', () => {
     expect(requestTime(now - 3 * 86_400_000, now)).not.toMatch(/:\d{2}:\d{2}/);
     expect(figures(request(1))).toEqual({ prompt: '30k', cached: '90% cached', output: '800 out', cost: '$0.050', firstToken: '900 ms' });
     expect(figures(request(1, { prompt_tokens: null, cost: null })).cached).toBe('—');
-    expect(figures(request(1, { cost: null })).cost).toBe('—');
+    // No usage to price: no cost, rather than $0.
+    expect(figures(request(1, { prompt_tokens: null, output_tokens: null, cost: null })).cost).toBe('—');
+  });
+
+  it('OV-C229: a request with usage the router could not price reads "not priced", never "$0", and its detail says why', () => {
+    const unpriced = request(5, { model: 'mystery-1', cost: null });
+    expect(figures(unpriced).cost).toBe('not priced');
+    expect(detail(unpriced, UNSCOPED).facts.filter((f) => f.label === 'cost').map((f) => f.value)).toEqual(['not priced — no rate for its model in the pricing table']);
+    // A priced request's detail adds nothing: the card already says what it cost.
+    expect(detail(request(5), UNSCOPED).facts.map((f) => f.label)).not.toContain('cost');
   });
 
   it('OV-C158: the detail gives every fact recorded, the tools in the order first called with ×N, the error, and the context window', () => {

@@ -64,6 +64,77 @@ export function usd(v: Num): string {
   return '$0';
 }
 
+/// A sum of costs as the router gives it: the dollars it could price, and beside them, counted, the
+/// requests with usage it could not price, which the dollars leave out, and the requests whose
+/// tokens were estimated rather than read from their stored response (OV-C229, OV-C232).
+export interface CostCounts {
+  readonly cost: Num;
+  readonly unpriced?: Num;
+  readonly estimated?: Num;
+}
+
+/// One mark on a cost and its reason, as a tooltip row pairs a value with its label.
+export interface CostMark {
+  readonly kind: 'unpriced' | 'estimated';
+  /// "4 unpriced", "3 estimated", "not priced".
+  readonly value: string;
+  /// Why it is marked.
+  readonly label: string;
+}
+
+/// A cost as the console writes it, with each of its marks' reasons for its tooltip.
+export interface CostFigure {
+  /// "$3.10", "$3.10 + 4 unpriced", "≈$3.10", "not priced", "$0", "—".
+  readonly text: string;
+  /// Empty when the figure carries no mark.
+  readonly marks: readonly CostMark[];
+}
+
+/// Why a sum leaves requests out (OV-C229).
+export const UNPRICED_WHY = 'no rate for their model in the pricing table, so the sum leaves them out';
+/// Why a request's tokens are an estimate (OV-C232): the Kimi Code requests recorded before the
+/// router counted their cache reads once, whose responses were no longer kept to count again from
+/// (src/db.rs, `recompute_kimi_usage`).
+export const ESTIMATED_WHY = 'tokens estimated rather than read from the stored response, for Kimi Code requests from before cache reads were counted once whose responses were no longer kept';
+
+const whole = (v: Num): number => (isNum(v) && v > 0 ? Math.round(v) : 0);
+
+/// A sum of costs, one rule wherever a cost is summed (OV-C229, OV-C232): the priced part, marked
+/// "+ N unpriced" when it leaves requests out, "not priced" when nothing in it was priced — never
+/// "$0", which stands only for a zero the router measured — and "≈" before it when the dollars rest
+/// on estimated tokens. A cost the router did not give, with nothing left out, is "—".
+export function costSum(s: CostCounts): CostFigure {
+  const unpriced = whole(s.unpriced);
+  const estimated = whole(s.estimated);
+  const priced = isNum(s.cost) && s.cost > 0;
+  const marks: CostMark[] = [];
+  if (unpriced) marks.push({ kind: 'unpriced', value: `${count(unpriced)} unpriced`, label: UNPRICED_WHY });
+  // An estimate moves only a figure there is: nothing priced has no dollars to be approximate.
+  if (estimated && priced) marks.push({ kind: 'estimated', value: `${count(estimated)} estimated`, label: ESTIMATED_WHY });
+  const dollars = unpriced ? (priced ? `${usd(s.cost)} + ${count(unpriced)} unpriced` : 'not priced') : usd(s.cost);
+  return { text: estimated && priced ? `≈${dollars}` : dollars, marks };
+}
+
+/// One request's cost (OV-C229): "not priced" for a request with usage and no cost, which the router
+/// could not price, never "$0"; "—" for one with no usage to price.
+export function requestCost(r: { readonly cost: Num; readonly prompt_tokens: Num; readonly output_tokens?: Num }): CostFigure {
+  const unpriced = !isNum(r.cost) && (isNum(r.prompt_tokens) || isNum(r.output_tokens));
+  return unpriced ? { text: 'not priced', marks: [{ kind: 'unpriced', value: 'not priced', label: 'no rate for its model in the pricing table' }] } : costSum({ cost: r.cost });
+}
+
+/// A figure's marks as one sentence, the tooltip of a row that is a button and so cannot hold a tip
+/// of its own: "4 unpriced: no rate …". Null when it carries none.
+export const costWhy = (f: CostFigure): string | null => (f.marks.length ? `${f.marks.map((m) => `${m.value}: ${m.label}`).join('. ')}.` : null);
+
+/// What the marks on a list's costs mean, said once under the list as text, since a row that is a
+/// button has only a title for its tooltip, which a phone and a keyboard never reach (OV-C229,
+/// OV-C232, SH-C30). Null when no cost in it is marked.
+export function costNote(figures: readonly CostFigure[]): string | null {
+  const kinds = new Set(figures.flatMap((f) => f.marks.map((m) => m.kind)));
+  const said = [kinds.has('unpriced') ? `Unpriced: ${UNPRICED_WHY}.` : null, kinds.has('estimated') ? `≈ estimated: ${ESTIMATED_WHY}.` : null].filter(Boolean);
+  return said.length ? said.join(' ') : null;
+}
+
 /// A fraction as a whole percent, for meters. `Fmt.percent`.
 export function percent(fraction: Num): string {
   return isNum(fraction) ? `${Math.round(fraction * 100)}%` : DASH;

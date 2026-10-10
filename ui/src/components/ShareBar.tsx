@@ -4,7 +4,7 @@
 // dashboard's `setStack` and `legRow` (assets/index.html).
 import { useRef, useState } from 'react';
 import { CONCEPTS, paint, type ArToken, type Concept } from '~/lib/concepts';
-import { DataTip, type Tip } from './DataTip';
+import { DataTip, type Tip, type TipRow } from './DataTip';
 import styles from './ShareBar.module.scss';
 
 /// A part under this many CSS pixels owns a zone this wide around its centre, so a sliver is still
@@ -27,6 +27,9 @@ export interface Part {
   readonly figure?: string;
   /// Anything else the part says, shown in its legend row and its tip: "5-min 1.2k · 1-hour 300".
   readonly detail?: string;
+  /// What its tip adds under the detail, in its tip only: the reasons behind a mark in the detail,
+  /// such as a cost's "+ 4 unpriced" (OV-C229, OV-C232). A tap pins the tip, so it reaches a phone.
+  readonly tip?: readonly TipRow[];
 }
 
 /// A share as the console writes one (OV-C179): "—" with nothing to divide by or nothing recorded,
@@ -101,6 +104,7 @@ export function ShareBar({
         { value: figure(p), label: unit, colour: p.colour },
         { value: shareOf(p.value, whole), label: of },
         p.detail ? { value: p.detail, label: '' } : null,
+        ...(p.tip ?? []),
       ],
     };
   };

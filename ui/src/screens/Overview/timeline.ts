@@ -5,13 +5,15 @@
 // Where the page broke its own rule, the rule is kept:
 // - a bucket's figures followed the pointer only; here they are a tip a tap pins and the keyboard
 //   walks, built by `bucketTip` (OV-C116);
-// - bucket sizes are spelt the phones' way, "15 minutes" (OV-C185, decision K).
+// - bucket sizes are spelt the phones' way, "15 minutes" (OV-C185, decision K);
+// - a bucket's cost is its priced part, marked where it leaves requests out or rests on estimated
+//   tokens, the reasons in its tip (OV-C229, OV-C232).
 
 import type { ChartTheme, ScaleTypes, StackedBarChartOptions, TickRotations, TruncationTypes } from '@carbon/charts';
 import type { Timeline, TimelineRow } from '~/data/overview';
 import type { TipRow } from '~/components/DataTip';
 import { FAMILY_COLOUR } from '~/lib/concepts';
-import { bucketName, compact, count, family, hm, monthDay, pct, plural, tod, usd, type Family } from '~/model/format';
+import { bucketName, compact, costSum, count, family, hm, monthDay, pct, plural, tod, type Family } from '~/model/format';
 
 /// The families, in the order they stack from the bottom and the legend reads (OV-C109): Kimi
 /// Code's after Claude's three, "other" last (OV-C222).
@@ -32,6 +34,10 @@ export interface Bucket {
   readonly sub: number;
   readonly errors: number;
   readonly cost: number;
+  /// Requests with usage the router could not price, which `cost` leaves out, and those whose tokens
+  /// were estimated (OV-C229, OV-C232).
+  readonly unpriced: number;
+  readonly estimated: number;
   readonly fam: Readonly<Record<Family, number>>;
   readonly famReq: Readonly<Record<Family, number>>;
 }
@@ -47,12 +53,12 @@ export function buckets(tl: Timeline | null | undefined, tzMs: number): Bucket[]
   if (!tl || !tl.bucket_ms || tl.start == null || tl.end == null) return [];
   const b = tl.bucket_ms;
   const t0 = Math.floor((tl.start + tzMs) / b) * b - tzMs;
-  const byT = new Map<number, { requests: number; prompt: number; output: number; cache: number; sub: number; errors: number; cost: number; fam: Record<Family, number>; famReq: Record<Family, number> }>();
+  const byT = new Map<number, { requests: number; prompt: number; output: number; cache: number; sub: number; errors: number; cost: number; unpriced: number; estimated: number; fam: Record<Family, number>; famReq: Record<Family, number> }>();
   for (const r of tl.rows as readonly TimelineRow[]) {
     const t = Number(r.t);
     let o = byT.get(t);
     if (!o) {
-      o = { requests: 0, prompt: 0, output: 0, cache: 0, sub: 0, errors: 0, cost: 0, fam: zeroes(), famReq: zeroes() };
+      o = { requests: 0, prompt: 0, output: 0, cache: 0, sub: 0, errors: 0, cost: 0, unpriced: 0, estimated: 0, fam: zeroes(), famReq: zeroes() };
       byT.set(t, o);
     }
     o.requests += n(r.requests);
@@ -62,13 +68,15 @@ export function buckets(tl: Timeline | null | undefined, tzMs: number): Bucket[]
     o.sub += n(r.subagent_tokens);
     o.errors += n(r.errors);
     o.cost += n(r.cost);
+    o.unpriced += n(r.unpriced);
+    o.estimated += n(r.estimated);
     const f = family(r.model);
     o.fam[f] += n(r.prompt_tokens);
     o.famReq[f] += n(r.requests);
   }
   const out: Bucket[] = [];
   for (let t = t0, i = 0; t <= tl.end && i < MAX_BUCKETS; t += b, i++) {
-    out.push({ t, ...(byT.get(t) ?? { requests: 0, prompt: 0, output: 0, cache: 0, sub: 0, errors: 0, cost: 0, fam: zeroes(), famReq: zeroes() }) });
+    out.push({ t, ...(byT.get(t) ?? { requests: 0, prompt: 0, output: 0, cache: 0, sub: 0, errors: 0, cost: 0, unpriced: 0, estimated: 0, fam: zeroes(), famReq: zeroes() }) });
   }
   return out;
 }
@@ -207,14 +215,16 @@ export function chartOptions(bk: readonly Bucket[], labels: readonly string[], l
 export const FAMILY_TOKENS: Readonly<Record<Family, string>> = FAMILY_COLOUR;
 
 /// One bucket's figures, as a tip: its span, each family's tokens and requests, output, cost, the
-/// share from cache, the share by subagents and its errors (OV-C116).
+/// share from cache, the share by subagents and its errors (OV-C116). Its cost is a cost sum, its
+/// marks' reasons each a row under it (OV-C229, OV-C232).
 export function bucketTip(b: Bucket, bucketMs: number, now: number = Date.now()): { readonly title: string; readonly rows: TipRow[] } {
   const rows: TipRow[] = FAMILIES.filter((f) => b.fam[f] > 0 || b.famReq[f] > 0).map((f) => ({
     value: compact(b.fam[f]),
     label: `${f} · ${count(b.famReq[f])} req`,
     colour: FAMILY_COLOUR[f],
   }));
-  rows.push({ value: compact(b.output), label: 'output tokens' }, { value: usd(b.cost), label: 'cost' }, { value: pct(b.cache, b.prompt), label: 'from cache' });
+  const cost = costSum(b);
+  rows.push({ value: compact(b.output), label: 'output tokens' }, { value: cost.text, label: 'cost' }, ...cost.marks.map((m) => ({ value: m.value, label: m.label })), { value: pct(b.cache, b.prompt), label: 'from cache' });
   if (b.sub > 0) rows.push({ value: pct(b.sub, b.prompt), label: 'by subagents', colour: '--ar-subagent' });
   if (b.errors > 0) rows.push({ value: count(b.errors), label: b.errors === 1 ? 'error' : 'errors', colour: '--ar-bad-fill' });
   return { title: `${tod(b.t, now)} – ${hm(b.t + bucketMs)}`, rows };

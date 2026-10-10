@@ -1,6 +1,7 @@
 // New for agent-router: Totals in scope (assets/index.html, `#headline`, `renderHeadline`): eight tiles,
 // each with its meaning as visible text (OV-C98), and each total its split by provider under it
-// (OV-C226).
+// (OV-C226). Spend is marked where it leaves requests out or rests on estimated tokens, the reason in
+// its tip (OV-C229, OV-C232), and the cache's rates are each provider's own, in a tip (OV-C228).
 import { Fragment } from 'react';
 import { Button } from '@carbon/react';
 import { DataTip } from '~/components/DataTip';
@@ -12,8 +13,8 @@ import { useCoarse } from '~/lib/viewport';
 import { compact, tod } from '~/model/format';
 import type { Scope } from '~/model/scope';
 import type { Bucket } from './timeline';
-import { headline, spendSplit, totalsCaption } from './tiles';
-import { Panel } from './parts';
+import { cacheRates, headline, spendSplit, totalsCaption } from './tiles';
+import { MarkedCost, Panel } from './parts';
 import { listErrors } from './requestList';
 import { ProviderSplit } from './ProviderSplit';
 import styles from './Overview.module.scss';
@@ -39,10 +40,11 @@ export function Headline({
 }) {
   const coarse = useCoarse();
   const t = snapshot.summary.totals;
-  const tiles = headline(t, snapshot.summary.latency, snapshot.summary.models, scope, now);
+  const tiles = headline(t, snapshot.summary.latency, scope, now);
   const times = bk.map((b) => tod(b.t, now));
   const prompt = n(t.prompt_tokens);
   const split = spendSplit(t);
+  const rates = cacheRates(t);
 
   return (
     <Panel title="Totals in scope" caption={totalsCaption(t, now)} busy={busy}>
@@ -62,13 +64,15 @@ export function Headline({
             case 'spend':
               // Spend opens into its full split: a tap or the keyboard pins it, and the bar's own name
               // carries every figure (OV-C101).
+              // Its value marked where it leaves requests out or rests on estimated tokens, each mark's
+              // reason in its own tip (OV-C229, OV-C232).
               return (
-                <StatTile key={tile.key} label={tile.label} value={value} detail={tile.detail} meaning={tile.meaning}>
+                <StatTile key={tile.key} label={tile.label} value={value === null ? null : <MarkedCost text={value} marks={tile.marks} label={tile.label} />} detail={tile.detail} meaning={tile.meaning}>
                   <DataTip
                     className={styles.spendTarget}
                     role="group"
                     label={`Where the money went: ${split.map((s) => `${s.label} ${s.value}`).join('; ')}`}
-                    tip={() => ({ title: 'Where the money went', rows: split.map((s) => ({ value: s.value, label: s.label })) })}
+                    tip={() => ({ title: 'Where the money went', rows: split })}
                   >
                     <dl className={styles.split}>
                       {split.slice(0, 2).map((s) => (
@@ -89,6 +93,21 @@ export function Headline({
                   <span className={styles.cacheMeter} aria-hidden="true">
                     {prompt > 0 && <span className={styles.cacheFill} style={{ inlineSize: `${(100 * n(t.cache_read_tokens)) / prompt}%`, background: 'var(--ar-tok-3)' }} />}
                   </span>
+                  {providers}
+                </StatTile>
+              );
+            case 'writes':
+              // Each provider's own cache rates, a tap or the keyboard away (OV-C228).
+              return (
+                <StatTile key={tile.key} label={tile.label} value={value} detail={tile.detail} meaning={tile.meaning}>
+                  <DataTip
+                    className={styles.spendTarget}
+                    role="group"
+                    label={`Cache rates: ${rates.map((r) => `${r.label} ${r.value}`).join('; ')}`}
+                    tip={() => ({ title: 'Cache rates, of uncached input', rows: rates })}
+                  >
+                    <span className={styles.note}>each provider’s rates — tap or focus</span>
+                  </DataTip>
                   {providers}
                 </StatTile>
               );

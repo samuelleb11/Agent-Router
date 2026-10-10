@@ -15,7 +15,7 @@ import { useCoarse } from '~/lib/viewport';
 import { count } from '~/model/format';
 import { RANGE_ORDER, SESSION_CAP, choose, chooseProvider, clearScope, crumbs, isScoped, parseProvider, parseRange, type Level, type Range, type Scope } from '~/model/scope';
 import type { Account } from '~/model/settings';
-import { ALL, accountOptions, accountProvider, projectOptions, providerChoices, sessionOptions } from './scopeOptions';
+import { ALL, accountOptions, accountProvider, pickerNote, projectOptions, providerChoices, sessionOptions } from './scopeOptions';
 import styles from './Overview.module.scss';
 
 /// What a picker says above its rows while they are read, or when they could not be.
@@ -115,7 +115,7 @@ export function ScopeBar({
           set={c.account.set}
           value={scope.account ?? ALL}
           options={accountChoices}
-          note={reading(lists.account, 'accounts')}
+          note={reading(lists.account, 'accounts') ?? pickerNote(byAccount)}
           onPick={pick('account')}
           onOpenChange={toggled('account')}
         />
@@ -128,7 +128,7 @@ export function ScopeBar({
           set={c.project.set}
           value={scope.project ?? ALL}
           options={lists.project.data ? projectOptions(projects, snapshot?.summary.totals.requests ?? null) : [{ key: ALL, name: 'All projects' }]}
-          note={reading(lists.project, 'projects')}
+          note={reading(lists.project, 'projects') ?? pickerNote(projects)}
           onPick={pick('project')}
           onOpenChange={toggled('project')}
         />
@@ -141,7 +141,7 @@ export function ScopeBar({
           set={c.session.set}
           value={scope.session ?? ALL}
           options={sessionChoices}
-          note={reading(lists.session, 'sessions') ?? (sessions.length >= SESSION_CAP ? `the ${count(SESSION_CAP)} most recent sessions` : undefined)}
+          note={reading(lists.session, 'sessions') ?? ([sessions.length >= SESSION_CAP ? `the ${count(SESSION_CAP)} most recent sessions` : null, pickerNote(sessions)].filter(Boolean).join(' · ') || undefined)}
           onPick={pick('session')}
           onOpenChange={toggled('session')}
         />

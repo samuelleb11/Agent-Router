@@ -29,6 +29,10 @@ export interface BarRow {
   readonly chips?: ReactNode;
   /// "N sessions · N req · out · % cached · cost · last seen", in the formatters' words.
   readonly meta?: string;
+  /// The meta line's tooltip: why a figure in it is marked, such as a cost's "+ 4 unpriced"
+  /// (OV-C229, OV-C232). A row that is a button holds no tip of its own, so the list's caller says
+  /// the same once as text (SH-C30).
+  readonly metaTip?: string;
   /// "3 errors": drawn with the error mark, in the error colour (OV-C5).
   readonly errors?: string;
   /// The magnitude the bar draws. Null draws no bar; zero, a faint stub.
@@ -137,7 +141,7 @@ function Row({ row, max, pressed, onSelect }: { row: BarRow; max: number; presse
           </span>
         )}
         {(row.meta || row.errors) && (
-          <span id={id('meta')} className={styles.meta}>
+          <span id={id('meta')} className={styles.meta} title={row.metaTip}>
             {row.meta}
             {row.meta && row.errors && ' · '}
             {row.errors && (

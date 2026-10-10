@@ -54,6 +54,10 @@ export interface ProjectRow {
   readonly requests: number;
   readonly prompt_tokens: number;
   readonly cost: number;
+  /// Requests with usage the router could not price, which `cost` leaves out, and those whose tokens
+  /// were estimated rather than read from their stored response (OV-C229, OV-C232).
+  readonly unpriced?: number | null;
+  readonly estimated?: number | null;
   readonly output_tokens: number;
   readonly cache_read_tokens: number;
   readonly subagent_tokens: number;

@@ -5,7 +5,7 @@ import { BarList } from '~/components/BarList';
 import { ProviderMark } from '~/components/ProviderMark';
 import { ShareBar } from '~/components/ShareBar';
 import type { Summary, TabPart } from '~/data/overview';
-import { family } from '~/model/format';
+import { costNote, family } from '~/model/format';
 import type { Scope } from '~/model/scope';
 import { CONTEXT_NOTE, contextParts, emptyWords, modelRows, readPanel, threadParts } from './panels';
 import { Panel, Swatch } from './parts';
@@ -17,6 +17,8 @@ export function Reading({ summary, part, scope, busy }: { summary: Summary; part
   const context = contextParts(part.context);
   const contextTotal = context.reduce((a, p) => a + (p.value ?? 0), 0);
   const models = modelRows(summary.models);
+  // What a marked model cost means, once under the list (OV-C229, OV-C232).
+  const marked = costNote(models.map((m) => m.cost));
   return (
     <>
       <div className={styles.two} data-two="">
@@ -36,6 +38,11 @@ export function Reading({ summary, part, scope, busy }: { summary: Summary; part
             <BarList label="By model" rows={models.map((m) => ({ ...m, mark: <Swatch family={family(m.key)} />, chips: <ProviderMark provider={m.provider} className={styles.chip} /> }))} />
           ) : (
             <p className={styles.empty}>No requests in scope.</p>
+          )}
+          {marked && (
+            <p className={styles.note} data-cost-note="">
+              {marked}
+            </p>
           )}
         </Panel>
         <Panel concept="subagents" title="Main thread vs subagents" caption="share of prompt tokens" busy={busy}>

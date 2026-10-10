@@ -542,6 +542,15 @@
   min-inline-size: 0;
 }
 
+/// A cost with a mark whose reason is in its tip (OV-C229, OV-C232): in the line it stands in,
+/// underlined in dots as a term with a definition is, so it reads as having more to say.
+.marked {
+  display: inline-block;
+  min-inline-size: 0;
+  text-decoration-line: underline;
+  text-decoration-style: dotted;
+}
+
 .split {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
@@ -702,6 +711,16 @@
 }
 
 // ---------------------------------------------------------------- lists
+
+/// How to start, a line per client, side by side as a list reads (OV-C230).
+.howToStart {
+  display: grid;
+  gap: $spacing-02;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  min-inline-size: 0;
+}
 
 .orphan {
   display: grid;

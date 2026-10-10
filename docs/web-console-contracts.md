@@ -74,7 +74,12 @@ ST-C125 (AGEN-0092), so Settings holds 125. The same day Quota headroom came to 
 provider with an account, each with its own windows, headroom and first to run out (AGEN-0133):
 OV-C224 and OV-C225, so the Overview holds 226. The same day each total came to show its split by
 provider under it, and the scope to offer a provider that the page's figures follow (AGEN-0134):
-OV-C226 and OV-C227, so the Overview holds 228.
+OV-C226 and OV-C227, so the Overview holds 228. The same day the cache figures came to say what
+happened, with each provider's own rates in their tooltips, OV-C228 (AGEN-0135); a sum of costs to
+read as its priced part, marked with how many requests it leaves out, OV-C229 (AGEN-0136); each
+client to be named where one is meant, with each one's setup side by side, OV-C230 (AGEN-0137); and a
+cost that rests on estimated tokens to be marked as estimated, OV-C232 (AGEN-0141), so the Overview
+holds 232.
 
 ## Shell
 
@@ -1093,7 +1098,8 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
 - **OV-C91** The 30-day pace is the last seven days of recorded spend scaled to thirty, whatever
   range the page shows, and says so. *Why:* "A pace is only meaningful against a fixed horizon."
   *Regression:* no. *Source:* `assets/index.html:1396`, `src/api.rs:1054-1066`,
-  `src/api.rs:1219-1223`.
+  `src/api.rs:1219-1223`. *Amended:* marked with the week's requests it leaves out and those whose
+  tokens were estimated, as every cost sum is (OV-C229, OV-C232).
 - **OV-C92** Headroom turns red only for a window whose verdict crosses; a tight one is amber and
   worded as too close to call. *Why:* only crosses is red (5b2c120). *Regression:* no. *Source:*
   `assets/index.html:1382-1389`, `src/api.rs:1188-1192`, `scripts/fixtures/forecast.json`. *Today:*
@@ -1151,7 +1157,9 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
   every account" says how many requests it leaves out ("leaves out N requests the router could not
   price"), and reads "—" when none was priced, as Spend does (OV-C178). *Why:* a cost of 0 beside
   requests with no price is not free. *Regression:* no. *Source:* `src/api.rs` (`forecast_inner`),
-  `src/pricing.rs`.
+  `src/pricing.rs`. *Amended:* one rule for every cost sum: a card reads "$X + N unpriced", and
+  "Spend, every account" is marked the same way, "not priced" when none was priced, each with the
+  reason in its tooltip rather than "leaves out N requests" under it (OV-C229).
 - **OV-C222** The model families gain `kimi` — `k3`, `k3-256k` and every `kimi-…` id — with its own
   colour token, `--ar-model-kimi`, declared in both themes and held by the palette validator as one
   of the model family set (OV-C9). It stacks after haiku and before other in the activity chart and
@@ -1170,7 +1178,8 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
 - **OV-C99** The largest tile says what it counts and over what span — "<first> → <last> ·
   everything the model read, cached or not" — over a sparkline per bucket; with nothing recorded it
   says "nothing recorded yet — point Claude Code at this router". *Why:* an empty router tells the
-  reader how to start. *Regression:* no. *Source:* `assets/index.html:1476-1477`.
+  reader how to start. *Regression:* no. *Source:* `assets/index.html:1476-1477`. *Amended:* "point
+  Claude Code or Kimi Code at this router" (OV-C230).
 - **OV-C100** Spend is subtitled with the two figures that dominate it, cached reads and output, and
   with nothing priced says "nothing priced in scope". *Why:* "The total alone is not interpretable:
   on an agentic workload most of it is cache, billed at a tenth of input." *Regression:* no.
@@ -1181,7 +1190,9 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
   pricing table. *Why:* 04efe6b: "the tooltip is where the number stops being surprising."
   *Regression:* yes — 04efe6b added this split, and the older call from f715d30, bound after it,
   overwrites it (the plan's defects). *Source:* `assets/index.html:1486-1501`. *Today:* broken — a
-  shorter, older tooltip replaces the split.
+  shorter, older tooltip replaces the split. *Amended:* the cache rows say what happened, "written
+  to cache, 5 minutes", "written to cache, 1 hour", "read from cache", and each provider's own rates
+  follow them (OV-C228); the total is marked as every cost sum is (OV-C229, OV-C232).
 - **OV-C102** Requests gives the count with "N sessions · M projects" and "K by subagents" when
   there are any; scoped to a session it reads "1 session · <project>". *Why:* a request count means
   little without where the requests came from. *Regression:* no. *Source:*
@@ -1195,6 +1206,8 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
   *Source:* `assets/index.html:1508-1510`, `assets/index.html:1601`.
 - **OV-C105** Cache writes gives the total with its 5-minute and 1-hour tiers. *Why:* the tiers are
   priced differently, at 1.25× and 2× input. *Regression:* no. *Source:* `assets/index.html:1511`.
+  *Amended:* its meaning quotes no rate, Anthropic's tiers being one provider's; each provider's
+  rates are in its tip (OV-C228).
 - **OV-C106** Time to first token gives the median, with the p95 and the whole reply's median under
   it, and every latency figure — first token p50 and p95, whole reply p50 and p95, and the slowest
   reply — is readable without hovering; with no requests it reads "median · no requests yet". *Why:*
@@ -1221,7 +1234,25 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
   chose one total with its split by provider under it, over a total per provider (AGEN-0134); the
   router splits every total by provider (`by_provider`, AGEN-0130). *Regression:* no. *Source:*
   `src/api.rs` (`summary_of`), `ui/src/screens/Overview/tiles.ts` (`providerSplit`),
-  `ui/src/screens/Overview/ProviderSplit.tsx`, `ui/src/screens/Overview/Headline.tsx`.
+  `ui/src/screens/Overview/ProviderSplit.tsx`, `ui/src/screens/Overview/Headline.tsx`. *Amended:* a
+  spend partly priced reads "$X + N unpriced", and one resting on estimated tokens "≈" before it, the
+  reasons in a tip on the figure, the one figure in a split that takes focus (OV-C229, OV-C232).
+- **OV-C228** The cache figures' labels say what happened — "written to cache, 5 minutes", "written
+  to cache, 1 hour", "read from cache" — and quote no provider's rate; Cache writes means "Prompt
+  tokens written to the cache, to be read back for less; each provider prices them at its own
+  rates." Each provider's own rates, as multiples of its own uncached input, are in the tooltip: in
+  Spend's split, after its figures, and in a tip on Cache writes, "each provider's rates — tap or
+  focus", which a tap pins and focus opens (SH-C30). Only the providers in scope are given, each row
+  keyed in its provider's colour and named by it: Anthropic's writes cost 1.25× input for 5 minutes
+  and 2× for an hour, and its reads 0.1×; Kimi Code's writes cost what an uncached input does, 1×,
+  and its reads 0.1× to 0.2× by model. A provider the console has no rates for says its rates are in
+  the pricing table. The cost itself already prices each request at its own provider's rates. The
+  rates are the rate table's seeds, which the console does not read, so a rate edited in the table
+  is not shown here. *Why:* the owner's decision (2026-10-10, AGEN-0135): with Kimi Code on the
+  router, labels quoting Anthropic's multipliers misdescribe the rest of the traffic; neutral labels,
+  each provider's rates in their tooltips. *Regression:* no. *Source:* `src/pricing.rs` (`DEFAULTS`),
+  `docs/sources-and-models.md` ("Kimi Code rates"), `ui/src/screens/Overview/tiles.ts`
+  (`spendSplit`, `cacheRates`), `ui/src/screens/Overview/Headline.tsx`.
 
 ### Activity
 
@@ -1287,7 +1318,7 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
   share" — with the note that totals are exact and the split apportions the API's exact prompt-token
   count by character share, there being no local tokenizer for current Claude models, so ratios are
   reliable and absolutes approximate. *Why:* estimates say they are estimates. *Regression:* no.
-  *Source:* `assets/index.html:467-470`.
+  *Source:* `assets/index.html:467-470`. *Amended:* "current Claude or Kimi models" (OV-C230).
 - **OV-C123** Each component row gives its estimated tokens, its share of the window and "≈ per
   request", divided by the requests that carried that component (by all requests only for a router
   that does not say), over a bar of its share. *Why:* an average over requests that did not carry it
@@ -1407,6 +1438,8 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
   requests are counted in the totals above. *Why:* the explanation sits next to the figure.
   *Regression:* no. *Source:* `assets/index.html:1733-1736`. *Today:* broken — only "no project
   recorded yet" is visible; the why, and that these requests are in the totals, are in its tooltip.
+  *Amended:* Claude Code and Kimi Code each label a request with its session's id, and the project
+  comes from the session's own files (OV-C230).
 - **OV-C143** Tool output the model read has one row per tool, ranked by estimated tokens, with "N
   results · ≈X each · ≥$cost", and "N failed" in the error colour with the error icon. *Why:* which
   tools fill the context, and at what floor of cost. *Regression:* no. *Source:*
@@ -1425,6 +1458,21 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
   model read say "yet" ("No tool results captured yet.", "Nothing read yet.") whatever the scope or
   range. *Amended:* no quota reading yet is said in the block of the provider whose serving account
   has none; a router with no account at all says "No account yet" and where to add one (OV-C224).
+  How to start names each client, "point Claude Code or Kimi Code at this router", with each one's
+  setup side by side (OV-C230).
+- **OV-C230** Where a client is meant, it is named, Claude Code and Kimi Code alike: an empty router
+  says to point Claude Code or Kimi Code at it (OV-C99, OV-C145); the context note has no local
+  tokenizer for current Claude or Kimi models (OV-C122); the unattributed row says Claude Code and
+  Kimi Code each label a request with its session's id (OV-C142). Where setup is explained — how to
+  start, under an empty Projects list — each client has a line of its own, named first, side by side:
+  Claude Code's as OV-C203 has it, Settings → Claude Code on a local router and Settings → Router's
+  line on a hosted one; and Kimi Code's, `agent-router install`, which writes the router into Kimi
+  Code's config.toml, and `agent-router kimi`, which starts a hosted session from a terminal. Neither
+  shows until the router has said which kind it is (OV-C203). *Why:* the owner's decision
+  (2026-10-10, AGEN-0137): Kimi Code is a client of the router with parity, and a line that speaks to
+  Claude Code alone tells a Kimi Code user nothing. *Regression:* no. *Source:* `src/kimi/config.rs`,
+  `src/kimi/launch.rs`, `ui/src/screens/Overview/Lists.tsx` (`HowToStart`),
+  `ui/src/screens/Overview/panels.ts`, `ui/src/screens/Overview/tiles.ts`.
 
 ### Requests
 
@@ -1602,13 +1650,18 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
   below that and four below a cent, "$0" for zero, and "—" for a cost that could not be priced,
   never "$0". *Why:* "Cents matter at coffee prices and are noise at four figures, and a cost we
   could not price — an unknown model — reads as an em dash rather than as free." *Regression:* no.
-  *Source:* `assets/index.html:677-683`. *Phones:* `testHoursReadAsHours`.
+  *Source:* `assets/index.html:677-683`. *Phones:* `testHoursReadAsHours`. *Amended:* a request
+  with usage the router could not price reads "not priced", and "—" is left for a cost with no
+  usage to price; a sum that holds unpriced requests reads its priced part, marked (OV-C229).
 - **OV-C178** A total that includes requests the router could not price says so, and one with
   nothing priced reads "—" rather than "$0". *Why:* an unpriced model "contributes nothing rather
   than counting as free" (`src/pricing.rs:122-124`), so its absence must show. *Regression:* no.
   *Source:* `assets/index.html:1484-1485`, `src/api.rs:325`. *Today:* broken — the router sums
   unpriced requests as nothing, so a mixed scope reads low with no mark, and an unpriced one reads
-  "$0" over "nothing priced in scope".
+  "$0" over "nothing priced in scope". *Amended:* the router counts them (`unpriced`), and the total
+  reads its priced part marked "+ N unpriced", or "not priced" with nothing priced beside them; "—"
+  is left for a scope with nothing to price at all, and the reason is in the figure's tooltip
+  rather than in the line under it (OV-C229).
 - **OV-C179** A share reads "—" when there is nothing to divide by, whole from 10 % and at 0, and to
   one decimal below 10 %, so 27 errors in 8,474 requests read 0.3 %, not 0 %. *Why:* a small share
   is not none. *Regression:* no. *Source:* `assets/index.html:684-685`. *Phones:*
@@ -1655,6 +1708,34 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
   *Why:* "all data goes through textContent"; the live view's quote-escaping hole (29c5eb3) is what
   markup from data costs. *Regression:* no. *Source:* `assets/index.html:721-734`,
   `assets/index.html:711`, `assets/index.html:1318-1319`.
+- **OV-C229** A sum of costs that holds requests the router could not price reads as its priced
+  part, marked with how many have no price — "$3.10 + 4 unpriced" — and as "not priced" when
+  nothing in it was priced. "$0" never stands for unknown: it is a zero the router measured, and a
+  cost the router did not give, with nothing left out, is "—". One request with usage and no cost
+  reads "not priced", never "$0". The reason — no rate for their model in the pricing table, so the
+  sum leaves them out — is in the figure's tooltip, which reaches a phone and a keyboard (SH-C30): a
+  tip a hover shows, focus opens and a tap pins where the figure stands on its own (Spend and its
+  split by provider, an All accounts card, Spend every account, the 30-day pace); a row of the tip
+  that already gives the figure (a thread's part, a bucket); the request's detail, for a request's
+  card; and where the figure is part of a row that is itself a button (By model, Projects,
+  Sessions, the pickers' figures), the row's title, with the same words said once as text under
+  the list or above the picker's rows. This holds wherever a cost is summed: the headline, threads,
+  models, projects, sessions, request cards, the pickers' figures, bucket tips, All accounts and the
+  30-day pace. *Why:* the owner's decision (2026-10-10, AGEN-0136): the router counts, beside every
+  cost it sums, the requests with usage it could not price (`unpriced`), and a sum that left them out
+  unmarked, or read "$0" over them, read as their price. *Regression:* no. *Source:* `src/api.rs`
+  (`unpriced` beside every `cost`), `src/pricing.rs`, `ui/src/model/format.ts` (`costSum`,
+  `requestCost`, `costNote`).
+- **OV-C232** A cost that includes requests whose tokens were estimated, rather than read from their
+  stored response, is marked as estimated, "≈" before it — "≈$3.10", "≈$3.10 + 4 unpriced" — with
+  why in its tooltip: they are Kimi Code requests from before cache reads were counted once, whose
+  responses were no longer kept to count again from. It applies to every sum OV-C229 names, in the
+  same tooltips; a sum with nothing priced has no figure to mark, and a single request's card is no
+  sum, the router not saying which request was estimated. *Why:* the router recomputed Kimi Code's
+  earlier requests from the responses it kept and estimated the rest (AGEN-0140), and counts them
+  beside every cost it sums (`estimated`); a figure resting on them should not read as measured
+  (AGEN-0141). *Regression:* no. *Source:* `src/db.rs` (`recompute_kimi_usage`), `src/api.rs`
+  (`estimated` beside every `cost`), `ui/src/model/format.ts` (`costSum`).
 
 ### Shared visuals
 

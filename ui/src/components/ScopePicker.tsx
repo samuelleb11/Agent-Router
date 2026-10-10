@@ -28,6 +28,9 @@ export interface ScopeOption {
   readonly path?: boolean;
   /// "1.20M · 840 req · $41.20", in the formatters' words.
   readonly meta?: string;
+  /// The meta's tooltip: why a figure in it is marked, such as a cost's "+ 4 unpriced" (OV-C229,
+  /// OV-C232); the picker's note says the same as text (SH-C30).
+  readonly metaTip?: string;
 }
 
 export type Level = 'account' | 'project' | 'session';
@@ -263,7 +266,9 @@ export function ScopePicker({
                     {o.meta && (
                       <>
                         {' '}
-                        <span className={styles.meta}>{o.meta}</span>
+                        <span className={styles.meta} title={o.metaTip}>
+                          {o.meta}
+                        </span>
                       </>
                     )}
                   </li>

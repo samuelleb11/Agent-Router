@@ -3,6 +3,7 @@
 // figures it is handed, with no chart library and no DOM.
 import { describe, expect, it } from 'vitest';
 import type { Timeline, TimelineRow } from '~/data/overview';
+import { ESTIMATED_WHY, UNPRICED_WHY } from '~/model/format';
 import { activityCaption, activityEmpty, bucketTip, buckets, chartData, chartOptions, errorMarks, FAMILIES, legend, MAX_BUCKETS, niceTop, perBucket, timeLabels } from './timeline';
 
 const MIN = 60_000;
@@ -143,6 +144,37 @@ describe('the activity chart', () => {
     const tip = bucketTip(bk[0]!, HOUR, T0);
     expect(tip.title).toMatch(/–/);
     expect(tip.rows.map((r) => `${r.value} ${r.label}`)).toEqual(['1.0k opus · 4 req', '2.0k output tokens', '$0.500 cost', '80% from cache', '25% by subagents', '1 error']);
+  });
+
+  it("OV-C229, OV-C232: a bucket's cost is its priced part, marked with what it leaves out and \"≈\" for estimated tokens, each reason a row of its tip; never $0 for nothing priced", () => {
+    const bk = buckets(
+      {
+        start: T0,
+        end: T0 + HOUR,
+        bucket_ms: HOUR,
+        rows: [
+          // Two models in one bucket add up their counts as they add up their cost.
+          row(T0, 'claude-opus-5', { cost: 0.5, requests: 4, unpriced: 0, estimated: 0 }),
+          row(T0, 'k3', { cost: 0.25, requests: 3, unpriced: 1, estimated: 2 }),
+          row(T0 + HOUR, 'mystery-1', { cost: 0, requests: 2, unpriced: 2, estimated: 0 }),
+        ],
+      },
+      0,
+    );
+    expect(bk.map((b) => [b.cost, b.unpriced, b.estimated])).toEqual([
+      [0.75, 1, 2],
+      [0, 2, 0],
+    ]);
+    const rows = (i: number) => bucketTip(bk[i]!, HOUR, T0).rows.filter((r) => /cost|unpriced|estimated/.test(`${r.value} ${r.label}`)).map((r) => [r.value, r.label]);
+    expect(rows(0)).toEqual([
+      ['≈$0.750 + 1 unpriced', 'cost'],
+      ['1 unpriced', UNPRICED_WHY],
+      ['2 estimated', ESTIMATED_WHY],
+    ]);
+    expect(rows(1)).toEqual([
+      ['not priced', 'cost'],
+      ['2 unpriced', UNPRICED_WHY],
+    ]);
   });
 
   it('OV-C117: the caption gives the range’s prompt tokens and requests', () => {

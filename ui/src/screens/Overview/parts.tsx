@@ -1,9 +1,10 @@
 // New for agent-router: the small pieces the Overview's panels share: a panel with its heading and
-// caption, a model family's swatch, a status tag and a forecast line.
+// caption, a model family's swatch, a status tag, a forecast line and a marked cost.
 import { WarningAlt } from '@carbon/icons-react';
 import { useId, type ReactNode } from 'react';
+import { DataTip } from '~/components/DataTip';
 import { CONCEPTS, FAMILY_COLOUR, paint, type Concept } from '~/lib/concepts';
-import type { Family } from '~/model/format';
+import type { CostMark, Family } from '~/model/format';
 import type { Line } from '~/model/forecast';
 import type { Status } from './quotaView';
 import styles from './Overview.module.scss';
@@ -72,5 +73,22 @@ export function ForecastLine({ line }: { line: Line }) {
       </p>
       {line.basis && <span className={styles.basis}>{line.basis}</span>}
     </div>
+  );
+}
+
+/// A cost as `costSum` writes it, and when it carries a mark — "+ 4 unpriced", "≈" — each mark's
+/// reason in a tip that a hover shows, focus opens and a tap pins, so it reaches a phone and a
+/// keyboard (OV-C229, OV-C232, SH-C30). Unmarked, the text alone, adding no tab stop.
+export function MarkedCost({ text, marks, label }: { text: string; marks: readonly CostMark[] | null | undefined; label: string }) {
+  if (!marks?.length) return <>{text}</>;
+  return (
+    <DataTip
+      className={styles.marked}
+      role="group"
+      label={`${label}: ${text}`}
+      tip={() => ({ title: 'Why it is marked', rows: marks.map((m) => ({ value: m.value, label: m.label })) })}
+    >
+      <span data-marked-cost="">{text}</span>
+    </DataTip>
   );
 }

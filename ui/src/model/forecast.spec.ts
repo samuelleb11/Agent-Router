@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import forecastText from './fixtures/forecast.json?raw';
 import { windows } from './fixtures/dashboard';
 import { allAccounts, burnDown, burnDownLayout, burnDowns, fcBasis, fcState, meter, providerHeadroom, windowLabel, windowMeter, windowName, type Forecast, type ForecastAccount, type Headroom, type Window } from './forecast';
-import { when } from './format';
+import { ESTIMATED_WHY, UNPRICED_WHY, usd, when } from './format';
 
 const NOW = Date.UTC(2026, 9, 5, 12, 0, 0);
 const W = windows(NOW);
@@ -217,14 +217,34 @@ describe('forecast', () => {
     expect(sub({ ...claude, usage: { requests: 0, last_seen: null } })).toBe('max · never seen');
   });
 
-  it('OV-C221: an account the router could not price reads "not priced", never "$0", and Spend says how many requests it leaves out', () => {
-    expect(allAccounts(only(KIMI), NOW)?.cards[0]?.cost).toBe('not priced');
-    expect(allAccounts(only({ ...KIMI, usage: { ...KIMI.usage, cost: 1.5, unpriced: 3 } }), NOW)?.cards[0]?.cost).toBe('$1.50 + 3 not priced');
+  it('OV-C221, OV-C229: an account the router could not price reads "not priced", never "$0"; one partly priced, and Spend, read their priced part marked with how many they leave out', () => {
+    expect(allAccounts(only(KIMI), NOW)?.cards[0]).toMatchObject({ cost: 'not priced', costMarks: [{ kind: 'unpriced', value: '12 unpriced', label: UNPRICED_WHY }] });
+    expect(allAccounts(only({ ...KIMI, usage: { ...KIMI.usage, cost: 1.5, unpriced: 3 } }), NOW)?.cards[0]?.cost).toBe('$1.50 + 3 unpriced');
     const mixed = allAccounts({ ...FORECAST, accounts: [...(FORECAST.accounts ?? []), KIMI] }, NOW);
-    expect(mixed?.spend.sub).toBe('across 3 accounts, at API rates · leaves out 12 requests the router could not price');
-    expect(mixed?.spend.value, 'what was priced is still the total').not.toBe('—');
-    expect(mixed?.cards.find((c) => c.id === 'primary')?.cost, 'a priced account as before').toBe('$699.48');
-    // Nothing priced at all: no total, rather than $0.
-    expect(allAccounts({ ...only(KIMI), global: { ...FORECAST.global, cost: 0, accounts: 1 } }, NOW)?.spend).toMatchObject({ value: '—' });
+    // The mark is on the figure, its reason in the figure's tooltip, so the line under it says no more.
+    expect(mixed?.spend).toMatchObject({ value: `${usd(FORECAST.global?.cost)} + 12 unpriced`, sub: 'across 3 accounts, at API rates', marks: [{ kind: 'unpriced', value: '12 unpriced', label: UNPRICED_WHY }] });
+    expect(mixed?.cards.find((c) => c.id === 'primary'), 'a priced account as before').toMatchObject({ cost: '$699.48', costMarks: [] });
+    // Nothing priced at all: "not priced", never $0.
+    expect(allAccounts({ ...only(KIMI), global: { ...FORECAST.global, cost: 0, accounts: 1 } }, NOW)?.spend).toMatchObject({ value: 'not priced' });
+  });
+
+  it('OV-C232: an account, and Spend, whose cost rests on estimated tokens read "≈" before it, the reason in its tooltip', () => {
+    const estimated: ForecastAccount = { ...KIMI, usage: { ...KIMI.usage, cost: 1.5, unpriced: 0, estimated: 4 } };
+    expect(allAccounts(only(estimated), NOW)?.cards[0]).toMatchObject({ cost: '≈$1.50', costMarks: [{ kind: 'estimated', value: '4 estimated', label: ESTIMATED_WHY }] });
+    expect(allAccounts({ ...only(estimated), global: { ...FORECAST.global, cost: 1.5, accounts: 1 } }, NOW)?.spend).toMatchObject({ value: '≈$1.50', marks: [{ kind: 'estimated', value: '4 estimated' }] });
+  });
+
+  it('OV-C229, OV-C232: the 30-day pace is its priced part, marked with the week’s unpriced requests and "≈" for its estimated ones, each with its reason', () => {
+    type Pace = NonNullable<NonNullable<Forecast['global']>['pace_30d']>;
+    const paced = (over: Pace) => allAccounts({ ...FORECAST, global: { ...FORECAST.global, pace_30d: { ...FORECAST.global?.pace_30d, ...over } } }, NOW)?.pace;
+    expect(paced({})).toMatchObject({ value: usd(FORECAST.global?.pace_30d?.cost), marks: [] });
+    expect(paced({ cost: 120, unpriced: 2, estimated: 5 })).toMatchObject({
+      value: '≈$120.00 + 2 unpriced',
+      marks: [
+        { kind: 'unpriced', value: '2 unpriced', label: UNPRICED_WHY },
+        { kind: 'estimated', value: '5 estimated', label: ESTIMATED_WHY },
+      ],
+    });
+    expect(paced({ cost: 0, unpriced: 2 })?.value).toBe('not priced');
   });
 });
