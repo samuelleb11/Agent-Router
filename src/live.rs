@@ -1881,18 +1881,93 @@ pub fn valid_model(m: &str) -> bool {
         && m.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '_' | '[' | ']' | ':' | '/'))
 }
 
-/// What the two UIs offer, from one place.
-pub async fn options() -> Json<serde_json::Value> {
+/// What the UIs offer, from one place. `models` is every name a session can be moved to,
+/// as every client before there was a second provider reads it; `by_provider` is the same
+/// names grouped by the provider that serves them, Claude's aliases under Anthropic and each
+/// other provider's models from the catalogue (`models`) under it, for a picker to show.
+pub async fn options(axum::extract::State(state): axum::extract::State<Arc<crate::proxy::AppState>>) -> Response {
+    let catalogue = match state.reads.get().and_then(|conn| Ok(crate::models::catalogue(&conn)?)) {
+        Ok(catalogue) => catalogue,
+        Err(e) => return bad(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    };
     let mut models: Vec<String> = Vec::new();
+    let mut anthropic: Vec<Value> = Vec::new();
     for a in MODEL_ALIASES {
-        models.push(a.to_string());
-        models.push(format!("{a}[1m]"));
+        for name in [a.to_string(), format!("{a}[1m]")] {
+            anthropic.push(serde_json::json!({ "id": name, "display_name": name }));
+            models.push(name);
+        }
+    }
+    let mut by_provider = vec![serde_json::json!({
+        "provider": crate::accounts::Provider::Anthropic.as_str(),
+        "name": crate::accounts::Provider::Anthropic.name(),
+        "models": anthropic,
+    })];
+    // Claude's own ids stay behind its aliases, as the CLI's picker has them.
+    let mut others: Vec<(crate::accounts::Provider, Vec<Value>)> = Vec::new();
+    for m in catalogue.iter().filter(|m| m.provider != crate::accounts::Provider::Anthropic) {
+        let entry = serde_json::json!({ "id": m.id, "display_name": m.display_name });
+        models.push(m.id.clone());
+        match others.iter_mut().find(|(p, _)| *p == m.provider) {
+            Some((_, list)) => list.push(entry),
+            None => others.push((m.provider, vec![entry])),
+        }
+    }
+    for (provider, list) in others {
+        by_provider.push(serde_json::json!({ "provider": provider.as_str(), "name": provider.name(), "models": list }));
     }
     let modes: Vec<serde_json::Value> = MODES
         .iter()
         .map(|(value, label)| serde_json::json!({ "value": value, "label": label }))
         .collect();
-    Json(serde_json::json!({ "models": models, "efforts": EFFORTS, "modes": modes }))
+    Json(serde_json::json!({ "models": models, "by_provider": by_provider, "efforts": EFFORTS, "modes": modes })).into_response()
+}
+
+/// Why no source serves `model`, if none does: a name the CLI knows as one of Claude's
+/// aliases, or that is Anthropic's, is taken; any other must be a model of a provider the
+/// router has an account at, as the proxy would route it (`models::account_for`).
+fn unserved(state: &crate::proxy::AppState, model: &str) -> anyhow::Result<Option<(StatusCode, String)>> {
+    let base = model.trim_end_matches("[1m]");
+    if MODEL_ALIASES.contains(&base) {
+        return Ok(None);
+    }
+    let provider = crate::models::provider_of(model);
+    if provider == Some(crate::accounts::Provider::Anthropic)
+        || crate::models::account_for(&*state.reads.get()?, model)?.is_some()
+    {
+        return Ok(None);
+    }
+    let why = format!("no source serves the model {model:?}");
+    // A provider's model with no account to serve it waits on the store; any other name
+    // waits on nothing the router holds.
+    let code = if provider.is_some() { StatusCode::CONFLICT } else { StatusCode::BAD_REQUEST };
+    Ok(Some((code, why)))
+}
+
+/// The router's refusal of a session's move to `model`, if nothing serves it. Asked by the
+/// router before anything reaches the session, on this machine (`set_model_checked`) and on
+/// a hosted router before the request goes down a machine's tunnel; the machine agent's own
+/// `set_model` has no catalogue to ask.
+pub fn refuse_unserved(state: &crate::proxy::AppState, model: &str) -> Option<Response> {
+    match unserved(state, model.trim()) {
+        Ok(None) => None,
+        Ok(Some((code, why))) => Some(bad(code, &why)),
+        Err(e) => Some(bad(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string())),
+    }
+}
+
+/// `set_model` on a router: a model nothing serves is refused before the session is asked,
+/// since it would only fail the session's next turn.
+pub async fn set_model_checked(
+    axum::extract::State(state): axum::extract::State<Arc<crate::proxy::AppState>>,
+    JsonBody(body): LiveBody<ModelBody>,
+) -> Response {
+    if valid_model(&body.model) {
+        if let Some(refused) = refuse_unserved(&state, &body.model) {
+            return refused;
+        }
+    }
+    set_model(JsonBody(body)).await
 }
 
 #[derive(Deserialize)]
@@ -3455,5 +3530,68 @@ mod tests {
         let o = lab.observe(&reg, "s-k", now);
         assert_eq!((o.activity.kind, o.activity.detail.as_str()), (Kind::Tool, "Running Bash"));
         assert!(stop_refusal(o.activity.kind).is_none());
+    }
+
+    /// A router with a Claude account and, unless `claude_only`, a Kimi Code one.
+    async fn router_with(tag: &str, claude_only: bool) -> crate::api_refusals::Lab {
+        let lab = crate::api_refusals::Lab::local(tag);
+        let mut adds = vec![serde_json::json!({ "label": format!("{tag} work"), "source": "token", "token": "sk-ant-oat01-not-a-credential" })];
+        if !claude_only {
+            adds.push(serde_json::json!({ "label": format!("{tag} kimi"), "source": "token", "provider": "kimi", "token": "sk-kimi-not-a-credential" }));
+        }
+        for add in adds {
+            assert_eq!(lab.post("/api/accounts", &add.to_string()).await.0, StatusCode::OK);
+        }
+        lab
+    }
+
+    async fn options_of(lab: &crate::api_refusals::Lab) -> Value {
+        let res = options(axum::extract::State(lab.state.clone())).await;
+        serde_json::from_slice(&axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn live_options_offer_each_providers_models() {
+        let lab = router_with("options-providers", false).await;
+        let got = options_of(&lab).await;
+        let groups = got["by_provider"].as_array().unwrap();
+        assert_eq!(groups.len(), 2, "{got}");
+        assert_eq!((&groups[0]["provider"], &groups[0]["name"]), (&serde_json::json!("anthropic"), &serde_json::json!("Anthropic")));
+        let claude: Vec<&str> = groups[0]["models"].as_array().unwrap().iter().map(|m| m["id"].as_str().unwrap()).collect();
+        assert_eq!(&claude[..4], ["opus", "opus[1m]", "sonnet", "sonnet[1m]"], "Claude's aliases, as the CLI's picker has them");
+        assert_eq!((&groups[1]["provider"], &groups[1]["name"]), (&serde_json::json!("kimi"), &serde_json::json!("Kimi Code")));
+        assert_eq!(groups[1]["models"][0], serde_json::json!({ "id": "k3", "display_name": "Kimi K3" }));
+        // Every client that reads the flat list can move a session to a Kimi Code model too.
+        let flat: Vec<&str> = got["models"].as_array().unwrap().iter().map(|m| m.as_str().unwrap()).collect();
+        assert!(flat.contains(&"opus") && flat.contains(&"k3") && flat.contains(&"kimi-for-coding"), "{flat:?}");
+
+        // With no Kimi Code account there is nothing to offer under it.
+        let lab = router_with("options-claude-only", true).await;
+        let got = options_of(&lab).await;
+        assert_eq!(got["by_provider"].as_array().unwrap().len(), 1, "{got}");
+        assert!(!got["models"].as_array().unwrap().contains(&serde_json::json!("k3")));
+    }
+
+    #[tokio::test]
+    async fn set_model_refuses_a_model_no_source_serves() {
+        let lab = router_with("set-model-unserved", true).await;
+        let session = "6f708192-0000-4000-8000-0000000000aa";
+        let ask = |model: &str| serde_json::json!({ "session": session, "model": model }).to_string();
+        // No session by that id is under a wrapper here, so anything that got past the router's
+        // own check would be answered "only a session under the wrapper", 503.
+        for (model, code) in [("gpt-9", StatusCode::BAD_REQUEST), ("k3", StatusCode::CONFLICT)] {
+            let (status, body) = lab.post("/api/live/model", &ask(model)).await;
+            assert_eq!(status, code, "{model}: {body}");
+            assert_eq!(body["reason"], format!("no source serves the model \"{model}\""), "{model}");
+        }
+        // Claude's aliases and ids are still taken, and reach the session check.
+        for model in ["opus", "sonnet[1m]", "claude-opus-5-5"] {
+            assert_eq!(lab.post("/api/live/model", &ask(model)).await.0, StatusCode::SERVICE_UNAVAILABLE, "{model}");
+        }
+
+        // A hosted router refuses it before the request goes down any machine's tunnel.
+        let hosted = crate::api_refusals::Lab::hosted("set-model-unserved-hosted").await;
+        let (status, body) = hosted.post("/api/live/model", &ask("k3")).await;
+        assert_eq!((status, body["reason"].as_str()), (StatusCode::CONFLICT, Some(r#"no source serves the model "k3""#)), "{body}");
     }
 }

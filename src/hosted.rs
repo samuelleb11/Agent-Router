@@ -56,7 +56,7 @@ pub fn routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
         .route("/api/live/send", post(crate::machines::api::by_body))
         .route("/api/live/interrupt", post(crate::machines::api::by_body))
         .route("/api/live/answer", post(crate::machines::api::by_body))
-        .route("/api/live/model", post(crate::machines::api::by_body))
+        .route("/api/live/model", post(live_model))
         .route("/api/live/effort", post(crate::machines::api::by_body))
         .route("/api/live/mode", post(crate::machines::api::by_body))
         .route("/api/live/aside", post(crate::machines::api::by_body))
@@ -127,6 +127,25 @@ async fn accounts_add(state: State<Arc<AppState>>, JsonBody(req): JsonBody<crate
         return refuse_profile();
     }
     crate::api::accounts_add(state, JsonBody(req)).await.into_response()
+}
+
+/// `POST /api/live/model`: a model nothing serves is refused here, before the request goes
+/// down the tunnel of the machine holding the session; that machine's agent has no catalogue
+/// to ask. Anything else goes on as every other live write does.
+async fn live_model(state: State<Arc<AppState>>, req: axum::extract::Request) -> Response {
+    let (parts, body) = req.into_parts();
+    let Ok(body) = axum::body::to_bytes(body, 64 * 1024).await else {
+        return refuse(StatusCode::PAYLOAD_TOO_LARGE, "that message is too long to send");
+    };
+    let model = serde_json::from_slice::<Value>(&body)
+        .ok()
+        .and_then(|v| v.get("model").and_then(Value::as_str).map(str::to_owned));
+    if let Some(model) = model.filter(|m| crate::live::valid_model(m)) {
+        if let Some(refused) = crate::live::refuse_unserved(&state, &model) {
+            return refused;
+        }
+    }
+    crate::machines::api::by_body(state, axum::extract::Request::from_parts(parts, axum::body::Body::from(body))).await
 }
 
 async fn no_machine() -> Response {

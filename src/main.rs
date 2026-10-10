@@ -565,7 +565,7 @@ fn machine_routes(router: Router<Arc<proxy::AppState>>) -> Router<Arc<proxy::App
         .route("/api/live/answer", post(live::answer))
         .route("/api/live/archive", post(live::archive))
         .route("/api/live/project", get(live::project_stats))
-        .route("/api/live/model", post(live::set_model))
+        .route("/api/live/model", post(live::set_model_checked))
         .route("/api/live/effort", post(live::set_effort))
         .route("/api/live/mode", post(live::set_mode))
         .route("/api/live/aside", post(live::aside))
