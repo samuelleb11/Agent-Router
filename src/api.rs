@@ -1762,7 +1762,7 @@ struct Credential {
 /// like `has_token`, for every account — is read from the router's secrets file.
 fn check_credential(account: &crate::accounts::Account) -> Credential {
     let (ready, detail, expires_at) = match crate::accounts::resolve(account) {
-        Ok(r) => (true, crate::accounts::token_kind(&r.token).to_string(), r.expires_at_ms),
+        Ok(r) => (true, crate::accounts::credential_kind(account.provider, &r.token).to_string(), r.expires_at_ms),
         Err(e) => (false, e.to_string(), 0),
     };
     Credential { ready, detail, expires_at, has_token: crate::accounts::has_token(&account.id) }

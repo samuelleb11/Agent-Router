@@ -901,6 +901,17 @@ pub fn slugify(label: &str) -> String {
     }
 }
 
+/// A credential's kind by its account's provider, safe to show and to log: an Anthropic
+/// token's by its prefix (`token_kind`), a Kimi Code account's as its key, whose form Kimi Code
+/// does not promise. Never any part of the secret.
+pub fn credential_kind(provider: Provider, token: &str) -> &str {
+    match provider {
+        Provider::Kimi if token.trim().is_empty() => "<empty>",
+        Provider::Kimi => "Kimi Code key",
+        Provider::Anthropic => token_kind(token),
+    }
+}
+
 /// The token's family prefix, safe to log. Never log the token itself.
 pub fn token_kind(token: &str) -> &str {
     let t = token.strip_prefix("Bearer ").unwrap_or(token).trim();
@@ -932,6 +943,18 @@ mod tests {
         assert_eq!(token_kind(t), "sk-ant-oat01 (subscription OAuth)");
         assert!(!token_kind(t).contains("SECRET"));
         assert_eq!(token_kind("Bearer sk-ant-api03-x"), "sk-ant-api03 (API key)");
+    }
+
+    /// A Kimi Code key was "<unrecognised>" on its card, as an Anthropic token of no known
+    /// family would be (AGEN-0123).
+    #[test]
+    fn a_kimi_code_key_is_described_as_one() {
+        let key = "sk-kimi-SECRETSECRET";
+        assert_eq!(credential_kind(Provider::Kimi, key), "Kimi Code key");
+        assert!(!credential_kind(Provider::Kimi, key).contains("SECRET"));
+        assert_eq!(credential_kind(Provider::Kimi, " "), "<empty>");
+        assert_eq!(credential_kind(Provider::Anthropic, "sk-ant-oat01-SECRET"), "sk-ant-oat01 (subscription OAuth)");
+        assert_eq!(credential_kind(Provider::Anthropic, "sk-kimi-SECRET"), "<unrecognised>", "an Anthropic account's is still its token's family");
     }
 
     /// A store of its own under the temp directory, opened as the router opens one at start.

@@ -23,7 +23,7 @@ use tokio::sync::mpsc::Sender;
 
 use crate::analyze::analyze_request;
 use crate::capture::{CaptureEvent, Pending, RateLimit, Tee};
-use crate::accounts::{self, token_kind, Provider};
+use crate::accounts::{self, credential_kind, token_kind, Provider};
 use crate::config::Config;
 use crate::db::now_ms;
 
@@ -277,7 +277,7 @@ impl AppState {
             account = %loaded.label,
             provider = loaded.provider.as_str(),
             identity = loaded.identity.as_deref().unwrap_or("-"),
-            credential = token_kind(&loaded.token),
+            credential = credential_kind(loaded.provider, &loaded.token),
             "signing credential resolved"
         );
         held.insert(loaded.account_id.clone(), loaded.clone());
