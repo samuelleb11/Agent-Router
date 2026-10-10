@@ -139,10 +139,37 @@ no date of its own. US dollars per million tokens, as the seed in `src/pricing.r
 
 - `kimi-for-coding` is K2.8 Preview today, upgraded in place, and the page does not list it.
   K2.7 Code is the nearest model it does list, so its figures are an estimate.
+- `kimi-for-coding-highspeed` is K2.7 Code Highspeed, by the Kimi CLI's own name for it
+  (its `config.toml`, 2026-10-10), so its figures are that model's own.
 - The K2 series charges nothing for writing to the cache, so a write is priced as an
   uncached input.
 - A rate is edited in the `pricing` table and survives upgrades. Every request is re-priced
   from it at the next start.
+
+### Measured without a key (2026-10-10)
+
+Asked of `https://api.kimi.ai/coding` with an invalid key and Agent Router's own User-Agent,
+and read from the Kimi CLI's configuration (Kimi Code CLI 2.1.1, signed in to the owner's
+plan), nothing of either credential used:
+
+- **The plan's models** are the four the catalogue lists: `k3` (1M context), `k3-256k`,
+  `kimi-for-coding` ("K2.8 Preview", 1M) and `kimi-for-coding-highspeed` ("K2.7 Code
+  Highspeed", 256K). K3 at 1M and HighSpeed mean a Pro plan or above. The CLI itself talks
+  to `https://api.kimi.ai/coding/v1`, signed in with a 15-minute OAuth token only it renews,
+  which the router cannot sign with: a router account takes a console key.
+- **Routes.** `POST /v1/messages`, `POST /v1/messages/count_tokens`, `GET /v1/models` and
+  `GET /v1/usages` all exist: each refuses the invalid key with 401, where a route that
+  does not exist answers 404 `resource_not_found_error`. `/v1/usages` answers the router's
+  own User-Agent, so the note that it answered 404 to anything but Kimi's CLI no longer
+  holds, at least for reaching it.
+- **Both auth headers are read**: `x-api-key` and `Authorization: Bearer` each get the same
+  invalid-key refusal. Which one a valid console key needs is still to measure.
+- **Error bodies are not Anthropic's shape.** `{"error":{"message":"The API Key appears to
+  be invalid or may have expired. …","type":"invalid_authentication_error"}}` has no
+  top-level `"type":"error"`, which is what capture looks for before it records an error's
+  message (`SseScanner::absorb_json_body`). AGEN-0088 reads the message without it.
+- **No `request-id`.** A response carries `x-trace-id` instead, and none of Anthropic's
+  `anthropic-ratelimit-*` headers.
 
 ### Still to measure
 
