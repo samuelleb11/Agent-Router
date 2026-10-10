@@ -1026,13 +1026,10 @@ fn install_if_different(installed: &Path, bytes: &[u8], try_run: fn(&Path) -> Re
 /// Run a binary with `--build`: it must answer within ten seconds, exit 0, and say a build.
 /// This catches a binary for another architecture, or one macOS will not start.
 fn try_run(path: &Path) -> Result<String> {
-    let mut child = std::process::Command::new(path)
-        .arg("--build")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .with_context(|| format!("starting {}", path.display()))?;
+    let mut run = std::process::Command::new(path);
+    run.arg("--build").stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
+    // Just written: busy for as long as a fork elsewhere still holds it open.
+    let mut child = crate::setup::spawn_when_free(&mut run).with_context(|| format!("starting {}", path.display()))?;
     let deadline = Instant::now() + Duration::from_secs(10);
     let status = loop {
         if let Some(status) = child.try_wait()? {

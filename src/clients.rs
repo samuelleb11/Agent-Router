@@ -196,7 +196,7 @@ fn ask_version(cli: &Path) -> Option<String> {
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
-    let mut child = cmd.spawn().ok()?;
+    let mut child = crate::setup::spawn_when_free(&mut cmd).ok()?;
     let deadline = Instant::now() + VERSION_WAIT;
     loop {
         match child.try_wait() {

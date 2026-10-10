@@ -126,6 +126,30 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+/// How many times a busy program is tried again, 20 ms apart: a second in all.
+const BUSY_TRIES: u32 = 50;
+
+/// Start a program, trying again while it is busy. On Linux a program cannot be started while
+/// any process holds it open for writing, and a fork made by another thread between a write
+/// and its close holds it until that child execs (AGEN-0122). Any other failure is said at
+/// once.
+pub(crate) fn spawn_when_free(cmd: &mut std::process::Command) -> std::io::Result<std::process::Child> {
+    when_free(|| cmd.spawn())
+}
+
+fn when_free<T>(mut start: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
+    let mut tries = 0;
+    loop {
+        match start() {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && tries < BUSY_TRIES => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            done => return done,
+        }
+    }
+}
+
 pub(crate) fn write_atomic(path: &Path, text: impl AsRef<[u8]>) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -1515,6 +1539,31 @@ mod autostart_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_busy_program_is_started_again_once_free() {
+        use std::io::{Error, ErrorKind};
+        let mut calls = 0;
+        let started = when_free(|| {
+            calls += 1;
+            if calls <= 2 { Err(Error::from(ErrorKind::ExecutableFileBusy)) } else { Ok("started") }
+        });
+        assert_eq!((started.unwrap(), calls), ("started", 3));
+
+        let mut calls = 0;
+        let missing = when_free(|| -> std::io::Result<()> {
+            calls += 1;
+            Err(Error::from(ErrorKind::NotFound))
+        });
+        assert_eq!((missing.unwrap_err().kind(), calls), (ErrorKind::NotFound, 1), "any other failure at once");
+
+        let mut calls = 0;
+        let stuck = when_free(|| -> std::io::Result<()> {
+            calls += 1;
+            Err(Error::from(ErrorKind::ExecutableFileBusy))
+        });
+        assert_eq!((stuck.unwrap_err().kind(), calls), (ErrorKind::ExecutableFileBusy, BUSY_TRIES + 1), "within a bound");
+    }
 
     fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("ar-setup-{name}-{}", now_ms()));
