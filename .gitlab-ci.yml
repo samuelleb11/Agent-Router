@@ -59,6 +59,15 @@ variables:
   DEPLOYMENT_ENV: production
   DEPLOYMENT_NAME: agent-router
 
+# A push to `dev` runs the checks its change needs and nothing else; the release (every
+# platform's build, the image, its tag and the chart) waits behind `package`, pressed when a
+# `dev` build is wanted. On `main`, a `v*` tag and a merge request the release runs by itself.
+# A newer push cancels the older pipeline: every job is interruptible but the ones that tag,
+# publish and deploy. (AGEN-0120: a push to `dev` took 20 to 27 minutes, nearly all of it the
+# release.)
+default:
+  interruptible: true
+
 # One pipeline per change: the merge request's, or the branch's when there is none, and a
 # tag's. Without this a push to a branch with an open merge request runs everything twice.
 workflow:
@@ -77,6 +86,40 @@ workflow:
     - if: $CI_COMMIT_BRANCH == "main"
     - if: $CI_COMMIT_BRANCH == "dev"
 
+# The Rust checks, on `dev` only when what they read changed: the crates, their fixtures and
+# skills, the scripts they run, and the console sources and public files src/console/tests.rs
+# reads.
+.rules-rust-check:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_BRANCH == "dev"
+      changes:
+        - src/**/*
+        - Cargo.toml
+        - Cargo.lock
+        - build.rs
+        - wrapper/**/*
+        - fixtures/**/*
+        - skills/**/*
+        - scripts/**/*
+        - ui/src/**/*
+        - ui/public/**/*
+        - .gitlab-ci.yml
+
+# The console's checks, on `dev` only when the console, the contracts its specs read and the
+# shared fixtures changed.
+.rules-console-check:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_BRANCH == "dev"
+      changes:
+        - ui/**/*
+        - docs/**/*
+        - fixtures/**/*
+        - .gitlab-ci.yml
+
 # The branches that publish, and the Helm channel each publishes to.
 .rules-publish:
   rules:
@@ -91,7 +134,7 @@ workflow:
 
 check rust:
   stage: check
-  extends: .rules-agent-router
+  extends: .rules-rust-check
   image: rust:1.98-bookworm
   cache:
     key:
@@ -222,9 +265,9 @@ build:ui:
 # timed out in Northstar's pipeline.
 check console:
   stage: check
-  extends: .rules-agent-router
+  extends: .rules-console-check
   image: node:22
-  needs: ["check rust", "build:ui"]
+  needs: [{job: "check rust", optional: true}, "build:ui"]
   before_script:
     - npm i -g pnpm@10.33.0
   script:
@@ -237,6 +280,22 @@ check console:
     - pnpm run notices:check
 
 # ---------------------------------------------------------------- build
+
+# The release's gate. On `dev` it waits to be pressed (allowed to stay unpressed, so a push's
+# pipeline passes on its checks alone); everywhere else it passes at once. Every platform's
+# build needs it, and the image, its tag and the chart need those, so pressing it builds and
+# publishes this commit as every push to `dev` used to.
+package:
+  stage: build
+  needs: []
+  image: alpine:3.22
+  rules:
+    - if: $CI_COMMIT_BRANCH == "dev"
+      when: manual
+      allow_failure: true
+    - when: on_success
+  script:
+    - echo "releasing $CI_COMMIT_SHORT_SHA"
 
 # The image builds its own console and router, and carries the machine agent the router
 # hands out (src/downloads.rs): every platform's agent and editor package, from the build
@@ -258,7 +317,7 @@ build docker image:
 # them. Named so that no hidden job in the shared templates can merge into it.
 .vsix-build:
   stage: build
-  needs: ["build:ui"]
+  needs: ["build:ui", "package"]
   rules:
     - when: on_success
   cache:
@@ -317,6 +376,7 @@ build:windows:
 # On `dev` too: the chart published from `dev` names this tag, not the moving `dev` one.
 tag docker image with commit:
   stage: tag
+  interruptible: false
   extends:
     - .docker-setup
     - .rules-publish
@@ -325,6 +385,7 @@ tag docker image with commit:
     - docker buildx imagetools create --tag "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA" "$IMAGE_TAG"
 
 tag docker image with latest:
+  interruptible: false
   extends:
     - .docker-tag-latest
     - .rules-main
@@ -341,8 +402,9 @@ tag docker image with latest:
 # imagePullSecrets, as the deploy's AGENT_ROUTER_VALUES gives it.
 publish chart:
   stage: publish
+  interruptible: false
   extends: .rules-publish
-  needs: [tag docker image with commit, check rust, check chart]
+  needs: [tag docker image with commit, {job: "check rust", optional: true}, check chart]
   image:
     name: alpine/helm:4.3.0
     entrypoint: [""]
@@ -359,6 +421,7 @@ publish chart:
 
 deploy to production:
   stage: deploy
+  interruptible: false
   # `$CI_COMMIT_BRANCH`, where the shared `.rules-main` reads `$CI_COMMIT_REF_NAME`: that is
   # `main` too in a merge request FROM main (main merged back into dev), whose pipeline has
   # no commit tag for this job to need, and GitLab would then refuse to create it.
@@ -388,6 +451,7 @@ deploy to production:
 
 release:
   stage: release
+  interruptible: false
   image: registry.gitlab.com/gitlab-org/release-cli:latest
   rules:
     - if: $CI_COMMIT_TAG =~ /^v/
@@ -406,6 +470,7 @@ release:
 
 publish:
   stage: release
+  interruptible: false
   image: node:22
   rules:
     - if: $CI_COMMIT_TAG =~ /^v/ && ($VSCE_PAT || $OVSX_PAT)
