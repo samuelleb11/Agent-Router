@@ -440,7 +440,7 @@ fn summary_parts_of(conn: &Connection, f: &Filter, parts: &[&str]) -> anyhow::Re
                     started_at
              FROM requests
              WHERE rl_status IS NOT NULL
-               AND account_id = (SELECT id FROM accounts WHERE active = 1 LIMIT 1)
+               AND account_id = (SELECT id FROM accounts WHERE active = 1 AND provider = 'anthropic' LIMIT 1)
              ORDER BY started_at DESC LIMIT 1",
             &[],
         )?;
@@ -450,7 +450,7 @@ fn summary_parts_of(conn: &Connection, f: &Filter, parts: &[&str]) -> anyhow::Re
         let account = one(
             conn,
             "SELECT id, label, email, org_name, subscription_type
-             FROM accounts WHERE active = 1 LIMIT 1",
+             FROM accounts WHERE active = 1 AND provider = 'anthropic' LIMIT 1",
             &[],
         )?;
         out.insert("account".into(), account);
@@ -652,7 +652,7 @@ fn summary_parts_of(conn: &Connection, f: &Filter, parts: &[&str]) -> anyhow::Re
                      FROM requests
                      WHERE rl_status IS NOT NULL
                        AND started_at >= ?3 AND started_at <= ?4
-                       AND account_id = (SELECT id FROM accounts WHERE active = 1 LIMIT 1)
+                       AND account_id = (SELECT id FROM accounts WHERE active = 1 AND provider = 'anthropic' LIMIT 1)
                      GROUP BY t ORDER BY t",
                     &[&tz_ms, &bucket, &start, &end],
                 )?
@@ -1460,7 +1460,7 @@ fn global_rollup(accounts: &[Value], now: i64) -> Value {
 // and 500 only for the router failing. They all answered 500 once, refusals included, so a
 // client could not tell a name already taken from a disk that would not write.
 
-use crate::accounts::{Conflict, Source, Store};
+use crate::accounts::{Conflict, Provider, Source, Store};
 use crate::refusal::{failed, refuse, JsonBody};
 
 /// What an accounts write the store did not make answers: 409 and its words when the
@@ -1491,8 +1491,38 @@ fn failure(e: impl std::fmt::Display) -> Unmade {
 pub struct AddAccount {
     pub label: String,
     pub source: String,
-    /// Required for `token` accounts: the value `claude setup-token` printed.
+    /// Required for `token` accounts: the value `claude setup-token` printed, or a Kimi
+    /// Code console key.
     pub token: Option<String>,
+    /// `anthropic` when absent: every client before there was a second provider sends none.
+    pub provider: Option<String>,
+    /// Where a Kimi Code account's requests go, when not to its provider's default.
+    pub base_url: Option<String>,
+}
+
+/// The base URL an account of `provider` is stored with, from the one an add gave, or why
+/// that one cannot be. Kimi Code's default is stored rather than left implicit, so the host
+/// a key was added for is the host it keeps signing for.
+fn base_url_for(provider: Provider, given: Option<&str>) -> Result<Option<String>, String> {
+    let given = given.map(str::trim).filter(|u| !u.is_empty());
+    match (provider.default_base_url(), given) {
+        (None, None) => Ok(None),
+        (None, Some(_)) => Err(format!(
+            "an {} account goes to the router's own upstream, and takes no base URL",
+            provider.name()
+        )),
+        (Some(default), None) => Ok(Some(default.to_string())),
+        (Some(_), Some(url)) => {
+            let url = url.trim_end_matches('/');
+            let parsed: Option<axum::http::Uri> = url.parse().ok();
+            match parsed {
+                Some(uri) if uri.scheme_str() == Some("https") && uri.authority().is_some() => {
+                    Ok(Some(url.to_string()))
+                }
+                _ => Err(format!("{url:?} is not an https:// address")),
+            }
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -1527,7 +1557,8 @@ fn looks_like_email(s: &str) -> bool {
 ///
 /// What the edit carries is checked first, against nothing the store holds (400); then
 /// the account it names, which may be gone or may not be the router's to give a token
-/// (409).
+/// (409). A new credential is checked once the account is read, against its provider's
+/// format (400): an Anthropic token and a Kimi Code key look nothing alike.
 pub async fn accounts_edit(
     State(state): State<Arc<AppState>>,
     JsonBody(req): JsonBody<AccountEdit>,
@@ -1540,21 +1571,6 @@ pub async fn accounts_edit(
         }
     }
     let token = req.token.as_deref().map(str::trim).filter(|t| !t.is_empty()).map(str::to_owned);
-    if let Some(token) = &token {
-        if token.starts_with("sk-ant-sid") {
-            return refuse(
-                StatusCode::BAD_REQUEST,
-                "that is a claude.ai session key — it belongs in the session-key field, \
-                 and cannot sign API requests",
-            );
-        }
-        if !token.starts_with("sk-ant-") {
-            return refuse(
-                StatusCode::BAD_REQUEST,
-                "expected a token starting sk-ant- (from `claude setup-token`)",
-            );
-        }
-    }
 
     let store = Store::new(state.config.db_path.clone());
     let id = req.id.clone();
@@ -1565,6 +1581,11 @@ pub async fn accounts_edit(
         // Rotating the credential: replace it in the secrets file, in place, so the
         // account keeps its id and everything recorded against it.
         if let Some(token) = token {
+            // Whose format a credential must have is the account's provider's, so it is
+            // read before the credential is judged.
+            if let Some(why) = account.provider.key_problem(&token) {
+                return Err((StatusCode::BAD_REQUEST, why.to_string()));
+            }
             if account.source != Source::Token {
                 return Err((
                     StatusCode::CONFLICT,
@@ -1666,8 +1687,8 @@ where
         let conn = reads.get()?;
         rows(
             &conn,
-            "SELECT id, label, source, profile_dir, email, org_name, subscription_type,
-                    active, created_at, coalesce(usage_key, 0) AS usage_key
+            "SELECT id, label, source, provider, base_url, profile_dir, email, org_name,
+                    subscription_type, active, created_at, coalesce(usage_key, 0) AS usage_key
              FROM accounts ORDER BY created_at",
             &[],
         )?
@@ -1687,6 +1708,9 @@ where
                 obj.get("source").and_then(Value::as_str).unwrap_or("keychain"),
             )
             .unwrap_or(crate::accounts::Source::Keychain),
+            provider: Provider::parse(obj.get("provider").and_then(Value::as_str).unwrap_or("anthropic"))
+                .unwrap_or(Provider::Anthropic),
+            base_url: obj.get("base_url").and_then(Value::as_str).map(str::to_owned),
             profile_dir: obj
                 .get("profile_dir")
                 .and_then(Value::as_str)
@@ -1747,6 +1771,28 @@ pub async fn accounts_add(
         (Source::Token, token) => token,
         (Source::Profile, _) => None,
     };
+    let provider = match req.provider.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+        None => Provider::Anthropic,
+        Some(p) => match Provider::parse(p) {
+            Ok(provider) => provider,
+            Err(e) => return refuse(StatusCode::BAD_REQUEST, e.to_string()),
+        },
+    };
+    // A Claude Code login and a profile are Anthropic's; every other provider's account is
+    // a key pasted in, kept as a setup-token is.
+    if provider != Provider::Anthropic && source != Source::Token {
+        return refuse(
+            StatusCode::BAD_REQUEST,
+            format!("a {} account is added from its key, as a token account", provider.name()),
+        );
+    }
+    if let Some(why) = token.as_deref().and_then(|t| provider.key_problem(t)) {
+        return refuse(StatusCode::BAD_REQUEST, why);
+    }
+    let base_url = match base_url_for(provider, req.base_url.as_deref()) {
+        Ok(url) => url,
+        Err(why) => return refuse(StatusCode::BAD_REQUEST, why),
+    };
     let id = crate::accounts::slugify(&req.label);
     let store = Store::new(state.config.db_path.clone());
 
@@ -1761,7 +1807,7 @@ pub async fn accounts_add(
                     ..Default::default()
                 };
                 // The token is stored by `add`, and only once the id is known to be free.
-                store.add(&id, &req.label, source, None, &status, || {
+                store.add(&id, &req.label, source, provider, base_url.as_deref(), None, &status, || {
                     crate::accounts::store_token(&id, &token)
                 })?;
                 Ok(json!({ "id": id, "ready": true }))
@@ -1774,7 +1820,7 @@ pub async fn accounts_add(
                 let dir = crate::accounts::profiles_root()?.join(&id);
                 std::fs::create_dir_all(&dir)?;
                 let status = crate::accounts::probe_profile(Some(&dir)).unwrap_or_default();
-                store.add(&id, &req.label, source, Some(&dir.to_string_lossy()), &status, || Ok(()))?;
+                store.add(&id, &req.label, source, provider, None, Some(&dir.to_string_lossy()), &status, || Ok(()))?;
                 Ok(json!({
                     "id": id,
                     "ready": status.logged_in,
@@ -2490,5 +2536,118 @@ mod tests {
             assert_eq!(row["has_token"], source == "token", "{source}");
             assert_eq!(row["expires_at"], 0, "{source}");
         }
+    }
+
+    #[tokio::test]
+    async fn the_accounts_list_names_each_provider() {
+        let store = store("accounts-providers");
+        store
+            .conn
+            .execute_batch(
+                "INSERT INTO accounts (id, label, source, active, created_at)
+                 VALUES ('default', 'me@example.com', 'keychain', 1, 1);
+                 INSERT INTO accounts (id, label, source, provider, base_url, active, created_at)
+                 VALUES ('kimi', 'Kimi', 'token', 'kimi', 'https://api.kimi.ai/coding', 1, 2);",
+            )
+            .unwrap();
+        let unchecked = |_: &Account| -> Credential { unreachable!("nothing asked for a check") };
+        let list = accounts_of(&store.reads, &AccountsQuery { probe: None }, unchecked).await.unwrap();
+        let list = list.as_array().unwrap();
+        assert_eq!(list.len(), 2);
+        assert_eq!((&list[0]["provider"], &list[0]["base_url"]), (&json!("anthropic"), &Value::Null));
+        assert_eq!(
+            (&list[1]["provider"], &list[1]["base_url"]),
+            (&json!("kimi"), &json!("https://api.kimi.ai/coding"))
+        );
+        assert_eq!((&list[0]["active"], &list[1]["active"]), (&json!(1), &json!(1)), "one active account per provider");
+    }
+
+    /// Not a credential: no Kimi Code key looks like this.
+    const KIMI_KEY: &str = "sk-kimi-test-0123456789abcdefghijklmnopqrstuvwxyz";
+
+    /// Add `label` as a Kimi Code account through the API, and read it back from the store.
+    async fn add_kimi(lab: &crate::api_refusals::Lab, label: &str, base_url: Option<&str>) -> Account {
+        let mut body = json!({ "label": label, "source": "token", "provider": "kimi", "token": KIMI_KEY });
+        if let Some(url) = base_url {
+            body["base_url"] = json!(url);
+        }
+        let (status, added) = lab.post("/api/accounts", &body.to_string()).await;
+        assert_eq!(status, StatusCode::OK, "{added}");
+        let id = added["id"].as_str().unwrap().to_string();
+        let account = crate::accounts::Store::new(lab.state.config.db_path.clone()).get(&id).unwrap().unwrap();
+        assert_eq!(account.provider, Provider::Kimi);
+        assert_eq!(account.source, Source::Token, "kept as a setup-token is");
+        assert_eq!(crate::accounts::resolve(&account).unwrap().token, KIMI_KEY, "it signs with the key it was given");
+        account
+    }
+
+    #[tokio::test]
+    async fn a_kimi_account_is_added_from_its_key_locally() {
+        let lab = crate::api_refusals::Lab::local("kimi-local");
+        let kimi = add_kimi(&lab, "Kimi local", None).await;
+        assert_eq!(kimi.base_url.as_deref(), Some("https://api.kimi.ai/coding"), "its provider's default, stored");
+        let store = crate::accounts::Store::new(lab.state.config.db_path.clone());
+        assert_eq!(store.active_for(Provider::Kimi).unwrap().id, "kimi-local", "the first of its provider");
+
+        // Kimi Code's China host, given with the slash its guide puts on the end.
+        let china = add_kimi(&lab, "Kimi local China", Some("https://api.kimi.com/coding/")).await;
+        assert_eq!(china.base_url.as_deref(), Some("https://api.kimi.com/coding"));
+        assert_eq!(store.active_for(Provider::Kimi).unwrap().id, "kimi-local", "a second one waits its turn");
+    }
+
+    #[tokio::test]
+    async fn a_kimi_account_is_added_from_its_key_on_a_hosted_router() {
+        let lab = crate::api_refusals::Lab::hosted("kimi-hosted").await;
+        add_kimi(&lab, "Kimi hosted", None).await;
+        let store = crate::accounts::Store::new(lab.state.config.db_path.clone());
+        assert_eq!(store.active_for(Provider::Kimi).unwrap().id, "kimi-hosted");
+        assert!(store.active().is_err(), "a Kimi Code key never becomes what Claude's requests are signed with");
+        let (status, body) = lab.post("/api/accounts/activate", r#"{"id":"kimi-hosted"}"#).await;
+        assert_eq!(status, StatusCode::OK, "a hosted router signs with pasted keys, and this is one: {body}");
+    }
+
+    #[tokio::test]
+    async fn a_key_is_checked_against_its_providers_format() {
+        use crate::api_refusals::{words, Lab};
+        let lab = Lab::local("key-format");
+        let kimi_wants = "that is an Anthropic token — a Kimi Code account takes a key from the Kimi Code console";
+        for (body, said) in [
+            (json!({ "label": "kimi-format", "source": "token", "provider": "kimi", "token": "sk-ant-oat01-abc" }), kimi_wants),
+            (
+                json!({ "label": "claude-format", "source": "token", "token": KIMI_KEY }),
+                "expected a token starting sk-ant- (from `claude setup-token`)",
+            ),
+            (
+                json!({ "label": "claude-format", "source": "token", "provider": "anthropic", "token": "sk-ant-sid01-abc" }),
+                "that is a claude.ai session key — it belongs in the session-key field, and cannot sign API requests",
+            ),
+            (
+                json!({ "label": "kimi-format", "source": "profile", "provider": "kimi" }),
+                "a Kimi Code account is added from its key, as a token account",
+            ),
+            (json!({ "label": "kimi-format", "source": "token", "provider": "openai", "token": KIMI_KEY }), r#"unknown provider "openai""#),
+            (
+                json!({ "label": "kimi-format", "source": "token", "provider": "kimi", "token": KIMI_KEY, "base_url": "http://api.kimi.ai/coding" }),
+                r#""http://api.kimi.ai/coding" is not an https:// address"#,
+            ),
+            (
+                json!({ "label": "claude-format", "source": "token", "token": "sk-ant-oat01-abc", "base_url": "https://example.com" }),
+                "an Anthropic account goes to the router's own upstream, and takes no base URL",
+            ),
+        ] {
+            assert_eq!(words(lab.post("/api/accounts", &body.to_string()).await, StatusCode::BAD_REQUEST), said, "{body}");
+        }
+        let store = crate::accounts::Store::new(lab.state.config.db_path.clone());
+        for id in ["kimi-format", "claude-format"] {
+            assert!(store.get(id).unwrap().is_none(), "{id}: nothing refused was stored");
+        }
+
+        // A new credential for an account is held to that account's provider's format.
+        let kimi = add_kimi(&lab, "Kimi rotate", None).await;
+        let rotate = |token: &str| json!({ "id": kimi.id, "token": token }).to_string();
+        assert_eq!(words(lab.post("/api/accounts/edit", &rotate("sk-ant-oat01-abc")).await, StatusCode::BAD_REQUEST), kimi_wants);
+        assert_eq!(crate::accounts::resolve(&kimi).unwrap().token, KIMI_KEY, "the refused one was not stored");
+        assert_eq!(lab.post("/api/accounts/edit", &rotate("sk-kimi-rotated")).await.0, StatusCode::OK);
+        assert_eq!(crate::accounts::resolve(&kimi).unwrap().token, "sk-kimi-rotated");
     }
 }

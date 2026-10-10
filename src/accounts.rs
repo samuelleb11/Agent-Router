@@ -53,11 +53,82 @@ impl Source {
     }
 }
 
+/// The service an account belongs to. It fixes where the account's requests go, how they
+/// are signed, how its quota is read and what a spent limit looks like
+/// (docs/sources-and-models.md). Where the credential is kept is `Source`, which says
+/// nothing about this: a Kimi Code key is kept as a setup-token is, `Source::Token`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Provider {
+    Anthropic,
+    /// Kimi Code, Moonshot's coding subscription, through its Anthropic-compatible endpoint.
+    Kimi,
+}
+
+impl Provider {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Provider::Anthropic => "anthropic",
+            Provider::Kimi => "kimi",
+        }
+    }
+
+    pub fn parse(s: &str) -> Result<Self> {
+        match s {
+            "anthropic" => Ok(Provider::Anthropic),
+            "kimi" => Ok(Provider::Kimi),
+            other => Err(anyhow!("unknown provider {other:?}")),
+        }
+    }
+
+    /// The provider's name as the dashboard and the phones write it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Provider::Anthropic => "Anthropic",
+            Provider::Kimi => "Kimi Code",
+        }
+    }
+
+    /// Where an account of this provider sends its requests when it names no base URL of
+    /// its own. An Anthropic account has none here: it goes to the router's `upstream`.
+    pub fn default_base_url(self) -> Option<&'static str> {
+        match self {
+            Provider::Anthropic => None,
+            Provider::Kimi => Some("https://api.kimi.ai/coding"),
+        }
+    }
+
+    /// Why `key` cannot be this provider's credential, if it cannot. A key pasted into the
+    /// wrong provider's field would otherwise be stored, and refused upstream at every
+    /// request it signed.
+    pub fn key_problem(self, key: &str) -> Option<&'static str> {
+        match self {
+            Provider::Anthropic if key.starts_with("sk-ant-sid") => Some(
+                "that is a claude.ai session key — it belongs in the session-key field, \
+                 and cannot sign API requests",
+            ),
+            Provider::Anthropic if !key.starts_with("sk-ant-") => {
+                Some("expected a token starting sk-ant- (from `claude setup-token`)")
+            }
+            Provider::Kimi if key.starts_with("sk-ant-") => Some(
+                "that is an Anthropic token — a Kimi Code account takes a key from the \
+                 Kimi Code console",
+            ),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Account {
     pub id: String,
     pub label: String,
     pub source: Source,
+    pub provider: Provider,
+    /// Where this account's requests go, when not its provider's default. Always `None`
+    /// for an Anthropic account.
+    #[cfg_attr(not(test), expect(dead_code, reason = "read by the proxy once requests are routed by their model (AGEN-0084)"))]
+    pub base_url: Option<String>,
     pub profile_dir: Option<String>,
     /// The identity this account was recorded as. For a Keychain account this is
     /// checked before signing: `/login` rewrites that Keychain entry in place, so the
@@ -526,13 +597,23 @@ impl Store {
         Ok(rusqlite::Connection::open(&self.path)?)
     }
 
+    /// The active Anthropic account: the one every request is signed with until requests
+    /// are routed by their model (docs/sources-and-models.md).
     pub fn active(&self) -> Result<Account> {
+        self.active_for(Provider::Anthropic)
+    }
+
+    /// The account `provider`'s requests go to when nothing else is chosen. Each provider
+    /// has its own, so making a Kimi Code account active leaves the Claude account active.
+    pub fn active_for(&self, provider: Provider) -> Result<Account> {
         let account = self
             .conn()?
             .query_row(
-                "SELECT id, label, source, profile_dir, email FROM accounts
-                 WHERE active = 1 ORDER BY created_at LIMIT 1",
-                [],
+                &format!(
+                    "SELECT {ACCOUNT_COLUMNS} FROM accounts
+                     WHERE active = 1 AND provider = ?1 ORDER BY created_at LIMIT 1"
+                ),
+                [provider.as_str()],
                 account_row,
             )
             .optional()?;
@@ -545,7 +626,7 @@ impl Store {
     pub fn get(&self, id: &str) -> Result<Option<Account>> {
         self.conn()?
             .query_row(
-                "SELECT id, label, source, profile_dir, email FROM accounts WHERE id = ?1",
+                &format!("SELECT {ACCOUNT_COLUMNS} FROM accounts WHERE id = ?1"),
                 [id],
                 account_row,
             )
@@ -583,25 +664,30 @@ impl Store {
     /// first, as this once did, wrote it over the holder's before anything had looked.
     /// When the credential cannot be stored, the row comes out again: an account with
     /// nothing behind it would only fail every request it signed.
+    #[allow(clippy::too_many_arguments)]
     pub fn add(
         &self,
         id: &str,
         label: &str,
         source: Source,
+        provider: Provider,
+        base_url: Option<&str>,
         profile_dir: Option<&str>,
         status: &AuthStatus,
         credential: impl FnOnce() -> Result<()>,
     ) -> Result<()> {
         let conn = self.conn()?;
         let added = conn.execute(
-            "INSERT INTO accounts (id, label, source, profile_dir, email, org_name,
-                                   subscription_type, active, created_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,0,?8)
+            "INSERT INTO accounts (id, label, source, provider, base_url, profile_dir, email,
+                                   org_name, subscription_type, active, created_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,0,?10)
              ON CONFLICT(id) DO NOTHING",
             rusqlite::params![
                 id,
                 label,
                 source.as_str(),
+                provider.as_str(),
+                base_url,
                 profile_dir,
                 status.email,
                 status.org_name,
@@ -618,8 +704,9 @@ impl Store {
             return Err(e);
         }
         // Never leave the router with nothing to sign with: the first account a store
-        // gets is the one it signs with. Locally the discovered default always holds
-        // that place, so this matters to a hosted router, whose store starts empty. Only
+        // gets of a provider is the one that provider's requests go to. Locally the
+        // discovered default always holds Anthropic's place, so this matters to a hosted
+        // router, whose store starts empty, and to every provider's first account. Only
         // now, with the credential stored, so it never signs from an empty entry.
         conn_activate_if_none(&conn, id)?;
         Ok(())
@@ -654,13 +741,16 @@ impl Store {
         Ok(())
     }
 
-    /// Exactly one account is active; switching is a single transaction.
+    /// Exactly one account of each provider is active; switching is a single transaction,
+    /// and touches only the provider of the account switched to.
     pub fn activate(&self, id: &str) -> Result<()> {
         let mut conn = self.conn()?;
         let tx = conn.transaction()?;
-        let n = tx.execute("UPDATE accounts SET active = 0 WHERE active = 1", [])?;
-        let _ = n;
-        let hit = tx.execute("UPDATE accounts SET active = 1 WHERE id = ?1", [id])?;
+        let hit = tx.execute(
+            "UPDATE accounts SET active = (id = ?1)
+              WHERE provider = (SELECT provider FROM accounts WHERE id = ?1)",
+            [id],
+        )?;
         if hit == 0 {
             return Err(Conflict::NoAccount(id.to_string()).into());
         }
@@ -670,22 +760,20 @@ impl Store {
 
     pub fn remove(&self, id: &str) -> Result<()> {
         let conn = self.conn()?;
-        let was_active: bool = conn
-            .query_row("SELECT active FROM accounts WHERE id = ?1", [id], |r| {
-                r.get::<_, i64>(0)
+        let was_active: Option<String> = conn
+            .query_row("SELECT provider FROM accounts WHERE id = ?1 AND active = 1", [id], |r| {
+                r.get(0)
             })
-            .optional()?
-            .map(|v| v == 1)
-            .unwrap_or(false);
+            .optional()?;
         conn.execute("DELETE FROM accounts WHERE id = ?1", [id])?;
         let _ = forget_token(id);
         let _ = forget_usage_token(id);
-        if was_active {
-            // Never leave the router with nothing to sign with.
+        if let Some(provider) = was_active {
+            // Never leave a provider with nothing to sign with while it has an account.
             conn.execute(
                 "UPDATE accounts SET active = 1 WHERE id =
-                   (SELECT id FROM accounts ORDER BY created_at LIMIT 1)",
-                [],
+                   (SELECT id FROM accounts WHERE provider = ?1 ORDER BY created_at LIMIT 1)",
+                [provider],
             )?;
         }
         Ok(())
@@ -695,25 +783,32 @@ impl Store {
 fn conn_activate_if_none(conn: &rusqlite::Connection, id: &str) -> Result<()> {
     conn.execute(
         "UPDATE accounts SET active = 1
-          WHERE id = ?1 AND NOT EXISTS (SELECT 1 FROM accounts WHERE active = 1)",
+          WHERE id = ?1 AND NOT EXISTS (
+            SELECT 1 FROM accounts o
+             WHERE o.active = 1 AND o.provider = (SELECT provider FROM accounts WHERE id = ?1))",
         [id],
     )?;
     Ok(())
 }
 
-/// One row as `SELECT id, label, source, profile_dir, email` reads it.
-type AccountRow = (String, String, Option<String>, Option<String>, Option<String>);
+/// What every read of an account selects, in the order `account_row` takes it.
+const ACCOUNT_COLUMNS: &str = "id, label, source, provider, base_url, profile_dir, email";
+
+/// One row as `SELECT {ACCOUNT_COLUMNS}` reads it.
+type AccountRow = (String, String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>);
 
 fn account_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<AccountRow> {
-    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?))
 }
 
 impl Account {
-    fn from_row((id, label, source, profile_dir, email): AccountRow) -> Result<Self> {
+    fn from_row((id, label, source, provider, base_url, profile_dir, email): AccountRow) -> Result<Self> {
         Ok(Account {
             id,
             label,
             source: Source::parse(source.as_deref().unwrap_or("keychain"))?,
+            provider: Provider::parse(provider.as_deref().unwrap_or("anthropic"))?,
+            base_url,
             profile_dir,
             email,
         })
@@ -828,5 +923,106 @@ mod tests {
         assert_eq!(token_kind(t), "sk-ant-oat01 (subscription OAuth)");
         assert!(!token_kind(t).contains("SECRET"));
         assert_eq!(token_kind("Bearer sk-ant-api03-x"), "sk-ant-api03 (API key)");
+    }
+
+    /// A store of its own under the temp directory, opened as the router opens one at start.
+    struct Scratch {
+        dir: PathBuf,
+        path: PathBuf,
+    }
+
+    impl Scratch {
+        fn new(tag: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("ar-accounts-{tag}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            Self { path: dir.join("agent-router.db"), dir }
+        }
+
+        /// Open the store as a start of the router does, and hand back its accounts.
+        fn start(&self) -> Store {
+            crate::db::Db::open(&self.path).unwrap();
+            Store::new(self.path.clone())
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    fn add(store: &Store, id: &str, provider: Provider, base_url: Option<&str>) {
+        store
+            .add(id, id, Source::Token, provider, base_url, None, &AuthStatus::default(), || Ok(()))
+            .unwrap();
+    }
+
+    #[test]
+    fn an_account_carries_its_provider_and_base_url() {
+        let scratch = Scratch::new("provider");
+        let store = scratch.start();
+        add(&store, "work", Provider::Anthropic, None);
+        add(&store, "kimi", Provider::Kimi, Some("https://api.kimi.com/coding"));
+
+        // Read again by a router started over the same store.
+        let store = scratch.start();
+        let work = store.get("work").unwrap().unwrap();
+        assert_eq!((work.provider, work.base_url), (Provider::Anthropic, None));
+        let kimi = store.get("kimi").unwrap().unwrap();
+        assert_eq!(kimi.provider, Provider::Kimi);
+        assert_eq!(kimi.base_url.as_deref(), Some("https://api.kimi.com/coding"));
+        assert_eq!(kimi.source, Source::Token, "a Kimi Code key is kept as a setup-token is");
+    }
+
+    #[test]
+    fn an_account_stored_before_providers_reads_as_anthropic() {
+        let scratch = Scratch::new("before-providers");
+        // The accounts table as it was before there was a second provider.
+        let conn = rusqlite::Connection::open(&scratch.path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE accounts (
+                id TEXT PRIMARY KEY, label TEXT NOT NULL, source TEXT NOT NULL DEFAULT 'keychain',
+                profile_dir TEXT, email TEXT, org_name TEXT, subscription_type TEXT,
+                active INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL);
+             INSERT INTO accounts (id, label, source, active, created_at)
+             VALUES ('default', 'Claude Code', 'keychain', 1, 1), ('work', 'Work', 'token', 0, 2);",
+        )
+        .unwrap();
+        drop(conn);
+
+        let store = scratch.start();
+        for id in ["default", "work"] {
+            let account = store.get(id).unwrap().unwrap();
+            assert_eq!((account.provider, account.base_url), (Provider::Anthropic, None), "{id}");
+        }
+        assert_eq!(store.active().unwrap().id, "default", "it still signs");
+    }
+
+    #[test]
+    fn each_provider_keeps_its_own_active_account() {
+        let scratch = Scratch::new("active-per-provider");
+        let store = scratch.start();
+        // The first account of each provider is the one its requests go to.
+        add(&store, "work", Provider::Anthropic, None);
+        add(&store, "kimi", Provider::Kimi, Some("https://api.kimi.ai/coding"));
+        add(&store, "home", Provider::Anthropic, None);
+        add(&store, "kimi-two", Provider::Kimi, Some("https://api.kimi.ai/coding"));
+        let active = |p| store.active_for(p).unwrap().id;
+        assert_eq!((active(Provider::Anthropic), active(Provider::Kimi)), ("work".into(), "kimi".into()));
+
+        store.activate("home").unwrap();
+        assert_eq!(active(Provider::Anthropic), "home");
+        assert_eq!(active(Provider::Kimi), "kimi", "activating a Claude account leaves Kimi Code's");
+
+        store.activate("kimi-two").unwrap();
+        assert_eq!(active(Provider::Kimi), "kimi-two");
+        assert_eq!(active(Provider::Anthropic), "home", "activating a Kimi Code account leaves Claude's");
+        assert_eq!(store.active().unwrap().id, "home", "what signs is the active Anthropic account");
+
+        // Removing a provider's active account hands its place to that provider's next one.
+        store.remove("kimi-two").unwrap();
+        assert_eq!((active(Provider::Anthropic), active(Provider::Kimi)), ("home".into(), "kimi".into()));
+        assert!(store.activate("nobody").is_err());
     }
 }

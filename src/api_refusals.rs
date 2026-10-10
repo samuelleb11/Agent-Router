@@ -96,7 +96,7 @@ impl Lab {
     }
 
     /// POST `body` as JSON, from this machine, and read the answer.
-    async fn post(&self, path: &str, body: &str) -> (StatusCode, Value) {
+    pub(crate) async fn post(&self, path: &str, body: &str) -> (StatusCode, Value) {
         self.send(path, Some("application/json"), body).await
     }
 
@@ -656,6 +656,8 @@ fn held(lab: &Lab, id: &str) -> Option<Held> {
         id: id.to_string(),
         label: String::new(),
         source: crate::accounts::Source::Token,
+        provider: crate::accounts::Provider::Anthropic,
+        base_url: None,
         profile_dir: None,
         email: None,
     };

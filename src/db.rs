@@ -401,6 +401,12 @@ impl Db {
             // itself stays in the Keychain; this is only so the UI can say whether
             // one is set without a Keychain read per account per poll.
             ("usage_key", "INTEGER NOT NULL DEFAULT 0"),
+            // Which service the account belongs to (`accounts::Provider`). Every account
+            // stored before there was a second one was Anthropic's, which is exactly what
+            // the default backfills.
+            ("provider", "TEXT NOT NULL DEFAULT 'anthropic'"),
+            // Where its requests go, when not its provider's default.
+            ("base_url", "TEXT"),
         ] {
             ensure_column(&conn, "accounts", col, ty)?;
         }
@@ -425,8 +431,10 @@ impl Db {
         status: &crate::accounts::AuthStatus,
     ) -> Result<()> {
         let restored = self.conn.execute(
-            "UPDATE accounts SET source = 'keychain', profile_dir = NULL
-              WHERE id = ?1 AND (source != 'keychain' OR profile_dir IS NOT NULL)",
+            "UPDATE accounts SET source = 'keychain', provider = 'anthropic', base_url = NULL,
+                                 profile_dir = NULL
+              WHERE id = ?1 AND (source != 'keychain' OR provider != 'anthropic'
+                                 OR base_url IS NOT NULL OR profile_dir IS NOT NULL)",
             [id],
         )?;
         if restored > 0 {
@@ -443,7 +451,8 @@ impl Db {
             "INSERT INTO accounts (id, label, source, email, org_name, subscription_type,
                                    active, created_at)
              VALUES (?1, ?2, 'keychain', ?3, ?4, ?5,
-                     CASE WHEN (SELECT count(*) FROM accounts WHERE active = 1) = 0 THEN 1 ELSE 0 END,
+                     CASE WHEN (SELECT count(*) FROM accounts
+                                 WHERE active = 1 AND provider = 'anthropic') = 0 THEN 1 ELSE 0 END,
                      ?6)
              ON CONFLICT(id) DO UPDATE SET
                label = ?2, email = ?3, org_name = ?4, subscription_type = ?5",
@@ -1271,7 +1280,7 @@ mod tests {
     /// under "default" for another test to find.
     #[test]
     fn built_in_account_restored_at_startup_and_no_other_account_changes() {
-        use crate::accounts::{self, Account, AuthStatus, Source, Store};
+        use crate::accounts::{self, Account, AuthStatus, Provider, Source, Store};
         use rusqlite::types::Value;
 
         // None of these is a credential.
@@ -1306,7 +1315,15 @@ mod tests {
         // The token the router would sign with for a token account with this id, and the
         // account's usage key.
         let secrets = |of: &str| {
-            let as_token = Account { id: of.into(), label: String::new(), source: Source::Token, profile_dir: None, email: None };
+            let as_token = Account {
+                id: of.into(),
+                label: String::new(),
+                source: Source::Token,
+                provider: Provider::Anthropic,
+                base_url: None,
+                profile_dir: None,
+                email: None,
+            };
             (accounts::resolve(&as_token).ok().map(|r| r.token), accounts::usage_token(of))
         };
 
@@ -1314,13 +1331,13 @@ mod tests {
         // is no longer the active one. Its usage key, as `quota::set_usage_token` records it.
         db.upsert_default_account(id, "me@example.com", &me).unwrap();
         store
-            .add("built-in-restored-work", "Work", Source::Token, None, &AuthStatus::default(), || {
+            .add("built-in-restored-work", "Work", Source::Token, Provider::Anthropic, None, None, &AuthStatus::default(), || {
                 accounts::store_token("built-in-restored-work", WORK)
             })
             .unwrap();
         accounts::store_usage_token("built-in-restored-work", WORK_USAGE).unwrap();
         let home = "/nowhere/accounts/built-in-restored-home";
-        store.add("built-in-restored-home", "Home", Source::Profile, Some(home), &AuthStatus::default(), || Ok(())).unwrap();
+        store.add("built-in-restored-home", "Home", Source::Profile, Provider::Anthropic, None, Some(home), &AuthStatus::default(), || Ok(())).unwrap();
         store.activate("built-in-restored-work").unwrap();
         accounts::store_usage_token(id, BUILT_IN_USAGE).unwrap();
         db.conn.execute("UPDATE accounts SET usage_key = 1 WHERE id = ?1", [id]).unwrap();
