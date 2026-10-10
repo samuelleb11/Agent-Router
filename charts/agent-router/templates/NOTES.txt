@@ -1,0 +1,76 @@
+{{- $url := include "agent-router.publicUrl" . }}
+{{- $secret := include "agent-router.auth.secretName" . }}
+{{- $fullname := include "agent-router.fullname" . }}
+Agent Router {{ .Chart.AppVersion }}, hosted: {{ $fullname }} in {{ .Release.Namespace }}
+
+1. The password is in the Secret {{ $secret }}:
+
+     kubectl --namespace {{ .Release.Namespace }} get secret {{ $secret }} -o jsonpath='{.data.{{ .Values.auth.passwordKey }}}' | base64 -d
+
+   The router sets it at every start, so the Secret is always the password that works and
+   the dashboard cannot change it. To change it, change the Secret, then restart the router:
+
+     kubectl --namespace {{ .Release.Namespace }} rollout restart deployment/{{ $fullname }}
+
+   Anyone who can read Secrets in this namespace can sign in: the cluster's RBAC is the lock
+   on that door.
+{{- if $url }}
+
+2. Open the dashboard and give the password:
+
+     {{ $url }}/
+
+   Add an account under Accounts by pasting what `claude setup-token` prints: a hosted
+   router signs with those only, and never runs `claude` itself.
+{{- if hasPrefix "http://" $url }}
+
+   WARNING: this URL is plain http, so the password crosses the network in the clear.
+{{- end }}
+{{- if and .Values.ingress.enabled (not (hasKey (.Values.ingress.annotations | default dict) "nginx.ingress.kubernetes.io/proxy-body-size")) }}
+
+   If this ingress is ingress-nginx, give it the four annotations values.yaml lists under
+   ingress.annotations: its defaults refuse requests over 1 MiB and cut streams at 60 s.
+{{- end }}
+
+3. Point Claude Code at it. On each machine, under "env" in ~/.claude/settings.json (or in
+   a project's .claude/settings.local.json):
+
+     "ANTHROPIC_BASE_URL": "{{ $url }}",
+     "ANTHROPIC_AUTH_TOKEN": "<the password>"
+
+4. The phones use the same URL:
+
+     {{ $url }}
+{{- if hasPrefix "https://" $url }}
+
+   The apps as built today take a host and a port and speak plain http, so they can use
+   it once they learn https:// URLs (planned with the machine agent).
+{{- end }}
+{{- else }}
+
+2. There is no URL to reach it by (no ingress, no server.publicUrl). A port-forward is the
+   way in, to a local port other than 8787, which a router on your own machine may hold:
+
+     kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ $fullname }} 18787:{{ .Values.service.port }}
+
+   Open http://localhost:18787/ and give the password. Add an account under Accounts by
+   pasting what `claude setup-token` prints. While the port-forward runs, Claude Code on
+   that machine reaches the router with these under "env" in ~/.claude/settings.json (or
+   in a project's .claude/settings.local.json):
+
+     "ANTHROPIC_BASE_URL": "http://localhost:18787",
+     "ANTHROPIC_AUTH_TOKEN": "<the password>"
+
+   The phones need a URL they can reach: enable the ingress.
+{{- end }}
+
+Live sessions -- the live list, following a session, and steering it (send, answer, stop,
+model, effort, mode, /btw) -- need the Agent Router agent on the machine that runs them,
+and a hosted router does not have one yet. Proxying, accounts, analytics, search, quota
+and push work without it.
+{{- if not .Values.persistence.existingClaim }}
+
+Uninstalling the release keeps the store's volume claim{{ if not .Values.auth.existingSecret }} and the password Secret{{ end }}, so a
+reinstall under the same name picks them up again. Deleting the claim is what deletes the
+store: {{ include "agent-router.data.claimName" . }}.
+{{- end }}

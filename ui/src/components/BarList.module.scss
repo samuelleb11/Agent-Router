@@ -1,0 +1,225 @@
+// New for agent-router: a list of bar rows, on Carbon tokens (docs/web-console-carbon.md, "Why
+// Carbon, and what it does not cover"). Drawn from the dashboard's `.brow` and `.track`
+// (assets/index.html), without the meta line that never wrapped and the 66 px it kept beside every
+// bar, which together scrolled a phone sideways.
+@use '@carbon/react/scss/spacing' as *;
+@use '@carbon/react/scss/type' as *;
+@use '@carbon/react/scss/motion' as *;
+@use '@carbon/react/scss/breakpoint' as *;
+@use '@carbon/react/scss/utilities/button-reset';
+@use '@carbon/react/scss/utilities/focus-outline' as *;
+
+.list {
+  display: grid;
+  min-inline-size: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.item {
+  min-inline-size: 0;
+}
+
+.item + .item {
+  border-block-start: 1px solid var(--cds-border-subtle-01);
+}
+
+/// A row: its label line over its bar. A row that scopes the page is a button (OV-C130).
+.row {
+  display: grid;
+  gap: $spacing-02;
+  inline-size: 100%;
+  min-inline-size: 0;
+  padding: $spacing-03;
+  color: var(--cds-text-primary);
+  text-align: start;
+}
+
+button.row {
+  @include button-reset.reset;
+  display: grid;
+  gap: $spacing-02;
+  padding: $spacing-03;
+  color: var(--cds-text-primary);
+
+  &:hover {
+    background: var(--cds-layer-hover-01);
+  }
+
+  &:focus-visible {
+    @include focus-outline('outline');
+  }
+}
+
+/// The selected row: pressed, with the accent's edge (OV-C130).
+.row[aria-pressed='true'] {
+  background: var(--cds-layer-selected-01);
+  box-shadow: inset $spacing-02 0 0 var(--cds-border-interactive);
+}
+
+/// The others stay pressable and keep their words' contrast; only their bars step back.
+.list[data-selection] .row[aria-pressed='false'] .bar {
+  opacity: 0.45;
+}
+
+/// The label line: mark, name, path, chips, and the meta line at the end.
+.line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: $spacing-02 $spacing-03;
+  min-inline-size: 0;
+  @include type-style('body-compact-01');
+}
+
+.mark {
+  display: inline-flex;
+  flex: none;
+}
+
+.name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.name[data-mono] {
+  @include type-style('code-02');
+  font-weight: 600;
+}
+
+/// A path is shown whole, at every width: it wraps anywhere rather than hide its tail or widen the
+/// page (SH-C42, OV-C196).
+.path {
+  min-inline-size: 0;
+  @include type-style('code-01');
+  color: var(--cds-text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.chips {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: $spacing-02;
+}
+
+.meta {
+  margin-inline-start: auto;
+  @include type-style('label-01');
+  color: var(--cds-text-secondary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/// Errors wear one mark everywhere: the error icon in the error colour beside the count (OV-C5).
+.errors {
+  display: inline-flex;
+  align-items: center;
+  gap: $spacing-02;
+  color: var(--ar-bad);
+  white-space: nowrap;
+}
+
+/// On a phone the meta line is a line of its own and wraps: nothing in a row is wider than the
+/// screen at 360 px (OV-C195, SH-C44).
+@include breakpoint-down('md') {
+  .meta {
+    flex-basis: 100%;
+    margin-inline-start: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+}
+
+/// The bar and its figure. `--gap` is how far the figure sits from the bar's end, $spacing-02.
+.track {
+  --gap: #{$spacing-02};
+  position: relative;
+  display: block;
+  min-inline-size: 0;
+}
+
+/// One line tall, so the figure can sit on it; the bar is drawn across its middle.
+.rail {
+  position: relative;
+  display: block;
+  block-size: $spacing-05;
+}
+
+/// The bar, scaled to the largest row (OV-C191). Any value above zero is at least 3 px wide, and a
+/// zero is a faint stub: geometry that is the data's, not spacing.
+.bar {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 0;
+  display: flex;
+  gap: $spacing-01;
+  min-inline-size: 3px;
+  block-size: $spacing-03;
+  margin-block: auto;
+  transition: inline-size $duration-moderate-02 motion(standard, productive);
+}
+
+.bar[data-zero] {
+  min-inline-size: $spacing-01;
+  background: var(--cds-border-strong-01);
+}
+
+/// The main and subagent parts share the bar by their sizes; each keeps a pixel so neither vanishes
+/// beside a much larger other.
+.main,
+.sub {
+  flex-basis: 0;
+  min-inline-size: 1px;
+}
+
+/// The subagent share, laid over the end of the bar in the subagent colour (OV-C192), the gap
+/// between them the bar's own.
+.sub {
+  background: var(--ar-subagent);
+}
+
+/// The figure: just past the bar's end, inside it when it would run past the track, and on a line
+/// of its own when it fits neither (OV-C193). Inside a bar it sits on the page's own surface, so it
+/// reads at full contrast over a fill of any colour (OV-C199).
+.value {
+  position: absolute;
+  inset-block-start: 0;
+  inline-size: max-content;
+  max-inline-size: 100%;
+  @include type-style('label-01');
+  line-height: $spacing-05;
+  color: var(--cds-text-primary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.value[data-place='inside'] {
+  padding-inline: $spacing-02;
+  background: var(--cds-layer-01);
+}
+
+.value[data-place='below'] {
+  position: static;
+  display: block;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.subLabel {
+  color: var(--cds-text-secondary);
+}
+
+/// A fingertip tall on a touch screen (SH-C45).
+@media (pointer: coarse) {
+  button.row {
+    min-block-size: $spacing-09;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bar {
+    transition: none;
+  }
+}

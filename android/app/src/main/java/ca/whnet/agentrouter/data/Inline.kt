@@ -1,4 +1,7 @@
-// Inline markdown — the styling inside one line — as a list of runs.
+// Inline markdown — the styling inside one line — as a list of runs, read exactly as the web
+// console reads it: `inline()` in ui/src/model/markdown.ts, the reference for both phones
+// (decision F; SE-C91, SE-C92, SE-C95, SE-C96 in docs/web-console-contracts.md). The fixtures the
+// three clients share, fixtures/live/markdown-blocks.json, hold this to it (SharedFixtureTest).
 //
 // Kept apart from Compose so it can be tested on the JVM: the composable that draws a
 // paragraph turns these runs into spans, and nothing here knows what a span is.
@@ -17,103 +20,151 @@ object Inline {
     )
 
     /**
-     * `**bold**`, `*italic*` or `_italic_`, `` `code` `` and `[text](url)`, plus bare
-     * `http(s)://` URLs. Anything unclosed is left as it was typed — a stray asterisk in
-     * a shell command is far more common than an unfinished emphasis.
+     * The web reads a line in four passes — inline code, bold, italic, links — each over the
+     * output of the one before, in which whatever an earlier pass built reads as one character
+     * no pattern names. So bold can hold inline code, italic can hold bold and a link's text can
+     * hold all three, while nothing is ever read inside inline code (SE-C95).
+     *
+     * - `` `code` ``, from one backtick to the next on the same line, verbatim.
+     * - `**bold**`, with no asterisk inside.
+     * - `*italic*`, only when its opening asterisk follows the start of the line, a space or
+     *   "(", so `d*no*e`, `*.rs` and `2 ** 8` stay as typed; underscores never mean emphasis.
+     * - `[text](https://…)`: only an http or https address is a link, and a bare one is text.
+     *
+     * Anything unclosed is left as it was typed. Adjacent runs in the same styles are one.
      */
     fun parse(src: String): List<Run> {
-        val out = mutableListOf<Run>()
-        val plain = StringBuilder()
-        var bold = false
-        var italic = false
+        // Inline code first.
+        var pieces = mutableListOf<Piece>()
         var i = 0
-
-        fun flush() {
-            if (plain.isNotEmpty()) {
-                out.add(Run(plain.toString(), bold = bold, italic = italic))
-                plain.setLength(0)
-            }
-        }
-
         while (i < src.length) {
-            val c = src[i]
-            when {
-                // Code spans win over everything inside them.
-                c == '`' -> {
-                    val end = src.indexOf('`', i + 1)
-                    if (end > i + 1) {
-                        flush()
-                        out.add(Run(src.substring(i + 1, end), bold = bold, italic = italic, code = true))
-                        i = end + 1
-                        continue
-                    }
-                }
-                src.startsWith("**", i) -> {
-                    val end = src.indexOf("**", i + 2)
-                    if (bold || (end > i + 2)) {
-                        flush(); bold = !bold; i += 2; continue
-                    }
-                    // Unpaired: both asterisks are literal, and neither is a single `*`.
-                    plain.append("**"); i += 2; continue
-                }
-                (c == '*' || c == '_') && isEmphasisEdge(src, i, c) -> {
-                    flush(); italic = !italic; i += 1; continue
-                }
-                c == '[' -> {
-                    val close = src.indexOf("](", i)
-                    val end = if (close > 0) src.indexOf(')', close + 2) else -1
-                    if (close > i + 1 && end > close + 2) {
-                        flush()
-                        out.add(Run(src.substring(i + 1, close), bold = bold, italic = italic,
-                            url = src.substring(close + 2, end)))
-                        i = end + 1
-                        continue
-                    }
-                }
-                src.startsWith("http://", i) || src.startsWith("https://", i) -> {
-                    var end = i
-                    while (end < src.length && !src[end].isWhitespace() && src[end] !in "<>\"'") end++
-                    // Trailing punctuation belongs to the sentence, not the address.
-                    while (end > i && src[end - 1] in ".,;:!?)") end--
-                    if (end > i + 8) {
-                        flush()
-                        val url = src.substring(i, end)
-                        out.add(Run(url, bold = bold, italic = italic, url = url))
-                        i = end
-                        continue
-                    }
-                }
+            val end = if (src[i] == '`') stop(src, i + 1, '`') else -1
+            if (end >= 0) {
+                pieces.add(Piece.Node(listOf(Run(src.substring(i + 1, end), code = true)), src.substring(i, end + 1)))
+                i = end + 1
+            } else {
+                pieces.add(Piece.Char(src[i]))
+                i++
             }
-            plain.append(c)
-            i++
         }
-        flush()
+        pieces = pass(pieces) { s, at, all ->
+            if (s[at] != '*' || at + 1 >= s.length || s[at + 1] != '*') return@pass null
+            val end = stop(s, at + 2, '*')
+            if (end < 0 || end + 1 >= s.length || s[end + 1] != '*') return@pass null
+            Match(end + 2, 0, styled(all.subList(at + 2, end)) { it.copy(bold = true) })
+        }
+        pieces = pass(pieces) { s, at, all ->
+            val lead = when {
+                at == 0 && s[0] == '*' -> 0
+                (Markdown.isSpace(s[at]) || s[at] == '(') && at + 1 < s.length && s[at + 1] == '*' -> 1
+                else -> return@pass null
+            }
+            val end = stop(s, at + lead + 1, '*')
+            if (end < 0) return@pass null
+            Match(end + 1, lead, styled(all.subList(at + lead + 1, end)) { it.copy(italic = true) })
+        }
+        pieces = pass(pieces) { s, at, all ->
+            if (s[at] != '[') return@pass null
+            val close = stop(s, at + 1, ']')
+            if (close < 0 || close + 1 >= s.length || s[close + 1] != '(') return@pass null
+            var k = close + 2
+            if (!s.startsWith("http", k)) return@pass null
+            k += 4
+            k = when {
+                k + 1 < s.length && s[k] == 's' && s[k + 1] == ':' -> k + 2
+                k < s.length && s[k] == ':' -> k + 1
+                else -> return@pass null
+            }
+            var end = k
+            while (end < s.length && s[end] != ')' && !Markdown.isSpace(s[end])) end++
+            if (end == k || end >= s.length || s[end] != ')') return@pass null
+            val url = source(all.subList(close + 2, end))
+            Match(end + 1, 0, styled(all.subList(at + 1, close)) { it.copy(url = url) })
+        }
+        return merged(runs(pieces))
+    }
+
+    private sealed interface Piece {
+        data class Char(val c: kotlin.Char) : Piece
+
+        /** What an earlier pass built: its runs, and the text it was read from. */
+        data class Node(val runs: List<Run>, val source: String) : Piece
+    }
+
+    /** Where a match ends, from which of its characters the node starts, and the node's runs. */
+    private class Match(val end: Int, val from: Int, val runs: List<Run>)
+
+    /** The character a node stands for in what a later pass reads, one no pattern names. */
+    private val OPAQUE = Char(0xE000)
+
+    /**
+     * The end of a pattern's middle, `[^x\n]+x` read from [from]: the index of the closing [x],
+     * with at least one character before it and no newline; -1 when there is none.
+     */
+    private fun stop(s: String, from: Int, x: kotlin.Char): Int {
+        var j = from
+        while (j < s.length && s[j] != x && s[j] != '\n') j++
+        return if (j > from && j < s.length && s[j] == x) j else -1
+    }
+
+    /** One pass: every match, leftmost first and never overlapping, becomes a node. */
+    private fun pass(pieces: List<Piece>, match: (String, Int, List<Piece>) -> Match?): MutableList<Piece> {
+        val flat = buildString { for (p in pieces) append(if (p is Piece.Char) p.c else OPAQUE) }
+        val out = mutableListOf<Piece>()
+        var at = 0
+        var i = 0
+        while (i < flat.length) {
+            val m = match(flat, i, pieces)
+            if (m == null) {
+                i++
+                continue
+            }
+            out.addAll(pieces.subList(at, i + m.from))
+            out.add(Piece.Node(m.runs, source(pieces.subList(i + m.from, m.end))))
+            at = m.end
+            i = m.end
+        }
+        out.addAll(pieces.subList(at, pieces.size))
         return out
     }
 
-    /**
-     * Whether a `*` or `_` here opens or closes emphasis, as opposed to being part of a
-     * word like `snake_case` or a glob like `*.rs`: it needs a closing partner, and it
-     * must sit at a word edge.
-     */
-    private fun isEmphasisEdge(s: String, i: Int, c: Char): Boolean {
-        val prev = s.getOrNull(i - 1)
-        val next = s.getOrNull(i + 1)
-        if (c == '_' && prev?.isLetterOrDigit() == true && next?.isLetterOrDigit() == true) return false
-        if (next == c || prev == c) return false
-        val opening = (prev == null || !prev.isLetterOrDigit()) && next != null && !next.isWhitespace()
-        val closing = prev != null && !prev.isWhitespace() && (next == null || !next.isLetterOrDigit())
-        if (!opening && !closing) return false
-        if (opening) {
-            // An opener needs a closer somewhere ahead on the same line.
-            var j = i + 1
-            while (j < s.length) {
-                if (s[j] == c && !s[j - 1].isWhitespace() && s[j - 1] != c && s.getOrNull(j + 1) != c) return true
-                if (s[j] == '\n') return false
-                j++
+    private fun runs(pieces: List<Piece>): List<Run> {
+        val out = mutableListOf<Run>()
+        val text = StringBuilder()
+        for (p in pieces) {
+            when (p) {
+                is Piece.Char -> text.append(p.c)
+                is Piece.Node -> {
+                    if (text.isNotEmpty()) out.add(Run(text.toString()))
+                    text.setLength(0)
+                    out.addAll(p.runs)
+                }
             }
-            return false
         }
-        return true
+        if (text.isNotEmpty()) out.add(Run(text.toString()))
+        return out
+    }
+
+    private fun styled(pieces: List<Piece>, style: (Run) -> Run): List<Run> = runs(pieces).map(style)
+
+    private fun source(pieces: List<Piece>): String = buildString {
+        for (p in pieces) {
+            when (p) {
+                is Piece.Char -> append(p.c)
+                is Piece.Node -> append(p.source)
+            }
+        }
+    }
+
+    /** Adjacent runs in the same styles as one, and no empty run. */
+    private fun merged(runs: List<Run>): List<Run> {
+        val out = mutableListOf<Run>()
+        for (r in runs) {
+            if (r.text.isEmpty()) continue
+            val last = out.lastOrNull()
+            if (last != null && last.copy(text = r.text) == r) out[out.size - 1] = last.copy(text = last.text + r.text)
+            else out.add(r)
+        }
+        return out
     }
 }

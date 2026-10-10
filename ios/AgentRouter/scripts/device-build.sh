@@ -17,7 +17,9 @@
 # setting override, which Xcode's signing checks ignore.
 set -e
 cd "$(dirname "$0")/.."
-DEV="${DEVICE:?set DEVICE to the target iPhone's UDID (xcrun devicectl list devices)}"
+# No apostrophe in that message: inside ${VAR:?word} the shell parses the word, and a
+# lone ' opens a quote it never closes — which breaks the whole script, not the message.
+DEV="${DEVICE:?set DEVICE to the UDID of the target iPhone (xcrun devicectl list devices)}"
 : "${DEVELOPMENT_TEAM:?set DEVELOPMENT_TEAM to your Apple Developer team id}"
 if [ "${PUSH:-1}" = "0" ]; then
   python3 - <<'PY'
@@ -39,7 +41,11 @@ fi
 xcodebuild -project AgentRouter.xcodeproj -scheme AgentRouter -configuration Debug \
   -destination "platform=iOS,id=$DEV" -derivedDataPath build -allowProvisioningUpdates $SIGNING build 2>&1 \
   | grep -E "error:|BUILD (SUCCEEDED|FAILED)" | head -5
-xcrun devicectl device install app --device "$DEV" build/Build/Products/Debug-iphoneos/AgentRouter.app 2>&1 | grep -E "installationURL|error" | head -1
+# devicectl prints "Failed to load provisioning paramter list … error" on every run, even
+# a plain `list devices`. Dropping that one line is what lets the install receipt — or a
+# real error — be the line you actually see.
+xcrun devicectl device install app --device "$DEV" build/Build/Products/Debug-iphoneos/AgentRouter.app 2>&1 \
+  | grep -E "installationURL|error" | grep -v "No provider was found" | head -1
 xcrun devicectl device process launch --terminate-existing --device "$DEV" ca.whnet.agent-router 2>&1 | tail -1
 # Leave the tree on the canonical project.
 xcodegen generate --quiet

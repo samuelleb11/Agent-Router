@@ -1,6 +1,7 @@
 import SwiftUI
 
-/// Add or edit a router. The password is the one set on the router's dashboard.
+/// Add or edit a router. The password is the one set on the router's dashboard, or by a
+/// hosted router's deployment.
 struct RouterFormView: View {
     enum Mode { case add, edit(Router) }
 
@@ -14,17 +15,38 @@ struct RouterFormView: View {
     @State private var password = ""
     @State private var testing = false
     @State private var testResult: (ok: Bool, text: String)?
+    /// What the router said about itself when this form last tested the address in it.
+    @State private var tested: AuthStatus?
 
     private var editing: Router? {
         if case .edit(let r) = mode { return r }
         return nil
     }
 
-    private var portValue: Int? { Int(port.trimmingCharacters(in: .whitespaces)) }
-    private var hostValue: String { host.trimmingCharacters(in: .whitespacesAndNewlines) }
+    /// Whether the router in the form says it is hosted: from this form's own connection
+    /// test, else — for a router being edited, still at its saved address — from its page.
+    /// Unknown reads as local, which is what every router was before hosting.
+    private var hosted: Bool {
+        if let tested { return tested.isHosted }
+        guard let r = editing, draft?.origin == r.origin else { return false }
+        return store.state(id: r.id)?.auth?.isHosted == true
+    }
+
+    private var entry: Router.Entry { Router.entry(host: host, port: port) }
+    /// A whole URL brings its own port, so the Port field steps aside.
+    private var hostIsURL: Bool { host.contains("://") }
+    /// The router as Save would store it, and what the connection test calls.
+    private var draft: Router? {
+        guard case .valid(let scheme, let validHost, let validPort) = entry else { return nil }
+        var router = editing ?? Router(name: "", host: "")
+        router.name = name.trimmingCharacters(in: .whitespaces)
+        router.scheme = scheme
+        router.host = validHost
+        router.port = validPort
+        return router
+    }
     private var valid: Bool {
-        !name.trimmingCharacters(in: .whitespaces).isEmpty && !hostValue.isEmpty
-            && (portValue.map { (1...65535).contains($0) } ?? false)
+        !name.trimmingCharacters(in: .whitespaces).isEmpty && draft != nil
             && (editing != nil || !password.isEmpty)
     }
 
@@ -35,18 +57,33 @@ struct RouterFormView: View {
                     TextField("Name", text: $name)
                         .textContentType(.name)
                         .accessibilityIdentifier("form-name")
-                    TextField("Host", text: $host, prompt: Text("10.0.0.5 or mac.local"))
+                    TextField("Host", text: $host, prompt: Text("10.0.0.5 or an https:// URL"))
                         .keyboardType(.URL)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .accessibilityIdentifier("form-host")
-                    TextField("Port", text: $port)
-                        .keyboardType(.numberPad)
-                        .accessibilityIdentifier("form-port")
+                    if !hostIsURL {
+                        TextField("Port", text: $port)
+                            .keyboardType(.numberPad)
+                            .accessibilityIdentifier("form-port")
+                    }
+                    switch entry {
+                    case .empty:
+                        EmptyView()
+                    case .invalid(let why):
+                        Label(why, systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                            .font(.callout)
+                            .accessibilityIdentifier("form-address")
+                    case .valid:
+                        LabeledContent("Connects to", value: draft?.origin ?? "")
+                            .font(.callout)
+                            .accessibilityIdentifier("form-address")
+                    }
                 } header: {
                     Text("Router")
                 } footer: {
-                    Text("The Mac running Agent Router, as this phone can reach it. The router must be listening beyond loopback (AGENT_ROUTER_BIND).")
+                    Text("The Mac running Agent Router, as this phone can reach it. Turn on Listen on your network in the router's dashboard settings first. A hosted router is added by its https URL, such as `https://agent-router.example.com`.")
                 }
                 Section {
                     SecureField(editing == nil ? "Password" : "New password (leave blank to keep)", text: $password)
@@ -55,7 +92,11 @@ struct RouterFormView: View {
                 } header: {
                     Text("Password")
                 } footer: {
-                    Text("Set on the router's dashboard, on the Mac. Kept in this phone's Keychain.")
+                    if hosted {
+                        Text("Set by the router's deployment. Kept in this phone's Keychain.")
+                    } else {
+                        Text("Set on the router's dashboard, on the Mac. Kept in this phone's Keychain.")
+                    }
                 }
                 Section {
                     Button {
@@ -66,7 +107,7 @@ struct RouterFormView: View {
                             if testing { Spacer(); ProgressView() }
                         }
                     }
-                    .disabled(testing || hostValue.isEmpty || portValue == nil)
+                    .disabled(testing || draft == nil)
                     if let testResult {
                         Label(testResult.text, systemImage: testResult.ok ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
                             .foregroundStyle(testResult.ok ? .green : .orange)
@@ -87,19 +128,17 @@ struct RouterFormView: View {
             .onAppear {
                 if let r = editing {
                     name = r.name
-                    host = r.host
+                    host = r.scheme == .https ? r.origin : r.host
                     port = String(r.port)
                 }
             }
+            // What a test said is about the address it tested.
+            .onChange(of: entry) { tested = nil }
         }
     }
 
     private func save() {
-        guard let portValue else { return }
-        var router = editing ?? Router(name: "", host: "")
-        router.name = name.trimmingCharacters(in: .whitespaces)
-        router.host = hostValue
-        router.port = portValue
+        guard let router = draft else { return }
         if editing == nil { store.add(router, password: password) } else { store.update(router, password: password) }
         dismiss()
     }
@@ -109,7 +148,8 @@ struct RouterFormView: View {
     private func test() async {
         testing = true
         defer { testing = false }
-        guard let portValue, let url = URL(string: "http://\(hostValue):\(portValue)") else {
+        tested = nil
+        guard let url = draft?.baseURL else {
             testResult = (false, "That is not a usable address.")
             return
         }
@@ -118,6 +158,7 @@ struct RouterFormView: View {
         do {
             let health: Health = try await client.get("/_router/health")
             let auth: AuthStatus = try await client.get("/api/auth")
+            tested = auth
             testResult = (true, "Agent Router \(health.version) answered\(auth.fromLoopback ? "" : ", and the password is right").")
         } catch let e as RouterClient.Failure {
             testResult = (false, e.errorDescription ?? "Failed.")

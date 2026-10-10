@@ -1,0 +1,22 @@
+// New for agent-router: the copy button and what became of the copy, on Carbon tokens.
+@use '@carbon/react/scss/spacing' as *;
+@use '@carbon/react/scss/type' as *;
+
+.copy {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: $spacing-03;
+  min-inline-size: 0;
+}
+
+.copyDone {
+  @include type-style('helper-text-01');
+  color: var(--cds-text-secondary);
+}
+
+.copyFailed {
+  @include type-style('helper-text-01');
+  color: var(--ar-warn);
+  overflow-wrap: anywhere;
+}

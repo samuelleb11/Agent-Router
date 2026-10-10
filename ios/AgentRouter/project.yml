@@ -58,7 +58,9 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
-        # Routers live on the LAN and speak plain HTTP; both need saying so.
+        # Routers on the LAN may speak plain HTTP, and both keys below are for them: the
+        # local-network prompt and the exception for plain HTTP to local addresses. Hosted
+        # routers use HTTPS, which needs neither.
         NSLocalNetworkUsageDescription: Agent Router connects to routers running on your local network.
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true

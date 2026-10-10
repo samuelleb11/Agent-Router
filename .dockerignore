@@ -1,0 +1,67 @@
+# Kept out of the build context. Everything here is also in .gitignore, and that is a rule,
+# not a coincidence: the image's build id is the tree git writes over the context (build.rs),
+# so excluding a TRACKED file would stamp the image with a tree that was never committed.
+# `.git` itself stays in, for the same reason.
+#
+# The syntax differs in one way that matters: a .gitignore pattern with no slash matches at
+# any depth, a .dockerignore one only at the root. Hence the `**/` below. Two lines are wider
+# than .gitignore's: `*.db*` also takes a SQLite journal and `.env*` an .envrc, so neither
+# reaches an image even untracked. That can change only the id of a build from a dirty tree,
+# never CI's.
+
+# Build output, caches and dependencies: large, and rebuilt inside the image anyway.
+target
+target-*
+.cargo
+dist/*
+# ...but for what scripts/stage-agents.sh lays out there for the image to hand out
+# (src/downloads.rs): the agent and its editor package, for every platform.
+!dist/agents
+# The image builds its own console (the Dockerfile's console stage); a local one would merge
+# stale hashed files into it.
+ui/dist
+**/node_modules
+vscode/out
+vscode/bin/*
+!vscode/bin/.gitkeep
+vscode/package.json.orig
+vscode/LICENSE
+**/*.vsix
+!dist/agents/*/agent-router.vsix
+
+# iOS and Android: build output, and what each machine supplies for itself.
+ios/AgentRouter/AgentRouter.xcodeproj
+ios/AgentRouter/build
+ios/AgentRouter/build-*
+ios/AgentRouter/project.nopush.yml
+ios/AgentRouter/Sources/AgentRouter.entitlements
+**/xcuserdata
+**/DerivedData
+**/*.xcresult
+android/.gradle
+android/build
+android/app/build
+android/local.properties
+android/app/google-services.json
+android/app/release
+**/*.iml
+**/.kotlin
+
+# Router data and secrets never go into an image.
+**/*.db*
+**/*.log
+**/.env*
+**/*.p8
+**/*.p12
+**/*.pem
+**/*.mobileprovision
+**/credentials.json
+
+# Local to one machine: Claude Code's per-project opt-in and worktrees, editors, macOS.
+.claude/settings.local.json
+.claude/worktrees
+**/.DS_Store
+**/.idea
+**/*.swp
+**/*.orig
+**/*.rej

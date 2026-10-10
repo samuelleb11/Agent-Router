@@ -1,0 +1,99 @@
+// New for agent-router: a sparkline strip, on Carbon tokens (docs/web-console-carbon.md, "Why Carbon,
+// and what it does not cover"). Drawn from the dashboard's `sparkSvg` and its quota history
+// (assets/index.html).
+@use '@carbon/react/scss/spacing' as *;
+@use '@carbon/react/scss/type' as *;
+
+.spark {
+  display: grid;
+  gap: $spacing-02;
+  min-inline-size: 0;
+  margin: 0;
+}
+
+/// The strip is 68 px tall: its height is the scale the data is drawn to, not spacing, and the
+/// shortest strip a Carbon LineChart cannot draw (it needs 100–120 px). 4.25rem at Carbon's 16 px
+/// root.
+.plot {
+  position: relative;
+  block-size: 4.25rem;
+}
+
+.svg {
+  display: block;
+  inline-size: 100%;
+  block-size: 100%;
+  overflow: visible;
+}
+
+/// One bar per bucket on the token ramp, the bucket still filling in the darker step (OV-C194).
+.bar {
+  fill: var(--ar-tok);
+}
+
+.bar[data-last] {
+  fill: var(--ar-tok-3);
+}
+
+.line {
+  fill: none;
+  stroke-width: $spacing-01;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.rule,
+.baseline {
+  stroke: var(--cds-border-subtle-01);
+  stroke-width: 1px;
+  vector-effect: non-scaling-stroke;
+}
+
+/// Where the tip is: the bucket it is about.
+.cross {
+  stroke: var(--cds-border-strong-01);
+  stroke-width: 1px;
+  vector-effect: non-scaling-stroke;
+}
+
+/// The latest point of each line, ringed in the page's own colour so it stands off the line.
+.mark {
+  position: absolute;
+  inline-size: $spacing-03;
+  block-size: $spacing-03;
+  border-radius: 50%;
+  box-shadow: 0 0 0 $spacing-01 var(--cds-background);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+/// The first and last buckets' times, and the series' keys, as text.
+.ends,
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: $spacing-01 $spacing-04;
+  @include type-style('label-01');
+  color: var(--cds-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.legend {
+  justify-content: flex-start;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.key {
+  display: inline-flex;
+  align-items: center;
+  gap: $spacing-02;
+}
+
+.swatch {
+  inline-size: $spacing-04;
+  block-size: $spacing-01;
+}

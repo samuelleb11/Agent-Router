@@ -92,6 +92,7 @@ pub fn bind_reuseport(addr: SocketAddr) -> Result<tokio::net::TcpListener> {
     let domain = if addr.is_ipv4() { Domain::IPV4 } else { Domain::IPV6 };
     let socket = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))?;
     socket.set_reuse_address(true)?;
+    #[cfg(unix)]
     socket
         .set_reuse_port(true)
         .context("SO_REUSEPORT is required for handover")?;
@@ -110,6 +111,7 @@ pub fn bind_reuseport(addr: SocketAddr) -> Result<tokio::net::TcpListener> {
 /// process that has joined the group but is not yet in its accept loop silently
 /// collects connections nobody reads — they hang until it starts serving. Signalling
 /// first and serving second turns a seamless handover into a stall.
+#[cfg(unix)]
 pub fn signal_incumbent(pid: i32) -> bool {
     tracing::info!(pid, "an agent-router is already serving this port; asking it to drain");
     // SAFETY: kill(2) with a valid signal number; a stale pid just returns ESRCH.
@@ -120,7 +122,18 @@ pub fn signal_incumbent(pid: i32) -> bool {
     true
 }
 
+/// Windows runs only the machine agent, which hands nothing over.
+#[cfg(not(unix))]
+pub fn signal_incumbent(_pid: i32) -> bool {
+    false
+}
+
 /// Watch the incumbent go away, without holding up our own accept loop.
+#[cfg(not(unix))]
+pub fn watch_incumbent(_pid: i32) {}
+
+/// Watch the incumbent go away, without holding up our own accept loop.
+#[cfg(unix)]
 pub fn watch_incumbent(pid: i32) {
     tokio::spawn(async move {
         for _ in 0..600 {
@@ -139,6 +152,12 @@ pub fn watch_incumbent(pid: i32) {
 ///
 /// The watching above is for the log; this is for work that must not start while the
 /// outgoing process is still touching shared state — see `db::migrate_bodies_if_needed`.
+#[cfg(not(unix))]
+pub fn has_exited_within(_pid: i32, _within: Duration) -> bool {
+    true
+}
+
+#[cfg(unix)]
 pub fn has_exited_within(pid: i32, within: Duration) -> bool {
     let deadline = std::time::Instant::now() + within;
     while std::time::Instant::now() < deadline {
@@ -151,7 +170,99 @@ pub fn has_exited_within(pid: i32, within: Duration) -> bool {
     false
 }
 
-/// Resolves when the process is asked to stop, either way.
+/// The store's lock, `router.lock` in the data directory, once no other process holds it.
+/// A hosted router's half of the handover: a rolling update starts the next pod while this
+/// one still serves the same store, so whoever holds the lock is the last router left on
+/// it, and the housekeeping that must not run beside another router waits for it.
+#[cfg(unix)]
+pub fn take_store_lock(dir: &std::path::Path) -> Option<std::fs::File> {
+    use std::os::fd::AsRawFd;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join("router.lock"))
+        .ok()?;
+    // SAFETY: flock(2) on a descriptor this function owns. The lock belongs to the open
+    // file, so it holds for as long as the returned File does, and the kernel drops it
+    // with the process, however the process ends.
+    (unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0).then_some(file)
+}
+
+/// Wait for the store's lock and keep it for the life of the process. A router that
+/// drains takes as long as its drain to let go, so this waits as long as that.
+#[cfg(unix)]
+pub fn hold_store(dir: &std::path::Path) {
+    let mut told = false;
+    loop {
+        if let Some(file) = take_store_lock(dir) {
+            // Never closed: the lock is this process's until it exits.
+            std::mem::forget(file);
+            if told {
+                tracing::info!("the previous router has exited; the store is this one's alone");
+            }
+            return;
+        }
+        if !told {
+            tracing::info!("the previous router is still draining; its housekeeping waits for it");
+            told = true;
+        }
+        std::thread::sleep(Duration::from_secs(1));
+    }
+}
+
+/// Windows runs only the machine agent, which keeps no store.
+#[cfg(not(unix))]
+pub fn hold_store(_dir: &std::path::Path) {}
+
+/// Whether the process has been asked to stop, and why. Cloned by everything that has to
+/// wind down on the same signal.
+#[derive(Clone)]
+pub struct Stopping(tokio::sync::watch::Receiver<Option<&'static str>>);
+
+impl Stopping {
+    /// This signal, or `also` if it comes first, said as `why`: another way a process may be
+    /// asked to stop (a machine agent's worker, when its keeper closes the pipe).
+    pub fn or(self, why: &'static str, also: impl std::future::Future<Output = ()> + Send + 'static) -> Stopping {
+        let (tx, rx) = tokio::sync::watch::channel(None);
+        let mut first = self;
+        tokio::spawn(async move {
+            let why = tokio::select! {
+                w = first.wait() => w,
+                () = also => why,
+            };
+            let _ = tx.send(Some(why));
+        });
+        Stopping(rx)
+    }
+
+    /// Resolves once the process is asked to stop, with what asked.
+    pub async fn wait(&mut self) -> &'static str {
+        // Copied out at once: the borrow `wait_for` hands back must not live across
+        // another await.
+        let why = self.0.wait_for(Option::is_some).await.ok().map(|w| *w);
+        match why {
+            Some(why) => why.unwrap_or("stop"),
+            // The listener went away without a word. Never resolving keeps serving,
+            // which beats stopping a router nobody asked to stop.
+            None => std::future::pending().await,
+        }
+    }
+}
+
+/// Resolves when the process is asked to stop, either way. For a listener that winds
+/// down on its own; the router itself listens from the start, through
+/// `listen_for_shutdown`.
+#[cfg(not(unix))]
+pub async fn shutdown_signal() -> &'static str {
+    tokio::signal::ctrl_c().await.ok();
+    "interrupt"
+}
+
+/// Resolves when the process is asked to stop, either way. For a listener that winds
+/// down on its own; the router itself listens from the start, through
+/// `listen_for_shutdown`.
+#[cfg(unix)]
 pub async fn shutdown_signal() -> &'static str {
     use tokio::signal::unix::{signal, SignalKind};
     let mut term = match signal(SignalKind::terminate()) {
@@ -164,6 +275,72 @@ pub async fn shutdown_signal() -> &'static str {
     tokio::select! {
         _ = tokio::signal::ctrl_c() => "interrupt",
         _ = term.recv()             => "SIGTERM",
+    }
+}
+
+/// Start listening for SIGTERM and Ctrl-C now. The SIGTERM handler is registered before
+/// this returns, not when something first waits: for PID 1 in a container the kernel
+/// drops a signal that has no handler yet, so one sent during a slow startup would be
+/// lost and the kubelet would wait out its grace period for a SIGKILL.
+#[cfg(unix)]
+pub fn listen_for_shutdown() -> Stopping {
+    use tokio::signal::unix::{signal, SignalKind};
+    let (tx, rx) = tokio::sync::watch::channel(None);
+    let term = signal(SignalKind::terminate()).ok();
+    tokio::spawn(async move {
+        let why = match term {
+            Some(mut term) => tokio::select! {
+                _ = tokio::signal::ctrl_c() => "interrupt",
+                _ = term.recv()             => "SIGTERM",
+            },
+            None => {
+                tokio::signal::ctrl_c().await.ok();
+                "interrupt"
+            }
+        };
+        let _ = tx.send(Some(why));
+    });
+    Stopping(rx)
+}
+
+/// Windows has no SIGTERM: Ctrl-C, and the console going away (a logoff, a shutdown, the
+/// window closed), are how the agent is asked to stop.
+#[cfg(windows)]
+pub fn listen_for_shutdown() -> Stopping {
+    let (tx, rx) = tokio::sync::watch::channel(None);
+    let close = tokio::signal::windows::ctrl_close().ok();
+    tokio::spawn(async move {
+        let why = match close {
+            Some(mut close) => tokio::select! {
+                _ = tokio::signal::ctrl_c() => "interrupt",
+                _ = close.recv()            => "console close",
+            },
+            None => {
+                tokio::signal::ctrl_c().await.ok();
+                "interrupt"
+            }
+        };
+        let _ = tx.send(Some(why));
+    });
+    Stopping(rx)
+}
+
+#[cfg(unix)]
+#[cfg(test)]
+mod store_lock_tests {
+    use super::take_store_lock;
+
+    /// Two routers on one store: the lock is the first one's for as long as it holds it,
+    /// and the next one's the moment it is let go — as when the old pod exits.
+    #[test]
+    fn the_store_lock_is_one_routers_at_a_time() {
+        let dir = std::env::temp_dir().join(format!("ar-store-lock-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let first = take_store_lock(&dir).expect("a store nobody holds");
+        assert!(take_store_lock(&dir).is_none(), "held by the first");
+        drop(first);
+        assert!(take_store_lock(&dir).is_some(), "free once the first lets go");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

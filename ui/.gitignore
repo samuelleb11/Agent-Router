@@ -1,0 +1,7 @@
+# Copied from Northstar ui/.gitignore at e9c1589.
+# Changed: *.tsbuildinfo added, so `tsc -b` leaves no untracked file in the tree.
+node_modules
+dist
+*.local
+*.tsbuildinfo
+.DS_Store

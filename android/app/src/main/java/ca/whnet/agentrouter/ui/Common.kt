@@ -3,6 +3,7 @@
 package ca.whnet.agentrouter.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -27,6 +28,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import ca.whnet.agentrouter.api.LiveSession
+import ca.whnet.agentrouter.data.DotLook
 import ca.whnet.agentrouter.data.StateColor
 
 /**
@@ -75,19 +78,48 @@ fun SettingsSection(
  * faint halo: the colour says what it is doing, the ring says it is doing it *now*.
  */
 @Composable
-fun StateDot(state: String?, size: Int = 10, modifier: Modifier = Modifier, active: Boolean = false) {
-    val color = dotColor(state)
+fun StateDot(state: String?, size: Int = 10, modifier: Modifier = Modifier, active: Boolean = false) =
+    StateDot(StateColor.of(state), size, modifier, active)
+
+/**
+ * The same dot from a colour already decided. A `hollow` one is a session whose process has
+ * gone: the outline says there was a session here, the empty middle that nothing is running
+ * it any more — which a gray fill cannot say, since gray is also "idle, and still there".
+ */
+@Composable
+fun StateDot(
+    color: StateColor,
+    size: Int = 10,
+    modifier: Modifier = Modifier,
+    active: Boolean = false,
+    hollow: Boolean = false,
+) {
+    val tint = dotColor(color)
     Box(
         modifier.size((size + if (active) 6 else 0).dp),
         contentAlignment = Alignment.Center,
     ) {
-        if (active) Box(Modifier.size((size + 6).dp).background(color.copy(alpha = 0.3f), CircleShape))
-        Box(Modifier.size(size.dp).background(color, CircleShape))
+        if (active) Box(Modifier.size((size + 6).dp).background(tint.copy(alpha = 0.3f), CircleShape))
+        if (hollow) Box(Modifier.size(size.dp).border(1.5.dp, tint, CircleShape))
+        else Box(Modifier.size(size.dp).background(tint, CircleShape))
     }
 }
 
+/** A dot whose look was decided elsewhere — see [DotLook] for the rules, which are tested there. */
 @Composable
-fun dotColor(state: String?): Color = when (StateColor.of(state)) {
+fun StateDot(look: DotLook, size: Int = 10, modifier: Modifier = Modifier) =
+    StateDot(look.color, size, modifier, active = look.active, hollow = look.hollow)
+
+/** A session's dot, from the router's own reading of it when it sends one. */
+@Composable
+fun SessionDot(session: LiveSession, size: Int = 10, modifier: Modifier = Modifier, active: Boolean = session.active) =
+    StateDot(DotLook.of(session, active), size, modifier)
+
+@Composable
+fun dotColor(state: String?): Color = dotColor(StateColor.of(state))
+
+@Composable
+fun dotColor(color: StateColor): Color = when (color) {
     StateColor.GREEN -> Color(0xFF34C759)
     StateColor.ORANGE -> Color(0xFFFF9F0A)
     StateColor.YELLOW -> Color(0xFFFFD60A)

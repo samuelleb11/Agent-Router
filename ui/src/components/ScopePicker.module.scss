@@ -1,0 +1,203 @@
+// New for agent-router: a scope crumb and its picker, on Carbon's Popover and Search and Carbon tokens
+// (docs/web-console-carbon.md, "Why Carbon, and what it does not cover"). Drawn from the dashboard's
+// `.crumb` and `.menu` (assets/index.html).
+@use '@carbon/react/scss/spacing' as *;
+@use '@carbon/react/scss/type' as *;
+@use '@carbon/react/scss/breakpoint' as *;
+@use '@carbon/react/scss/utilities/button-reset';
+@use '@carbon/react/scss/utilities/focus-outline' as *;
+
+/// At most 60 % of the window and never more than the dashboard's 420 px, scrolling within (OV-C20).
+/// Carbon's spacing scale stops at 10rem, so no token expresses it; it is the picker's one measure,
+/// named once.
+$ar-picker-max-block: 26.25rem;
+
+/// The crumb: its level's icon, what it is set to, and the caret that says it opens.
+.crumb {
+  @include button-reset.reset($width: false);
+  display: inline-flex;
+  align-items: center;
+  gap: $spacing-02;
+  max-inline-size: 100%;
+  min-block-size: $spacing-07;
+  padding-inline: $spacing-03;
+  @include type-style('body-compact-01');
+  color: var(--cds-text-secondary);
+
+  &:hover {
+    background: var(--cds-layer-hover-01);
+  }
+
+  &:focus-visible {
+    @include focus-outline('outline');
+  }
+
+  &[aria-expanded='true'] {
+    background: var(--cds-layer-selected-01);
+  }
+}
+
+/// A level that is set reads in the strong style (OV-C12).
+.crumb[data-set] {
+  color: var(--cds-text-primary);
+  font-weight: 600;
+}
+
+.crumbText {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.caret {
+  flex: none;
+  fill: var(--cds-icon-secondary);
+}
+
+/// As wide as its rows need, from 280 px to the dashboard's 480 px, and never wider than the window.
+.panel {
+  display: grid;
+  gap: $spacing-03;
+  inline-size: max-content;
+  min-inline-size: min(calc(#{$spacing-13} * 1.75), calc(100vw - #{$spacing-07}));
+  max-inline-size: min(calc(#{$spacing-13} * 3), calc(100vw - #{$spacing-07}));
+  max-block-size: min(60vh, #{$ar-picker-max-block});
+  padding: $spacing-03;
+  overflow-y: auto;
+  color: var(--cds-text-primary);
+  text-align: start;
+}
+
+.note,
+.empty {
+  margin: 0;
+  @include type-style('helper-text-01');
+  color: var(--cds-text-secondary);
+}
+
+.list {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/// One choice: its name, which never shrinks, its second line, which gives up the space, and its
+/// figures at the end (OV-C16).
+.option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: $spacing-03;
+  min-block-size: $spacing-07;
+  padding: $spacing-02 $spacing-03;
+  cursor: pointer;
+  @include type-style('body-compact-01');
+
+  &:hover {
+    background: var(--cds-layer-hover-01);
+  }
+
+  &:focus {
+    outline: none;
+  }
+
+  &:focus-visible {
+    @include focus-outline('outline');
+  }
+}
+
+/// The current choice, marked by the accent's edge as well as by `aria-selected`.
+.option[aria-selected='true'] {
+  background: var(--cds-layer-selected-01);
+  box-shadow: inset $spacing-01 0 0 var(--cds-border-interactive);
+  font-weight: 600;
+}
+
+/// Each part has its cell whether or not the others are there, so the figures stay in their column.
+.name {
+  grid-column: 1;
+  grid-row: 1;
+  white-space: nowrap;
+}
+
+.name[data-mono] {
+  @include type-style('code-02');
+  font-weight: inherit;
+}
+
+.sub {
+  grid-column: 2;
+  grid-row: 1;
+  min-inline-size: 0;
+  @include type-style('label-01');
+  color: var(--cds-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/// A path gives up its head, never its tail: the ellipsis is on the left (OV-C16).
+.sub[data-path] {
+  direction: rtl;
+  text-align: start;
+  unicode-bidi: plaintext;
+}
+
+/// The row the keyboard is on shows its second line whole (SH-C30).
+.option:focus-visible .sub {
+  direction: ltr;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.meta {
+  grid-column: 3;
+  grid-row: 1;
+  @include type-style('label-01');
+  color: var(--cds-text-secondary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/// On a phone the figures share the name's line and the second line takes its own.
+@include breakpoint-down('md') {
+  .option {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .meta {
+    grid-column: 2;
+  }
+
+  .sub {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
+  .name {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+}
+
+/// A fingertip on a touch screen (SH-C45): every crumb and row 48 px tall, the filter's text 16 px
+/// so iOS does not zoom into it (Carbon's Search is 14 px), and every path whole, since there is no
+/// hover or keyboard to bring it out.
+@media (pointer: coarse) {
+  .crumb,
+  .option {
+    min-block-size: $spacing-09;
+  }
+
+  .panel :global(.cds--search-input) {
+    @include type-style('body-compact-02');
+  }
+
+  .sub {
+    direction: ltr;
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+}

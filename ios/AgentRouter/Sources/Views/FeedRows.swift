@@ -13,7 +13,9 @@ struct FeedRowView: View {
         switch item.kind {
         case "ask" where item.ask != nil:
             AskFormView(questions: item.ask!.questions, answered: row.answered) { answers, parts in
-                await feed.answer(answers, fallback: parts, row: row.id)
+                // Which questions the form was drawn for: the transcript it came from has no
+                // prompt id, so these are what say whether the question waiting is this one.
+                await feed.answer(answers, questions: item.ask!.questions.map(\.question), fallback: parts, row: row.id)
             }
             .padding(12)
             .background(RoundedRectangle(cornerRadius: 12).fill(Color.orange.opacity(row.answered ? 0.06 : 0.12)))
@@ -39,8 +41,8 @@ struct FeedRowView: View {
             HStack {
                 Spacer(minLength: 40)
                 VStack(alignment: .trailing, spacing: 3) {
-                    if row.pending {
-                        Text("you · queued").font(.caption2).foregroundStyle(.secondary)
+                    if let label = row.label {
+                        Text(label).font(.caption2).foregroundStyle(.secondary)
                     }
                     Text(item.text ?? "")
                         .textSelection(.enabled)
@@ -131,8 +133,9 @@ struct RichText: View {
                 case .paragraph(let s):
                     Text(Markdown.inline(s)).textSelection(.enabled)
                 case .heading(let level, let s):
+                    // The level the web draws, `#` the third and `##` the fourth (SE-C98).
                     Text(Markdown.inline(s))
-                        .font(level <= 2 ? .headline : .subheadline.weight(.semibold))
+                        .font(level <= 4 ? .headline : .subheadline.weight(.semibold))
                         .padding(.top, 2)
                 case .bullets(let items):
                     VStack(alignment: .leading, spacing: 3) {

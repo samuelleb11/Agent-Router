@@ -53,7 +53,7 @@ class AppState(app: Application) : AndroidViewModel(app) {
 
     fun feed(router: Router, session: ca.whnet.agentrouter.api.LiveSession): LiveFeed {
         feeds[session.sessionId]?.let { return it }
-        val created = LiveFeed(session, store.client(router))
+        val created = LiveFeed(session, store.client(router), hosted = { states[router.id]?.isHosted == true })
         feeds[session.sessionId] = created
         feedJobs[session.sessionId] = viewModelScope.launch {
             launch { created.loadFacts() }

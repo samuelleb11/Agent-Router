@@ -1,0 +1,35 @@
+// Copied from Northstar ui/src/components/EmptyState.module.scss at e9c1589.
+// Changed: nothing.
+@use '@carbon/react/scss/spacing' as *;
+@use '@carbon/react/scss/type' as *;
+
+/// An empty state is centred in the card or table it stands in, with the page's own inside
+/// padding — never a bare paragraph pinned to a corner. It claims no height of its own: the
+/// container gives it what it has, and a container with nothing in it stays the size of
+/// this sentence.
+.empty {
+  display: grid;
+  gap: $spacing-03;
+  justify-items: center;
+  align-content: center;
+  text-align: center;
+  padding: $spacing-07;
+  block-size: 100%;
+  min-inline-size: 0;
+}
+
+.title {
+  @include type-style('heading-02');
+  margin: 0;
+}
+
+.body {
+  @include type-style('body-01');
+  color: var(--cds-text-secondary);
+  margin: 0;
+  max-inline-size: 60ch;
+}
+
+.action {
+  margin-block-start: $spacing-02;
+}

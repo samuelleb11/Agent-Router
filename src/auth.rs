@@ -20,6 +20,10 @@
 //!
 //! This is HTTP, so the password crosses the network in the clear. The bind that makes
 //! remote callers possible already assumes a network you trust; this does not change that.
+//!
+//! A hosted router (`serve --server`) is the exception to most of the above: its
+//! password is pinned from the deployment at every start (`Auth::pin`), loopback is asked
+//! for it like everyone else (`guard`), and TLS is terminated in front of it.
 
 use std::num::NonZeroU32;
 use std::path::Path;
@@ -174,6 +178,8 @@ pub struct Auth {
     accepted: std::sync::Mutex<Vec<[u8; 32]>>,
     /// One derivation at a time. A flood of guesses costs one core, not the proxy's.
     verifying: tokio::sync::Mutex<()>,
+    /// Set by the deployment at startup (see `pin`), and so not changeable over the API.
+    pinned: std::sync::atomic::AtomicBool,
 }
 
 impl Auth {
@@ -197,11 +203,40 @@ impl Auth {
             record: tokio::sync::RwLock::new(record),
             accepted: std::sync::Mutex::new(Vec::new()),
             verifying: tokio::sync::Mutex::new(()),
+            pinned: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
     pub async fn configured(&self) -> bool {
         self.record.read().await.is_some()
+    }
+
+    pub fn pinned(&self) -> bool {
+        self.pinned.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Make `password` the password, as a hosted router does at every start from
+    /// `config::SERVER_PASSWORD_ENV` — the pattern of Northstar's ADR 0022, where the
+    /// deployment's Secret is always the password that works. A stored record that
+    /// already verifies it is kept, date and all, so a restart changes nothing; any
+    /// other is replaced. From then on the password cannot be changed or removed over
+    /// the API: the Secret would only put it back at the next start, and in between
+    /// every client holding the Secret's value would be refused.
+    pub async fn pin(&self, db_path: &Path, password: &str) -> anyhow::Result<()> {
+        let stored = self.record.read().await.as_ref().map(|r| r.hash.clone());
+        let same = match stored {
+            Some(hash) => {
+                let owned = password.to_string();
+                tokio::task::spawn_blocking(move || verify_password(&hash, &owned)).await?
+            }
+            None => false,
+        };
+        if !same {
+            self.set(db_path, password).await?;
+            tracing::info!("password set from {}", crate::config::SERVER_PASSWORD_ENV);
+        }
+        self.pinned.store(true, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
     }
 
     pub async fn updated_at(&self) -> Option<i64> {
@@ -288,11 +323,14 @@ pub mod api {
     use std::sync::Arc;
 
     use axum::extract::{ConnectInfo, State};
+    use axum::http::StatusCode;
+    use axum::response::{IntoResponse, Response};
     use axum::Json;
     use serde::Deserialize;
     use serde_json::{json, Value};
 
     use crate::proxy::AppState;
+    use crate::refusal::{failed, refuse, JsonBody};
 
     #[derive(Deserialize)]
     pub struct SetReq {
@@ -310,28 +348,55 @@ pub mod api {
         State(state): State<Arc<AppState>>,
         ConnectInfo(peer): ConnectInfo<SocketAddr>,
     ) -> Json<Value> {
-        Json(json!({
+        let mut body = json!({
             "configured":    state.auth.configured().await,
             "updated_at":    state.auth.updated_at().await,
-            "remote_bind":   !state.config.bind.ip().is_loopback(),
             "from_loopback": peer.ip().is_loopback(),
-        }))
+            // What both pages and the phones decide by: a hosted router has no machine
+            // of its own to set up, and a password only its deployment can change.
+            "mode":            if state.config.server { "server" } else { "local" },
+            "password_pinned": state.auth.pinned(),
+            "public_url":      state.config.public_url,
+        });
+        // `remote_bind` and the rest of the socket's story come from `network`, which
+        // owns the answer — it can change while the router runs. Both phone apps read
+        // it from here, so here is where it stays.
+        body.as_object_mut()
+            .expect("just built as an object")
+            .extend(crate::network::report(&state));
+        Json(body)
     }
 
-    pub async fn set(State(state): State<Arc<AppState>>, Json(req): Json<SetReq>) -> Json<Value> {
+    /// Refusals answer with an error status (see `refusal`): until they did, the dashboard
+    /// read a refused password as "set".
+    pub async fn set(State(state): State<Arc<AppState>>, JsonBody(req): JsonBody<SetReq>) -> Response {
+        if state.auth.pinned() {
+            // 409: nothing is wrong with the request, but the deployment's Secret decides
+            // the password here, and would put its own back at the next start.
+            return refuse(
+                StatusCode::CONFLICT,
+                format!(
+                    "the password is set by the deployment ({}); change the Secret and restart the router",
+                    crate::config::SERVER_PASSWORD_ENV
+                ),
+            );
+        }
         if req.clear {
             return match state.auth.clear(&state.config.db_path).await {
-                Ok(()) => Json(json!({ "ok": true, "configured": false })),
-                Err(e) => Json(json!({ "error": e.to_string() })),
+                Ok(()) => Json(json!({ "ok": true, "configured": false })).into_response(),
+                // The store would not take the write: the router failing, not a refusal.
+                Err(e) => failed(e),
             };
         }
-        // Not trimmed: a password is whatever was typed, spaces included.
+        // Not trimmed: a password is whatever was typed, spaces included. 400, because the
+        // request itself falls short of what any password here must be, whatever the
+        // router's state — a longer one is the fix.
         if req.password.chars().count() < super::MIN_LEN {
-            return Json(json!({ "error": format!("use at least {} characters", super::MIN_LEN) }));
+            return refuse(StatusCode::BAD_REQUEST, format!("use at least {} characters", super::MIN_LEN));
         }
         match state.auth.set(&state.config.db_path, &req.password).await {
-            Ok(()) => Json(json!({ "ok": true, "configured": true })),
-            Err(e) => Json(json!({ "error": e.to_string() })),
+            Ok(()) => Json(json!({ "ok": true, "configured": true })).into_response(),
+            Err(e) => failed(e),
         }
     }
 }

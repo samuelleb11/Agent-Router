@@ -22,15 +22,19 @@ pub struct StoredBody {
 }
 
 impl StoredBody {
-    pub fn new(bytes: &[u8], cap: usize) -> Self {
-        let truncated = bytes.len() > cap;
-        Self {
-            stored: bytes[..bytes.len().min(cap)].to_vec(),
-            truncated,
-            true_bytes: bytes.len() as i64,
-        }
+    /// For a body capped as it streamed in: `stored` is already no longer than the cap,
+    /// and `true_bytes` was counted separately as the bytes went past.
+    ///
+    /// Both numbers have to be carried, because the buffer cannot report on itself. A
+    /// constructor that measures what it is handed against the cap always finds them
+    /// equal — the buffer stopped growing there — and so calls every truncated response
+    /// complete, with the cap itself as the true size. That is exactly what happened:
+    /// 6,082 rows in the live store were cut and recorded as whole.
+    pub fn streamed(stored: Vec<u8>, true_bytes: i64) -> Self {
+        Self { truncated: true_bytes > stored.len() as i64, stored, true_bytes }
     }
 }
+
 
 /// Quota headroom, straight off the response. On a subscription this matters more
 /// than a dollar figure: it is the scarce resource actually being spent.
@@ -85,7 +89,9 @@ pub struct CaptureEvent {
     pub usage: Usage,
     pub tool_calls: Vec<String>,
     pub shape: Option<RequestShape>,
-    pub request_body: StoredBody,
+    /// No request body: the conversation inside it is indexed as blocks instead, in
+    /// full rather than capped, and `request_bytes` still records how big it was. See
+    /// `Db::record`.
     pub response_body: StoredBody,
     pub request_bytes: i64,
     pub response_bytes: i64,
@@ -167,7 +173,6 @@ pub struct Pending {
     pub streaming_requested: bool,
     pub rl: RateLimit,
     pub shape: Option<RequestShape>,
-    pub request_body: StoredBody,
     pub request_bytes: i64,
 }
 
@@ -188,6 +193,9 @@ pub struct Tee {
     scanner: crate::analyze::SseScanner,
     raw: Vec<u8>,
     body_cap: usize,
+    /// Every decoded byte that arrived, whether or not it fitted under the cap. The
+    /// length of `raw` cannot stand in for this — it stops growing at the cap.
+    plain_bytes: i64,
     wire_bytes: i64,
     is_sse: bool,
     started: std::time::Instant,
@@ -210,6 +218,7 @@ impl Tee {
             scanner: Default::default(),
             raw: Vec::new(),
             body_cap,
+            plain_bytes: 0,
             wire_bytes: 0,
             is_sse,
             started,
@@ -232,6 +241,7 @@ impl Tee {
         if plain.is_empty() {
             return;
         }
+        self.plain_bytes += plain.len() as i64;
         if self.raw.len() < self.body_cap {
             let room = self.body_cap - self.raw.len();
             self.raw.extend_from_slice(&plain[..plain.len().min(room)]);
@@ -278,14 +288,24 @@ impl Drop for Tee {
             rl: p.rl,
             usage: self.scanner.usage.clone(),
             tool_calls: self.scanner.tool_calls.clone(),
-            request_body: p.request_body,
-            response_body: StoredBody::new(&self.raw, self.body_cap),
+            response_body: StoredBody::streamed(std::mem::take(&mut self.raw), self.plain_bytes),
             request_bytes: p.request_bytes,
             response_bytes: self.wire_bytes,
             shape: p.shape,
         };
         self.state.offer(ev);
     }
+}
+
+/// Whether a request's own environment says where its session runs: only a turn of the
+/// main thread does. A subagent's (`x-claude-code-agent-id`) may run in a worktree of its
+/// own. A request that offers the model no tools is not a turn of the conversation at
+/// all, though it carries the session's id — a title, a summary, the auto-mode
+/// classifier — and what it carries is the conversation quoted back, where any line can
+/// look like an environment: a session editing this very parser once had its project
+/// set to one of the parser's test strings that way.
+fn speaks_for_its_session(agent_id: Option<&str>, shape: &RequestShape) -> bool {
+    agent_id.is_none() && shape.tools_defined > 0
 }
 
 /// Start the capture task and return the sender the proxy tees into.
@@ -307,7 +327,23 @@ pub fn spawn(db_path: PathBuf) -> (mpsc::Sender<CaptureEvent>, tokio::task::Join
         let mut resolver = Resolver::new();
         while let Some(ev) = rx.recv().await {
             if let Some(session) = &ev.session_id {
-                let info = resolver.resolve(session);
+                // The transcript decides where there is one. A hosted router never has
+                // one to look for; elsewhere it is missing for sessions on other
+                // machines and ones the CLI never wrote to disk. Either way the request
+                // said where it runs, and that fills whatever the transcript did not.
+                let mut info = if crate::config::is_server() {
+                    Default::default()
+                } else {
+                    resolver.resolve(session)
+                };
+                if let Some(shape) = ev.shape.as_ref().filter(|s| speaks_for_its_session(ev.agent_id.as_deref(), s)) {
+                    if info.cwd.is_none() {
+                        info.cwd = shape.cwd.clone();
+                    }
+                    if info.git_branch.is_none() {
+                        info.git_branch = shape.git_branch.clone();
+                    }
+                }
                 if let Err(err) = db.touch_session(
                     session,
                     info.cwd.as_deref(),
@@ -351,15 +387,48 @@ mod tests {
         assert_eq!(out, plain);
     }
 
+    /// A response longer than the cap must say so. It is capped as it streams, so the
+    /// buffer alone cannot tell — which is why 6,082 rows in the live store claimed to
+    /// be complete at exactly the cap before this was counted separately.
     #[test]
-    fn body_truncation_records_the_true_size() {
-        let b = StoredBody::new(&vec![b'x'; 100], 10);
-        assert_eq!(b.stored.len(), 10);
-        assert!(b.truncated);
-        assert_eq!(b.true_bytes, 100);
+    fn a_streamed_body_reports_the_size_it_had_before_the_cap() {
+        let cut = StoredBody::streamed(vec![b'x'; 64], 4096);
+        assert!(cut.truncated);
+        assert_eq!(cut.true_bytes, 4096, "the size before the cap, not after it");
+        assert_eq!(cut.stored.len(), 64);
 
-        let b = StoredBody::new(b"short", 10);
-        assert!(!b.truncated);
-        assert_eq!(b.true_bytes, 5);
+        let whole = StoredBody::streamed(vec![b'x'; 64], 64);
+        assert!(!whole.truncated, "a body that fitted is not truncated");
+        assert_eq!(whole.true_bytes, 64);
+    }
+
+    /// Only the main thread's turns say where the session runs: not a subagent's, and not
+    /// a request with no tools that quotes the conversation back.
+    #[test]
+    fn only_the_main_threads_turns_say_where_the_session_runs() {
+        let env = "# Environment\nYou have been invoked in the following environment: \n - Primary working directory: /home/u/code/p\n";
+        let turn = crate::analyze::analyze_request(
+            serde_json::json!({
+                "tools": [{ "name": "Bash", "input_schema": { "type": "object" } }],
+                "messages": [
+                    { "role": "user", "content": "fix it" },
+                    { "role": "system", "content": env },
+                ],
+            })
+            .to_string()
+            .as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(turn.cwd.as_deref(), Some("/home/u/code/p"));
+        assert!(speaks_for_its_session(None, &turn));
+        assert!(!speaks_for_its_session(Some("a2fc94267e771da5e"), &turn), "a subagent's");
+
+        let quoted = format!("Judge this action. The transcript so far:\n{env}\nsed -n 1,9p src/analyze.rs\n - Primary working directory: /in/a/test\\n\";");
+        let classifier = crate::analyze::analyze_request(
+            serde_json::json!({ "messages": [{ "role": "user", "content": quoted }] }).to_string().as_bytes(),
+        )
+        .unwrap();
+        assert!(classifier.cwd.is_some(), "it does look like an environment");
+        assert!(!speaks_for_its_session(None, &classifier), "but it offers no tools");
     }
 }

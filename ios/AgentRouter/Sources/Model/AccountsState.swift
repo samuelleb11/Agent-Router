@@ -15,8 +15,8 @@ final class AccountsState {
 
     private var client: RouterClient? { router.liveClient }
 
-    /// `probe` makes the router resolve every credential, which is not free — asked for
-    /// on open and after a change, not on every poll.
+    /// `probe` makes the router check every credential, which is not free; without it a row
+    /// carries no verdict. Asked for on open, on a pull and after a change.
     func load(probe: Bool) async {
         guard let client else { return }
         do {

@@ -1,0 +1,51 @@
+// New for agent-router: the activity chart's frame, on Carbon tokens. Its marks are Carbon Charts' own,
+// in the model-family colours the chart reads off the tokens; this places what the chart cannot
+// draw: the error marks and the crosshair.
+@use '@carbon/react/scss/spacing' as *;
+@use '@carbon/react/scss/type' as *;
+
+.target {
+  display: block;
+  min-inline-size: 0;
+}
+
+.chart {
+  position: relative;
+  min-inline-size: 0;
+  min-block-size: 13.75rem;
+}
+
+/// Over the chart, taking no pointer: the tip's target is the chart beneath it.
+.overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+/// A bucket with errors: a small mark above its bar, in the error colour (OV-C115).
+.errorMark {
+  position: absolute;
+  inline-size: $spacing-02;
+  block-size: $spacing-02;
+  margin-inline-start: calc(-1 * #{$spacing-01});
+  margin-block-start: calc(-1 * #{$spacing-04});
+  background: var(--ar-bad-fill);
+}
+
+/// The bucket the tip is about.
+.cross {
+  position: absolute;
+  inline-size: 1px;
+  background: var(--cds-border-strong-01);
+}
+
+.loading {
+  inline-size: 100%;
+  block-size: 13.75rem;
+}
+
+.unavailable {
+  margin: 0;
+  @include type-style('body-compact-01');
+  color: var(--cds-text-secondary);
+}

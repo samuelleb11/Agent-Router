@@ -1,0 +1,208 @@
+import XCTest
+@testable import AgentRouter
+
+/// The fixtures the web view and both phones share, fixtures/live/markdown-blocks.json and
+/// fixtures/live/session-groups.json, read from the repository and held against this app's own
+/// Markdown blocks and session list. Their `expected` is generated from the web's model, the
+/// reference for both phones (docs/session-liveness.md, "Client presentation policy"), which
+/// follows the phones where the three clients were decided in their favour on 2026-10-05:
+/// numbered lists, and a hosted router's list headed per machine. Each file's `about` says what
+/// the shape means. A case marked `pending` is one where matching the web would lose something
+/// here, and it is skipped, by name, until it is decided.
+final class SharedFixtureTests: XCTestCase {
+    func testMarkdownBlocksMatchTheSharedFixtures() throws {
+        let fixture = try load(Fixture<MarkdownCase>.self, "markdown-blocks.json")
+        XCTAssertFalse(fixture.cases.isEmpty)
+        for c in fixture.cases where c.pending == nil {
+            XCTAssertEqual(Shape.blocks(Markdown.blocks(c.input)), c.expected, c.name)
+        }
+    }
+
+    func testSessionGroupsMatchTheSharedFixtures() throws {
+        let fixture = try load(Fixture<GroupsCase>.self, "session-groups.json")
+        XCTAssertFalse(fixture.cases.isEmpty)
+        for c in fixture.cases where c.pending == nil {
+            // What the list screen draws: one part under no machine's heading, for a local router
+            // and for a hosted router's single machine, or a part per machine under its heading.
+            let parts = SessionGroups.byMachine(c.sessions, now: Date(timeIntervalSince1970: TimeInterval(c.now) / 1000))
+            XCTAssertEqual(Shape.groups(parts), c.expected, c.name)
+        }
+    }
+
+    /// Named here so the run says which cases wait on a decision, and what each client does.
+    func testPendingCasesAreSkippedByName() throws {
+        let markdown = try load(Fixture<MarkdownCase>.self, "markdown-blocks.json").cases.compactMap { c in
+            c.pending.map { "markdown-blocks.json: \(c.name) (\($0))" }
+        }
+        let groups = try load(Fixture<GroupsCase>.self, "session-groups.json").cases.compactMap { c in
+            c.pending.map { "session-groups.json: \(c.name) (\($0))" }
+        }
+        let pending = markdown + groups
+        try XCTSkipIf(!pending.isEmpty, "\(pending.count) pending, skipped: \(pending.joined(separator: "; "))")
+    }
+
+    // ---------- the files ----------
+
+    private struct Fixture<Case: Decodable>: Decodable {
+        let cases: [Case]
+    }
+
+    private struct MarkdownCase: Decodable {
+        let name: String
+        let input: String
+        let pending: String?
+        let expected: [Shape.Block]
+    }
+
+    private struct GroupsCase: Decodable {
+        let name: String
+        let now: Int
+        let sessions: [LiveSession]
+        let pending: String?
+        let expected: Shape.Groups
+    }
+
+    /// The repository's own copy, found from this source file: …/ios/AgentRouter/Tests/ is three
+    /// folders below the root.
+    private func load<T: Decodable>(_ type: T.Type, _ name: String) throws -> T {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let url = root.appendingPathComponent("fixtures/live").appendingPathComponent(name)
+        return try JSONDecoder().decode(T.self, from: Data(contentsOf: url))
+    }
+}
+
+/// The client-neutral shapes the fixtures are written in, and this app's values mapped to them.
+private enum Shape {
+    struct Run: Decodable, Equatable, CustomStringConvertible {
+        var text: String
+        var bold = false
+        var italic = false
+        var code = false
+        var href: String?
+
+        init(_ run: Markdown.Run) {
+            (text, bold, italic, code, href) = (run.text, run.bold, run.italic, run.code, run.href)
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: Keys.self)
+            text = try c.decode(String.self, forKey: .text)
+            bold = try c.decodeIfPresent(Bool.self, forKey: .bold) ?? false
+            italic = try c.decodeIfPresent(Bool.self, forKey: .italic) ?? false
+            code = try c.decodeIfPresent(Bool.self, forKey: .code) ?? false
+            href = try c.decodeIfPresent(String.self, forKey: .href)
+        }
+
+        private enum Keys: String, CodingKey { case text, bold, italic, code, href }
+
+        var description: String {
+            let styles = [bold ? "bold" : nil, italic ? "italic" : nil, code ? "code" : nil, href.map { "href \($0)" }].compactMap { $0 }
+            return styles.isEmpty ? "\"\(text)\"" : "\"\(text)\" (\(styles.joined(separator: ", ")))"
+        }
+    }
+
+    struct Block: Decodable, Equatable {
+        var type: String
+        var level: Int?
+        var ordered: Bool?
+        var runs: [Run]?
+        var items: [[Run]]?
+        var lang: String?
+        var text: String?
+        var head: [[Run]]?
+        var rows: [[[Run]]]?
+    }
+
+    struct Group: Decodable, Equatable {
+        var project: String
+        var tone: String?
+        var halo: Bool
+        var sessions: [String]
+    }
+
+    /// One list as one machine's sessions make it; `machine` is the label of the machine it is
+    /// headed by, nil for a list with no machine heading and for the rows that name no machine.
+    struct Part: Decodable, Equatable {
+        var machine: String?
+        var recent: [Group]
+        var older: [Group]
+        var archived: [String]
+    }
+
+    /// `expected`: `{recent, older, archived}` for a list with no machine heading, or `{machines}`
+    /// for a hosted router's list from several machines, a part per machine in the order headed.
+    enum Groups: Decodable, Equatable {
+        case one(Part)
+        case machines([Part])
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: Keys.self)
+            if let machines = try c.decodeIfPresent([Part].self, forKey: .machines) {
+                self = .machines(machines)
+            } else {
+                self = .one(try Part(from: decoder))
+            }
+        }
+
+        private enum Keys: String, CodingKey { case machines }
+    }
+
+    /// A line's runs, as the screen draws them: adjacent runs in the same styles are one.
+    static func runs(_ s: String) -> [Run] {
+        var out: [Run] = []
+        for run in Markdown.runs(s).map(Run.init) where !run.text.isEmpty {
+            if let last = out.last, last.bold == run.bold, last.italic == run.italic, last.code == run.code, last.href == run.href {
+                out[out.count - 1].text += run.text
+            } else {
+                out.append(run)
+            }
+        }
+        return out
+    }
+
+    static func blocks(_ blocks: [Markdown.Block]) -> [Block] {
+        blocks.map { block in
+            switch block {
+            case .paragraph(let s): Block(type: "paragraph", runs: runs(s))
+            case .heading(let level, let s): Block(type: "heading", level: level, runs: runs(s))
+            case .bullets(let items): Block(type: "list", ordered: false, items: items.map(runs))
+            case .numbered(let items): Block(type: "list", ordered: true, items: items.map(runs))
+            case .quote(let s): Block(type: "quote", runs: runs(s))
+            // The language tag is dropped, as on the web (SE-C93).
+            case .code(let s): Block(type: "code", lang: nil, text: s)
+            case .table(let rows): Block(type: "table", head: (rows.first ?? []).map(runs), rows: rows.dropFirst().map { $0.map(runs) })
+            }
+        }
+    }
+
+    /// The list as `byMachine` parts it: one part with no heading, or a part per machine, each
+    /// labelled with its machine's name. The rows that name no machine are the part this app heads
+    /// `SessionGroups.unnamedMachine`, and the fixtures label null.
+    static func groups(_ parts: [SessionGroups.Machine]) -> Groups {
+        if parts.count == 1, let only = parts.first, only.name == nil { return .one(part(only.groups, machine: nil)) }
+        return .machines(parts.map { part($0.groups, machine: $0.id == "unnamed" ? nil : $0.name) })
+    }
+
+    private static func part(_ g: SessionGroups, machine: String?) -> Part {
+        let project = { (p: SessionGroups.Project) in
+            Group(project: p.name, tone: p.tone.map(name), halo: p.look.halo, sessions: p.sessions.map(\.sessionId))
+        }
+        return Part(machine: machine, recent: g.recent.map(project), older: g.older.map(project), archived: g.archived.map(\.sessionId))
+    }
+
+    private static func name(_ tone: SessionTone) -> String {
+        switch tone {
+        case .busy: "busy"
+        case .attention: "attention"
+        case .warn: "warn"
+        case .error: "error"
+        case .idle: "idle"
+        case .closed: "closed"
+        case .unknown(let raw): raw
+        }
+    }
+}

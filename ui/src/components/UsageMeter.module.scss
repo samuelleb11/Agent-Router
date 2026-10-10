@@ -1,0 +1,80 @@
+// New for agent-router: one quota window as a meter, on Carbon tokens (docs/web-console-carbon.md,
+// "Why Carbon, and what it does not cover"). Drawn from the dashboard's `.meter` (assets/index.html).
+@use '@carbon/react/scss/spacing' as *;
+@use '@carbon/react/scss/type' as *;
+@use '@carbon/react/scss/motion' as *;
+
+.meter {
+  display: grid;
+  gap: $spacing-02;
+  min-inline-size: 0;
+}
+
+/// The window's name at the left and its reading at the right, on one line on a desk; the reading
+/// takes a line of its own when a phone has no room for both.
+.head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: $spacing-01 $spacing-04;
+  @include type-style('label-01');
+}
+
+.label {
+  color: var(--cds-text-primary);
+}
+
+.value {
+  color: var(--cds-text-secondary);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+/// Carbon's progress bar track, $layer-accent, and its 8px bar.
+.track {
+  position: relative;
+  overflow: hidden;
+  block-size: $spacing-03;
+  background: var(--cds-layer-accent-01);
+}
+
+/// The 5-hour window in Carbon's blue, the 7-day window in slate (OV-C62); amber from 70 % and red
+/// from 90 % replace either (OV-C57).
+.fill {
+  display: block;
+  block-size: 100%;
+  background: var(--cds-interactive);
+  transition: inline-size $duration-moderate-02 motion(standard, productive);
+}
+
+.meter[data-tone='slate'] .fill {
+  background: var(--ar-tok);
+}
+
+.meter[data-level='warn'] .fill {
+  background: var(--ar-warn-fill);
+}
+
+.meter[data-level='bad'] .fill {
+  background: var(--ar-bad-fill);
+}
+
+/// No reading, or a window that has rolled over: the bare grey track and the words, never an old
+/// figure drawn as current (OV-C58, OV-C72).
+.meter[data-level='none'] .value,
+.meter[data-level='expired'] .value {
+  font-style: italic;
+}
+
+/// The exact reset, as text: a phone and a keyboard reach it without a hover (OV-C63).
+.at {
+  @include type-style('helper-text-01');
+  color: var(--cds-text-secondary);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fill {
+    transition: none;
+  }
+}

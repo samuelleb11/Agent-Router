@@ -1,0 +1,471 @@
+// Copied from Northstar ui/src/screens/Settings/Settings.module.scss at e9c1589.
+// Changed: the frame of the area (.settings, .head, .tabs) is Northstar's; the rules of agent-router's six pages follow it (AGEN-0011): cards, facts, switches with their explanation and outcome, rows, forms and snippets that wrap rather than widen a phone.
+@use '@carbon/react/scss/spacing' as *;
+@use '@carbon/react/scss/type' as *;
+@use '@carbon/react/scss/breakpoint' as *;
+
+/// The page frame, the header and the sections come from the kit (`~/components/Page`,
+/// `~/components/PageHeader`, `~/components/StatGrid`). What is left here is the frame of
+/// the area: the field size in a hand, the header and the tabs. The pages' own rules arrive
+/// with them (AGEN-0011).
+
+/// The whole settings area, as the class the kit's `Page` carries.
+///
+/// iOS zooms into a field under 16px and never back out. On a touch pointer every field
+/// takes the 16px body style, and stays there.
+.settings {
+  @media (pointer: coarse) {
+    input,
+    select,
+    textarea {
+      @include type-style('body-02');
+    }
+
+    // A fingertip's target: every button on these pages, Carbon's sizes being for a pointer.
+    :global(.cds--btn) {
+      min-block-size: $spacing-09;
+    }
+  }
+}
+
+/// The page header and the sub-navigation read as one opening, so they sit closer together
+/// than two sections of the page do.
+.head {
+  display: grid;
+  gap: $spacing-05;
+  min-inline-size: 0;
+}
+
+/// Carbon's tab list scrolls its own overflow and shows its own buttons for it; all this
+/// does is stop the tabs forcing the page wider than a phone.
+///
+/// In a hand, scrolling is the wrong answer: the labels do not fit on one line at 390px,
+/// so the strip parked a label half-under each chevron — `Serve` with nothing after it, or
+/// `ositories` with nothing before it (design §5, §8: a control never truncates its own
+/// label). Below `md` the list wraps onto a second row instead, which is the same tabs, the
+/// same anchors and the same `role="tablist"` — only the line they sit on changes. Once
+/// it wraps there is no overflow left to scroll, so Carbon hides its own chevrons; they are
+/// taken out of the flow here too, because a chevron that scrolls nothing is still a target.
+///
+/// The container has to grow with the rows. Carbon caps `.cds--tabs` at one row's height
+/// (`max-block-size` is the `xl` layout size, 64px) with `overflow-x: hidden`, which makes
+/// the other axis scroll. So the wrapped second row sat below the cap, clipped to a 16px
+/// sliver behind a scroll nobody could see -- the last tabs unreachable in a hand while every
+/// test passed, because jsdom lays nothing out. Measured over CDP at 390px in Northstar; the
+/// cap is lifted here the way Carbon's own vertical tabs lift it.
+.tabs {
+  max-inline-size: 100%;
+
+  @include breakpoint-down('md') {
+    max-block-size: none;
+    overflow: visible;
+
+    :global(.cds--tab--list) {
+      flex-wrap: wrap;
+      overflow-x: visible;
+    }
+
+    :global(.cds--tab--overflow-nav-button) {
+      display: none;
+    }
+  }
+
+  // Wrapping is what shrank them. Carbon sizes a tab in a wrapped list at 32px, so the
+  // strip that is the ONLY navigation between the settings pages went from 48px on a
+  // desk to 32px in a hand — the target got smaller exactly where the pointer got bigger,
+  // which is the mobile rule inverted rather than merely unmet (docs/13 §7).
+  @media (pointer: coarse) {
+    :global(.cds--tabs__nav-item),
+    :global(.cds--tabs__nav-link) {
+      min-block-size: $spacing-09;
+      display: flex;
+      align-items: center;
+    }
+  }
+}
+
+
+// ------------------------------------------------------------------ the pages
+
+/// The line under a page's heading: its state at a glance.
+.lead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: $spacing-03 $spacing-05;
+  margin: 0;
+  @include type-style('body-01');
+  color: var(--cds-text-secondary);
+}
+
+.leadLoading {
+  inline-size: auto;
+}
+
+/// An explanation is visible text beside what it explains (ST-C4).
+.explain {
+  margin: 0;
+  max-inline-size: 48rem;
+  @include type-style('body-01');
+  color: var(--cds-text-secondary);
+  overflow-wrap: anywhere;
+
+  code {
+    @include type-style('code-01');
+    color: var(--cds-text-primary);
+  }
+}
+
+.subtle {
+  @include type-style('helper-text-01');
+  color: var(--cds-text-secondary);
+  overflow-wrap: anywhere;
+}
+
+/// The router's refusals and failures, in the status text token that reaches 4.5:1.
+.bad {
+  color: var(--ar-bad);
+  overflow-wrap: anywhere;
+}
+
+// A forge's check that came back well (ST-C107).
+.good {
+  color: var(--ar-ok);
+  overflow-wrap: anywhere;
+}
+
+.warn {
+  color: var(--ar-warn);
+}
+
+.mono {
+  @include type-style('code-01');
+  overflow-wrap: anywhere;
+}
+
+/// A path, a URL or an extension's name: it wraps anywhere rather than widen a phone (SH-C44).
+.path {
+  @include type-style('code-01');
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+
+.block {
+  display: grid;
+  gap: $spacing-04;
+  min-inline-size: 0;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: $spacing-03;
+  min-inline-size: 0;
+}
+
+.inline {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: $spacing-02;
+  align-items: center;
+}
+
+.outcome {
+  min-inline-size: 0;
+
+  :global(.cds--inline-notification) {
+    max-inline-size: 100%;
+    min-inline-size: 0;
+  }
+}
+
+.readFailed {
+  max-inline-size: 100%;
+}
+
+.pinned {
+  margin: 0;
+  @include type-style('body-01');
+}
+
+// ------------------------------------------------------------------ accounts
+
+/// One card per account: two across on a desk, one in a hand, every card a block.
+.cards {
+  display: grid;
+  gap: $spacing-05;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 26rem), 1fr));
+  align-items: start;
+  min-inline-size: 0;
+}
+
+.card {
+  display: grid;
+  gap: $spacing-05;
+  align-content: start;
+  min-inline-size: 0;
+}
+
+.cardHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: $spacing-03;
+  min-inline-size: 0;
+}
+
+.cardTitle {
+  margin: 0;
+  @include type-style('heading-compact-02');
+  color: var(--cds-text-primary);
+  overflow-wrap: anywhere;
+  min-inline-size: 0;
+}
+
+/// A card's facts: a label and its value per line, the values wrapping inside their column.
+.facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: $spacing-03 $spacing-05;
+  margin: 0;
+  min-inline-size: 0;
+
+  dt {
+    @include type-style('label-01');
+    color: var(--cds-text-secondary);
+    padding-block-start: $spacing-01;
+  }
+
+  // A value is as wide as it is, up to its column: a tag keeps its own width rather than stretch.
+  dd {
+    display: grid;
+    justify-items: start;
+    gap: $spacing-02;
+    margin: 0;
+    min-inline-size: 0;
+    @include type-style('body-01');
+    overflow-wrap: anywhere;
+  }
+}
+
+.builtIn {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: $spacing-03;
+}
+
+.editor,
+.form {
+  display: grid;
+  gap: $spacing-05;
+  min-inline-size: 0;
+}
+
+.editor {
+  padding-block-start: $spacing-05;
+  border-block-start: 1px solid var(--cds-border-subtle-01);
+}
+
+/// Two fields side by side on a desk, one under the other in a hand.
+.fields,
+.fields3 {
+  display: grid;
+  gap: $spacing-05;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr));
+  min-inline-size: 0;
+}
+
+.fields3 {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr));
+}
+
+.field {
+  display: grid;
+  gap: $spacing-03;
+  min-inline-size: 0;
+}
+
+.addForm {
+  min-inline-size: 0;
+}
+
+.choices {
+  display: grid;
+  gap: $spacing-03;
+  min-inline-size: 0;
+
+  :global(legend) {
+    @include type-style('label-01');
+    color: var(--cds-text-secondary);
+    margin-block-end: $spacing-03;
+  }
+}
+
+.choice {
+  min-inline-size: 0;
+}
+
+.choiceTitle {
+  display: block;
+  @include type-style('heading-compact-01');
+  padding-inline-end: $spacing-07;
+}
+
+.choiceBody {
+  display: block;
+  margin-block-start: $spacing-02;
+  @include type-style('body-01');
+  color: var(--cds-text-secondary);
+  overflow-wrap: anywhere;
+}
+
+/// A sign-in or a profile login under way.
+.flow {
+  display: grid;
+  gap: $spacing-04;
+  min-inline-size: 0;
+}
+
+/// A code snippet that wraps its text, a long link included, rather than scroll a phone sideways.
+.snippet {
+  max-inline-size: 100%;
+  min-inline-size: 0;
+
+  :global(code),
+  :global(pre) {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    word-break: break-all;
+  }
+}
+
+.snippetRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: $spacing-03;
+  min-inline-size: 0;
+
+  > .snippet {
+    flex: 1 1 14rem;
+  }
+}
+
+// ------------------------------------------------------------------ switches and rows
+
+/// A switch, its explanation and its outcome, together.
+.control {
+  display: grid;
+  gap: $spacing-03;
+  min-inline-size: 0;
+  padding-block: $spacing-04;
+  border-block-start: 1px solid var(--cds-border-subtle-01);
+}
+
+.controlWhy {
+  display: grid;
+  gap: $spacing-03;
+  min-inline-size: 0;
+}
+
+.controlLabel {
+  @include type-style('label-01');
+  color: var(--cds-text-secondary);
+}
+
+.rows {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  min-inline-size: 0;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: $spacing-03 $spacing-05;
+  padding-block: $spacing-03;
+  border-block-start: 1px solid var(--cds-border-subtle-01);
+  min-inline-size: 0;
+}
+
+.rowText {
+  display: grid;
+  gap: $spacing-02;
+  flex: 1 1 14rem;
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
+}
+
+.rowOutcome {
+  flex: 1 0 100%;
+  min-inline-size: 0;
+}
+
+.inlineForm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: $spacing-03 $spacing-05;
+  min-inline-size: 0;
+
+  > :first-child {
+    flex: 1 1 16rem;
+    min-inline-size: 0;
+  }
+}
+
+.secretBox textarea {
+  @include type-style('code-01');
+}
+
+// ------------------------------------------------------------------ dialogs
+
+.confirm :global(.cds--modal-content) p {
+  margin: 0;
+}
+
+.confirmBody {
+  display: grid;
+  gap: $spacing-04;
+  @include type-style('body-01');
+}
+
+.firstBoot {
+  @include breakpoint-down('md') {
+    inline-size: 100%;
+    max-inline-size: 100%;
+  }
+}
+
+.firstBootBody {
+  display: grid;
+  gap: $spacing-05;
+
+  > p {
+    margin: 0;
+    @include type-style('body-01');
+  }
+
+  // No field under 16px under a finger: iOS zooms into a smaller one. The prompt opens over any
+  // screen, outside the Settings frame that sets this for its own pages.
+  @media (pointer: coarse) {
+    input {
+      @include type-style('body-02');
+    }
+  }
+}
+
+/// Back to top: over the page's corner, clear of a phone's home indicator.
+.toTop {
+  position: fixed;
+  inset-block-end: calc(#{$spacing-05} + env(safe-area-inset-bottom, 0px));
+  inset-inline-end: calc(#{$spacing-05} + env(safe-area-inset-right, 0px));
+  z-index: 6000;
+}

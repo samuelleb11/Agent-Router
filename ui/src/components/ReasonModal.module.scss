@@ -1,0 +1,53 @@
+// Copied from Northstar ui/src/components/ReasonModal.module.scss at e9c1589.
+// Changed: on a phone the field takes body-02, which is 16px; Northstar's body-01 compiles to 14px while its comment says it is the 1rem step. The short counter wears the --ar-warn text token.
+@use '@carbon/react/scss/spacing' as *;
+@use '@carbon/react/scss/type' as *;
+@use '@carbon/react/scss/breakpoint' as *;
+
+// One reason dialog. On a desk a small modal; in a hand the whole screen, with the field
+// taking the height a thumb can type into (docs/13 §7).
+
+.container {
+  @include breakpoint-down('md') {
+    inline-size: 100%;
+    max-inline-size: 100%;
+    block-size: 100%;
+    max-block-size: 100%;
+  }
+}
+
+.body {
+  display: grid;
+  gap: $spacing-05;
+  align-content: start;
+
+  @include breakpoint-down('md') {
+    block-size: 100%;
+    grid-template-rows: auto 1fr auto;
+
+    // Carbon's textarea wrapper; the field fills what the prose leaves.
+    :global(.cds--text-area__wrapper),
+    :global(.cds--text-area) {
+      block-size: 100%;
+    }
+    // No field under 16px: iOS zooms into a smaller one and never back out. `body-02`
+    // is the 1rem step of the type scale; `body-01` is 0.875rem.
+    :global(.cds--text-area) {
+      @include type-style('body-02');
+    }
+  }
+}
+
+.prose {
+  @include type-style('body-01');
+  margin: 0;
+  color: var(--cds-text-primary);
+}
+
+.counter {
+  font-variant-numeric: tabular-nums;
+}
+
+.short {
+  color: var(--ar-warn);
+}

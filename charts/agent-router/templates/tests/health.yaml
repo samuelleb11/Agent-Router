@@ -1,0 +1,35 @@
+{{- /*
+`helm test`: the router answers /_router/health through its Service.
+
+By the Service's IP and not its name. The Host guard admits IP literals, localhost and the
+names it was given; the Service's names are among those, but a test by IP proves the
+Service routes to the pod without also depending on that list being right.
+*/}}
+{{- $svcEnv := printf "%s_SERVICE_HOST" (include "agent-router.fullname" . | upper | replace "-" "_") }}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "agent-router.fullname" . }}-health
+  labels:
+    {{- include "agent-router.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: health
+      image: curlimages/curl:8.16.0
+      command: ["sh", "-c"]
+      args:
+        - curl -fsS --max-time 10 "http://${{ $svcEnv }}:{{ .Values.service.port }}/_router/health"
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]

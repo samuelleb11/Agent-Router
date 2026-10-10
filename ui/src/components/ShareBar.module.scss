@@ -1,0 +1,134 @@
+// New for agent-router: a share bar and its legend, on Carbon tokens (docs/web-console-carbon.md,
+// "Why Carbon, and what it does not cover"). Drawn from the dashboard's `.stack` and `.leg`
+// (assets/index.html).
+@use '@carbon/react/scss/spacing' as *;
+@use '@carbon/react/scss/type' as *;
+@use '@carbon/react/scss/motion' as *;
+@use '@carbon/react/scss/breakpoint' as *;
+
+.share {
+  display: grid;
+  gap: $spacing-04;
+  min-inline-size: 0;
+  margin: 0;
+}
+
+/// The parts side by side in their fixed order, on Carbon's track colour. Its pointing zone reaches
+/// 8 px above and below it (OV-C190), so a thin bar is not a thin target.
+.bar {
+  position: relative;
+  display: flex;
+  gap: $spacing-01;
+  block-size: $spacing-04;
+  background: var(--cds-layer-accent-01);
+
+  &::before {
+    content: '';
+    position: absolute;
+    inset-block: calc(-1 * #{$spacing-03});
+    inset-inline: 0;
+  }
+}
+
+.bar[data-size='sm'] {
+  block-size: $spacing-03;
+}
+
+/// A part above zero is at least 3 px wide, so a sliver is still seen (OV-C189): geometry that is
+/// the data's, not spacing. Its width is its share, set on the element.
+.segment {
+  flex-shrink: 1;
+  flex-basis: 0;
+  min-inline-size: 3px;
+  block-size: 100%;
+  transition: flex-grow $duration-moderate-02 motion(standard, productive);
+}
+
+/// The part pointed at, or whose legend row is, is outlined in the ink (OV-C125, OV-C190).
+.segment[data-hot] {
+  outline: $spacing-01 solid var(--cds-text-primary);
+  outline-offset: calc(-1 * #{$spacing-01});
+}
+
+/// One row per part: its key, its name and what else it says, its figure and its share.
+.legend {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: baseline;
+  gap: $spacing-02 $spacing-04;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  @include type-style('label-01');
+  color: var(--cds-text-primary);
+}
+
+/// Each row is a row of the legend's grid, so the figures line up down the column. A subgrid, not
+/// `display: contents`, which some browsers still drop from the accessibility tree with its role.
+.item {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+  align-items: baseline;
+}
+
+.swatch {
+  align-self: center;
+  inline-size: $spacing-03;
+  block-size: $spacing-03;
+}
+
+.name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: $spacing-01 $spacing-03;
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
+}
+
+.icon {
+  flex: none;
+}
+
+.detail {
+  color: var(--cds-text-secondary);
+}
+
+.figure,
+.pct {
+  font-variant-numeric: tabular-nums;
+  text-align: end;
+  white-space: nowrap;
+}
+
+.pct {
+  min-inline-size: 4ch;
+  color: var(--cds-text-secondary);
+}
+
+/// A row's own bar of its share, the width of the row, under its words (OV-C123). Its width is its
+/// share, set on the element; a part above zero is at least 3 px, as in the bar above (OV-C189).
+.rowBar {
+  grid-column: 1 / -1;
+  display: block;
+  block-size: $spacing-02;
+  background: var(--cds-layer-accent-01);
+}
+
+.rowFill {
+  display: block;
+  block-size: 100%;
+  min-inline-size: 3px;
+}
+
+/// The row whose part is lit, lit with it.
+.item[data-hot] {
+  background: var(--cds-layer-hover-01);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .segment {
+    transition: none;
+  }
+}

@@ -88,6 +88,7 @@ private fun Root(app: AppState) {
                         onUsage = { nav.navigate(UsageRoute(router.id)) },
                         onAccounts = { nav.navigate(AccountsRoute(router.id)) },
                         onSettings = { nav.navigate(SettingsRoute(router.id)) },
+                        onSearch = { nav.navigate(SearchRoute(router.id)) },
                     )
                 },
             )
@@ -112,6 +113,19 @@ private fun Root(app: AppState) {
                 onUsage = { nav.navigate(UsageRoute(router.id)) },
                 onAccounts = { nav.navigate(AccountsRoute(router.id)) },
                 onSettings = { nav.navigate(SettingsRoute(router.id)) },
+                onSearch = { nav.navigate(SearchRoute(router.id)) },
+            )
+        }
+        composable<SearchRoute> { entry ->
+            val router = app.store.byId(entry.toRoute<SearchRoute>().id)
+            if (router == null) { nav.popBackStack(); return@composable }
+            SearchScreen(
+                app = app,
+                router = router,
+                onBack = { nav.popBackStack() },
+                // A hit carries only a session id, and SessionRoute already tolerates one
+                // the list has not returned yet.
+                onOpenSession = { nav.navigate(SessionRoute(router.id, it)) },
             )
         }
         composable<UsageRoute> { entry ->

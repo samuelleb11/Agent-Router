@@ -1,0 +1,324 @@
+// Copied from Northstar ui/src/screens/Palette/Palette.module.scss at e9c1589: the rules for what the palette holds.
+// Changed: in its own module, so they arrive with the body rather than with every page; the field shares its row with a Close button; new rules for the step bar, the kind switcher (which scrolls inside itself on a phone rather than truncating a kind), a search hit's snippet and its marks, an identifier beside a detail, and a run's count; Northstar's per-run identifier columns, item kind and stale label are gone with the items.
+@use '@carbon/react/scss/spacing' as *;
+@use '@carbon/react/scss/type' as *;
+@use '@carbon/react/scss/breakpoint' as *;
+@use '@carbon/react/scss/motion' as *;
+
+// The one length written here, once, with its reason: the selected row's edge marker is a
+// 2px rule, and $spacing-01 (2px) is a SPACING token — using it as a border width would be
+// the kind of coincidence that breaks the day the scale moves. Carbon has no border-width
+// token, so the number is named here and used twice.
+$ar-selected-bar: 0.125rem;
+
+// The field and the button that closes the palette, on one row: in a hand there is no
+// Escape key, and a full-height sheet has no outside to tap.
+.field {
+  display: flex;
+  align-items: center;
+  gap: $spacing-03;
+  flex: 0 0 auto;
+  padding-inline: $spacing-05;
+
+  :global(.cds--search) {
+    flex: 1 1 auto;
+    min-inline-size: 0;
+  }
+
+  // Carbon's Search is body-compact-01 (14px); iOS zooms into a field under 16px and never
+  // back out (docs/13 §7), so a touch pointer takes the 16px step.
+  @media (pointer: coarse) {
+    :global(.cds--search-input) {
+      @include type-style('body-compact-02');
+    }
+  }
+  @include breakpoint-down('md') {
+    :global(.cds--search-input) {
+      @include type-style('body-compact-02');
+    }
+  }
+}
+
+.close {
+  flex: 0 0 auto;
+}
+
+// Where a command that asked for more stands, and the way back from it.
+.step {
+  display: flex;
+  align-items: center;
+  gap: $spacing-03;
+  flex: 0 0 auto;
+  padding-inline: $spacing-05;
+}
+
+.stepTitle {
+  @include type-style('heading-compact-01');
+  margin: 0;
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
+}
+
+// The kinds the search can be narrowed to, always in sight while words are searched. On a
+// phone five kinds are wider than the sheet; Carbon would cut each word to an ellipsis, and a
+// kind nobody can read cannot be chosen, so the switcher keeps its words and scrolls sideways
+// inside itself instead. The page never does.
+.kinds {
+  flex: 0 0 auto;
+  padding-inline: $spacing-05;
+
+  @include breakpoint-down('md') {
+    overflow-x: auto;
+
+    :global(.cds--content-switcher) {
+      inline-size: max-content;
+      min-inline-size: 100%;
+    }
+
+    :global(.cds--content-switcher-btn) {
+      flex: 1 0 auto;
+    }
+  }
+}
+
+// The middle band: notices, the hits, and whatever stands where the hits would. It is the
+// only scrolling region, it claims no height of its own, and it shrinks to nothing when
+// there is nothing in it — so the palette is never a tall box with a gap in the middle.
+.results {
+  display: grid;
+  align-content: start;
+  gap: $spacing-05;
+  flex: 1 1 auto;
+  min-block-size: 0;
+  min-inline-size: 0;
+  overflow-y: auto;
+}
+
+.hint {
+  @include type-style('helper-text-01');
+  color: var(--cds-text-secondary);
+  margin: 0;
+  padding-inline: $spacing-05;
+}
+
+.notice {
+  max-inline-size: none;
+  margin-inline: $spacing-05;
+}
+
+.doing {
+  padding-inline: $spacing-05;
+}
+
+// A refusal, in the shared component's words, and what it means here. Carbon caps an inline
+// notification's width; inside the palette it spans the body.
+.refusal {
+  display: grid;
+  gap: $spacing-03;
+  padding-inline: $spacing-05;
+
+  :global(.cds--inline-notification) {
+    max-inline-size: none;
+  }
+}
+
+.reading {
+  display: grid;
+  gap: $spacing-03;
+  padding-inline: $spacing-05;
+}
+
+// The shared empty state carries the page's own inside padding, which is a card's worth;
+// inside a palette that is a hole between the sentence and the rule under it. The one
+// thing changed is how much room it takes.
+.empty > * {
+  padding: $spacing-05;
+}
+
+// Each run of hits is a labelled list, in Carbon's contained-list rhythm: the kind said
+// once over the run instead of on every row.
+.list {
+  display: grid;
+  align-content: start;
+  gap: $spacing-05;
+}
+
+.group {
+  display: grid;
+  gap: $spacing-02;
+  min-inline-size: 0;
+}
+
+// The label sits on the gutter and its rule runs edge to edge, the way a contained list's
+// header does.
+.groupLabel {
+  @include type-style('label-01');
+  color: var(--cds-text-secondary);
+  margin: 0;
+  padding-block-end: $spacing-02;
+  padding-inline: $spacing-05;
+  border-block-end: 1px solid var(--cds-border-subtle-01);
+}
+
+// How many the run held back, beside its name.
+.count {
+  color: var(--cds-text-helper);
+}
+
+// The rows of one run share their columns, so the labels line up under each other, the
+// details start at one edge and the ages end at one edge — a run reads as a table, not as
+// a stack of independent lines. In a hand there is no room for three columns, so each row
+// becomes its own small stack and every fact stays on the row (docs/13 §7).
+.rows {
+  display: grid;
+  min-inline-size: 0;
+
+  @include breakpoint('md') {
+    grid-template-columns: max-content minmax(0, 1fr) auto;
+  }
+}
+
+.hit {
+  display: grid;
+  gap: $spacing-01 $spacing-05;
+  grid-column: 1 / -1;
+  align-items: center;
+  min-block-size: $spacing-08;
+  min-inline-size: 0;
+  // The selected row's 2px bar is taken out of the leading gutter, so a row's words start
+  // on the same edge whether or not it is the selected one.
+  padding-block: $spacing-03;
+  padding-inline: calc(#{$spacing-05} - #{$ar-selected-bar}) $spacing-05;
+  cursor: pointer;
+  color: var(--cds-text-primary);
+  border-inline-start: $ar-selected-bar solid transparent;
+  transition:
+    background-color $duration-fast-01 motion(standard, productive),
+    border-color $duration-fast-01 motion(standard, productive);
+  animation: enter $duration-fast-02 motion(standard, productive) both;
+
+  @include breakpoint('md') {
+    grid-template-columns: subgrid;
+  }
+
+  &:hover {
+    background: var(--cds-layer-hover-01);
+  }
+  &:active {
+    background: var(--cds-layer-active-01);
+  }
+  &[aria-disabled='true'] {
+    cursor: not-allowed;
+    color: var(--cds-text-disabled);
+  }
+
+  // Nothing tappable is smaller than a fingertip (docs/13 §7).
+  @media (pointer: coarse) {
+    min-block-size: $spacing-09;
+  }
+}
+
+.active {
+  background: var(--cds-layer-selected-01);
+  border-inline-start-color: var(--cds-border-interactive);
+
+  &:hover {
+    background: var(--cds-layer-selected-hover-01);
+  }
+}
+
+// The handle of the row: a session's name, a project's, a command.
+.ref {
+  @include type-style('heading-compact-01');
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+// On a desk the detail is one cell of a three-column run and ends in an ellipsis, as a table
+// cell does. In a hand the row is a small stack with the width to itself, so it wraps and
+// carries the whole detail rather than dropping the end of it (docs/13 §7).
+.title {
+  @include type-style('body-compact-01');
+  color: var(--cds-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+
+  @include breakpoint-down('md') {
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+}
+
+// An identifier is set in the mono identifier style wherever it stands — a session's short
+// id, an account's router id, a mode's value — and the words beside it are not.
+.ident {
+  @include type-style('code-01');
+}
+
+.note {
+  @include type-style('body-compact-01');
+}
+
+// The row's age, at the end of the row on a desk and on the row's own last line in a hand:
+// every fact on both platforms (docs/13 §7).
+.meta {
+  @include type-style('label-01');
+  color: var(--cds-text-helper);
+  white-space: nowrap;
+}
+
+// A search hit's context, under its row's columns: at most three lines, wrapping anywhere, so
+// a long path or a token never widens the sheet. Its matches are marked runs of plain text.
+.snippet {
+  @include type-style('body-compact-01');
+  grid-column: 1 / -1;
+  color: var(--cds-text-secondary);
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+
+  mark {
+    background: var(--cds-highlight);
+    color: var(--cds-text-primary);
+  }
+}
+
+// Why choosing this row goes nowhere. It wraps under the row's own columns rather than
+// squeezing one of them, because a reason nobody can read is not a reason.
+.why {
+  @include type-style('helper-text-01');
+  color: var(--cds-text-secondary);
+  grid-column: 1 / -1;
+}
+
+// What was searched, and what a command acts on.
+.scope {
+  display: grid;
+  gap: $spacing-02;
+  flex: 0 0 auto;
+  padding-inline: $spacing-05;
+  border-block-start: 1px solid var(--cds-border-subtle-01);
+  padding-block-start: $spacing-03;
+}
+
+.lead {
+  @include type-style('helper-text-01');
+  color: var(--cds-text-secondary);
+  margin: 0;
+}
+
+@keyframes enter {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}

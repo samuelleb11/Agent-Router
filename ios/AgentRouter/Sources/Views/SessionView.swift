@@ -13,6 +13,7 @@ struct SessionView: View {
     @State private var askModel = false
     @State private var customModel = ""
     @State private var askAside = false
+    @State private var confirmBypass = false
     @State private var asideText = ""
     @FocusState private var composing: Bool
 
@@ -31,16 +32,36 @@ struct SessionView: View {
         .toolbar {
             ToolbarItem(placement: .principal) {
                 VStack(spacing: 1) {
-                    Text(session.projectName).font(.headline)
-                    if let st = feed?.status {
+                    if let machine = session.machineName {
+                        // On a hosted router: which machine the session runs on. A toolbar
+                        // draws a Label as its icon alone, so the title is asked for; a long
+                        // name gives way before the project's.
+                        HStack(spacing: 6) {
+                            Text(session.projectName).font(.headline).layoutPriority(1)
+                            Label(machine, systemImage: "desktopcomputer")
+                                .labelStyle(.titleAndIcon)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .accessibilityLabel("on \(machine)")
+                                .accessibilityIdentifier("session-machine")
+                        }
+                        .lineLimit(1)
+                    } else {
+                        Text(session.projectName).font(.headline)
+                    }
+                    if let feed, feed.connected, let st = feed.status {
                         HStack(spacing: 5) {
-                            StateDot(state: st.state, active: st.isBusy)
-                            Text(statusLine(st))
+                            StateDot(look: st.look)
+                            Text(st.line)
                         }
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    } else if feed?.connected == false {
-                        Text("connecting…").font(.caption).foregroundStyle(.secondary)
+                    } else if let feed, !feed.connected {
+                        // Never the last line the stream sent: see `LiveFeed.linkLine`.
+                        Text(feed.linkLine)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .accessibilityIdentifier("feed-link")
                     }
                 }
             }
@@ -70,8 +91,22 @@ struct SessionView: View {
                             Label("Effort" + (feed.stats?.effort.map { " · \($0)" } ?? ""), systemImage: "gauge.with.needle")
                         }
                         .disabled(!session.wrapped || feed.switching)
+                        Menu {
+                            ForEach(opts?.modes ?? [], id: \.self) { m in
+                                Button {
+                                    // One tap would otherwise stop this session asking
+                                    // about anything, on a Mac nobody may be sitting at.
+                                    if m.isBypass { confirmBypass = true } else { Task { await feed.setMode(m.value) } }
+                                } label: {
+                                    if m.value == feed.stats?.mode { Label(m.label, systemImage: "checkmark") } else { Text(m.label) }
+                                }
+                            }
+                        } label: {
+                            Label("Mode" + (modeLabel.map { " · \($0)" } ?? ""), systemImage: "hand.raised")
+                        }
+                        .disabled(!session.wrapped || feed.switching)
                         if !session.wrapped {
-                            Text("Read-only session: model and effort cannot be changed from here.")
+                            Text("Read-only session: model, effort and mode cannot be changed from here.")
                         }
                         Button("Ask on the side…", systemImage: "text.bubble") { asideText = draft; askAside = true }
                             .disabled(feed.switching)
@@ -114,17 +149,59 @@ struct SessionView: View {
             let f = LiveFeed(session: session, client: state.liveClient)
             feed = f
             async let facts: Void = f.loadFacts()
+            // A permission request never reaches the transcript, so it has to be polled
+            // for. Alongside the stream, not after it: `run()` only returns when the
+            // session ends.
+            async let prompts: Void = pollPrompts(f)
+            async let list: Void = pollSessions()
             await f.run()
+            // One at a time: awaiting several `async let`s as a tuple aborts at runtime.
             _ = await facts
+            _ = await prompts
+            _ = await list
+        }
+        .alert("Bypass permissions?", isPresented: $confirmBypass) {
+            Button("Cancel", role: .cancel) {}
+            Button("Bypass", role: .destructive) { Task { await feed?.setMode("bypassPermissions") } }
+        } message: {
+            Text("This session will stop asking before it runs commands or edits files.")
         }
     }
 
+    /// Two seconds is the same cadence the web view uses: fast enough that a prompt
+    /// does not sit unnoticed, slow enough to be free.
+    private func pollPrompts(_ f: LiveFeed) async {
+        while !Task.isCancelled {
+            await f.loadPrompt()
+            try? await Task.sleep(for: .seconds(2))
+        }
+    }
+
+    /// The other tabs' dots come from the session list (the open one's from its stream,
+    /// see `LiveFeed.look(of:)`), and nothing else re-reads the list while this page
+    /// covers it — so they would keep the states from the moment the session was opened.
+    /// Re-read here at the list's own cadence.
+    private func pollSessions() async {
+        while !Task.isCancelled {
+            try? await Task.sleep(for: .seconds(5))
+            if Task.isCancelled { return }
+            await state.refreshSessions()
+        }
+    }
+
+    /// The mode in force, in the router's wording rather than the CLI's identifier.
+    private var modeLabel: String? {
+        guard let value = feed?.stats?.mode else { return nil }
+        return feed?.options?.modes?.first(where: { $0.value == value })?.label ?? value
+    }
+
     /// Every session of this project that is current, plus this one — creation order,
-    /// so a tab keeps its place for the life of the session.
+    /// so a tab keeps its place for the life of the session. On this machine only: the same
+    /// project on another machine is another project, as the list shows it.
     private var siblings: [LiveSession] {
         let now = Date()
         return state.sessions
-            .filter { $0.projectName == session.projectName }
+            .filter { $0.projectName == session.projectName && $0.machineName == session.machineName }
             .filter { $0.sessionId == session.sessionId || (SessionGroups.isCurrent($0, now: now) && !$0.archived) }
             .sorted { ($0.createdMs ?? $0.lastActivityMs) < ($1.createdMs ?? $1.lastActivityMs) }
     }
@@ -140,12 +217,6 @@ struct SessionView: View {
         }
     }
 
-    private func statusLine(_ st: LiveStatus) -> String {
-        var line = st.quietMs > 4000 ? "\(st.detail) · \(Fmt.duration(TimeInterval(st.quietMs) / 1000))" : st.detail
-        if let q = st.queued, q > 0 { line += " · \(q) queued" }
-        return line
-    }
-
     @ViewBuilder private func content(_ feed: LiveFeed) -> some View {
         VStack(spacing: 0) {
             let tabs = siblings
@@ -158,7 +229,7 @@ struct SessionView: View {
                                 if !on { draft = ""; session = s }
                             } label: {
                                 HStack(spacing: 5) {
-                                    StateDot(state: s.state, active: s.active)
+                                    StateDot(look: feed.look(of: s))
                                     Text(s.label).lineLimit(1)
                                 }
                                 .font(.caption)
@@ -176,7 +247,7 @@ struct SessionView: View {
                 .background(.bar)
                 .accessibilityLabel("Sessions in this project")
             }
-            if let t = feed.stats { FactsStrip(stats: t, project: feed.project) }
+            if let t = feed.stats { FactsStrip(stats: t, project: feed.project, modes: feed.options?.modes) }
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 10) {
@@ -224,20 +295,62 @@ struct SessionView: View {
                 .padding(.vertical, 8)
                 .background(n.ok ? Color.green.opacity(0.12) : Color.orange.opacity(0.15))
             }
+            if let p = feed.pendingPrompt { permissionCard(feed, p) }
             composer(feed)
         }
     }
 
     /// What this person already said in this session, newest first — the web view's
-    /// ArrowUp history, as a menu.
+    /// ArrowUp history, as a menu. Not a side question: the session never heard it.
     private func recent(_ feed: LiveFeed) -> [String] {
         var seen = Set<String>()
         return feed.rows.reversed().compactMap { r -> String? in
-            guard r.item.role == "user", r.item.kind == "text", !r.item.sidechain, !r.pending,
+            guard r.item.role == "user", r.item.kind == "text", !r.item.sidechain, !r.pending, !r.sideQuestion,
                   let t = r.item.text, !t.isEmpty, seen.insert(t).inserted else { return nil }
             return t
         }
         .prefix(8).map { $0 }
+    }
+
+    /// What the session is blocked on, and the ways out of it. The offers come from the
+    /// prompt itself — the router refuses an index it did not offer.
+    @ViewBuilder
+    private func permissionCard(_ feed: LiveFeed, _ p: LivePrompt) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("\(p.displayName ?? p.tool ?? "A tool") is waiting for permission")
+                .font(.subheadline).bold()
+            if let d = p.description, !d.isEmpty {
+                Text(d).font(.footnote).foregroundStyle(.secondary)
+            }
+            if let n = p.count, n > 1 {
+                // The router offers the newest; the rest follow once this one is settled.
+                Text("\(n - 1) more waiting after this one")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                Button("Allow") { Task { await feed.answerPermission(p, allow: true, said: "Allowed.") } }
+                    .buttonStyle(.borderedProminent)
+                ForEach(p.suggestions ?? []) { s in
+                    Button(s.label) {
+                        Task { await feed.answerPermission(p, allow: true, suggestion: s.index, said: s.label + ".") }
+                    }
+                    .buttonStyle(.bordered)
+                    .font(.footnote)
+                }
+                Button("Deny", role: .destructive) {
+                    Task { await feed.answerPermission(p, allow: false, said: "Declined.") }
+                }
+                .buttonStyle(.bordered)
+            }
+            .disabled(feed.switching)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(.yellow.opacity(0.12))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(.yellow.opacity(0.5)))
+        .padding(.horizontal, 12)
+        .padding(.bottom, 4)
     }
 
     private func composer(_ feed: LiveFeed) -> some View {
@@ -297,11 +410,20 @@ struct SessionView: View {
 private struct FactsStrip: View {
     let stats: SessionStats
     let project: ProjectStats?
+    /// Passed in so the strip can show the router's wording for the mode rather than
+    /// the CLI's identifier.
+    let modes: [LiveMode]?
+
+    private var modeLabel: String? {
+        guard let value = stats.mode else { return nil }
+        return modes?.first(where: { $0.value == value })?.label ?? value
+    }
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 Text((stats.model ?? "unknown").replacingOccurrences(of: "claude-", with: "")).bold()
                 if let e = stats.effort { Text("·"); Text("effort \(e)") }
+                if let m = modeLabel { Text("·"); Text(m) }
                 Text("·"); Text("\(Fmt.compact(Double(stats.total))) tokens")
                 Text("·"); Text("\(stats.turns) turn\(stats.turns == 1 ? "" : "s")")
                 if let c = stats.cost { Text("·"); Text(Fmt.usd(c)).bold() }

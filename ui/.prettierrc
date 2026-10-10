@@ -1,0 +1,3 @@
+# Copied from Northstar ui/.prettierrc at e9c1589 (JSON there; YAML here so it can say so).
+# Changed: nothing else.
+singleQuote: true

@@ -3,20 +3,25 @@
 # left in dist/<vsce target>/, into dist/agent-router-<version>-<target>.vsix.
 #
 #   scripts/package-vsix.sh darwin-arm64
+#   scripts/package-vsix.sh win32-x64       # agent-router.exe and claude-wrapper.exe
 #
 # The extension's version is the router's (Cargo.toml), so a Marketplace update always
 # carries a router at least as new as the one it will find running.
 set -eu
 cd "$(dirname "$0")/.."
-VT="${1:?usage: package-vsix.sh <darwin-arm64|darwin-x64|linux-x64|linux-arm64>}"
+VT="${1:?usage: package-vsix.sh <darwin-arm64|darwin-x64|linux-x64|linux-arm64|win32-x64>}"
 SRC="dist/$VT"
-[ -x "$SRC/agent-router" ] || { echo "no binaries in $SRC — run scripts/build-target.sh first" >&2; exit 2; }
+# Windows programs keep their .exe, which is the name the extension looks for there.
+EXE=""
+case "$VT" in win32-*) EXE=".exe" ;; esac
+# -f rather than -x: a cross-built .exe need not carry the execute bit; chmod gives it.
+[ -f "$SRC/agent-router$EXE" ] || { echo "no binaries in $SRC — run scripts/build-target.sh first" >&2; exit 2; }
 VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 
 cd vscode
 rm -rf bin && mkdir -p bin
-cp "../$SRC/agent-router" "../$SRC/claude-wrapper" bin/
-chmod 755 bin/agent-router bin/claude-wrapper
+cp "../$SRC/agent-router$EXE" "../$SRC/claude-wrapper$EXE" bin/
+chmod 755 "bin/agent-router$EXE" "bin/claude-wrapper$EXE"
 printf '%s\n' "$VERSION" > bin/VERSION
 # The manifest version follows the router; edited in place and restored after.
 cp package.json package.json.orig
