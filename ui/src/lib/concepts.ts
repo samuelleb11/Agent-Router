@@ -45,6 +45,7 @@ export const AR_TOKENS = [
   '--ar-model-opus',
   '--ar-model-sonnet',
   '--ar-model-haiku',
+  '--ar-model-kimi',
   '--ar-model-other',
   '--ar-ok',
   '--ar-warn',
@@ -121,12 +122,13 @@ export const CONCEPTS = {
 
 export type Concept = keyof typeof CONCEPTS;
 
-/// A model's family colour (OV-C10). The family itself is read from the model's name by the
-/// formatters; "other" is drawn as a hollow ring, never as a fourth fill.
+/// A model's family colour (OV-C10, OV-C222). The family itself is read from the model's name by
+/// the formatters; "other" is drawn as a hollow ring, never as a fill of its own.
 export const FAMILY_COLOUR = {
   opus: '--ar-model-opus',
   sonnet: '--ar-model-sonnet',
   haiku: '--ar-model-haiku',
+  kimi: '--ar-model-kimi',
   other: '--ar-model-other',
 } as const satisfies Record<string, ArToken>;
 

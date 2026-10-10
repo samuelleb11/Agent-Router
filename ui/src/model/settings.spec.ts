@@ -2,7 +2,7 @@
 // New for agent-router: what Settings decides from /api/auth, beyond what the old checks pinned
 // (docs/web-console-contracts.md, "Settings").
 import { describe, expect, it } from 'vitest';
-import { accountSources, networkStatus, passwordProblem, passwordStatus, readsSetup, settingsPages } from './settings';
+import { accountSources, networkStatus, passwordProblem, passwordStatus, providerName, providerOf, readsSetup, settingsPages } from './settings';
 
 const NOW = Date.UTC(2026, 9, 5, 12, 0, 0);
 
@@ -15,11 +15,18 @@ describe('settings', () => {
     expect(passwordProblem('long enough', 'long enougH')).toBe('the two entries differ');
   });
 
-  it('ST-C101: until /api/auth has said which kind of router this is, no machine-only control is offered, which the page offered', () => {
-    expect(settingsPages(null)).toEqual(['accounts', 'password', 'notifications', 'router']);
-    expect([accountSources(null), readsSetup(null)]).toEqual([['token'], false]);
+  it('ST-C101, ST-C117, ST-C122: until /api/auth has said which kind of router this is, no machine-only control is offered, which the page offered; Models and a Kimi Code key are offered on every router', () => {
+    expect(settingsPages(null)).toEqual(['accounts', 'models', 'password', 'notifications', 'router']);
+    expect([accountSources(null), readsSetup(null)]).toEqual([['token', 'kimi'], false]);
     // A router that predates `mode` is local, with nothing changed (ST-C100).
-    expect(settingsPages({})).toEqual(['accounts', 'claude-code', 'network', 'password', 'notifications', 'router']);
+    expect(settingsPages({})).toEqual(['accounts', 'models', 'claude-code', 'network', 'password', 'notifications', 'router']);
+    expect(accountSources({})).toEqual(['signin', 'token', 'profile', 'kimi']);
+    expect(settingsPages({ mode: 'server' })).toEqual(['accounts', 'models', 'password', 'notifications', 'router', 'forges', 'library']);
+  });
+
+  it('ST-C119: an account names its provider as the router does, and one from a router that predates providers is Anthropic’s', () => {
+    expect([providerName('anthropic'), providerName('kimi'), providerName(null), providerName('glm')]).toEqual(['Anthropic', 'Kimi Code', 'Anthropic', 'glm']);
+    expect([providerOf({}), providerOf({ provider: 'kimi' })]).toEqual(['anthropic', 'kimi']);
   });
 
   it('ST-C77: the password heading says whether one is set and when, or why it matters', () => {

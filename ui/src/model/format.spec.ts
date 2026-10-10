@@ -11,6 +11,7 @@ import {
   duration,
   factTokens,
   factUsd,
+  family,
   id8,
   kindRun,
   kindWord,
@@ -75,6 +76,13 @@ describe('format', () => {
   it('OV-C183: a reset instant in either spelling the router sends, and anything else unknown, never the epoch', () => {
     expect([resetAt('@1789416000'), resetAt('2026-10-05T12:00:00Z')]).toEqual([1_789_416_000_000, NOW]);
     expect([resetAt('soon'), resetAt('@'), resetAt('@x'), resetAt(null)]).toEqual([null, null, null, null]);
+  });
+
+  it('OV-C10, OV-C222: a model’s family is read from its name, Kimi Code’s ids a family of their own, and anything else other', () => {
+    expect(['claude-opus-5-5', 'claude-sonnet-4-5', 'claude-haiku-4-5', 'opus[1m]'].map(family)).toEqual(['opus', 'sonnet', 'haiku', 'opus']);
+    expect(['k3', 'k3-256k', 'k3[1m]', 'kimi-for-coding', 'kimi-for-coding-highspeed'].map(family)).toEqual(['kimi', 'kimi', 'kimi', 'kimi', 'kimi']);
+    // A name that only starts like one is not one.
+    expect(['k30', 'kimik2', 'gpt-x', null].map(family)).toEqual(['other', 'other', 'other', 'other']);
   });
 
   it("OV-C184: a model's short name is the phones', where the page also dropped the date and joined the version", () => {

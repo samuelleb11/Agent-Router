@@ -4,12 +4,12 @@
 // dress another.
 import { useId, useRef, useState, type FormEvent } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Modal, Select, SelectItem, TextInput, Toggletip, ToggletipButton, ToggletipContent } from '@carbon/react';
+import { Modal, Select, SelectItem, SelectItemGroup, TextInput, Toggletip, ToggletipButton, ToggletipContent } from '@carbon/react';
 import { Information } from '@carbon/icons-react';
 import { FormModal } from '~/components/FormModal';
 import { liveKeys, postLive, readOptions, readProject, readStats, type Stats } from '~/data/live';
 import { refusalText } from '~/lib/errors';
-import { liveProjectKey, notice, OTHER_MODEL, switcherOptions, switchNotice, type LiveOptions, type SessionRow } from '~/model/session';
+import { liveProjectKey, notice, OTHER_MODEL, switcherOptions, switcherSections, switchNotice, type LiveOptions, type SessionRow, type SwitchOption } from '~/model/session';
 import { failed, projectFacts, sessionFacts } from './logic';
 import { NoticeLine } from './Notice';
 import { useNotice } from './useNotice';
@@ -24,6 +24,8 @@ const KINDS: readonly { readonly kind: Kind; readonly label: string }[] = [
 ];
 
 const BYPASS = 'bypassPermissions';
+
+const item = (o: SwitchOption) => <SelectItem key={`${o.value}|${o.label}`} value={o.value} text={o.label} />;
 
 /// The strip: what the session is and what it is costing, the project's own total apart, and for a
 /// session under the wrapper the three switchers (SE-C131, SE-C132, SE-C137). Totals are read once
@@ -67,6 +69,7 @@ export function Facts({ session, row }: { session: string; row: SessionRow | nul
 
 /// Model, effort and mode as inline Selects, a phone's native picker each. What they offer is the
 /// router's (SE-C138); each leads with what is in force, or says it is unknown (SE-C139, SE-C140).
+/// The models sit under their provider's name, each by its display name (SE-C233).
 function Switchers({ session, stats, options, say }: { session: string; stats: Stats | null; options: LiveOptions | null; say: (n: ReturnType<typeof notice>) => void }) {
   const id = useId();
   // What is in force: as read, then as switched here (SE-C145).
@@ -144,9 +147,15 @@ function Switchers({ session, stats, options, say }: { session: string; stats: S
           disabled={!!busy[kind]}
           onChange={(e) => chose(kind, e.target.value)}
         >
-          {offered(kind).map((o) => (
-            <SelectItem key={`${o.value}|${o.label}`} value={o.value} text={o.label} />
-          ))}
+          {switcherSections(offered(kind)).map((section) =>
+            section.group === null ? (
+              section.options.map(item)
+            ) : (
+              <SelectItemGroup key={`group|${section.group}`} label={section.group}>
+                {section.options.map(item)}
+              </SelectItemGroup>
+            ),
+          )}
         </Select>
       ))}
       <Toggletip align="bottom-end" className={styles.help}>

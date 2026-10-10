@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { notice, type Ask } from '~/model/session';
 import { press } from '~/test-utils';
 import { FakeEventSource } from './fakes';
-import { A, B, C, defaults, drain, held, hang, json, renderSessions, session, SESSIONS, streamOf, stubRouter, working } from './kit';
+import { A, B, C, defaults, drain, held, hang, json, OPTIONS, renderSessions, session, SESSIONS, streamOf, stubRouter, working } from './kit';
 import { COMPOSING, walk } from './logic';
 import { NoticeLine } from './Notice';
 import { useNotice } from './useNotice';
@@ -327,6 +327,34 @@ describe('the facts strip and its switchers', () => {
       { session: A, model: 'sonnet' },
       { session: A, model: 'opus-4-1' },
     ]));
+  });
+
+  it('SE-C233: the model switcher draws each provider’s models under its name, by display name, and sends the id of the one chosen', async () => {
+    const grouped = {
+      ...OPTIONS,
+      models: ['opus', 'sonnet', 'k3'],
+      by_provider: [
+        { provider: 'anthropic', name: 'Anthropic', models: [{ id: 'opus', display_name: 'opus' }, { id: 'sonnet', display_name: 'sonnet' }] },
+        { provider: 'kimi', name: 'Kimi Code', models: [{ id: 'k3', display_name: 'Kimi K3' }] },
+      ],
+    };
+    const router = stubRouter((req) =>
+      req.method === 'GET' && req.path === '/api/live/options' ? json(grouped) : req.method === 'POST' && req.path === '/api/live/model' ? json({ ok: true, model: 'k3' }) : undefined,
+    );
+    renderSessions(`/live?session=${A}`);
+    await opened();
+    const model = () => facts().getByRole('combobox', { name: 'Model' });
+    await waitFor(() => expect(model().querySelectorAll('optgroup')).toHaveLength(2));
+    const groups = [...model().querySelectorAll('optgroup')].map((g) => [g.getAttribute('label'), [...g.querySelectorAll('option')].map((o) => o.textContent)]);
+    expect(groups).toEqual([
+      ['Anthropic', ['opus', 'sonnet']],
+      ['Kimi Code', ['Kimi K3']],
+    ]);
+    // The value in force leads outside every group, and other… ends the list.
+    expect(model()).toHaveDisplayValue('model: opus-4-1');
+    expect([...model().querySelectorAll(':scope > option')].map((o) => o.textContent)).toEqual(['model: opus-4-1', 'other…']);
+    fireEvent.change(model(), { target: { value: 'k3' } });
+    await waitFor(() => expect(router.posts('/api/live/model').map((p) => p.body)).toEqual([{ session: A, model: 'k3' }]));
   });
 
   it('SE-C141, SE-C142: "other…" asks in a modal, where an empty name changes nothing; Bypass asks first in a danger modal, and declining sends nothing', async () => {

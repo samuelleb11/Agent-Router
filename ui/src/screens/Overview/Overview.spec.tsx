@@ -525,6 +525,33 @@ describe('all accounts', () => {
     await loaded();
     expect([...document.querySelectorAll('[data-account-card]')].map((c) => c.getAttribute('data-account-card'))).toEqual(['secondary', 'retired']);
   });
+
+  it('OV-C218, OV-C219, OV-C221: a Kimi Code account’s card names Kimi Code, draws its second window as Month, a spent window as spent until its reset, and its cost as not priced', async () => {
+    const at = (ms: number) => Math.floor(ms / 1000);
+    const kimi = forecastAccount('kimi', {
+      label: 'Kimi',
+      email: null,
+      provider: 'kimi',
+      plan: null,
+      pool: null,
+      status: 'rejected',
+      usage: { requests: 12, prompt_tokens: 40_000, output_tokens: 900, cost: 0, unpriced: 12, last_seen: NOW - 5 * 60_000 },
+      five_hour: { used: 1, reset_at: at(NOW + 2 * 3_600_000), expired: false, spent: true, basis: 'none', series: [] },
+      seven_day: null,
+      month: { used: 0.12, reset_at: at(NOW + 20 * 86_400_000), expired: false, spent: false, basis: 'none', series: [] },
+    });
+    router((path) => (path === '/api/forecast' ? ok(forecast([forecastAccount('secondary'), kimi])) : undefined));
+    show();
+    await loaded();
+    const card = within(document.querySelector<HTMLElement>('[data-account-card="kimi"]')!);
+    expect(card.getByText(/^Kimi Code · last request 5 min ago/)).toBeInTheDocument();
+    expect(card.getByText('5-hour')).toBeInTheDocument();
+    expect(card.getByText('Month')).toBeInTheDocument();
+    expect(card.queryByText('7-day')).toBeNull();
+    expect(card.getByText(/^spent until it resets in 2h 00m/)).toBeInTheDocument();
+    expect(card.getByText('not priced')).toBeInTheDocument();
+    expect(card.queryByText('$0')).toBeNull();
+  });
 });
 
 describe('Totals in scope', () => {

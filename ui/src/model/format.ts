@@ -182,12 +182,16 @@ export function shortModel(m: string | null | undefined): string {
   return m.startsWith('claude-') ? m.slice('claude-'.length) : m;
 }
 
-export type Family = 'opus' | 'sonnet' | 'haiku' | 'other';
+export type Family = 'opus' | 'sonnet' | 'haiku' | 'kimi' | 'other';
 
-/// A model's family, read from its name; anything else is other (OV-C10).
+/// A model's family, read from its name; anything else is other (OV-C10). Kimi Code's models are
+/// one family, `kimi`: `k3`, `k3-256k`, and every `kimi-…` id (OV-C222).
 export function family(m: string | null | undefined): Family {
   const s = m ?? '';
-  return /opus/.test(s) ? 'opus' : /sonnet/.test(s) ? 'sonnet' : /haiku/.test(s) ? 'haiku' : 'other';
+  if (/opus/.test(s)) return 'opus';
+  if (/sonnet/.test(s)) return 'sonnet';
+  if (/haiku/.test(s)) return 'haiku';
+  return /^(?:k3|kimi)\b/.test(s) ? 'kimi' : 'other';
 }
 
 /// What the dashboard calls a request with no project: the join behind it is a LEFT JOIN, so a

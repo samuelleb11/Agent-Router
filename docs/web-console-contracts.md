@@ -57,7 +57,11 @@ same day Sessions tabbed a hosted router's machines, SE-C226 to SE-C230, so it h
 SE-C231 and SE-C232 in Sessions, which holds 232, and OV-C214 in the Overview, which holds 214.
 The same day the summary learned to answer only the parts asked for, SV-C45, so Serving holds 45,
 and the Overview kept Quota headroom, All accounts and Totals in scope on top and tabbed the rest,
-reading only the open tab: OV-C215 to OV-C217, so the Overview holds 217.
+reading only the open tab: OV-C215 to OV-C217, so the Overview holds 217. On 2026-10-10 the
+`sources` milestone ([Sources](sources-and-models.md), AGEN-0092) gave the console Kimi Code accounts
+and the Models page, ST-C117 to ST-C123, so Settings holds 123; a Kimi Code account's card and the
+`kimi` family, OV-C218 to OV-C222, so the Overview holds 222; and the picker by provider, SE-C233, so
+Sessions holds 233.
 
 ## Shell
 
@@ -529,6 +533,7 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
   mark share, and the ring keeps "other" from reading as one more hue. *Regression:* no. *Source:*
   `assets/index.html:21`, `assets/index.html:234-235`, `assets/index.html:665-666`,
   `assets/index.html:712`, `assets/index.html:742`. *Phones:* `testRangesAndFormats`.
+  *Amended:* Kimi Code's models are a family of their own, `kimi`, with its own colour (OV-C222).
 - **OV-C11** Whatever the page turns off is not displayed and takes no space, an SVG included,
   whatever classes style it. *Why:* "Any class that sets `display` outranks the user-agent rule for
   the hidden attribute, which silently un-hides elements", and in Chrome `hidden` does not hide an
@@ -972,6 +977,7 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
   meter with percentage and reset, or "—" for a window rolled over or never read; each window's
   forecast line; and a footer of cost, tokens read and requests. *Why:* the quota panel's facts for
   every account at once. *Regression:* no. *Source:* `assets/index.html:1406-1436`.
+  *Amended:* a Kimi Code account's card, OV-C218 to OV-C221.
 - **OV-C95** Accounts that share a quota say "shares a quota with <names>" on every card in the
   pool, and the line follows the pool as soon as it changes. *Why:* "Say so rather than letting the
   page read as two independent allowances"; check "two credentials on one quota are named as sharing
@@ -987,6 +993,36 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
   to end with no "undefined" or "NaN" in any line. *Why:* check "the real /api/forecast payload
   renders end to end". *Regression:* no. *Source:* `assets/index.html:1239-1256`,
   `assets/index.html:1359-1437`, `scripts/check-dashboard-ui.js:496-508`.
+- **OV-C218** A Kimi Code account's card says "Kimi Code" on its line and shows its two windows: the
+  5-hour, and the second under its real name — "Month" for `month`, a newer plan's, and "7-day" for
+  `seven_day`, a legacy plan's — each with its meter and its forecast line as any card's. *Why:*
+  Kimi Code's second window is a monthly total on newer plans, and drawn as "7-day" it would misname
+  the quota it measures. *Regression:* no. *Source:* `src/api.rs` (`reading_windows`),
+  `src/forecast.rs` (`MONTH`), [Sources](sources-and-models.md), "Kimi Code".
+- **OV-C219** A spent window — `spent: true`, the provider having refused a request for it — reads
+  as spent until its reset ("spent until it resets in 2h 10m, at …") in the error tone, under a full
+  meter, with no projection and no basis. *Why:* a 403 that names the window says it is spent until
+  it resets; a projection over it would invent work left. *Regression:* no. *Source:* `src/api.rs`
+  (`reading_windows`), `src/quota.rs` (`spent_windows`).
+- **OV-C220** An account that served requests is never "never seen". With no rate-limit reading
+  (`seen_at` null) its line says "last request <ago>" from `usage.last_seen`, its newest request in
+  the range. A Kimi Code account's `seen_at` is when its usage was read, not a request, so its line
+  says "last request <ago>" and "usage read <ago>", each as what it is. *Why:* `seen_at` comes from
+  Anthropic's rate-limit headers, which Kimi Code never sends. *Regression:* no. *Source:*
+  `src/api.rs` (`forecast_inner`, `reading_windows`).
+- **OV-C221** An account with requests the router could not price (`usage.unpriced`) reads "not
+  priced" where its cost is 0, never "$0", and "$X + N not priced" where some were priced. "Spend,
+  every account" says how many requests it leaves out ("leaves out N requests the router could not
+  price"), and reads "—" when none was priced, as Spend does (OV-C178). *Why:* a cost of 0 beside
+  requests with no price is not free. *Regression:* no. *Source:* `src/api.rs` (`forecast_inner`),
+  `src/pricing.rs`.
+- **OV-C222** The model families gain `kimi` — `k3`, `k3-256k` and every `kimi-…` id — with its own
+  colour token, `--ar-model-kimi`, declared in both themes and held by the palette validator as one
+  of the model family set (OV-C9). It stacks after haiku and before other in the activity chart and
+  its legend (OV-C109), and wears its swatch wherever a family is drawn (OV-C10). *Why:* drawn as
+  "other", a Kimi Code request would hide which provider the work went to. *Regression:* no.
+  *Source:* `ui/src/model/format.ts` (`family`), `ui/src/styles.scss`,
+  `ui/scripts/check-palette.mjs`.
 
 ### Headline
 
@@ -1045,6 +1081,7 @@ repository; line numbers are as of this repository's commit `7965562` and Norths
   tokens per <bucket>". *Why:* the plan asks for a fixed legend order and a legend that does not
   filter, which Carbon Charts does by default. *Regression:* no. *Source:*
   `assets/index.html:453-457`, `assets/index.html:1529-1531`, `assets/index.html:1545-1554`.
+  *Amended:* `kimi` stacks after haiku and before other (OV-C222).
 - **OV-C110** The chart spans the selected range, quiet stretches included: every bucket from start
   to end is drawn, an empty one as empty; with the range all it spans the data; with no requests in
   a range it still shows the range. *Why:* "so a quiet hour still shows as an hour of quiet"
@@ -2489,6 +2526,7 @@ defect.
   list for every client: models and efforts are bare values, and modes carry the router's own
   labels. *Why:* the wording lives in the router, not in three clients. *Regression:* no. *Source:*
   `assets/live.html:412-414, 1221-1227`. *Phones:* iOS `testSwitchPayloadsDecode`.
+  *Amended:* the models also come grouped by provider, each with its display name (SE-C233).
 - **SE-C139** A switcher leads with the current value, marked as such ("model: opus") and offered
   even when the router's list lacks it; choosing it again does nothing. *Why:* the reader must see
   what is in force before changing it. *Regression:* no. *Source:*
@@ -2523,6 +2561,14 @@ defect.
   the previous value again sends it. *Why:* a switch back is a switch. *Regression:* no. *Source:*
   `assets/live.html:1228, 1244`. *Today:* broken — the switcher keeps comparing against the value it
   was drawn with, so switching back is a silent no-op and its "model:" mark stays on the old value.
+- **SE-C233** When `/api/live/options` sends `by_provider`, the model switcher groups its models
+  under each provider's name ("Anthropic", "Kimi Code"), each labelled with its display name ("Kimi
+  K3") and sending its id; the value in force still leads, marked, and "other…" still ends it. A
+  router that sends no `by_provider` is offered the flat `models`, as before. The palette's "Set the
+  model…" lists the same models in a run per provider, and a provider's name finds its models.
+  *Why:* a session moves to Kimi Code by picking one of its models, and a bare `k3` among Claude's
+  aliases does not say whose it is. *Regression:* no. *Source:* `src/live.rs` (`options`),
+  [Sources](sources-and-models.md), "Clients". *Phones:* AGEN-0093 and AGEN-0094 group them too.
 
 ### Composer
 
@@ -3329,6 +3375,7 @@ disclosure, and each explanation next to the field it concerns.
   its own. *Regression:* no. *Source:* `docs/web-console-carbon.md:184-188`,
   `docs/web-console-carbon.md:205-206`, `docs/web-console-carbon.md:551-552`,
   `docs/web-console-carbon.md:634`, `assets/index.html:526-644`.
+  *Amended:* Models follows Accounts, on every router (ST-C122).
 - **ST-C2** Every tab can be reached on a 360 px phone. *Why:* Carbon's tabs are capped at
   one 64 px row, so wrapped tabs could not be reached on a Northstar phone, and six sections
   do not fit one row there. *Regression:* yes — Northstar `29472eb`. *Source:*
@@ -3498,6 +3545,22 @@ disclosure, and each explanation next to the field it concerns.
   sign next: the oldest one left. *Why:* the router never leaves itself with nothing to sign
   with, so removing the active account activates the oldest remaining one. *Regression:* no.
   *Source:* `assets/index.html:1998`, `src/accounts.rs:585-606`.
+- **ST-C119** Each account card names its provider, "Anthropic" or "Kimi Code"; a row from a router
+  that predates providers names none and is Anthropic's. Org and Plan are Anthropic's facts, shown
+  for an Anthropic account only; a Kimi Code card shows its base URL in their place, Kimi Code's own
+  (`https://api.kimi.ai/coding`) when it names none. *Why:* a Kimi Code key reports no organisation
+  or plan, and two cards that sign for different providers must not read as one kind.
+  *Regression:* no. *Source:* `src/api.rs` (`accounts_list`: `provider`, `base_url`),
+  `src/accounts.rs` (`Provider::name`), [Sources](sources-and-models.md), "Clients".
+- **ST-C121** Each provider has its own active account. Use makes an account its provider's active
+  one and leaves the other provider's where it was, so two cards can read "active" at once: the
+  heading names each ("me@example.com active · kimi active for Kimi Code"), an active card says
+  whose requests it signs, and Remove's confirmation names the oldest account of the same provider
+  as the one that signs next, a Kimi Code account's key going with it and no claude.ai session key.
+  The palette's "Use …" works the same way, and a Kimi Code account's command reads "Use <name> for
+  Kimi Code". *Why:* `active` became one per provider (AGEN-0082), and "the active account" alone no
+  longer says which. *Regression:* no. *Source:* `src/accounts.rs` (`activate`, `remove`),
+  [Sources](sources-and-models.md), "The catalogue".
 
 ### Accounts: editing
 
@@ -3550,6 +3613,13 @@ disclosure, and each explanation next to the field it concerns.
   *Regression:* yes — check "a hosted router speaks of its deployment, not of this Mac, and a
   local one as it always did". *Source:* `assets/index.html:553-555`,
   `assets/index.html:2294-2295`, `src/accounts.rs:396-401`.
+- **ST-C120** A Kimi Code account's editor rotates its key by Kimi Code's rule — anything but an
+  `sk-ant-` token, refused before sending in the router's sentence — with a placeholder and words
+  of the Kimi Code console, never `sk-ant-oat01-…` or `claude setup-token`; and it offers no
+  claude.ai session key, which reads Anthropic's usage only. *Why:* the router checks a new
+  credential against the account's own provider, so a key judged by Anthropic's rule here would be
+  refused here and taken there. *Regression:* no. *Source:* `src/api.rs` (`accounts_edit`),
+  `src/accounts.rs` (`Provider::key_problem`).
 
 ### Accounts: adding
 
@@ -3638,6 +3708,52 @@ disclosure, and each explanation next to the field it concerns.
   refuses both. *Regression:* yes — check "a hosted router adds an account by pasted token
   only, and a local one every way". *Source:* `assets/index.html:2308-2317`,
   `src/hosted.rs:28-31`, `src/hosted.rs:78-85`, `scripts/check-dashboard-ui.js:371-383`.
+  *Amended:* a Kimi Code key is a pasted key kept as a token, so a hosted router, and one that has
+  not said what it is, offers it beside the setup token (ST-C117); sign-in and profile are still not
+  offered, and the form still opens on the setup token.
+- **ST-C117** Add account offers Kimi Code beside the sign-in, the setup token and the profile on a
+  local router, and beside the setup token on a hosted router and on one that has not said what it
+  is: a choice carrying its own explanation, offered last. It takes a name, a key from the Kimi Code
+  console and an optional base URL, whose field says that blank means Kimi Code's own,
+  `https://api.kimi.ai/coding`. It is sent as `{label, source: "token", provider: "kimi", token,
+  base_url}`, the base URL only when one was typed; an Anthropic token is sent as it always was,
+  naming no provider. *Why:* a Kimi Code key is kept as a setup token is, and the router stores
+  Kimi Code's default itself. *Regression:* no. *Source:* `src/api.rs` (`AddAccount`,
+  `base_url_for`), [Sources](sources-and-models.md), "Words" and "Providers".
+- **ST-C118** Each provider's key rule is checked before sending, beside its field, in the router's
+  words: the `sk-ant-` rule (ST-C11, ST-C48) is for an Anthropic token only; a Kimi Code key must be
+  given ("a token is required for this account type") and must not be an Anthropic token ("that is
+  an Anthropic token — a Kimi Code account takes a key from the Kimi Code console"); a base URL,
+  when one is given, must be an https address (`"http://…" is not an https:// address`). *Why:* a
+  key pasted into the wrong provider's field would be stored, then refused upstream at every
+  request it signed. *Regression:* no. *Source:* `src/accounts.rs` (`Provider::key_problem`),
+  `src/api.rs` (`accounts_add`, `base_url_for`).
+
+### Models
+
+The catalogue ([Sources](sources-and-models.md), "The catalogue"): every model the router can serve,
+each with its provider and the account its next request goes to. A client picks an account by
+picking a model, so this is where the owner decides which account that is. Built 2026-10-10 as
+AGEN-0092, against the router of AGEN-0083.
+
+- **ST-C122** Settings has a Models page after Accounts, on every router, which reads `GET
+  /api/models` each time it opens and after each of its writes. It lists the catalogue: each model
+  by the provider's name for it, with its id, its provider ("Anthropic", "Kimi Code") and the
+  account its next request goes to — the one assigned to it, or its provider's active account,
+  said as which, or that its provider has no active account. A failed read is said in the router's
+  words, never drawn as an empty list (SH-C22), and an empty catalogue says how a model comes to be
+  listed. *Why:* which account a model goes to is a setting the owner reads and changes here.
+  *Regression:* no. *Source:* `src/models.rs` (`list`, `row`, `catalogue`).
+- **ST-C123** Each model has a Carbon list box (a Dropdown) offering its provider's active account
+  first, naming which it is now, then each account of the model's own provider that can sign on
+  this router (a hosted router signs with a pasted key only, ST-C27), and whatever account it is
+  assigned now. Choosing one posts `{model, account}` to `/api/models/assign`, `account: null` for
+  the active account. The box shows the assignment the router reports, read back after the write
+  (ST-C13); it is disabled while the write flies and until the accounts are read. A refusal shows
+  beside it in the router's words — an account of another provider (409), a model nothing serves
+  (400) — and a success says where the model goes now. *Why:* the router refuses an assignment
+  across providers, and a control that could only be refused is not offered (ST-C12).
+  *Regression:* no. *Source:* `src/models.rs` (`assign`, `assign_route`).
 
 ### Claude Code
 

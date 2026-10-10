@@ -6,8 +6,8 @@
 // request rather than learnt from its refusal (docs/web-console-contracts.md, "Settings").
 
 import { ago, DASH, when } from '~/model/format';
-import type { AccountRow, Device, LoginStatus } from '~/data/settings';
-import type { Account } from '~/model/settings';
+import type { AccountRow, Device, LoginStatus, ModelRow } from '~/data/settings';
+import { providerName, providerOf, type Account, type Provider } from '~/model/settings';
 
 /// The router's integers and booleans for one flag: SQLite gives 1 and 0, JSON gives true and false.
 export const flag = (v: number | boolean | null | undefined): boolean => v === true || (typeof v === 'number' && v !== 0);
@@ -60,8 +60,37 @@ export function tokenProblem(token: string): string | null {
   return null;
 }
 
-/// What the router answers a token account added with no token (src/api.rs, `accounts_add`).
+/// The router's rule for a Kimi Code key (src/accounts.rs, `Provider::key_problem`): anything but an
+/// Anthropic token, which could only be refused upstream at every request it signed. Blank is
+/// nobody's problem here, as for a token (ST-C118).
+export function kimiKeyProblem(key: string): string | null {
+  const k = key.trim();
+  if (k === '' || !k.startsWith('sk-ant-')) return null;
+  return 'that is an Anthropic token — a Kimi Code account takes a key from the Kimi Code console';
+}
+
+/// A credential checked by its account's provider's rule: the `sk-ant-` rule is Anthropic's alone
+/// (ST-C11, ST-C118).
+export const keyProblem = (provider: Provider, key: string): string | null => (provider === 'kimi' ? kimiKeyProblem(key) : tokenProblem(key));
+
+/// What the router answers a token account added with no token (src/api.rs, `accounts_add`), a Kimi
+/// Code account's key included.
 export const TOKEN_NEEDED = 'a token is required for this account type';
+
+/// The router's rule for a Kimi Code account's base URL (src/api.rs, `base_url_for`): an https
+/// address with a host, a trailing slash dropped, and named as typed when it is not one. Blank means
+/// Kimi Code's own (ST-C118).
+export function baseUrlProblem(url: string): string | null {
+  const u = url.trim().replace(/\/+$/, '');
+  if (u === '') return null;
+  let parsed: URL | null = null;
+  try {
+    parsed = new URL(u);
+  } catch {
+    parsed = null;
+  }
+  return parsed?.protocol === 'https:' && parsed.host !== '' ? null : `${JSON.stringify(u)} is not an https:// address`;
+}
 
 /// The router's rule for a claude.ai session key (src/quota.rs, `set_usage_token`). Blank means keep.
 export function sessionKeyProblem(key: string): string | null {
@@ -132,33 +161,43 @@ export function expiry(a: Pick<AccountRow, 'ready' | 'expires_at'>): string {
   return a.expires_at > 0 ? when(a.expires_at) : 'no expiry';
 }
 
-/// The list's heading: how many, and which one signs (ST-C22).
-export function accountsHeading(accounts: readonly Pick<AccountRow, 'id' | 'label' | 'email' | 'active'>[]): string {
-  const active = accounts.find((a) => flag(a.active));
+/// The list's heading: how many, and which one signs (ST-C22). Each provider has its own active
+/// account, so an Anthropic one is "active" and any other "active for" its provider, Anthropic's
+/// first (ST-C121).
+export function accountsHeading(accounts: readonly Pick<AccountRow, 'id' | 'label' | 'email' | 'active' | 'provider'>[]): string {
+  const active = accounts.filter((a) => flag(a.active)).sort((a, b) => Number(providerOf(a) !== 'anthropic') - Number(providerOf(b) !== 'anthropic'));
+  const said = active.map((a) => (providerOf(a) === 'anthropic' ? `${accountName(a)} active` : `${accountName(a)} active for ${providerName(providerOf(a))}`));
   const n = accounts.length;
-  return `${n} account${n === 1 ? '' : 's'} · ${active ? `${accountName(active)} active` : 'none active'}`;
+  return `${n} account${n === 1 ? '' : 's'} · ${said.length ? said.join(' · ') : 'none active'}`;
 }
 
-/// The account that signs once `id` is removed: the oldest one left when `id` is the active one,
-/// because the router never leaves itself with nothing to sign with (src/accounts.rs, `remove`).
-/// Undefined when `id` is not active, and null when nothing would be left.
-export function nextSigner<T extends Pick<AccountRow, 'id' | 'active' | 'created_at'>>(accounts: readonly T[], id: string): T | null | undefined {
+/// The account that signs once `id` is removed: the oldest one of its provider left when `id` is
+/// that provider's active one, because the router never leaves a provider with nothing to sign
+/// with (src/accounts.rs, `remove`; ST-C121). Undefined when `id` is not active, and null when
+/// nothing of its provider would be left.
+export function nextSigner<T extends Pick<AccountRow, 'id' | 'active' | 'created_at' | 'provider'>>(accounts: readonly T[], id: string): T | null | undefined {
   const gone = accounts.find((a) => a.id === id);
   if (!gone || !flag(gone.active)) return undefined;
-  const left = accounts.filter((a) => a.id !== id);
+  const left = accounts.filter((a) => a.id !== id && providerOf(a) === providerOf(gone));
   // The router's list is oldest first already; the creation time decides where it is known.
   const oldest = [...left].sort((a, b) => (a.created_at ?? 0) - (b.created_at ?? 0));
   return (left.every((a) => a.created_at != null) ? oldest[0] : left[0]) ?? null;
 }
 
-/// Remove's confirmation: which account, what goes with it, and who signs next (ST-C28).
+/// Remove's confirmation: which account, what goes with it, and who signs next (ST-C28). A Kimi
+/// Code account has a key and no claude.ai session key, and the one that signs next is of its own
+/// provider (ST-C121).
 export function removeWords(accounts: readonly AccountRow[], id: string): string[] {
   const a = accounts.find((x) => x.id === id);
   const name = a ? accountName(a) : id;
-  const said = [`Remove ${name} from the router? Its stored credential and its claude.ai session key are deleted with it.`];
+  const kimi = a !== undefined && providerOf(a) === 'kimi';
+  const said = [
+    kimi ? `Remove ${name} from the router? Its stored key is deleted with it.` : `Remove ${name} from the router? Its stored credential and its claude.ai session key are deleted with it.`,
+  ];
+  const whose = kimi ? 'signing Kimi Code’s requests' : 'signing requests';
   const next = nextSigner(accounts, id);
-  if (next === null) said.push('It is the account signing requests now, and no other is left to sign with.');
-  else if (next) said.push(`It is the account signing requests now: ${accountName(next)}, the oldest one left, signs from the next request.`);
+  if (next === null) said.push(`It is the account ${whose} now, and no other is left to sign with.`);
+  else if (next) said.push(`It is the account ${whose} now: ${accountName(next)}, the oldest one left, signs from the next request.`);
   return said;
 }
 
@@ -171,6 +210,13 @@ export const NOT_ON_A_SERVER =
 /// pasted token on a hosted router, which refuses the rest (ST-C27).
 export const usable = (a: Pick<Account, 'source'>, hosted: boolean): boolean => !hosted || a.source === 'token';
 
+/// What an active card says it does. Each provider has its own active account, which signs that
+/// provider's requests, all but a model's assigned to another account (ST-C121, ST-C123).
+export function activeWords(a: Pick<Account, 'provider'>): string {
+  const whose = providerOf(a) === 'anthropic' ? 'Claude' : providerName(providerOf(a));
+  return `Signs every ${whose} request now, but for a model assigned another account.`;
+}
+
 /// The explanation the "built in" marker carries as visible text (ST-C23).
 export const BUILT_IN = 'Discovered from the Claude Code login on this machine, so the router does not own it.';
 
@@ -179,6 +225,49 @@ export const USAGE_KEY = 'A claude.ai session key is stored for this account, us
 
 /// Dots that look like a filled field, for a secret the page is never sent (ST-C17).
 export const HELD = '•'.repeat(24);
+
+// ---------- models ----------
+
+/// One choice of a model's list box: an account of the model's provider, or null for whichever
+/// account is that provider's active one.
+export interface ModelChoice {
+  readonly id: string | null;
+  readonly label: string;
+}
+
+/// A model as the page names it: the provider's name for it, else its id.
+export const modelName = (m: Pick<ModelRow, 'id' | 'display_name'>): string => m.display_name || m.id;
+
+/// What a model's list box offers (ST-C123): its provider's active account first, naming which one
+/// that is now; then each account of the model's own provider that can sign on this router — the
+/// router refuses another provider's (409), and a hosted router signs with a pasted key only
+/// (ST-C27) — and whatever account it is assigned now, so the box always shows what the router
+/// reports.
+export function modelChoices(model: Pick<ModelRow, 'provider' | 'assigned'>, accounts: readonly AccountRow[], hosted: boolean): [ModelChoice, ...ModelChoice[]] {
+  const own = accounts.filter((a) => providerOf(a) === providerOf(model));
+  const active = own.find((a) => flag(a.active));
+  const first: ModelChoice = { id: null, label: `${providerName(providerOf(model))}’s active account${active ? ` (${accountName(active)})` : ''}` };
+  const rest: ModelChoice[] = own.filter((a) => usable(a, hosted) || a.id === model.assigned).map((a) => ({ id: a.id, label: accountName(a) }));
+  if (model.assigned && !rest.some((c) => c.id === model.assigned)) rest.push({ id: model.assigned, label: model.assigned });
+  return [first, ...rest];
+}
+
+/// Who a model's next request goes to (ST-C122): the account it was assigned, else its provider's
+/// active account, by name; or that its provider has none.
+export function servedBy(model: Pick<ModelRow, 'provider' | 'assigned' | 'serving'>, accounts: readonly AccountRow[]): string {
+  const provider = providerName(providerOf(model));
+  if (!model.serving) return `nothing: ${provider} has no active account`;
+  const a = accounts.find((x) => x.id === model.serving);
+  const name = a ? accountName(a) : model.serving;
+  return model.assigned ? `${name}, assigned to it` : `${name}, ${provider}’s active account`;
+}
+
+/// What an assignment did, once the router took it (ST-C123).
+export function assignedWords(model: Pick<ModelRow, 'id' | 'display_name' | 'provider'>, choice: ModelChoice): string {
+  return choice.id === null
+    ? `${modelName(model)} goes to ${providerName(providerOf(model))}’s active account again.`
+    : `${modelName(model)} goes to ${choice.label} now.`;
+}
 
 // ---------- Claude Code ----------
 

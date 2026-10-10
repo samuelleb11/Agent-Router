@@ -23,7 +23,7 @@ const row = (t: number, model: string | null, over: Partial<TimelineRow> = {}): 
   ...over,
 });
 
-const LOOK = { theme: 'white' as const, fills: { opus: '#7c3aed', sonnet: '#ea580c', haiku: '#0d9488', other: '#854d0e' } };
+const LOOK = { theme: 'white' as const, fills: { opus: '#7c3aed', sonnet: '#ea580c', haiku: '#0d9488', kimi: '#434697', other: '#854d0e' } };
 
 describe('the activity chart', () => {
   it('OV-C110: spans the selected range, quiet stretches included, every bucket drawn and an empty one as empty', () => {
@@ -53,7 +53,7 @@ describe('the activity chart', () => {
     };
     const bk = buckets(tl, tz);
     expect(bk.map((b) => b.t)).toEqual([midnight, midnight + DAY]);
-    expect(bk[0]).toMatchObject({ prompt: 300, requests: 5, fam: { opus: 100, sonnet: 200, haiku: 0, other: 0 }, famReq: { opus: 2, sonnet: 3 } });
+    expect(bk[0]).toMatchObject({ prompt: 300, requests: 5, fam: { opus: 100, sonnet: 200, haiku: 0, kimi: 0, other: 0 }, famReq: { opus: 2, sonnet: 3 } });
   });
 
   it("OV-C112: the bucket width is the router's, and the page draws at most 500 buckets", () => {
@@ -105,17 +105,19 @@ describe('the activity chart', () => {
 
   it('OV-C109: stacks prompt tokens by family, opus at the bottom, in the family colours, with a legend that keeps the order, dims an absent family and never filters', () => {
     const bk = buckets({ start: T0, end: T0 + HOUR, bucket_ms: HOUR, rows: [row(T0, 'claude-haiku-4-5', { prompt_tokens: 5 }), row(T0, 'claude-opus-5', { prompt_tokens: 7 })] }, 0);
-    expect(FAMILIES).toEqual(['opus', 'sonnet', 'haiku', 'other']);
-    expect(chartData(bk).slice(0, 4)).toEqual([
+    expect(FAMILIES).toEqual(['opus', 'sonnet', 'haiku', 'kimi', 'other']);
+    expect(chartData(bk).slice(0, 5)).toEqual([
       { group: 'opus', key: String(T0), value: 7 },
       { group: 'sonnet', key: String(T0), value: 0 },
       { group: 'haiku', key: String(T0), value: 5 },
+      { group: 'kimi', key: String(T0), value: 0 },
       { group: 'other', key: String(T0), value: 0 },
     ]);
     expect(legend(bk)).toEqual([
       { family: 'opus', present: true },
       { family: 'sonnet', present: false },
       { family: 'haiku', present: true },
+      { family: 'kimi', present: false },
       { family: 'other', present: false },
     ]);
     const options = chartOptions(bk, ['x', 'y'], LOOK, 'chart');
@@ -146,6 +148,13 @@ describe('the activity chart', () => {
   it('OV-C117: the caption gives the range’s prompt tokens and requests', () => {
     const bk = buckets({ start: T0, end: T0 + HOUR, bucket_ms: HOUR, rows: [row(T0, 'claude-opus-5', { prompt_tokens: 1_200_000, requests: 3 }), row(T0 + HOUR, null, { prompt_tokens: 0, requests: 1 })] }, 0);
     expect(activityCaption(bk)).toBe('1.20M prompt tokens · 4 requests');
+  });
+
+  it('OV-C222: Kimi Code’s requests stack as their own family, after haiku and before other, in its own colour', () => {
+    const bk = buckets({ start: T0, end: T0, bucket_ms: HOUR, rows: [row(T0, 'k3', { prompt_tokens: 300, requests: 2 }), row(T0, 'kimi-for-coding', { prompt_tokens: 100 }), row(T0, 'gpt-x', { prompt_tokens: 5 })] }, 0);
+    expect(bk[0]).toMatchObject({ fam: { kimi: 400, other: 5 }, famReq: { kimi: 3, other: 1 } });
+    expect(chartData(bk).map((d) => d.group)).toEqual(['opus', 'sonnet', 'haiku', 'kimi', 'other']);
+    expect(bucketTip(bk[0]!, HOUR, T0).rows.find((r) => r.label.startsWith('kimi'))).toEqual({ value: '400', label: 'kimi · 3 req', colour: '--ar-model-kimi' });
   });
 
   it('OV-C200, OV-C213: the chart is handed no animation at all, so a redraw queues no transition a hidden tab would hold', () => {

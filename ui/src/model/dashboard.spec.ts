@@ -218,10 +218,11 @@ describe('the dashboard, as scripts/check-dashboard-ui.js checked it', () => {
       const f = addForm(first);
       return { type: first, token: f.token, signin: f.signin, save: f.save };
     };
-    expect(accountSources(LOCAL), 'what a local router offers').toEqual(['signin', 'token', 'profile']);
-    expect(accountSources(HOSTED), 'what a hosted router offers').toEqual(['token']);
+    // A Kimi Code key is a pasted key too, kept as a token, so every router offers it last (ST-C117).
+    expect(accountSources(LOCAL), 'what a local router offers').toEqual(['signin', 'token', 'profile', 'kimi']);
+    expect(accountSources(HOSTED), 'what a hosted router offers').toEqual(['token', 'kimi']);
     expect(form(HOSTED), 'the form on a hosted router').toEqual({ type: 'token', token: true, signin: false, save: 'Add account' });
-    expect(accountSources(LOCAL), 'what a local router offers once more').toEqual(['signin', 'token', 'profile']);
+    expect(accountSources(LOCAL), 'what a local router offers once more').toEqual(['signin', 'token', 'profile', 'kimi']);
     expect(form(LOCAL), 'the form on a local router').toEqual({ type: 'signin', token: false, signin: true, save: 'Start sign-in' });
   });
 

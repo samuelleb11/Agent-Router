@@ -3,7 +3,8 @@
 // `connectSnippet`, `renderRouterInfo`, `renderPush`, `openEdit`, `renderAccounts`). A hosted
 // router (`agent-router serve --server`) has no Mac behind it, and says so in `mode`; a router that
 // predates the field is local, and nothing changes (ST-C100). The words are the dashboard's,
-// docs/web-console-contracts.md ST-C7 to ST-C103 and SH-C18, SH-C19.
+// docs/web-console-contracts.md ST-C7 to ST-C103 and SH-C18, SH-C19; an account's provider and Kimi
+// Code's are the router's own (ST-C117 to ST-C122).
 //
 // Where the page broke its own rule, the rule is kept:
 // - a password's length is counted the way the router counts it, in characters, so four emoji
@@ -35,34 +36,45 @@ export const isHosted = (auth: Auth | null | undefined): boolean => auth?.mode =
 /// Whether the router has said which kind it is.
 const known = (auth: Auth | null | undefined): auth is Auth => auth != null;
 
-export type Page = 'accounts' | 'claude-code' | 'network' | 'password' | 'notifications' | 'router' | 'forges' | 'library';
+export type Page = 'accounts' | 'models' | 'claude-code' | 'network' | 'password' | 'notifications' | 'router' | 'forges' | 'library';
 
-/// The Settings pages offered. A hosted router has no Claude Code page and no Network page
-/// (OV-C204, ST-C53, ST-C72), and it alone has the Library's Forges and Library pages (ST-C104);
-/// a router that has not said yet what it is has none of these (ST-C101).
+/// The Settings pages offered. Every router has Models, after Accounts (ST-C122). A hosted router
+/// has no Claude Code page and no Network page (OV-C204, ST-C53, ST-C72), and it alone has the
+/// Library's Forges and Library pages (ST-C104); a router that has not said yet what it is has none
+/// of these (ST-C101).
 export function settingsPages(auth: Auth | null | undefined): Page[] {
-  if (known(auth) && isHosted(auth)) return ['accounts', 'password', 'notifications', 'router', 'forges', 'library'];
-  return known(auth) ? ['accounts', 'claude-code', 'network', 'password', 'notifications', 'router'] : ['accounts', 'password', 'notifications', 'router'];
+  if (known(auth) && isHosted(auth)) return ['accounts', 'models', 'password', 'notifications', 'router', 'forges', 'library'];
+  return known(auth) ? ['accounts', 'models', 'claude-code', 'network', 'password', 'notifications', 'router'] : ['accounts', 'models', 'password', 'notifications', 'router'];
 }
 
 /// Whether the setup and the wrapper's state are read at all: never on a hosted router, which
 /// would refuse (OV-C204, ST-C53).
 export const readsSetup = (auth: Auth | null | undefined): boolean => known(auth) && !isHosted(auth);
 
-export type Source = 'signin' | 'token' | 'profile';
+/// The ways to add an account. `kimi` is a Kimi Code key, which the router keeps as it keeps a
+/// pasted token (`source: token`, `provider: kimi`).
+export type Source = 'signin' | 'token' | 'profile' | 'kimi';
 
 /// The ways to add an account: on a local router sign-in first, then a pasted token, then a
 /// separate profile (ST-C40); on a hosted router, which never runs `claude`, a pasted token only
-/// (ST-C52, OV-C205). The first is the form's choice when it opens.
+/// (ST-C52, OV-C205). A Kimi Code key comes last on both, a pasted key like the token (ST-C117).
+/// The first is the form's choice when it opens.
 export function accountSources(auth: Auth | null | undefined): Source[] {
-  return known(auth) && !isHosted(auth) ? ['signin', 'token', 'profile'] : ['token'];
+  return known(auth) && !isHosted(auth) ? ['signin', 'token', 'profile', 'kimi'] : ['token', 'kimi'];
 }
 
-/// The add form for a choice: the token field for a token, the sign-in explanation for sign-in,
-/// and the button's words (ST-C43).
-export function addForm(source: Source): { readonly token: boolean; readonly signin: boolean; readonly save: string; readonly help: string | null } {
+/// The add form for a choice: the token field for a token, the key and base URL fields for a Kimi
+/// Code key, the sign-in explanation for sign-in, and the button's words (ST-C43, ST-C117).
+export function addForm(source: Source): {
+  readonly token: boolean;
+  readonly kimi: boolean;
+  readonly signin: boolean;
+  readonly save: string;
+  readonly help: string | null;
+} {
   return {
     token: source === 'token',
+    kimi: source === 'kimi',
     signin: source === 'signin',
     save: source === 'signin' ? 'Start sign-in' : 'Add account',
     help:
@@ -263,14 +275,38 @@ export const noteText = (segments: readonly Segment[]): string => segments.map((
 
 // ---------- accounts ----------
 
+/// The service an account belongs to (src/accounts.rs, `Provider`). A router that predates
+/// providers sends none, and every account it has is Anthropic's.
+export type Provider = 'anthropic' | 'kimi' | (string & {});
+
+/// Where a Kimi Code account's requests go when it names no base URL of its own
+/// (src/accounts.rs, `Provider::default_base_url`).
+export const KIMI_BASE_URL = 'https://api.kimi.ai/coding';
+
+/// A provider as the router names it (src/accounts.rs, `Provider::name`): "Anthropic", "Kimi Code",
+/// and one it names later as it is sent.
+export function providerName(provider: Provider | null | undefined): string {
+  if (!provider || provider === 'anthropic') return 'Anthropic';
+  if (provider === 'kimi') return 'Kimi Code';
+  return provider;
+}
+
+/// An account's provider, Anthropic's when the row names none.
+export const providerOf = (account: { readonly provider?: Provider | null }): Provider => account.provider || 'anthropic';
+
 /// One row of `GET /api/accounts` (src/api.rs), as much as Settings decides from.
 export interface Account {
   readonly id: string;
   readonly label?: string | null;
   readonly email?: string | null;
   /// `keychain` is the built-in Claude Code login; `profile` a separate Claude Code profile;
-  /// `token` a pasted long-lived token.
+  /// `token` a pasted long-lived token, or a Kimi Code key.
   readonly source?: string | null;
+  /// Absent from a router that predates providers: Anthropic.
+  readonly provider?: Provider | null;
+  /// Where a Kimi Code account's requests go; null for an Anthropic account.
+  readonly base_url?: string | null;
+  /// One per provider: a Claude account and a Kimi Code account can both be active.
   readonly active?: number | boolean | null;
   /// Absent when the credential was not checked; true or 1 when it works.
   readonly ready?: boolean | number | null;

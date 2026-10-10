@@ -1,5 +1,5 @@
 // New for agent-router: Settings → Accounts, against the router's answers (docs/web-console-contracts.md,
-// "Accounts: the list", "Accounts: editing", "Accounts: adding").
+// "Accounts: the list", "Accounts: editing", "Accounts: adding"), a Kimi Code account among them.
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -30,6 +30,25 @@ function show({ auth = LOCAL, accounts = ACCOUNTS, more = {} }: { auth?: typeof 
   return { ...router, ...view, setRows: (next: AccountRow[]) => (rows = next) };
 }
 
+/// A Kimi Code account as `probe=1` answers it: a key the router holds, at Kimi Code's own address.
+const KIMI: AccountRow = {
+  id: 'kimi',
+  label: 'Kimi',
+  source: 'token',
+  provider: 'kimi',
+  base_url: 'https://api.kimi.ai/coding',
+  email: null,
+  org_name: null,
+  subscription_type: null,
+  active: 1,
+  created_at: 40,
+  usage_key: 0,
+  ready: true,
+  detail: 'a Kimi Code key',
+  expires_at: 0,
+  has_token: true,
+};
+
 const card = (name: string) => screen.getByLabelText(`Account ${name}`);
 const cardOf = async (name: string) => screen.findByLabelText(`Account ${name}`);
 const listReads = (r: ReturnType<typeof stubRouter>) => r.gets('/api/accounts').length;
@@ -58,6 +77,23 @@ describe('Accounts: the list', () => {
     expect(within(active).queryByRole('button', { name: 'Use' })).toBeNull();
     // No overflow menu anywhere on the page.
     expect(document.querySelector('.cds--overflow-menu')).toBeNull();
+  });
+
+  it('ST-C119, ST-C121: each card names its provider; Org and Plan are an Anthropic account’s, a Kimi Code card shows its base URL, and each provider’s active account says whose requests it signs', async () => {
+    show({ accounts: [...ACCOUNTS, KIMI] });
+    const kimi = within(await cardOf('Kimi'));
+    expect(kimi.getByText('Provider').nextElementSibling).toHaveTextContent('Kimi Code');
+    expect(kimi.getByText('Base URL').nextElementSibling).toHaveTextContent('https://api.kimi.ai/coding');
+    expect(kimi.queryByText('Org')).toBeNull();
+    expect(kimi.queryByText('Plan')).toBeNull();
+    expect(kimi.getByText('active')).toBeInTheDocument();
+    expect(kimi.getByText('Signs every Kimi Code request now, but for a model assigned another account.')).toBeInTheDocument();
+    const claude = within(card('me@example.com'));
+    expect(claude.getByText('Provider').nextElementSibling).toHaveTextContent('Anthropic');
+    expect(claude.getByText('Org').nextElementSibling).toHaveTextContent('Example Org');
+    expect(claude.queryByText('Base URL')).toBeNull();
+    expect(claude.getByText('Signs every Claude request now, but for a model assigned another account.')).toBeInTheDocument();
+    expect(screen.getByText('4 accounts · me@example.com active · Kimi active for Kimi Code')).toBeInTheDocument();
   });
 
   it('ST-C20: a failed credential shows the router’s whole reason in the error tone; a row read without a check says "not checked"', async () => {
@@ -352,6 +388,24 @@ describe('Accounts: editing', () => {
     }
   });
 
+  it('ST-C120: a Kimi Code key rotates by Kimi Code’s rule, with the Kimi Code console’s words, and offers no claude.ai session key', async () => {
+    const r = show({ accounts: [...ACCOUNTS, { ...KIMI, has_token: false }], more: { 'POST /api/accounts/edit': ok({ ok: true, id: 'kimi' }) } });
+    const form = await edit('Kimi');
+    const key = within(form).getByLabelText('Credential');
+    expect(key).toHaveAttribute('placeholder', 'the key from the Kimi Code console');
+    expect(form).toHaveTextContent('A fresh key from the Kimi Code console');
+    expect(form).not.toHaveTextContent('claude setup-token');
+    expect(within(form).queryByLabelText('claude.ai session key')).toBeNull();
+    fireEvent.change(key, { target: { value: 'sk-ant-oat01-wrong-provider' } });
+    fireEvent.submit(form);
+    expect(await within(form).findByText('that is an Anthropic token — a Kimi Code account takes a key from the Kimi Code console')).toBeInTheDocument();
+    expect(r.posts('/api/accounts/edit')).toEqual([]);
+    // A Kimi Code key is not held to sk-ant-.
+    fireEvent.change(key, { target: { value: 'sk-kimi-rotated' } });
+    fireEvent.submit(form);
+    await waitFor(() => expect(r.posts('/api/accounts/edit')).toEqual([{ id: 'kimi', token: 'sk-kimi-rotated' }]));
+  });
+
   it('ST-C38: the session-key field says what the key is for, and locally that it lives in a Keychain entry apart from the credential', async () => {
     show();
     const local = await edit('work');
@@ -405,8 +459,8 @@ describe('Accounts: adding', () => {
     show();
     const form = await open();
     const radios = within(form).getAllByRole('radio') as HTMLInputElement[];
-    const titles = ['Sign in from here (recommended)', 'Paste a token I already have', 'Separate Claude Code profile'];
-    expect(radios).toHaveLength(3);
+    const titles = ['Sign in from here (recommended)', 'Paste a token I already have', 'Separate Claude Code profile', 'Kimi Code'];
+    expect(radios).toHaveLength(4);
     radios.forEach((r, i) => expect(r.labels?.[0]?.textContent?.startsWith(titles[i]!), titles[i]).toBe(true));
     // Each carries its own explanation, in its own choice.
     expect(radios[1]!.labels?.[0]).toHaveTextContent('The value claude setup-token prints');
@@ -483,19 +537,64 @@ describe('Accounts: adding', () => {
     ]);
   });
 
-  it('ST-C52, ST-C101: a hosted router, and one that has not said what it is, add by pasted token only, drawn for a token from the start', async () => {
+  it('ST-C52, ST-C101, ST-C117: a hosted router, and one that has not said what it is, add by a pasted key only — the setup token, drawn from the start, or Kimi Code’s', async () => {
+    // Each way by the title its choice opens with.
+    const ways = (form: HTMLElement) =>
+      (within(form).getAllByRole('radio') as HTMLInputElement[]).map((r) => ['Paste a token I already have', 'Kimi Code'].find((t) => r.labels?.[0]?.textContent?.startsWith(t)));
     show({ auth: HOSTED });
     const form = await open();
-    expect(within(form).queryAllByRole('radio')).toEqual([]);
+    expect(ways(form)).toEqual(['Paste a token I already have', 'Kimi Code']);
+    expect(within(form).getByRole('radio', { name: /^Paste a token/ })).toBeChecked();
     expect(within(form).getByLabelText('Token')).toBeInTheDocument();
     expect(within(form).getByRole('button', { name: 'Add account' })).toBeInTheDocument();
     expect(form).not.toHaveTextContent('Sign in from here');
+    expect(form).not.toHaveTextContent('Separate Claude Code profile');
     vi.unstubAllGlobals();
     document.body.innerHTML = '';
     show({ more: { '/api/auth': () => new Promise<Response>(() => {}) } });
     const unknown = await open();
-    expect(within(unknown).queryAllByRole('radio')).toEqual([]);
+    expect(ways(unknown)).toEqual(['Paste a token I already have', 'Kimi Code']);
     expect(within(unknown).getByLabelText('Token')).toBeInTheDocument();
+  });
+
+  it('ST-C117, ST-C118: Kimi Code takes a key and an optional base URL, Kimi Code’s own when blank, checked by its own rules before it is sent as a Kimi Code token account', async () => {
+    const r = show({ more: { 'POST /api/accounts': ok({ id: 'kimi', ready: true }) } });
+    const form = await open();
+    expect((within(form).getByRole('radio', { name: /^Kimi Code/ }) as HTMLInputElement).labels?.[0]).toHaveTextContent('A key from the Kimi Code console');
+    choose(form, /^Kimi Code/);
+    expect(within(form).queryByLabelText('Token')).toBeNull();
+    const url = within(form).getByLabelText('Base URL (optional)');
+    expect(url).toHaveAttribute('placeholder', 'https://api.kimi.ai/coding');
+    expect(form).toHaveTextContent('Left blank, Kimi Code’s own: https://api.kimi.ai/coding.');
+    fireEvent.change(within(form).getByLabelText('Name'), { target: { value: 'kimi' } });
+    // Nothing given, an Anthropic token, a plain-http address: each said beside its field, nothing sent.
+    fireEvent.submit(form);
+    expect(await within(form).findByText('a token is required for this account type')).toBeInTheDocument();
+    fireEvent.change(within(form).getByLabelText('Key'), { target: { value: 'sk-ant-oat01-claude' } });
+    fireEvent.change(url, { target: { value: 'http://api.kimi.ai/coding' } });
+    fireEvent.submit(form);
+    expect(await within(form).findByText('that is an Anthropic token — a Kimi Code account takes a key from the Kimi Code console')).toBeInTheDocument();
+    expect(within(form).getByText('"http://api.kimi.ai/coding" is not an https:// address')).toBeInTheDocument();
+    expect(r.posts('/api/accounts')).toEqual([]);
+    // A key that is not sk-ant- is Kimi Code's to judge, and a blank address is its own.
+    fireEvent.change(within(form).getByLabelText('Key'), { target: { value: 'sk-kimi-0123' } });
+    fireEvent.change(url, { target: { value: '' } });
+    fireEvent.submit(form);
+    expect(await screen.findByText('Added kimi.')).toBeInTheDocument();
+    expect(r.posts('/api/accounts')).toEqual([{ label: 'kimi', source: 'token', provider: 'kimi', token: 'sk-kimi-0123' }]);
+  });
+
+  it('ST-C117: a base URL typed for Kimi Code is sent with it', async () => {
+    const r = show({ more: { 'POST /api/accounts': ok({ id: 'kimi-china', ready: true }) } });
+    const form = await open();
+    choose(form, /^Kimi Code/);
+    fireEvent.change(within(form).getByLabelText('Name'), { target: { value: 'kimi china' } });
+    fireEvent.change(within(form).getByLabelText('Key'), { target: { value: 'sk-kimi-0123' } });
+    fireEvent.change(within(form).getByLabelText('Base URL (optional)'), { target: { value: 'https://api.kimi.com/coding/' } });
+    fireEvent.submit(form);
+    await waitFor(() =>
+      expect(r.posts('/api/accounts')).toEqual([{ label: 'kimi china', source: 'token', provider: 'kimi', token: 'sk-kimi-0123', base_url: 'https://api.kimi.com/coding/' }]),
+    );
   });
 
   it('ST-C44: the sign-in page never opens by itself; the whole link is shown, opened in a new tab with no opener or referrer, and copying says when it failed', async () => {

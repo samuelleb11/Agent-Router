@@ -4,7 +4,8 @@
 import { describe, expect, it } from 'vitest';
 import forecastText from './fixtures/forecast.json?raw';
 import { windows } from './fixtures/dashboard';
-import { allAccounts, burnDown, burnDownLayout, fcBasis, fcState, meter, windowMeter, type Forecast, type Window } from './forecast';
+import { allAccounts, burnDown, burnDownLayout, fcBasis, fcState, meter, windowMeter, type Forecast, type ForecastAccount, type Window } from './forecast';
+import { when } from './format';
 
 const NOW = Date.UTC(2026, 9, 5, 12, 0, 0);
 const W = windows(NOW);
@@ -14,6 +15,24 @@ const win = (name: string): Window => {
   return w;
 };
 const FORECAST = JSON.parse(forecastText) as Forecast;
+
+const HOUR = 3600e3;
+/// A Kimi Code account as `/api/forecast` sends it: its windows read from its usage API, a 5-hour and
+/// a month, `seen_at` the reading, and every request one the router could not price.
+const KIMI: ForecastAccount = {
+  id: 'kimi',
+  label: 'Kimi',
+  provider: 'kimi',
+  active: 1,
+  plan: null,
+  usage: { requests: 12, prompt_tokens: 40_000, output_tokens: 900, cost: 0, unpriced: 12, last_seen: NOW - 5 * 60e3 },
+  seen_at: NOW - 2 * 60e3,
+  pool: null,
+  five_hour: { used: 0.3, reset_at: (NOW + 2 * HOUR) / 1000, expired: false, basis: 'none', series: [], spent: false },
+  seven_day: null,
+  month: { used: 0.12, reset_at: (NOW + 20 * 24 * HOUR) / 1000, expired: false, basis: 'none', series: [], spent: false },
+};
+const only = (...accounts: ForecastAccount[]): Forecast => ({ ...FORECAST, accounts });
 
 describe('forecast', () => {
   it('OV-C69: the words are the same on every client', () => {
@@ -111,5 +130,55 @@ describe('forecast', () => {
     ]);
     expect(panel?.headroom).toMatchObject({ value: '3.2 h', sub: '1 quota pool, none projected to run out', tone: 'plain' });
     expect(panel?.pace.sub).toBe('20.67B tokens · from the last 7 days of recorded spend');
+  });
+
+  it('OV-C218: a Kimi Code account’s card names Kimi Code and shows its two windows, the second under its real name, a month or a week', () => {
+    const card = allAccounts(only(KIMI), NOW)?.cards[0];
+    expect(card?.sub).toMatch(/^Kimi Code · /);
+    expect(card?.windows.map((w) => [w.key, w.label, w.meter.text])).toEqual([
+      ['five_hour', '5-hour', '30% used · resets in 2h 00m'],
+      ['month', 'Month', '12% used · resets in 20d 0h'],
+    ]);
+    // A legacy plan's second window is a week, and reads as one.
+    const legacy = allAccounts(only({ ...KIMI, month: null, seven_day: { used: 0.4, reset_at: (NOW + 3 * 24 * HOUR) / 1000, expired: false, basis: 'none', spent: false } }), NOW)?.cards[0];
+    expect(legacy?.windows.map((w) => [w.key, w.label])).toEqual([
+      ['five_hour', '5-hour'],
+      ['seven_day', '7-day'],
+    ]);
+    // An Anthropic account is drawn as it always was.
+    expect(allAccounts(FORECAST, NOW)?.cards[1]?.windows.map((w) => w.label)).toEqual(['5-hour', '7-day']);
+  });
+
+  it('OV-C219: a spent window says it is spent until its reset, in red, with nothing projected over it', () => {
+    const reset = NOW + 2 * HOUR;
+    const spent: Window = { used: 1, reset_at: reset / 1000, expired: false, spent: true, basis: 'this-window', burn_per_active_hour: 0.2, active_hours_left: 0, exhausts_at: NOW, measured_active_hours: 1 };
+    expect(fcState(spent, NOW)).toEqual({ tone: 'bad', text: `spent until it resets in 2h 00m, at ${when(reset)}` });
+    expect(fcBasis(spent)).toBeNull();
+    const card = allAccounts(only({ ...KIMI, status: 'rejected', five_hour: spent }), NOW)?.cards[0];
+    expect(card?.windows[0]?.meter).toMatchObject({ text: '100% used · resets in 2h 00m', level: 'bad' });
+    expect(card?.windows[0]?.line).toEqual({ tone: 'bad', text: `spent until it resets in 2h 00m, at ${when(reset)}`, basis: null });
+  });
+
+  it('OV-C220: an account that served requests is never "never seen", and a Kimi Code account’s usage reading reads as one', () => {
+    const sub = (a: ForecastAccount) => allAccounts(only(a), NOW)?.cards[0]?.sub;
+    expect(sub(KIMI)).toBe('Kimi Code · last request 5 min ago · usage read 2 min ago');
+    expect(sub({ ...KIMI, seen_at: null })).toBe('Kimi Code · last request 5 min ago');
+    expect(sub({ ...KIMI, seen_at: null, usage: { ...KIMI.usage, last_seen: null } })).toBe('Kimi Code · never seen');
+    // An Anthropic account with no rate-limit reading still served its requests.
+    const claude: ForecastAccount = { id: 'work', label: 'work', plan: 'max', seen_at: null, usage: { requests: 3, last_seen: NOW - 3 * 60e3 } };
+    expect(sub(claude)).toBe('max · last request 3 min ago');
+    expect(sub({ ...claude, seen_at: NOW - 60 * 60e3 })).toBe('max · last request 1 h ago');
+    expect(sub({ ...claude, usage: { requests: 0, last_seen: null } })).toBe('max · never seen');
+  });
+
+  it('OV-C221: an account the router could not price reads "not priced", never "$0", and Spend says how many requests it leaves out', () => {
+    expect(allAccounts(only(KIMI), NOW)?.cards[0]?.cost).toBe('not priced');
+    expect(allAccounts(only({ ...KIMI, usage: { ...KIMI.usage, cost: 1.5, unpriced: 3 } }), NOW)?.cards[0]?.cost).toBe('$1.50 + 3 not priced');
+    const mixed = allAccounts({ ...FORECAST, accounts: [...(FORECAST.accounts ?? []), KIMI] }, NOW);
+    expect(mixed?.spend.sub).toBe('across 3 accounts, at API rates · leaves out 12 requests the router could not price');
+    expect(mixed?.spend.value, 'what was priced is still the total').not.toBe('—');
+    expect(mixed?.cards.find((c) => c.id === 'primary')?.cost, 'a priced account as before').toBe('$699.48');
+    // Nothing priced at all: no total, rather than $0.
+    expect(allAccounts({ ...only(KIMI), global: { ...FORECAST.global, cost: 0, accounts: 1 } }, NOW)?.spend).toMatchObject({ value: '—' });
   });
 });

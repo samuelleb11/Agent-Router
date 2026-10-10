@@ -1,5 +1,6 @@
 // New for agent-router: All accounts (assets/index.html, `renderAllAccounts`): every account at once,
-// whatever the page is scoped to (OV-C87), and nothing at all when the forecast lists none (OV-C86).
+// whatever the page is scoped to (OV-C87), and nothing at all when the forecast lists none (OV-C86). A
+// Kimi Code account's card draws its second window under its real name (OV-C218).
 import { Tile } from '@carbon/react';
 import { StatGrid } from '~/components/StatGrid';
 import { StatTile, type Tone } from '~/components/StatTile';
@@ -14,7 +15,7 @@ import styles from './Overview.module.scss';
 const toneOf = (t: LineTone): Tone | undefined => (t === 'bad' ? 'bad' : t === 'warn' ? 'warn' : undefined);
 
 /// A card's window: its meter with percentage and reset, "—" for a window rolled over or never read,
-/// and its forecast line (OV-C94).
+/// and its forecast line (OV-C94), which for a spent window says so until its reset (OV-C219).
 function CardWindow({ label, w, now, tone }: { label: string; w: Window | null | undefined; now: number; tone: 'accent' | 'slate' }) {
   const live = !!w && !w.expired && typeof w.used === 'number';
   const reset = w && w.reset_at != null ? w.reset_at * 1000 : null;
@@ -31,7 +32,6 @@ export function AllAccounts({ forecast, now, busy }: { forecast: Reading<Forecas
   if (!all) return null;
   const tiles = [all.spend, all.tokens, all.requests, all.headroom, all.pace];
   const Person = CONCEPTS.account.icon;
-  const list = forecast?.value.accounts ?? [];
   return (
     <Panel concept="account" title="All accounts" caption={all.caption} busy={busy}>
       <StatGrid label="Every account">
@@ -47,26 +47,24 @@ export function AllAccounts({ forecast, now, busy }: { forecast: Reading<Forecas
         </p>
       )}
       <div className={styles.cards}>
-        {all.cards.map((c) => {
-          const a = list.find((x) => x.id === c.id);
-          return (
-            <Tile key={c.id} className={styles.card} data-account-card={c.id}>
-              <p className={styles.cardName}>
-                <Person aria-hidden="true" style={{ fill: paint(CONCEPTS.account.colour) }} />
-                {c.name}
-                {c.active && <span className={styles.activeTag}>active</span>}
-              </p>
-              <p className={styles.note}>{c.sub}</p>
-              <CardWindow label="5-hour" w={a?.five_hour} now={now} tone="accent" />
-              <CardWindow label="7-day" w={a?.seven_day} now={now} tone="slate" />
-              <p className={styles.cardFoot}>
-                <span>{c.cost}</span>
-                <span>{c.read}</span>
-                <span>{c.requests}</span>
-              </p>
-            </Tile>
-          );
-        })}
+        {all.cards.map((c) => (
+          <Tile key={c.id} className={styles.card} data-account-card={c.id}>
+            <p className={styles.cardName}>
+              <Person aria-hidden="true" style={{ fill: paint(CONCEPTS.account.colour) }} />
+              {c.name}
+              {c.active && <span className={styles.activeTag}>active</span>}
+            </p>
+            <p className={styles.note}>{c.sub}</p>
+            {c.windows.map((w, i) => (
+              <CardWindow key={w.key} label={w.label} w={w.window} now={now} tone={i === 0 ? 'accent' : 'slate'} />
+            ))}
+            <p className={styles.cardFoot}>
+              <span>{c.cost}</span>
+              <span>{c.read}</span>
+              <span>{c.requests}</span>
+            </p>
+          </Tile>
+        ))}
       </div>
     </Panel>
   );

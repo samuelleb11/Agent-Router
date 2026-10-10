@@ -16,6 +16,11 @@
 //   window, and names the first account to run out by its label, with the window and the time
 //   (OV-C92, OV-C93);
 // - a card's window with no reading shows "—", never "0% used" (OV-C58, OV-C94).
+//
+// A Kimi Code account reports its windows through its own usage API rather than rate-limit headers:
+// its card shows the 5-hour window and the second under its real name, a month or a week, a spent
+// window as spent until its reset, its last request whenever it served one, and "not priced" where
+// the router could not price it (OV-C218 to OV-C221).
 
 import { DASH, ago, compact, count, duration, hours, plural, relative, tod, usd, when } from './format';
 
@@ -54,11 +59,17 @@ export interface Window {
   readonly readings?: number | null;
   readonly expired?: boolean | null;
   readonly seen_at?: number | null;
+  /// The provider refused a request for this window: spent until `reset_at` (OV-C219).
+  readonly spent?: boolean | null;
   /// Readings across the window, epoch milliseconds and a fraction used.
   readonly series?: readonly { readonly t: number; readonly u: number }[] | null;
 }
 
 export type WindowKey = 'five_hour' | 'seven_day';
+
+/// A window on an account's card: a Kimi Code account's second window is a month on newer plans,
+/// and a week on legacy ones as every other account's is (OV-C218).
+export type CardWindowKey = WindowKey | 'month';
 
 export interface ForecastAccount {
   readonly id: string;
@@ -66,13 +77,21 @@ export interface ForecastAccount {
   readonly email?: string | null;
   readonly plan?: string | null;
   readonly active?: number | boolean | null;
+  /// `anthropic` or `kimi`; absent from a router that predates providers, and for an account the
+  /// router no longer holds.
+  readonly provider?: string | null;
   readonly usage?: {
     readonly requests?: number | null;
     readonly prompt_tokens?: number | null;
     readonly output_tokens?: number | null;
     readonly cost?: number | null;
+    /// Requests with usage the router could not price: a cost of 0 beside them is not free.
+    readonly unpriced?: number | null;
+    /// Epoch milliseconds of its newest request in the range.
     readonly last_seen?: number | null;
   } | null;
+  /// Epoch milliseconds: when its rate-limit headers were last seen, or for a Kimi Code account
+  /// when its usage was last read.
   readonly seen_at?: number | null;
   readonly status?: string | null;
   /// The 7-day reset that identifies a quota pool: two credentials onto one Anthropic account
@@ -80,6 +99,7 @@ export interface ForecastAccount {
   readonly pool?: number | string | null;
   readonly five_hour?: Window | null;
   readonly seven_day?: Window | null;
+  readonly month?: Window | null;
 }
 
 export interface Forecast {
@@ -134,6 +154,8 @@ export function fcState(w: Window | null | undefined, now: number = Date.now()):
   if (!w) return { tone: 'plain', text: 'no rate-limit reading yet' };
   // An old utilisation is never shown as current (OV-C72).
   if (w.expired) return { tone: 'plain', text: `window rolled over ${ago(num(w.reset_at) * 1000, now)} · nothing seen since` };
+  // The provider said so: spent until it resets, with nothing to project (OV-C219).
+  if (w.spent) return { tone: 'bad', text: `spent until it resets ${relative(num(w.reset_at) * 1000, now)}, at ${when(num(w.reset_at) * 1000)}` };
   // Already there, whatever basis the burn came from (OV-C74). The router says so with no hours
   // left and a crossing at the moment it read the window.
   const full = num(w.used) >= 1;
@@ -166,7 +188,7 @@ export function fcState(w: Window | null | undefined, now: number = Date.now()):
 /// What a projection was fitted on, as visible text under it (OV-C76). A borrowed rate never
 /// claims a fit (OV-C77), and the duty band is disclosed exactly when it has width (OV-C78).
 export function fcBasis(w: Window | null | undefined): string | null {
-  if (!w || w.expired || w.basis === 'none' || !num(w.burn_per_active_hour)) return null;
+  if (!w || w.expired || w.spent || w.basis === 'none' || !num(w.burn_per_active_hour)) return null;
   const rate = `${(num(w.burn_per_active_hour) * 100).toFixed(1)}% per hour of work`;
   if (w.basis === 'trailing-windows') return `${rate} · nothing burnt yet this window, so this is your recent average`;
   const pct = (v: unknown) => Math.round(num(v) * 100);
@@ -327,8 +349,10 @@ export interface Tile {
 }
 
 export interface CardWindow {
-  readonly key: WindowKey;
+  readonly key: CardWindowKey;
   readonly label: string;
+  /// The window as the router sent it, for the meter to draw.
+  readonly window: Window | null;
   readonly meter: Meter;
   readonly line: Line | null;
 }
@@ -338,8 +362,10 @@ export interface AccountCard {
   readonly name: string;
   /// Serving new requests.
   readonly active: boolean;
-  /// Its plan, when it was last seen, and any quota it shares.
+  /// Its provider when it is not Anthropic, its plan, when it was last seen, and any quota it
+  /// shares.
   readonly sub: string;
+  /// The 5-hour window, then the second: 7-day, or a Kimi Code account's month (OV-C218).
   readonly windows: readonly [CardWindow, CardWindow];
   readonly cost: string;
   readonly read: string;
@@ -367,6 +393,35 @@ export interface AllAccounts {
 }
 
 const nameOf = (a: Pick<ForecastAccount, 'id' | 'label'>): string => a.label || a.id;
+
+/// An account's second window and its real name: a Kimi Code account on a newer plan has a month
+/// where every other has a week (OV-C218).
+function secondWindow(a: ForecastAccount): { readonly key: CardWindowKey; readonly label: string; readonly window: Window | null | undefined } {
+  return a.month != null ? { key: 'month', label: 'Month', window: a.month } : { key: 'seven_day', label: '7-day', window: a.seven_day };
+}
+
+/// When an account was last seen, in words (OV-C94, OV-C220). An account that served requests is
+/// never "never seen": a rate-limit reading says when its last request was, and with none its newest
+/// request in the range does. A Kimi Code account's reading is of its usage, not of a request, so it
+/// says both.
+function seenWords(a: ForecastAccount, now: number): string {
+  const lastRequest = a.usage?.last_seen;
+  if (a.provider === 'kimi') {
+    const said = [lastRequest ? `last request ${ago(lastRequest, now)}` : null, a.seen_at ? `usage read ${ago(a.seen_at, now)}` : null].filter(Boolean);
+    return said.length ? said.join(' · ') : 'never seen';
+  }
+  const at = a.seen_at || lastRequest;
+  return at ? `last request ${ago(at, now)}` : 'never seen';
+}
+
+/// What an account cost (OV-C221): a cost of 0 beside requests the router could not price is not
+/// free, so it reads "not priced", never "$0"; a priced cost with some it could not price says how
+/// many it leaves out.
+function costWords(u: NonNullable<ForecastAccount['usage']>): string {
+  const unpriced = num(u.unpriced);
+  if (!unpriced) return usd(u.cost);
+  return num(u.cost) > 0 ? `${usd(u.cost)} + ${count(unpriced)} not priced` : 'not priced';
+}
 
 /// Every account at once, whatever the page is scoped to (OV-C87); null — the panel, its heading
 /// and its tiles gone — when the forecast lists no account or could not be read (OV-C86). Spend,
@@ -413,33 +468,42 @@ export function allAccounts(fc: Forecast | null | undefined, now: number = Date.
     const key = String(a.pool);
     pools.set(key, [...(pools.get(key) ?? []), nameOf(a)]);
   }
-  const cardWindow = (key: WindowKey, label: string, w: Window | null | undefined): CardWindow => ({
+  const cardWindow = (key: CardWindowKey, label: string, w: Window | null | undefined): CardWindow => ({
     key,
     label,
+    window: w ?? null,
     meter: windowMeter(w, now),
     line: fcLine(w, now),
   });
   const cards = list.map((a): AccountCard => {
     const shared = a.pool == null ? [] : (pools.get(String(a.pool)) ?? []).filter((x) => x !== nameOf(a));
-    const sub = [a.plan, a.seen_at ? `last request ${ago(a.seen_at, now)}` : 'never seen', shared.length ? `shares a quota with ${shared.join(', ')}` : null]
-      .filter(Boolean)
-      .join(' · ');
+    const provider = a.provider === 'kimi' ? 'Kimi Code' : null;
+    const sub = [provider, a.plan, seenWords(a, now), shared.length ? `shares a quota with ${shared.join(', ')}` : null].filter(Boolean).join(' · ');
     const u = a.usage ?? {};
+    const second = secondWindow(a);
     return {
       id: a.id,
       name: nameOf(a),
       active: a.active === true || num(a.active) > 0,
       sub,
-      windows: [cardWindow('five_hour', '5-hour', a.five_hour), cardWindow('seven_day', '7-day', a.seven_day)],
-      cost: usd(u.cost),
+      windows: [cardWindow('five_hour', '5-hour', a.five_hour), cardWindow(second.key, second.label, second.window)],
+      cost: costWords(u),
       read: `${compact(u.prompt_tokens)} read`,
       requests: `${count(u.requests)} req`,
     };
   });
 
+  // The requests no account's cost includes: a total over them is not their price (OV-C221).
+  const unpriced = list.reduce((sum, a) => sum + num(a.usage?.unpriced), 0);
+  const leaves = unpriced ? ` · leaves out ${plural(unpriced, 'request', 'requests')} the router could not price` : '';
   return {
     caption: `${plural(list.length, 'account', 'accounts')} · spend and tokens add up, quota does not`,
-    spend: { label: 'Spend, every account', value: usd(g.cost), sub: `across ${plural(g.accounts, 'account', 'accounts')}, at API rates`, tone: 'plain' },
+    spend: {
+      label: 'Spend, every account',
+      value: unpriced && !(num(g.cost) > 0) ? DASH : usd(g.cost),
+      sub: `across ${plural(g.accounts, 'account', 'accounts')}, at API rates${leaves}`,
+      tone: 'plain',
+    },
     tokens: { label: 'Tokens read', value: compact(g.prompt_tokens), sub: `${compact(g.output_tokens)} written back`, tone: 'plain' },
     requests: { label: 'Requests', value: count(g.requests), sub: 'in the selected range', tone: 'plain' },
     headroom,

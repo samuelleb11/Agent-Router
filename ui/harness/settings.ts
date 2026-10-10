@@ -3,7 +3,7 @@
 // src/login.rs). Invented, every one. A local router, guarded and on the network, so every page
 // is drawn and the first-boot prompt stays shut; the long names and the long reason are there to
 // see a phone wrap them.
-import type { AccountRow, LoginStatus, Push, Setup, Shim } from '~/data/settings';
+import type { AccountRow, LoginStatus, ModelRow, Push, Setup, Shim } from '~/data/settings';
 import type { Auth } from '~/model/settings';
 
 const AT = Date.UTC(2026, 9, 5, 9, 0, 0);
@@ -126,6 +126,14 @@ export const PUSH: Push = {
   last_sent: { at: AT - 3_600_000, what: 'agent-router: waiting on you' },
 };
 
+/// The catalogue (ST-C122): the Claude models the request log has seen, one of them given an account
+/// of its own, each served by the account that would take its next request.
+export const MODELS: readonly ModelRow[] = [
+  { id: 'claude-haiku-4-5', provider: 'anthropic', display_name: 'claude-haiku-4-5', assigned: 'work', serving: 'work' },
+  { id: 'claude-opus-5-5', provider: 'anthropic', display_name: 'claude-opus-5-5', assigned: null, serving: 'default' },
+  { id: 'claude-sonnet-5-5', provider: 'anthropic', display_name: 'claude-sonnet-5-5', assigned: null, serving: 'default' },
+];
+
 /// No sign-in has run: what the router answers before the first one (ST-C46).
 export const LOGIN: LoginStatus = { phase: 'failed', url: null, label: '', account_id: null, email: null, error: null };
 
@@ -142,5 +150,6 @@ export function settingsRead(path: string, query: URLSearchParams): Response | n
   if (path === '/api/setup/shim' && only()) return json(SHIM);
   if (path === '/api/push' && only()) return json(PUSH);
   if (path === '/api/login/status' && only()) return json(LOGIN);
+  if (path === '/api/models' && only()) return json(MODELS);
   return null;
 }

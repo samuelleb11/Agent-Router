@@ -569,7 +569,7 @@
   block-size: $spacing-03;
 }
 
-/// "Other" is a hollow ring, never a fourth fill (OV-C10).
+/// "Other" is a hollow ring, never a fill of its own (OV-C10).
 .swatch[data-family='other'] {
   border: 2px solid var(--ar-model-other);
   border-radius: 50%;

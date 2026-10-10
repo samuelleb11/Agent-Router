@@ -919,8 +919,20 @@ export function asideNotice(status: number, body: unknown): Notice | null {
 
 // ---------- switchers ----------
 
+/// One provider's models, as `/api/live/options` groups them (src/live.rs, `options`): Claude's
+/// aliases under Anthropic, Kimi Code's models under Kimi Code.
+export interface ProviderModels {
+  readonly provider: string;
+  /// The provider's name: "Anthropic", "Kimi Code".
+  readonly name: string;
+  readonly models: readonly { readonly id: string; readonly display_name?: string | null }[];
+}
+
 export interface LiveOptions {
   readonly models?: readonly string[] | null;
+  /// The same models grouped by provider. A router from before there was a second provider sends
+  /// none, and the flat list is offered as it always was (SE-C233).
+  readonly by_provider?: readonly ProviderModels[] | null;
   readonly efforts?: readonly string[] | null;
   readonly modes?: readonly { readonly value: string; readonly label: string }[] | null;
 }
@@ -929,6 +941,9 @@ export interface SwitchOption {
   readonly value: string;
   readonly label: string;
   readonly current: boolean;
+  /// The provider a model is offered under, by name; none for the value in force, a value the router
+  /// does not list, and "other…" (SE-C233).
+  readonly group?: string;
 }
 
 /// The "other…" entry of the model switcher, which asks for a name in a modal (SE-C141).
@@ -937,14 +952,35 @@ export const OTHER_MODEL = '__other__';
 /// A switcher's options: the current value first, marked ("model: opus") and offered even when the
 /// router's list lacks it (SE-C139), or "unknown" when the session has none on record, never its
 /// first option as though it were current (SE-C140); the router's own labels for modes (SE-C138).
+/// Models come grouped by provider when the router groups them, each by its display name, and
+/// "other…" ends them (SE-C141, SE-C233).
 export function switcherOptions(kind: 'model' | 'effort' | 'mode', current: string | null | undefined, options: LiveOptions): SwitchOption[] {
   const modes = options.modes ?? [];
-  const list = kind === 'model' ? (options.models ?? []) : kind === 'effort' ? (options.efforts ?? []) : modes.map((m) => m.value);
-  const labelOf = (v: string) => (kind === 'mode' ? modes.find((m) => m.value === v)?.label || v : v);
+  const groups = kind === 'model' && options.by_provider?.length ? options.by_provider : null;
+  const named = new Map<string, { readonly label: string; readonly group: string }>();
+  for (const g of groups ?? []) for (const m of g.models) if (!named.has(m.id)) named.set(m.id, { label: m.display_name || m.id, group: g.name });
+  const list = groups ? [...named.keys()] : kind === 'model' ? (options.models ?? []) : kind === 'effort' ? (options.efforts ?? []) : modes.map((m) => m.value);
+  const labelOf = (v: string) => (kind === 'mode' ? modes.find((m) => m.value === v)?.label || v : (named.get(v)?.label ?? v));
   const cur = (current ?? '').replace(/^claude-/, '');
-  const out: SwitchOption[] = [...new Set([cur, ...list].filter(Boolean))].map((v) => ({ value: v, label: `${v === cur ? `${kind}: ` : ''}${labelOf(v)}`, current: v === cur }));
+  const out: SwitchOption[] = [...new Set([cur, ...list].filter(Boolean))].map((v) => {
+    const group = v === cur ? undefined : named.get(v)?.group;
+    return { value: v, label: `${v === cur ? `${kind}: ` : ''}${labelOf(v)}`, current: v === cur, ...(group ? { group } : {}) };
+  });
   if (!cur) out.unshift({ value: '', label: `${kind}: unknown`, current: true });
   if (kind === 'model') out.push({ value: OTHER_MODEL, label: 'other…', current: false });
+  return out;
+}
+
+/// A switcher's options as its picker draws them: each run of one provider's models under that
+/// provider's name, in the order they came, and everything else on its own (SE-C233).
+export function switcherSections(options: readonly SwitchOption[]): { readonly group: string | null; readonly options: readonly SwitchOption[] }[] {
+  const out: { group: string | null; options: SwitchOption[] }[] = [];
+  for (const o of options) {
+    const group = o.group ?? null;
+    const last = out[out.length - 1];
+    if (last && last.group === group) last.options.push(o);
+    else out.push({ group, options: [o] });
+  }
   return out;
 }
 

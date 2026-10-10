@@ -82,7 +82,7 @@ describe('the Settings writers, through the fetch layer', () => {
 
     const NO_PROFILE = "a profile account is a Claude Code login directory on the router's machine, which a hosted router does not have — run `claude setup-token` on your machine and paste the token";
     stubFetch({ '/api/accounts': () => json({ ok: false, error: NO_PROFILE }, 409) });
-    expect((await failure(addAccount('side', 'profile'))).words).toBe(NO_PROFILE);
+    expect((await failure(addAccount('side', { source: 'profile' }))).words).toBe(NO_PROFILE);
 
     const PINNED = 'the password is set by the deployment (AGENT_ROUTER_PASSWORD); change the Secret and restart the router';
     stubFetch({ '/api/auth': () => json({ ok: false, error: PINNED }, 409) });

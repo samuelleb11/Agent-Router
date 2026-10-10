@@ -13,8 +13,9 @@ import type { TipRow } from '~/components/DataTip';
 import { FAMILY_COLOUR } from '~/lib/concepts';
 import { bucketName, compact, count, family, hm, monthDay, pct, plural, tod, usd, type Family } from '~/model/format';
 
-/// The families, in the order they stack from the bottom and the legend reads (OV-C109).
-export const FAMILIES: readonly Family[] = ['opus', 'sonnet', 'haiku', 'other'];
+/// The families, in the order they stack from the bottom and the legend reads (OV-C109): Kimi
+/// Code's after Claude's three, "other" last (OV-C222).
+export const FAMILIES: readonly Family[] = ['opus', 'sonnet', 'haiku', 'kimi', 'other'];
 
 /// The page draws at most this many buckets (OV-C112).
 export const MAX_BUCKETS = 500;
@@ -35,7 +36,7 @@ export interface Bucket {
   readonly famReq: Readonly<Record<Family, number>>;
 }
 
-const zeroes = (): Record<Family, number> => ({ opus: 0, sonnet: 0, haiku: 0, other: 0 });
+const zeroes = (): Record<Family, number> => ({ opus: 0, sonnet: 0, haiku: 0, kimi: 0, other: 0 });
 const n = (v: number | null | undefined): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
 
 /// Every bucket from the start of the span to its end, an empty one as empty, so a quiet hour still

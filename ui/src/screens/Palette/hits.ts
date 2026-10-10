@@ -354,6 +354,8 @@ export function archivePost(session: SessionRef, archived: boolean): Post {
   };
 }
 
+/// Make an account its provider's active one: a Kimi Code account takes Kimi Code's requests and
+/// leaves Claude's where they were (ST-C121).
 export function activatePost(account: Account): Post {
   const name = account.email || account.label;
   return {
@@ -361,7 +363,7 @@ export function activatePost(account: Account): Post {
     body: { id: account.id },
     doing: `Switching to ${name}…`,
     refused: `Could not switch to ${name}`,
-    done: () => ({ title: `${name} signs requests now` }),
+    done: () => ({ title: account.provider === 'kimi' ? `${name} signs Kimi Code’s requests now` : `${name} signs requests now` }),
   };
 }
 
@@ -414,15 +416,18 @@ function sessionCommands(ctx: Context): Hit[] {
 }
 
 /// Switch the account that signs: one per account, the router's id beside its name (OV-C17), in
-/// one choice with no confirmation (ST-C24). The one signing now is marked and does nothing.
+/// one choice with no confirmation (ST-C24). Each provider has its own active account, so a Kimi
+/// Code account's command says it is Kimi Code's (ST-C121). The one signing now is marked and does
+/// nothing.
 function accountCommands(ctx: Context): Hit[] {
   return ctx.accounts.value.map((a): Hit => {
     const serving = Number(a.active) === 1;
+    const kimi = a.provider === 'kimi';
     return {
       id: `cmd:account:${a.id}`,
-      label: `Use ${a.email || a.label}`,
+      label: kimi ? `Use ${a.email || a.label} for Kimi Code` : `Use ${a.email || a.label}`,
       ident: a.id,
-      keywords: 'account switch sign',
+      keywords: kimi ? 'account switch sign kimi' : 'account switch sign',
       ...(serving ? { note: 'serving now' } : {}),
       action: serving ? null : { type: 'post', post: activatePost(a) },
     };
@@ -512,18 +517,31 @@ function sessionStep(command: SessionCommand, needle: string, ctx: Context): Res
 /// What a step's run of values is called.
 const VALUE_RUN: Readonly<Record<Setting, string>> = { model: 'Models', effort: 'Effort levels', mode: 'Modes' };
 
+interface Value {
+  readonly value: string;
+  readonly label: string;
+  /// The run it is listed in: a provider's name for a model the router groups (SE-C233).
+  readonly run: string;
+}
+
+/// The values a step offers. Models come in a run per provider, by display name, when the router
+/// groups them, and in one run as bare values when it does not (SE-C138, SE-C233).
+function stepValues(setting: Setting, options: LiveOptions | null): Value[] {
+  if (options === null) return [];
+  if (setting === 'mode') return options.modes.map((m) => ({ ...m, run: VALUE_RUN.mode }));
+  if (setting === 'model' && options.by_provider?.length) {
+    return options.by_provider.flatMap((g) => g.models.map((m) => ({ value: m.id, label: m.display_name || m.id, run: g.name })));
+  }
+  return (setting === 'model' ? options.models : options.efforts).map((v) => ({ value: v, label: v, run: VALUE_RUN[setting] }));
+}
+
 function valueStep(setting: Setting, session: SessionRef, raw: string, ctx: Context): Resolved {
-  const options = ctx.options.value;
-  const values =
-    options === null
-      ? []
-      : setting === 'mode'
-        ? options.modes
-        : (setting === 'model' ? options.models : options.efforts).map((v) => ({ value: v, label: v }));
+  const values = stepValues(setting, ctx.options.value);
   const needle = raw.toLowerCase();
-  const hits = values
-    .filter((v) => !needle || matchesWords(needle, v.label, v.value))
-    .map((v): Hit => ({
+  const runs: { key: string; label: string; hits: Hit[] }[] = [];
+  // A provider's name finds its models: "kimi" lists Kimi Code's.
+  for (const v of values.filter((x) => !needle || matchesWords(needle, x.label, x.value, x.run === VALUE_RUN[setting] ? null : x.run))) {
+    const hit: Hit = {
       id: `value:${v.value}`,
       label: v.label,
       ...(v.label === v.value ? {} : { ident: v.value }),
@@ -533,20 +551,27 @@ function valueStep(setting: Setting, session: SessionRef, raw: string, ctx: Cont
         setting === 'mode' && v.value === 'bypassPermissions'
           ? { type: 'step', step: { kind: 'bypass', session } }
           : { type: 'post', post: switchPost(setting, session, v.value) },
-    }));
+    };
+    const run = runs.find((r) => r.label === v.run);
+    if (run) run.hits.push(hit);
+    else runs.push({ key: v.run === VALUE_RUN[setting] ? `pick:${setting}` : `pick:${setting}:${v.run}`, label: v.run, hits: [hit] });
+  }
   // The router's list is not every model the CLI accepts (SE-C141): typed words that could name
   // one are offered as one. Nothing typed offers nothing.
   if (setting === 'model' && validModel(raw) && !values.some((v) => v.value === raw)) {
-    hits.push({
+    const typed: Hit = {
       id: 'value:typed',
       label: `Use “${raw}”`,
       detail: 'a model name or alias the list does not hold',
       action: { type: 'post', post: switchPost('model', session, raw) },
-    });
+    };
+    const run = runs.find((r) => r.key === `pick:${setting}`);
+    if (run) run.hits.push(typed);
+    else runs.push({ key: `pick:${setting}`, label: VALUE_RUN.model, hits: [typed] });
   }
   return {
     mode: 'step',
-    runs: hits.length > 0 ? [{ key: `pick:${setting}`, label: VALUE_RUN[setting], hits }] : [],
+    runs,
     notices: sourceNotices(ctx.options, 'switch options', 'The values the router offers cannot be listed; a model can still be typed.'),
   };
 }

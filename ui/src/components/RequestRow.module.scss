@@ -78,7 +78,7 @@
   text-overflow: ellipsis;
 }
 
-/// A model family's swatch; "other" is a hollow ring rather than a fourth fill (OV-C10).
+/// A model family's swatch; "other" is a hollow ring rather than a fill of its own (OV-C10).
 .swatch {
   flex: none;
   inline-size: $spacing-03;

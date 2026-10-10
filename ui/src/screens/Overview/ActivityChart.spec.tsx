@@ -80,7 +80,8 @@ describe('the activity chart', () => {
     const calls = chart.StackedBarChart.mock.calls.length;
     await setVisible('visible');
     expect(handed().data).not.toBe(before.data);
-    expect((handed().data as { value: number }[]).at(-4)!.value).toBe(1_234);
+    // The last bucket's opus, whatever the families after it.
+    expect((handed().data as { group: string; value: number }[]).filter((d) => d.group === 'opus').at(-1)!.value).toBe(1_234);
     // Shown again, it is handed the latest once, and nothing more while the figures hold.
     const after = handed();
     rerender(draw(timeline([100, 200, 300, 1_234])));

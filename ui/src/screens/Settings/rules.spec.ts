@@ -6,11 +6,17 @@ import type { AccountRow } from '~/data/settings';
 import {
   accountId,
   accountsHeading,
+  activeWords,
+  assignedWords,
+  baseUrlProblem,
   credential,
   deviceRow,
   expiry,
   identityProblem,
+  keyProblem,
+  kimiKeyProblem,
   looksLikeEmail,
+  modelChoices,
   nameProblem,
   networkWhere,
   nextSigner,
@@ -19,6 +25,7 @@ import {
   pushKeyProblem,
   removeWords,
   running,
+  servedBy,
   sessionKeyProblem,
   setupHeading,
   signin,
@@ -74,6 +81,64 @@ describe('Settings rules', () => {
     expect(pushKeyProblem('ABCDE12345', 'ABC123DEF4', '')).toBe('team id, key id and the .p8 key are all needed');
     expect(pushKeyProblem('ABCDE12345', ' ', '-----BEGIN')).toBe('team id, key id and the .p8 key are all needed');
     expect(pushKeyProblem('ABCDE12345', 'ABC123DEF4', '-----BEGIN')).toBeNull();
+  });
+
+  it('ST-C118: each provider’s key is checked by its own rule in the router’s words, the sk-ant- rule being Anthropic’s alone, and a base URL must be https', () => {
+    // src/accounts.rs, `Provider::key_problem`.
+    expect(kimiKeyProblem('sk-ant-oat01-abc')).toBe('that is an Anthropic token — a Kimi Code account takes a key from the Kimi Code console');
+    expect(kimiKeyProblem('sk-kimi-0123')).toBeNull();
+    expect(kimiKeyProblem(''), 'blank is the add form’s to ask for, and the editor’s keep').toBeNull();
+    expect(keyProblem('kimi', 'oat01-abc'), 'a Kimi Code key is not held to sk-ant-').toBeNull();
+    expect(keyProblem('anthropic', 'sk-kimi-0123')).toBe('expected a token starting sk-ant- (from `claude setup-token`)');
+    expect(keyProblem('kimi', 'sk-ant-sid01-abc')).toBe('that is an Anthropic token — a Kimi Code account takes a key from the Kimi Code console');
+    // src/api.rs, `base_url_for`: a trailing slash is dropped, and a URL that is not https is named.
+    expect(baseUrlProblem('')).toBeNull();
+    expect(baseUrlProblem('https://api.kimi.com/coding/')).toBeNull();
+    expect(baseUrlProblem('http://api.kimi.ai/coding')).toBe('"http://api.kimi.ai/coding" is not an https:// address');
+    expect(baseUrlProblem('api.kimi.ai/coding/')).toBe('"api.kimi.ai/coding" is not an https:// address');
+  });
+
+  it('ST-C121: each provider has its own active account: the heading names each, and removing one names the oldest of its own provider as the next', () => {
+    const accounts = [
+      row('kimi-old', { provider: 'kimi', created_at: 5 }),
+      row('kimi', { provider: 'kimi', active: 1, created_at: 15, label: 'Kimi' }),
+      row('work', { active: 1, created_at: 10, email: 'me@example.com' }),
+      row('spare', { created_at: 1 }),
+    ];
+    expect(accountsHeading(accounts)).toBe('4 accounts · me@example.com active · Kimi active for Kimi Code');
+    expect(nextSigner(accounts, 'kimi')?.id, 'the oldest Kimi Code account, not the oldest of all').toBe('kimi-old');
+    expect(nextSigner(accounts, 'work')?.id).toBe('spare');
+    expect(nextSigner([row('kimi', { provider: 'kimi', active: 1 }), row('work', { active: 1 })], 'kimi'), 'no other Kimi Code account').toBeNull();
+    expect(removeWords(accounts, 'kimi')).toEqual([
+      'Remove Kimi from the router? Its stored key is deleted with it.',
+      'It is the account signing Kimi Code’s requests now: kimi-old, the oldest one left, signs from the next request.',
+    ]);
+    expect(activeWords({ provider: 'kimi' })).toBe('Signs every Kimi Code request now, but for a model assigned another account.');
+    expect(activeWords({})).toBe('Signs every Claude request now, but for a model assigned another account.');
+  });
+
+  it('ST-C122, ST-C123: a model’s list box offers its provider’s active account first, then its own provider’s accounts that can sign here, and says who serves it', () => {
+    const accounts = [
+      row('default', { source: 'keychain', active: 1, email: 'me@example.com' }),
+      row('work'),
+      row('kimi', { provider: 'kimi', active: 1, label: 'Kimi' }),
+      row('kimi-2', { provider: 'kimi', label: 'Kimi two' }),
+    ];
+    const k3 = { id: 'k3', provider: 'kimi', display_name: 'Kimi K3', assigned: null, serving: 'kimi' } as const;
+    expect(modelChoices(k3, accounts, false)).toEqual([
+      { id: null, label: 'Kimi Code’s active account (Kimi)' },
+      { id: 'kimi', label: 'Kimi' },
+      { id: 'kimi-2', label: 'Kimi two' },
+    ]);
+    const opus = { id: 'claude-opus-5-5', provider: 'anthropic', display_name: 'claude-opus-5-5', assigned: 'default', serving: 'default' } as const;
+    // A hosted router signs with a pasted key only, but the account a model is assigned is always shown.
+    expect(modelChoices(opus, accounts, true).map((c) => c.id)).toEqual([null, 'default', 'work']);
+    expect(modelChoices({ ...opus, assigned: null }, accounts, true).map((c) => c.id)).toEqual([null, 'work']);
+    expect(servedBy(k3, accounts)).toBe('Kimi, Kimi Code’s active account');
+    expect(servedBy(opus, accounts)).toBe('me@example.com, assigned to it');
+    expect(servedBy({ ...k3, serving: null }, [])).toBe('nothing: Kimi Code has no active account');
+    expect(assignedWords(k3, { id: 'kimi-2', label: 'Kimi two' })).toBe('Kimi K3 goes to Kimi two now.');
+    expect(assignedWords(k3, { id: null, label: 'Kimi Code’s active account (Kimi)' })).toBe('Kimi K3 goes to Kimi Code’s active account again.');
   });
 
   it('ST-C20: a credential not checked reads "not checked", a ready one its kind, a failed one the router’s whole reason', () => {

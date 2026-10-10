@@ -1,5 +1,5 @@
 // Copied from Northstar ui/src/lib/routes.ts at e9c1589.
-// Changed: agent-router's four screens and its six settings pages.
+// Changed: agent-router's four screens and its settings pages.
 
 /// Where things live: one route table for the rail, the settings sub-navigation and every
 /// screen that links to a sibling, so a link and the screen it reaches cannot drift apart. A
@@ -9,6 +9,7 @@
 /// is a link and the sub-navigation is only a way to reach one.
 export const SECTIONS = [
   { slug: 'accounts', label: 'Accounts' },
+  { slug: 'models', label: 'Models' },
   { slug: 'claude-code', label: 'Claude Code' },
   { slug: 'network', label: 'Network' },
   { slug: 'password', label: 'Password' },

@@ -934,6 +934,43 @@ describe('resolve (the rules, without a modal)', () => {
     });
   });
 
+  it('SE-C233: Set the model lists the router’s models in a run per provider, by display name, and a provider’s name finds its models', () => {
+    const options: LiveOptions = {
+      ...OPTIONS,
+      models: ['opus', 'sonnet', 'k3', 'kimi-for-coding'],
+      by_provider: [
+        { provider: 'anthropic', name: 'Anthropic', models: [{ id: 'opus', display_name: 'opus' }, { id: 'sonnet', display_name: 'sonnet' }] },
+        { provider: 'kimi', name: 'Kimi Code', models: [{ id: 'k3', display_name: 'Kimi K3' }, { id: 'kimi-for-coding', display_name: 'Kimi for Coding' }] },
+      ],
+    };
+    const step = { kind: 'value', setting: 'model', session: { id: S1, name: 'Rebuild the palette' } } as const;
+    const all = resolve('', ctx({ step, options: { state: 'read', value: options } })).runs;
+    expect(all.map((r) => [r.label, r.hits.map((h) => h.label)])).toEqual([
+      ['Anthropic', ['opus', 'sonnet']],
+      ['Kimi Code', ['Kimi K3', 'Kimi for Coding']],
+    ]);
+    // A display name that is not the id shows the id beside it, and the id is what is sent.
+    expect(all[1]?.hits[0]).toMatchObject({ ident: 'k3', action: { type: 'post', post: { path: '/api/live/model', body: { session: S1, model: 'k3' } } } });
+    // Typed words that could name a model are still offered as one, after the list (SE-C141).
+    expect(resolve('kimi', ctx({ step, options: { state: 'read', value: options } })).runs.map((r) => [r.label, r.hits.map((h) => h.label)])).toEqual([
+      ['Kimi Code', ['Kimi K3', 'Kimi for Coding']],
+      ['Models', ['Use “kimi”']],
+    ]);
+    // An older router groups nothing: one run, as it always was.
+    expect(resolve('', ctx({ step })).runs.map((r) => r.label)).toEqual(['Models']);
+  });
+
+  it('ST-C121: a Kimi Code account’s Use says it is Kimi Code’s, and its outcome says whose requests it signs', () => {
+    const accounts: Account[] = [...ACCOUNTS, { id: 'kimi', label: 'Kimi', email: null, active: 0, provider: 'kimi' }];
+    const run = resolve('>', ctx({ accounts: { state: 'read', value: accounts } })).runs.find((r) => r.key === 'commands:account');
+    const kimi = run?.hits.find((h) => h.id === 'cmd:account:kimi');
+    expect(kimi?.label).toBe('Use Kimi for Kimi Code');
+    expect(run?.hits.find((h) => h.id === 'cmd:account:work')?.label).toBe('Use work@example.com');
+    const post = kimi?.action?.type === 'post' ? kimi.action.post : null;
+    expect(post?.body).toEqual({ id: 'kimi' });
+    expect(post?.done({ ok: true }).title).toBe('Kimi signs Kimi Code’s requests now');
+  });
+
   it('says a source is still being read or could not be read, and never lists it as empty', () => {
     const r = resolve('', ctx({ sessions: { state: 'unreachable', value: [], error: new Unreachable() }, projects: { state: 'loading', value: [] } }));
     expect(r.runs).toEqual([]);

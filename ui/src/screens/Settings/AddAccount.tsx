@@ -1,18 +1,32 @@
 // New for agent-router: adding an account, in place under the Accounts heading (assets/index.html,
-// `wireAddForm`; ST-C39 to ST-C52). Each way to add one is a choice that carries its explanation;
-// the sign-in link and the profile command sit in code snippets with a copy button that says when
-// copying failed; nothing opens a window by itself.
+// `wireAddForm`; ST-C39 to ST-C52, ST-C117, ST-C118). Each way to add one is a choice that carries
+// its explanation, a Kimi Code key among them; the sign-in link and the profile command sit in code
+// snippets with a copy button that says when copying failed; nothing opens a window by itself.
 import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 import { Button, CodeSnippet, Form, InlineLoading, PasswordInput, RadioTile, TextInput, Tile, TileGroup } from '@carbon/react';
 import { keys } from '~/app/query';
 import { CopyButton } from '~/components/CopyButton';
 import { addAccount, probeProfile, readLogin, startSignin, useReread, type AccountRow } from '~/data/settings';
-import { accountSources, addForm, isHosted, notes, type Auth, type Source } from '~/model/settings';
-import { accountId, looksLikeEmail, nameProblem, PROFILE_POLL_MS, running, signin, SIGNIN_POLL_MS, signinWords, TOKEN_NEEDED, tokenProblem, type Signin } from './rules';
+import { accountSources, addForm, KIMI_BASE_URL, notes, type Auth, type Source } from '~/model/settings';
+import {
+  accountId,
+  baseUrlProblem,
+  kimiKeyProblem,
+  looksLikeEmail,
+  nameProblem,
+  PROFILE_POLL_MS,
+  running,
+  signin,
+  SIGNIN_POLL_MS,
+  signinWords,
+  TOKEN_NEEDED,
+  tokenProblem,
+  type Signin,
+} from './rules';
 import { Explain, Outcome, ReadFailed, Words } from './parts';
 import styles from './Settings.module.scss';
 
-/// Each way in, as its choice says it (ST-C40, ST-C43).
+/// Each way in, as its choice says it (ST-C40, ST-C43, ST-C117).
 const CHOICE: Readonly<Record<Source, { readonly title: string; readonly body: readonly (string | { readonly code: string } | { readonly b: string })[] }>> = {
   signin: {
     title: 'Sign in from here (recommended)',
@@ -31,6 +45,16 @@ const CHOICE: Readonly<Record<Source, { readonly title: string; readonly body: r
   profile: {
     title: 'Separate Claude Code profile',
     body: [addForm('profile').help ?? ''],
+  },
+  kimi: {
+    title: 'Kimi Code',
+    body: [
+      'A key from the Kimi Code console, for Kimi’s models (',
+      { code: 'k3' },
+      ', ',
+      { code: 'kimi-for-coding' },
+      '): a session moves to Kimi Code by picking one of them.',
+    ],
   },
 };
 
@@ -126,6 +150,9 @@ export function AddAccount({ auth, accounts, onDone, onClose }: { auth: Auth | n
   const source: Source = sources.includes(picked) ? picked : (sources[0] ?? 'token');
   const [label, setLabel] = useState('');
   const [token, setToken] = useState('');
+  // A Kimi Code key has fields of its own: a token typed under another choice is not one.
+  const [key, setKey] = useState('');
+  const [baseUrl, setBaseUrl] = useState('');
   const [tried, setTried] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
@@ -137,7 +164,10 @@ export function AddAccount({ auth, accounts, onDone, onClose }: { auth: Auth | n
   const nameIssue = nameProblem(label, accounts);
   // The name is checked as it is typed once it says something; empty, only once Add was pressed.
   const showName = (label.trim() !== '' || tried) && !!nameIssue;
+  // Each provider's key by its own rule: `sk-ant-` is Anthropic's alone (ST-C118).
   const tokenIssue = source === 'token' ? (token.trim() === '' ? TOKEN_NEEDED : tokenProblem(token)) : null;
+  const keyIssue = source === 'kimi' ? (key.trim() === '' ? TOKEN_NEEDED : kimiKeyProblem(key)) : null;
+  const urlIssue = source === 'kimi' ? baseUrlProblem(baseUrl) : null;
   const id = accountId(label);
 
   const finish = (said: string) => {
@@ -158,19 +188,23 @@ export function AddAccount({ auth, accounts, onDone, onClose }: { auth: Auth | n
   const submit = async (e?: FormEvent) => {
     e?.preventDefault();
     setTried(true);
-    if (busy || nameIssue || tokenIssue) return;
+    if (busy || nameIssue || tokenIssue || keyIssue || urlIssue) return;
     setBusy(true);
     setError(null);
     try {
       if (source === 'signin') {
         flow.begin(signin(await startSignin(label)));
       } else if (source === 'token') {
-        await addAccount(label, 'token', token);
+        await addAccount(label, { source: 'token', token });
         // Stored: the secret leaves the screen. On a refusal it stays where it was pasted (ST-C50).
         setToken('');
         finish(`Added ${label.trim()}.`);
+      } else if (source === 'kimi') {
+        await addAccount(label, { source: 'kimi', token: key, base_url: baseUrl });
+        setKey('');
+        finish(`Added ${label.trim()}.`);
       } else {
-        const added = await addAccount(label, 'profile');
+        const added = await addAccount(label, { source: 'profile' });
         void reread(keys.accounts);
         if (added.command) setProfile({ id: added.id, command: added.command });
         else finish(`Added ${label.trim()}.`);
@@ -196,22 +230,17 @@ export function AddAccount({ auth, accounts, onDone, onClose }: { auth: Auth | n
     <Tile className={styles.addForm}>
       <Form aria-label="Add an account" onSubmit={(e) => void submit(e)} onKeyDown={escape} className={styles.form}>
         <h3 className={styles.cardTitle}>Add an account</h3>
-        {sources.length > 1 ? (
-          <TileGroup key={offered} legend="How to add it" name={groupName} valueSelected={source} onChange={(v) => setPicked(v as Source)} className={styles.choices}>
-            {sources.map((s) => (
-              <RadioTile key={s} id={`${groupName}-way-${s}`} value={s} className={styles.choice}>
-                <span className={styles.choiceTitle}>{CHOICE[s].title}</span>
-                <span className={styles.choiceBody}>
-                  <Body parts={CHOICE[s].body} />
-                </span>
-              </RadioTile>
-            ))}
-          </TileGroup>
-        ) : (
-          <Explain>
-            Paste the long-lived token that <code>claude setup-token</code> prints{isHosted(auth) ? ': a hosted router adds an account no other way.' : '.'}
-          </Explain>
-        )}
+        {/* Every router offers more than one way: a hosted one a token and a Kimi Code key. */}
+        <TileGroup key={offered} legend="How to add it" name={groupName} valueSelected={source} onChange={(v) => setPicked(v as Source)} className={styles.choices}>
+          {sources.map((s) => (
+            <RadioTile key={s} id={`${groupName}-way-${s}`} value={s} className={styles.choice}>
+              <span className={styles.choiceTitle}>{CHOICE[s].title}</span>
+              <span className={styles.choiceBody}>
+                <Body parts={CHOICE[s].body} />
+              </span>
+            </RadioTile>
+          ))}
+        </TileGroup>
 
         <TextInput
           id={`${groupName}-name-field`}
@@ -223,7 +252,7 @@ export function AddAccount({ auth, accounts, onDone, onClose }: { auth: Auth | n
           invalid={showName}
           invalidText={nameIssue ?? undefined}
           helperText={
-            source === 'token' && looksLikeEmail(label)
+            (source === 'token' || source === 'kimi') && looksLikeEmail(label)
               ? 'This name is an email address, so it becomes the account’s identity: a long-lived token cannot report which account it belongs to.'
               : id
                 ? `Its id will be “${id}”.`
@@ -245,6 +274,35 @@ export function AddAccount({ auth, accounts, onDone, onClose }: { auth: Auth | n
             invalidText={tokenIssue ?? undefined}
             helperText={<Words segments={notes(auth).token} />}
           />
+        ) : null}
+
+        {form.kimi ? (
+          <>
+            <PasswordInput
+              id={`${groupName}-key-field`}
+              labelText="Key"
+              placeholder="the key from the Kimi Code console"
+              autoComplete="new-password"
+              spellCheck={false}
+              value={key}
+              onChange={(e) => setKey(e.target.value)}
+              invalid={tried && !!keyIssue}
+              invalidText={keyIssue ?? undefined}
+              helperText="Made in the Kimi Code console, signed in to your plan. An Anthropic token is not one: it cannot sign Kimi Code’s requests."
+            />
+            <TextInput
+              id={`${groupName}-base-url-field`}
+              labelText="Base URL (optional)"
+              placeholder={KIMI_BASE_URL}
+              autoComplete="off"
+              spellCheck={false}
+              value={baseUrl}
+              onChange={(e) => setBaseUrl(e.target.value)}
+              invalid={tried && !!urlIssue}
+              invalidText={urlIssue ?? undefined}
+              helperText={`Where its requests go. Left blank, Kimi Code’s own: ${KIMI_BASE_URL}.`}
+            />
+          </>
         ) : null}
 
         {source === 'signin' && flow.seen ? <SigninPanel status={flow.status} url={url} misses={flow.misses} /> : null}

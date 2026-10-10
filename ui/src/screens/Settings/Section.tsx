@@ -9,6 +9,7 @@ import { useAuth } from '~/data/settings';
 import { SECTIONS, type SectionSlug } from '~/lib/routes';
 import { isHosted, settingsPages } from '~/model/settings';
 import AccountsPage from './Accounts';
+import ModelsPage from './Models';
 import ClaudeCodePage from './ClaudeCode';
 import NetworkPage from './Network';
 import NotificationsPage from './Notifications';
@@ -22,6 +23,7 @@ import { NO_MACHINE } from './rules';
 
 const PAGES: Readonly<Record<SectionSlug, ComponentType>> = {
   accounts: AccountsPage,
+  models: ModelsPage,
   'claude-code': ClaudeCodePage,
   network: NetworkPage,
   password: PasswordPage,

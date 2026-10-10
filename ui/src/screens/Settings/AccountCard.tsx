@@ -1,25 +1,27 @@
 // New for agent-router: one account, as a card that carries every fact a desk row had and its
 // actions at rest — Use, Edit, Remove — with the editor opening inside it (assets/index.html,
-// `renderAccounts`, `openEdit`, `wireEditForm`; ST-C19 to ST-C38).
+// `renderAccounts`, `openEdit`, `wireEditForm`; ST-C19 to ST-C38). It names its provider, and Org,
+// Plan and the claude.ai session key are Anthropic's alone (ST-C119, ST-C120).
 import { useState, type FormEvent, type KeyboardEvent } from 'react';
 import { useMutation } from '@tanstack/react-query';
 import { Button, Form, PasswordInput, Tag, TextInput, Tile } from '@carbon/react';
 import { keys } from '~/app/query';
 import { activateAccount, clearSessionKey, editAccount, removeAccount, setSessionKey, useReread, type AccountEdit, type AccountRow } from '~/data/settings';
-import { identityNote, notes, removable, type Auth } from '~/model/settings';
+import { identityNote, KIMI_BASE_URL, notes, providerName, providerOf, removable, type Auth } from '~/model/settings';
 import {
   accountName,
+  activeWords,
   BUILT_IN,
   credential,
   expiry,
   flag,
   HELD,
   identityProblem,
+  keyProblem,
   NOT_ON_A_SERVER,
   removeWords,
   sessionKeyProblem,
   sourceWord,
-  tokenProblem,
   usable,
   USAGE_KEY,
 } from './rules';
@@ -34,6 +36,7 @@ export function AccountCard({ account, accounts, auth, hosted }: { account: Acco
   const name = accountName(account);
   const cred = credential(account);
   const builtIn = account.source === 'keychain' && !hosted;
+  const anthropic = providerOf(account) === 'anthropic';
 
   // Use and Remove each re-read the list whatever the router said, and a refusal stays on this
   // card in the router's words (ST-C24, ST-C25).
@@ -71,8 +74,19 @@ export function AccountCard({ account, accounts, auth, hosted }: { account: Acco
         <Fact term="Id" mono>
           {account.id}
         </Fact>
-        <Fact term="Org">{account.org_name || '—'}</Fact>
-        <Fact term="Plan">{account.subscription_type || '—'}</Fact>
+        <Fact term="Provider">{providerName(providerOf(account))}</Fact>
+        {/* Org and plan are what Anthropic reports of a login; a Kimi Code key reports neither,
+            and says where its requests go instead (ST-C119). */}
+        {anthropic ? (
+          <>
+            <Fact term="Org">{account.org_name || '—'}</Fact>
+            <Fact term="Plan">{account.subscription_type || '—'}</Fact>
+          </>
+        ) : (
+          <Fact term="Base URL" mono>
+            {account.base_url || (providerOf(account) === 'kimi' ? KIMI_BASE_URL : '—')}
+          </Fact>
+        )}
         <Fact term="Source">
           <span className={styles.inline}>
             <Tag type="gray" size="sm">
@@ -94,7 +108,7 @@ export function AccountCard({ account, accounts, auth, hosted }: { account: Acco
         <Fact term="Expires">{expiry(account)}</Fact>
       </Facts>
 
-      {active ? <Explain>Signs every request now.</Explain> : null}
+      {active ? <Explain>{activeWords(account)}</Explain> : null}
       {!usable(account, hosted) ? (
         <Explain className={styles.bad}>
           It cannot sign on this router: {cred.kind === 'failed' ? cred.text : NOT_ON_A_SERVER}
@@ -183,6 +197,10 @@ function AccountEditor({ account, auth, onClose }: { account: AccountRow; auth: 
 
   const builtIn = account.source === 'keychain';
   const ownsToken = account.source === 'token';
+  const provider = providerOf(account);
+  const kimi = provider === 'kimi';
+  // A claude.ai session key reads Anthropic's usage; a Kimi Code account has none to read (ST-C120).
+  const takesSessionKey = !kimi;
   const hasKey = flag(account.usage_key);
   const id = `edit-${account.id}`;
 
@@ -190,11 +208,12 @@ function AccountEditor({ account, auth, onClose }: { account: AccountRow; auth: 
   if (label !== undefined && label.trim() !== '' && label.trim() !== (account.label ?? '')) edit.label = label.trim();
   if (!builtIn && email !== undefined && email.trim() !== '' && email.trim() !== (account.email ?? '')) edit.email = email.trim();
   if (ownsToken && token.trim() !== '') edit.token = token.trim();
-  const newKey = key.trim();
+  const newKey = takesSessionKey ? key.trim() : '';
   const problems = {
     email: builtIn || email === undefined ? null : identityProblem(email),
-    token: ownsToken ? tokenProblem(token) : null,
-    key: sessionKeyProblem(key),
+    // By the account's own provider's rule: a Kimi Code key is never `sk-ant-` (ST-C118, ST-C120).
+    token: ownsToken ? keyProblem(provider, token) : null,
+    key: takesSessionKey ? sessionKeyProblem(key) : null,
   };
   const nothing = Object.keys(edit).length === 0 && newKey === '';
 
@@ -282,53 +301,62 @@ function AccountEditor({ account, auth, onClose }: { account: AccountRow; auth: 
           labelText="Credential"
           autoComplete="new-password"
           spellCheck={false}
-          placeholder={flag(account.has_token) ? HELD : 'sk-ant-oat01-…'}
+          placeholder={flag(account.has_token) ? HELD : kimi ? 'the key from the Kimi Code console' : 'sk-ant-oat01-…'}
           value={token}
           onChange={(e) => setToken(e.target.value)}
           invalid={tried && !!problems.token}
           invalidText={problems.token ?? undefined}
           helperText={
-            <>
-              {tokenState} A fresh <code>claude setup-token</code> value, if the current one was revoked or you want to rotate it. The account keeps its
-              id, so everything already recorded against it stays intact.
-            </>
+            kimi ? (
+              <>
+                {tokenState} A fresh key from the Kimi Code console, if the current one was revoked or you want to rotate it. The account keeps its id, so
+                everything already recorded against it stays intact.
+              </>
+            ) : (
+              <>
+                {tokenState} A fresh <code>claude setup-token</code> value, if the current one was revoked or you want to rotate it. The account keeps its
+                id, so everything already recorded against it stays intact.
+              </>
+            )
           }
         />
       ) : null}
-      <div className={styles.field}>
-        <PasswordInput
-          id={`${id}-key`}
-          labelText="claude.ai session key"
-          autoComplete="new-password"
-          spellCheck={false}
-          placeholder={hasKey ? HELD : 'sk-ant-sid…'}
-          value={key}
-          onChange={(e) => setKey(e.target.value)}
-          invalid={tried && !!problems.key}
-          invalidText={problems.key ?? undefined}
-          helperText={
-            <>
-              {hasKey ? 'Stored; leave it blank to keep it, or type a new one to replace it. ' : 'None stored; optional, for usage figures. '}
-              <Words segments={notes(auth).usageKey} />
-            </>
-          }
-        />
-        {keyError ? <Outcome error={keyError} refusedTitle="The session key was refused" /> : null}
-        {hasKey ? (
-          <div className={styles.actions}>
-            <Button
-              kind="danger--tertiary"
-              size="md"
-              onClick={() => {
-                clear.reset();
-                setClearing(true);
-              }}
-            >
-              Remove stored key
-            </Button>
-          </div>
-        ) : null}
-      </div>
+      {takesSessionKey ? (
+        <div className={styles.field}>
+          <PasswordInput
+            id={`${id}-key`}
+            labelText="claude.ai session key"
+            autoComplete="new-password"
+            spellCheck={false}
+            placeholder={hasKey ? HELD : 'sk-ant-sid…'}
+            value={key}
+            onChange={(e) => setKey(e.target.value)}
+            invalid={tried && !!problems.key}
+            invalidText={problems.key ?? undefined}
+            helperText={
+              <>
+                {hasKey ? 'Stored; leave it blank to keep it, or type a new one to replace it. ' : 'None stored; optional, for usage figures. '}
+                <Words segments={notes(auth).usageKey} />
+              </>
+            }
+          />
+          {keyError ? <Outcome error={keyError} refusedTitle="The session key was refused" /> : null}
+          {hasKey ? (
+            <div className={styles.actions}>
+              <Button
+                kind="danger--tertiary"
+                size="md"
+                onClick={() => {
+                  clear.reset();
+                  setClearing(true);
+                }}
+              >
+                Remove stored key
+              </Button>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
       <div className={styles.actions}>
         <Button type="submit" kind="primary" size="md" disabled={busy || nothing}>
           Save
