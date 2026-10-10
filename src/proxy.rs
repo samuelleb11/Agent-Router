@@ -126,7 +126,7 @@ pub struct AppState {
     pub credentials: tokio::sync::RwLock<std::collections::HashMap<String, Active>>,
     /// Last quota reading; see `quota`. Keyed by account, because one account's
     /// numbers must never be shown under another's name.
-    pub quota_cache: tokio::sync::RwLock<Option<crate::quota::Cached>>,
+    pub quota_cache: tokio::sync::RwLock<std::collections::HashMap<String, crate::quota::Cached>>,
     /// The in-progress `setup-token` sign-in, if any. One at a time.
     pub login: crate::login::Shared,
     /// The router's password, asked of callers that are not on this machine.
@@ -173,7 +173,7 @@ impl AppState {
             client,
             config,
             credentials: Default::default(),
-            quota_cache: tokio::sync::RwLock::new(None),
+            quota_cache: Default::default(),
             login: Default::default(),
             auth,
             network,
@@ -192,7 +192,7 @@ impl AppState {
         self.credentials.write().await.clear();
         // The quota reading belongs to the account that produced it, so a switch
         // must drop it too — otherwise the new account inherits the old one's numbers.
-        *self.quota_cache.write().await = None;
+        self.quota_cache.write().await.clear();
     }
 
     /// The active Anthropic account's id and token: what a request with no model to route

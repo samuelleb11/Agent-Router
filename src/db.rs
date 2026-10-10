@@ -42,6 +42,20 @@ CREATE TABLE IF NOT EXISTS accounts (
   created_at        INTEGER NOT NULL
 );
 
+-- A provider's own reading of an account's windows, from its usage API rather than from
+-- response headers (Kimi Code's `/v1/usages`; `quota`). Utilisation is 0..1 and a reset is
+-- epoch seconds, as the `rl_*` columns of `requests` hold them.
+CREATE TABLE IF NOT EXISTS quota_readings (
+  account_id      TEXT NOT NULL,
+  at              INTEGER NOT NULL,
+  five_hour_used  REAL,
+  five_hour_reset INTEGER,
+  second_window   TEXT,
+  second_used     REAL,
+  second_reset    INTEGER
+);
+CREATE INDEX IF NOT EXISTS quota_readings_account ON quota_readings(account_id, at);
+
 -- Which account a model's requests go to, when not its provider's active one (`models`).
 CREATE TABLE IF NOT EXISTS model_assignments (
   model      TEXT PRIMARY KEY,

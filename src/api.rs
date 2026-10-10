@@ -1068,6 +1068,71 @@ const WINDOWS: [Win; 2] = [
 /// for rows belonging to `reset`. Rows outside that window — and rows that carried no
 /// rate-limit header at all — still come back, because they are work, and work is the
 /// denominator the burn rate divides by.
+/// An account's windows from the readings its provider's usage API gave (`quota_readings`),
+/// forecast as Anthropic's are: the work in the window is every request the account served,
+/// and each reading is a utilisation at the time it was taken. A window the newest reading
+/// does not give is `null`; one whose reset has passed is `expired`. The second window carries
+/// its own name: `seven_day`, else `month`.
+fn reading_windows(conn: &Connection, id: &str, now: i64) -> anyhow::Result<(Map<String, Value>, Option<i64>)> {
+    use rusqlite::OptionalExtension;
+    let mut windows = Map::new();
+    windows.insert(crate::forecast::FIVE_HOUR.name.into(), Value::Null);
+    windows.insert(crate::forecast::SEVEN_DAY.name.into(), Value::Null);
+    let latest: Option<(i64, Option<i64>, Option<String>, Option<i64>)> = conn
+        .query_row(
+            "SELECT at, five_hour_reset, second_window, second_reset FROM quota_readings
+             WHERE account_id = ?1 ORDER BY at DESC LIMIT 1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()?;
+    let Some((seen_at, five_reset, second_name, second_reset)) = latest else { return Ok((windows, None)) };
+    let second_kind = if second_name.as_deref() == Some("month") { crate::forecast::MONTH } else { crate::forecast::SEVEN_DAY };
+    for (kind, reset, used_col, reset_col, session_duty) in [
+        (crate::forecast::FIVE_HOUR, five_reset, "five_hour_used", "five_hour_reset", true),
+        (second_kind, second_reset, "second_used", "second_reset", false),
+    ] {
+        let Some(reset) = reset else { continue };
+        if reset.saturating_mul(1000) <= now {
+            windows.insert(kind.name.into(), json!({ "expired": true, "reset_at": reset, "seen_at": seen_at }));
+            continue;
+        }
+        let from_ms = (reset - kind.span_ms / 1000).saturating_mul(1000);
+        let mut readings: Vec<crate::forecast::Reading> = {
+            let mut stmt = conn.prepare(
+                "SELECT started_at FROM requests WHERE account_id = ?1 AND started_at >= ?2 ORDER BY started_at",
+            )?;
+            let work = stmt
+                .query_map(rusqlite::params![id, from_ms], |r| Ok(crate::forecast::Reading { at_ms: r.get(0)?, util: None }))?
+                .collect::<Result<Vec<_>, _>>()?;
+            work
+        };
+        {
+            let mut stmt = conn.prepare(&format!(
+                "SELECT at, {used_col} FROM quota_readings
+                 WHERE account_id = ?1 AND {reset_col} = ?2 AND at >= ?3 AND {used_col} IS NOT NULL ORDER BY at"
+            ))?;
+            let taken = stmt
+                .query_map(rusqlite::params![id, reset, from_ms], |r| {
+                    Ok(crate::forecast::Reading { at_ms: r.get(0)?, util: Some(r.get(1)?) })
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            readings.extend(taken);
+        }
+        readings.sort_by_key(|r| r.at_ms);
+        let win = Win { kind, reset_col: "", util_col: "", session_duty };
+        let fc = crate::forecast::forecast(&readings, kind, reset, now, None, duty_band_for(conn, id, &win, &readings, reset, now)?);
+        let mut v = serde_json::to_value(&fc)?;
+        if let Some(o) = v.as_object_mut() {
+            o.insert("expired".into(), json!(false));
+            o.insert("seen_at".into(), json!(seen_at));
+            o.insert("series".into(), json!([]));
+        }
+        windows.insert(kind.name.into(), v);
+    }
+    Ok((windows, Some(seen_at)))
+}
+
 fn window_readings(
     conn: &Connection,
     account: &str,
@@ -1251,10 +1316,10 @@ fn forecast_inner(state: &AppState, f: &Filter) -> anyhow::Result<Value> {
     let ids = rows(
         &conn,
         "SELECT a.id AS id, coalesce(a.email, a.label, a.id) AS label, a.email AS email,
-                a.subscription_type AS plan, coalesce(a.active, 0) AS active
+                a.subscription_type AS plan, coalesce(a.active, 0) AS active, a.provider AS provider
          FROM accounts a
          UNION
-         SELECT DISTINCT r.account_id, r.account_id, NULL, NULL, 0
+         SELECT DISTINCT r.account_id, r.account_id, NULL, NULL, 0, NULL
          FROM requests r
          WHERE r.account_id IS NOT NULL
            AND r.account_id NOT IN (SELECT id FROM accounts)",
@@ -1292,6 +1357,23 @@ fn forecast_inner(state: &AppState, f: &Filter) -> anyhow::Result<Value> {
              WHERE r.account_id = ?1 AND r.started_at >= ?2",
             &[&id, &week_ago],
         )?;
+
+        // A provider that sends no rate-limit headers reports its windows through its own
+        // usage API instead, and the router keeps each reading (`quota::kimi_quota`).
+        if item.get("provider").and_then(Value::as_str) == Some("kimi") {
+            let (windows, seen_at) = reading_windows(&conn, id, now)?;
+            let mut row = item.clone();
+            if let Some(o) = row.as_object_mut() {
+                o.insert("usage".into(), usage);
+                o.insert("week".into(), week);
+                o.insert("seen_at".into(), json!(seen_at));
+                o.insert("status".into(), Value::Null);
+                o.insert("pool".into(), Value::Null);
+                o.extend(windows);
+            }
+            out.push(row);
+            continue;
+        }
 
         let latest = one(
             &conn,
@@ -2672,5 +2754,35 @@ mod tests {
             words(refused, StatusCode::CONFLICT),
             r#""kimi-probe" is a Kimi Code account, so it has no Claude Code login to check"#
         );
+    }
+
+    #[tokio::test]
+    async fn the_forecast_gives_a_kimi_accounts_windows() {
+        let lab = crate::api_refusals::Lab::local("forecast-kimi");
+        let add = json!({ "label": "Forecast kimi", "source": "token", "provider": "kimi", "token": "sk-kimi-not-a-credential" });
+        assert_eq!(lab.post("/api/accounts", &add.to_string()).await.0, StatusCode::OK);
+        // Two readings of Kimi Code's usage API, as the reader keeps them, an hour apart.
+        let now = crate::db::now_ms();
+        let (five_reset, month_reset) = (now / 1000 + 3 * 3600, now / 1000 + 20 * 86_400);
+        let conn = Connection::open(&lab.state.config.db_path).unwrap();
+        // The rate table and its cost view, as the router sets them up at start.
+        crate::pricing::ensure_table(&conn).unwrap();
+        for (at, five, month) in [(now - 3_600_000, 0.1, 0.30), (now - 60_000, 0.4, 0.35)] {
+            conn.execute(
+                "INSERT INTO quota_readings (account_id, at, five_hour_used, five_hour_reset, second_window, second_used, second_reset)
+                 VALUES ('forecast-kimi', ?1, ?2, ?3, 'month', ?4, ?5)",
+                params![at, five, five_reset, month, month_reset],
+            )
+            .unwrap();
+        }
+        let everything = Filter { project: None, session: None, account: None, since: None, until: None, tz: None };
+        let got = forecast_inner(&lab.state, &everything).unwrap();
+        let card = got["accounts"].as_array().unwrap().iter().find(|a| a["id"] == "forecast-kimi").unwrap().clone();
+        assert_eq!(card["provider"], "kimi");
+        assert_eq!(card["seen_at"], json!(now - 60_000), "seen when it was last read");
+        assert_eq!((&card["five_hour"]["used"], &card["five_hour"]["reset_at"]), (&json!(0.4), &json!(five_reset)));
+        assert_eq!(card["five_hour"]["expired"], json!(false));
+        assert_eq!((&card["month"]["used"], &card["month"]["reset_at"]), (&json!(0.35), &json!(month_reset)));
+        assert_eq!(card["seven_day"], Value::Null, "a monthly plan has no weekly window");
     }
 }

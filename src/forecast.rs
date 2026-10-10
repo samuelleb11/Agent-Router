@@ -60,6 +60,9 @@ pub struct WindowKind {
 
 pub const FIVE_HOUR: WindowKind = WindowKind { name: "five_hour", span_ms: 5 * 3_600_000 };
 pub const SEVEN_DAY: WindowKind = WindowKind { name: "seven_day", span_ms: 7 * 86_400_000 };
+/// A monthly total, as Kimi Code counts one beside its 5-hour window. A billing month, taken
+/// as thirty days: only the window's start depends on it.
+pub const MONTH: WindowKind = WindowKind { name: "month", span_ms: 30 * 86_400_000 };
 
 /// One request: when it went out, and the utilisation its response reported. Requests
 /// that carried no rate-limit header still count — they are work, and work is the

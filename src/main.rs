@@ -434,6 +434,8 @@ async fn serve_here(args: config::ServeArgs) -> anyhow::Result<()> {
     }
     // Watches for prompts for the life of the process; a restart announces nothing.
     tokio::spawn(state.push.clone().watch());
+    // Kimi Code accounts' windows, read from Kimi Code's usage API every five minutes.
+    quota::keep_kimi_readings(state.clone());
     // Wraps every Claude Code extension VSCode adds, when the switch is on. A hosted
     // router has no editor to watch.
     if !server {
@@ -541,7 +543,7 @@ fn app_with(state: Arc<proxy::AppState>, console: console::Files) -> Router {
         .route("/api/push/register", post(notify::api::register))
         .route("/api/push/unregister", post(notify::api::unregister))
         .route("/api/push/test", post(notify::api::test))
-        .route("/api/quota", get(quota::quota))
+        .route("/api/quota", get(quota::quota_route))
         .route("/api/quota/raw", get(quota::raw_usage))
         .route("/api/usage-token", post(quota::set_usage_token))
         .route("/api/live/options", get(live::options))
