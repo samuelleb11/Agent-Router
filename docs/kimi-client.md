@@ -9,7 +9,8 @@ machine agent finding and setting up both clients.
 Written for the maintainer, and as the contract the items are built against. The work is
 Northstar's milestone `kimi-client` ([Tracked in Northstar](#tracked-in-northstar)). It
 builds on [docs/sources-and-models.md](sources-and-models.md): Kimi Code's account, its
-models, quota and prices are already the router's. Nothing in this document is built yet.
+models, quota and prices are already the router's. What is built is what Northstar has
+closed in that table.
 
 ## Owner's decisions (2026-10-10)
 

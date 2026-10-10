@@ -426,6 +426,8 @@ impl Db {
         // outlives the account. Every request recorded before there was a second provider
         // was Anthropic's; the API reads a missing one as that.
         ensure_column(&conn, "requests", "provider", "TEXT")?;
+        // The coding clients a machine said it has (`clients`), as JSON.
+        ensure_column(&conn, "machines", "clients", "TEXT")?;
         attach_bodies(&conn, path)?;
         for (col, ty) in [
             ("source", "TEXT NOT NULL DEFAULT 'keychain'"),

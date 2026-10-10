@@ -608,9 +608,11 @@ pub mod api {
     }
 
     /// `GET /api/machines`: each machine, with where its Library stands (`library::push`),
-    /// from what it last said and what is live now.
+    /// from what it last said and what is live now, and the clients it last reported
+    /// (`clients`).
     pub async fn machines(State(state): State<Arc<AppState>>) -> Json<Value> {
         let standings = crate::library::push::standings(&state).await;
+        let clients = crate::places::clients(&state).await;
         let rows = state
             .machines
             .seen()
@@ -619,6 +621,7 @@ pub mod api {
                 let library = standings.get(&m.id).cloned().unwrap_or_else(crate::library::push::Standing::not_yet);
                 let mut row = json!(m);
                 row["library"] = json!(library);
+                row["clients"] = clients.get(&m.id).cloned().unwrap_or_else(|| json!([]));
                 row
             })
             .collect();
@@ -853,5 +856,30 @@ mod tests {
     fn query_values_are_encoded() {
         assert_eq!(encode("req:abc-1_2.3~"), "req%3Aabc-1_2.3~");
         assert_eq!(encode("a b&c"), "a%20b%26c");
+    }
+
+    /// The clients a machine reports with its places come back on `/api/machines`; a report
+    /// that does not name them (an older agent's) leaves them as they were.
+    #[tokio::test]
+    async fn machines_report_their_clients() {
+        let lab = crate::api_refusals::Lab::hosted("machines-clients").await;
+        let (m, _sent) = machine();
+        lab.state.machines.note(&m, true);
+        let clients = json!([
+            { "client": "claude-code", "cli": { "path": "/u/.local/bin/claude", "version": "2.1.267" },
+              "extensions": [{ "editor": "vscode", "version": "2.1.296" }], "home": "/u/.claude" },
+            { "client": "kimi-code", "cli": { "path": "/u/.kimi-code/bin/kimi", "version": "2.1.1" },
+              "extensions": [], "home": "/u/.kimi-code" },
+        ]);
+        let (status, _) = lab.post("/api/machines/places", &json!({ "machine": "m-1", "clients": clients }).to_string()).await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, rows) = lab.get("/api/machines").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(rows[0]["id"], "m-1");
+        assert_eq!(rows[0]["clients"], clients);
+
+        let (status, _) = lab.post("/api/machines/places", &json!({ "machine": "m-1" }).to_string()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(lab.get("/api/machines").await.1[0]["clients"], clients, "an older agent's report keeps them");
     }
 }

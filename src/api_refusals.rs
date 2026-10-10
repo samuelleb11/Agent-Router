@@ -100,11 +100,21 @@ impl Lab {
         self.send(path, Some("application/json"), body).await
     }
 
+    /// GET `path`, from this machine, and read the answer.
+    pub(crate) async fn get(&self, path: &str) -> (StatusCode, Value) {
+        self.answer(path, Request::get(path), "").await
+    }
+
     async fn send(&self, path: &str, content_type: Option<&str>, body: &str) -> (StatusCode, Value) {
-        let mut req = Request::post(path).header(header::HOST, "127.0.0.1");
+        let mut req = Request::post(path);
         if let Some(t) = content_type {
             req = req.header(header::CONTENT_TYPE, t);
         }
+        self.answer(path, req, body).await
+    }
+
+    async fn answer(&self, path: &str, req: axum::http::request::Builder, body: &str) -> (StatusCode, Value) {
+        let mut req = req.header(header::HOST, "127.0.0.1");
         if let Some(p) = self.password {
             req = req.header(header::AUTHORIZATION, format!("Bearer {p}"));
         }

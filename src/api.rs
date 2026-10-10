@@ -2165,6 +2165,7 @@ mod tests {
             platform: None,
             sessions: listed.iter().map(|(s, c)| Listed { session: (*s).into(), cwd: Some((*c).into()) }).collect(),
             directories: dirs,
+            clients: None,
         };
         record(
             &store.conn,

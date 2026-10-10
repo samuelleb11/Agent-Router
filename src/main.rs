@@ -17,6 +17,7 @@ mod api_refusals;
 mod apns;
 mod auth;
 mod capture;
+mod clients;
 mod config;
 mod console;
 mod db;
