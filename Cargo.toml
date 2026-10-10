@@ -10,7 +10,7 @@ description = "A local proxy between Claude Code and Anthropic: several accounts
 repository = "https://github.com/samuelleb11/agent-router"
 
 [dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "process", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "process", "time", "io-std", "io-util"] }
 axum = { version = "0.8", features = ["ws"] }
 hyper = { version = "1", features = ["client", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["client", "client-legacy", "tokio", "http1", "http2"] }

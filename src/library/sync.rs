@@ -588,6 +588,20 @@ impl Router {
         Ok((parts.status, parts.headers, body.collect().await?.to_bytes()))
     }
 
+    /// `send` with no body, its answer read as it arrives: a live stream. The wait is for its
+    /// head only.
+    pub(crate) async fn open(&self, method: Method, path: &str) -> Result<hyper::Response<hyper::body::Incoming>> {
+        let request = Request::builder()
+            .method(method)
+            .uri(format!("{}{path}", self.server))
+            .header(header::AUTHORIZATION, self.auth.clone())
+            .body(http_body_util::Full::new(Bytes::new()))?;
+        tokio::time::timeout(Duration::from_secs(60), self.client.request(request))
+            .await
+            .map_err(|_| anyhow!("{} did not answer", self.server))?
+            .with_context(|| format!("reaching {}", self.server))
+    }
+
     pub async fn manifest(&self) -> Result<Vec<Wanted>> {
         #[derive(Deserialize)]
         struct Manifest {

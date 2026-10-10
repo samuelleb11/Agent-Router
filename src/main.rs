@@ -70,6 +70,9 @@ USAGE:
   agent-router status                show what is installed and what is managed
   agent-router agent [OPTIONS]       connect this machine's sessions to a hosted router
   agent-router library status|sync   the hosted router's Library on this machine
+  agent-router kimi [--model <id>] [prompt]
+                                     a hosted Kimi Code session in this directory,
+                                     worked with here and from the console
 
 SERVE OPTIONS:
   --bind <ip>            also listen here, not only on loopback (like AGENT_ROUTER_BIND)
@@ -142,6 +145,7 @@ async fn main() -> anyhow::Result<()> {
         Some("uninstall") => return cmd_uninstall(),
         Some("status") => return cmd_status(),
         Some("hook") => return kimi::hook(&args[1..]),
+        Some("kimi") => return kimi::launch::main(&args[1..]).await,
         Some("-h") | Some("--help") | Some("help") => {
             print!("{USAGE}");
             return Ok(());

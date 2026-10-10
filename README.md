@@ -197,6 +197,31 @@ another account of its provider. The plan is [docs/sources-and-models.md](docs/s
   services and hooks are left as they are. The agent puts these entries back after Kimi
   Code updates itself, and uninstalling takes them out and puts your default model back.
 
+#### Kimi Code sessions, watched and hosted
+
+Every Kimi Code session on a machine shows in Sessions and on the phones beside Claude
+Code's, marked with its client: what was asked, each tool call and its result, an approval
+it waits on, its tokens and cost. Those are **watched**: Kimi Code's terminal UI and its VS
+Code extension keep each session inside their own process, with no way in from outside, and
+a second process opening the same session writes into its history beside the first. So the
+router never drives a session it did not start.
+
+A **hosted** session is one the router starts, through Kimi Code's own server (`kimi web`),
+which the machine agent runs on loopback and stops when it sits unused. It is driven from
+everywhere: prompts, approvals, Stop, the model and the permission mode. Start one from a
+terminal, in the directory to work in:
+
+```sh
+agent-router kimi                        # on K3
+agent-router kimi --model k3-256k "Explain the build"
+```
+
+It prints the session's link in the console, then takes a prompt per line, prints each reply
+and tool call as it lands, asks `y`/`n` before a tool runs, and stops the turn on Ctrl-C (a
+second Ctrl-C, or Ctrl-D, leaves; the session stays). A hosted router starts it on this
+machine through its agent (`POST /api/live/start {machine, cwd, model}`); a local router
+starts it itself.
+
 ## Upgrading without dropping sessions
 
 Build the new binary and just start it — no need to stop the old one:
