@@ -297,7 +297,7 @@ export interface SessionChips {
   readonly branch: string | null;
   /// The project, only when no project is scoped.
   readonly project: { readonly name: string; readonly path: string } | null;
-  /// "VS Code" or "CLI", with the whole entrypoint.
+  /// "VS Code", "CLI", "Kimi Code CLI"…, with the whole entrypoint (OV-C187, SE-C234).
   readonly client: { readonly name: string; readonly entrypoint: string } | null;
   readonly families: readonly { readonly family: Family; readonly model: string }[];
 }
@@ -309,7 +309,7 @@ export function sessionRows(list: readonly SessionRow[], scope: Scope, now: numb
   return list.map((s) => {
     const prompt = s.prompt_tokens;
     const sub = s.subagent_tokens;
-    const ran = client(s.entrypoint);
+    const ran = client(s.entrypoint, s.client);
     return {
       key: s.id,
       name: id8(s.id),

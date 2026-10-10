@@ -37,6 +37,7 @@ import { arrivalIn, failed } from './logic';
 import { NoticeLine } from './Notice';
 import { useNotice } from './useNotice';
 import { SessionView } from './SessionView';
+import { StartSession } from './StartSession';
 import { useViewportPin } from './useViewportPin';
 import styles from './Sessions.module.scss';
 
@@ -162,6 +163,14 @@ export default function Sessions() {
     listTop.current = 0;
     if (listScroller.current) listScroller.current.scrollTop = 0;
   }, [machine]);
+  // A session just started is opened, the list read again so its row comes in (SE-C241).
+  const onStarted = useCallback(
+    (id: string) => {
+      void client.invalidateQueries({ queryKey: liveKeys.sessions });
+      goSession(id);
+    },
+    [client, goSession],
+  );
   // A tab is a history entry of its own, as a session is (SE-C189) and the Overview's scope (OV-C30);
   // the rest of the address stays, so a session open beside the list stays open (SE-C228).
   const onTab = useCallback((next: string | null) => void navigate({ search: withMachine(location.search, next) }), [navigate, location.search]);
@@ -276,6 +285,10 @@ export default function Sessions() {
                   <strong>live</strong>: under the wrapper, so it takes a typed message and a Stop. <strong>view</strong>: read-only until it is started
                   again after installing the wrapper.
                 </p>
+                <p>
+                  A Kimi Code session is <strong>live</strong> when this router hosts it, as one started here is, and <strong>view</strong> when it
+                  runs in its own terminal or in VS Code.
+                </p>
               </ToggletipContent>
             </Toggletip>
             {session === null && (
@@ -283,6 +296,8 @@ export default function Sessions() {
                 Find
               </Button>
             )}
+            {/* Where a session is started from: a Kimi Code session the router hosts (SE-C239). */}
+            <StartSession hosted={hostedRead.data ?? null} onStarted={onStarted} />
           </header>
           {list.value !== null && failedRead !== null && (
             // Kept, never blanked, and marked with its age (SE-C41).

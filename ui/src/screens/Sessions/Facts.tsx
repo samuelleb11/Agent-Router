@@ -9,7 +9,22 @@ import { Information } from '@carbon/icons-react';
 import { FormModal } from '~/components/FormModal';
 import { liveKeys, postLive, readOptions, readProject, readStats, type Stats } from '~/data/live';
 import { refusalText } from '~/lib/errors';
-import { liveProjectKey, notice, OTHER_MODEL, switcherOptions, switcherSections, switchNotice, type LiveOptions, type SessionRow, type SwitchOption } from '~/model/session';
+import {
+  BYPASS,
+  KIMI_YOLO,
+  controlsOf,
+  isKimi,
+  liveProjectKey,
+  notice,
+  OTHER_MODEL,
+  switcherOptions,
+  switcherSections,
+  switchNotice,
+  type Controls,
+  type LiveOptions,
+  type SessionRow,
+  type SwitchOption,
+} from '~/model/session';
 import { failed, projectFacts, sessionFacts } from './logic';
 import { NoticeLine } from './Notice';
 import { useNotice } from './useNotice';
@@ -23,13 +38,21 @@ const KINDS: readonly { readonly kind: Kind; readonly label: string }[] = [
   { kind: 'mode', label: 'Mode' },
 ];
 
-const BYPASS = 'bypassPermissions';
+/// What the modal that asks before the mode that stops a session asking says, by that mode: Claude
+/// Code's Bypass, Kimi Code's YOLO (SE-C142, SE-C238).
+const BYPASS_ASK = { heading: 'Bypass permissions?', button: 'Bypass permissions' } as const;
+const ASK_FIRST: Readonly<Record<string, { readonly heading: string; readonly button: string }>> = {
+  [BYPASS]: BYPASS_ASK,
+  [KIMI_YOLO]: { heading: 'Switch to YOLO?', button: 'Switch to YOLO' },
+};
 
 const item = (o: SwitchOption) => <SelectItem key={`${o.value}|${o.label}`} value={o.value} text={o.label} />;
 
 /// The strip: what the session is and what it is costing, the project's own total apart, and for a
-/// session under the wrapper the three switchers (SE-C131, SE-C132, SE-C137). Totals are read once
-/// each time the session opens, never pushed with every event (SE-C133).
+/// session under the wrapper, or a Kimi Code one, the three switchers (SE-C131, SE-C132, SE-C137).
+/// A Kimi Code session's are held back where the router refuses them, saying why in its words
+/// (SE-C236, SE-C237). Totals are read once each time the session opens, never pushed with every
+/// event (SE-C133).
 export function Facts({ session, row }: { session: string; row: SessionRow | null }) {
   const once = { staleTime: 0, refetchOnWindowFocus: false, refetchOnReconnect: false, retry: false } as const;
   const stats = useQuery({ queryKey: liveKeys.stats(session), queryFn: ({ signal }) => readStats(session, signal), ...once });
@@ -40,6 +63,11 @@ export function Facts({ session, row }: { session: string; row: SessionRow | nul
   const options = useQuery({ queryKey: liveKeys.options, queryFn: ({ signal }) => readOptions(signal), staleTime: Infinity, retry: false });
   const [said, say] = useNotice();
   const total = projectFacts(project.data);
+  const controls = controlsOf(session, row);
+  // A Kimi Code session is switched through the router that hosts it, never through the wrapper,
+  // so its switchers are drawn whatever its `wrapped`, and held back where they cannot act (SE-C236).
+  const kimi = isKimi(session, row);
+  const why = controls.held ?? controls.effort;
   return (
     <section className={styles.facts} aria-label="This session’s totals and settings">
       <p className={styles.factsLine}>
@@ -57,9 +85,16 @@ export function Facts({ session, row }: { session: string; row: SessionRow | nul
         )}
         {total && <span className={styles.projectTotal}>{total}</span>}
       </p>
-      {row?.wrapped && !stats.isPending ? (
-        <Switchers session={session} stats={stats.data ?? null} options={options.data ?? null} say={say} />
-      ) : row && !row.wrapped ? (
+      {(kimi || row?.wrapped) && !stats.isPending ? (
+        <>
+          <Switchers session={session} stats={stats.data ?? null} options={options.data ?? null} controls={controls} say={say} />
+          {why && (
+            <p className={styles.muted} data-held="">
+              {why}
+            </p>
+          )}
+        </>
+      ) : row && !row.wrapped && !kimi ? (
         <p className={styles.muted}>View only: start this session after installing the wrapper to switch its model, effort or mode from here.</p>
       ) : null}
       <NoticeLine notice={said} onClose={() => say(null)} />
@@ -69,8 +104,22 @@ export function Facts({ session, row }: { session: string; row: SessionRow | nul
 
 /// Model, effort and mode as inline Selects, a phone's native picker each. What they offer is the
 /// router's (SE-C138); each leads with what is in force, or says it is unknown (SE-C139, SE-C140).
-/// The models sit under their provider's name, each by its display name (SE-C233).
-function Switchers({ session, stats, options, say }: { session: string; stats: Stats | null; options: LiveOptions | null; say: (n: ReturnType<typeof notice>) => void }) {
+/// The models sit under their provider's name, each by its display name (SE-C233). A Kimi Code
+/// session's modes are Kimi Code's, and one the router refuses is drawn disabled (SE-C236 to
+/// SE-C238).
+function Switchers({
+  session,
+  stats,
+  options,
+  controls,
+  say,
+}: {
+  session: string;
+  stats: Stats | null;
+  options: LiveOptions | null;
+  controls: Controls;
+  say: (n: ReturnType<typeof notice>) => void;
+}) {
   const id = useId();
   // What is in force: as read, then as switched here (SE-C145).
   const [set, setSet] = useState<Partial<Record<Kind, string>>>({});
@@ -80,10 +129,16 @@ function Switchers({ session, stats, options, say }: { session: string; stats: S
   const flying = useRef<Partial<Record<Kind, boolean>>>({});
   const read = (kind: Kind): string => (stats?.[kind] ? String(stats[kind]) : '').replace(/^claude-/, '');
   const current = (kind: Kind): string => (set[kind] ?? read(kind)).replace(/^claude-/, '');
+  // Kimi Code's modes in place of the router's list, which is Claude Code's (SE-C238).
+  const offers: LiveOptions = controls.modes ? { ...(options ?? {}), modes: controls.modes } : (options ?? {});
+  /// Why a switcher is off, in the router's words: every one on a session it only watches, and the
+  /// effort on any Kimi Code session (SE-C236, SE-C237).
+  const off = (kind: Kind): string | null => controls.held ?? (kind === 'effort' ? controls.effort : null);
+  const askFirst = ASK_FIRST[controls.bypass] ?? BYPASS_ASK;
   /// What a switcher offers: the router's list led by what is in force, and the value the session
   /// was read with kept among them, so switching back to it is a choice like any other (SE-C145).
   const offered = (kind: Kind) => {
-    const list = switcherOptions(kind, current(kind), options ?? {});
+    const list = switcherOptions(kind, current(kind), offers);
     const was = read(kind);
     if (!was || list.some((o) => o.value === was)) return list;
     return [list[0], { value: was, label: was, current: false }, ...list.slice(1)].filter((o): o is (typeof list)[number] => o !== undefined);
@@ -91,7 +146,7 @@ function Switchers({ session, stats, options, say }: { session: string; stats: S
 
   /// Send a switch. Disabled while it flies; the outcome is the router's (SE-C143, SE-C144).
   const send = async (kind: Kind, value: string) => {
-    if (flying.current[kind] || !value || value === current(kind)) return;
+    if (flying.current[kind] || off(kind) || !value || value === current(kind)) return;
     flying.current[kind] = true;
     setBusy((b) => ({ ...b, [kind]: true }));
     const r = await postLive<Record<string, unknown>>(`/api/live/${kind}`, { session, [kind]: value });
@@ -115,8 +170,8 @@ function Switchers({ session, stats, options, say }: { session: string; stats: S
     }
     if (value === current(kind)) return;
     // One choice would otherwise stop the session asking about anything, on a machine the reader
-    // may not be sitting at: asked first, in a modal (SE-C142).
-    if (kind === 'mode' && value === BYPASS) {
+    // may not be sitting at: asked first, in a modal — Bypass, or Kimi Code's YOLO (SE-C142, SE-C238).
+    if (kind === 'mode' && value === controls.bypass) {
       setAsking('bypass');
       return;
     }
@@ -144,7 +199,7 @@ function Switchers({ session, stats, options, say }: { session: string; stats: S
           // The option in force reads "model: opus", so the label is said, not shown twice.
           hideLabel
           value={current(kind)}
-          disabled={!!busy[kind]}
+          disabled={!!busy[kind] || off(kind) !== null}
           onChange={(e) => chose(kind, e.target.value)}
         >
           {switcherSections(offered(kind)).map((section) =>
@@ -191,14 +246,14 @@ function Switchers({ session, stats, options, say }: { session: string; stats: S
         open={asking === 'bypass'}
         danger
         size="sm"
-        modalHeading="Bypass permissions?"
+        modalHeading={askFirst.heading}
         modalLabel="Mode"
-        primaryButtonText="Bypass permissions"
+        primaryButtonText={askFirst.button}
         secondaryButtonText="Keep the current mode"
         onRequestClose={() => setAsking(null)}
         onRequestSubmit={() => {
           setAsking(null);
-          void send('mode', BYPASS);
+          void send('mode', controls.bypass);
         }}
       >
         <p>This session will stop asking before it runs commands or edits files.</p>

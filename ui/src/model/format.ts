@@ -209,12 +209,46 @@ export function projectName(path: string | null | undefined): string {
 /// A session by the first eight characters of its id (OV-C186).
 export const id8 = (id: string | null | undefined): string => String(id ?? '').slice(0, 8);
 
-/// The client a session ran in: "VS Code" when its entrypoint mentions claude-vscode, else "CLI"
-/// for claude-cli, else not named (OV-C187). The VS Code extension launches the CLI, so its mark
-/// is tested first.
-export function client(entrypoint: string | null | undefined): 'VS Code' | 'CLI' | null {
+/// The clients the router names a session's requests by, read off their User-Agent
+/// (src/analyze.rs, `client_of`): Claude Code's terminal and VS Code, and Kimi Code's terminal,
+/// VS Code and web.
+export type ClientId = 'claude-code-cli' | 'claude-code-vscode' | 'kimi-code-cli' | 'kimi-code-vscode' | 'kimi-code-web';
+
+/// Each client's label, one spelling wherever the console names a session's client (SE-C234).
+/// Claude Code's keep the words its entrypoint was always named by (OV-C187); Kimi Code's say whose
+/// they are.
+const CLIENT_LABELS: Readonly<Record<ClientId, string>> = {
+  'claude-code-cli': 'CLI',
+  'claude-code-vscode': 'VS Code',
+  'kimi-code-cli': 'Kimi Code CLI',
+  'kimi-code-vscode': 'Kimi Code VS Code',
+  'kimi-code-web': 'Kimi Code web',
+};
+
+/// A client's label by the router's id for it; null for an id the console does not know, which is
+/// not named (SE-C234). Looked up as an own property, so `constructor` names nothing.
+export function clientLabel(id: string | null | undefined): string | null {
+  return typeof id === 'string' && Object.hasOwn(CLIENT_LABELS, id) ? (CLIENT_LABELS[id as ClientId] ?? null) : null;
+}
+
+/// The products a machine's agent reports (src/clients.rs, `Client`), by their names.
+const PRODUCTS: Readonly<Record<string, string>> = { 'claude-code': 'Claude Code', 'kimi-code': 'Kimi Code' };
+
+/// A product by its name — "Claude Code", "Kimi Code" — and one the console does not know as sent
+/// (MA-C8, SE-C235).
+export function productName(id: string | null | undefined): string {
+  const p = typeof id === 'string' ? id : '';
+  return (Object.hasOwn(PRODUCTS, p) ? PRODUCTS[p] : undefined) ?? p;
+}
+
+/// The client a session ran in: the router's id for it when it names one (SE-C234), else from the
+/// entrypoint, "VS Code" when it mentions claude-vscode, else "CLI" for claude-cli, else not named
+/// (OV-C187). The VS Code extension launches the CLI, so its mark is tested first.
+export function client(entrypoint: string | null | undefined, id?: string | null): string | null {
+  const named = clientLabel(id);
+  if (named) return named;
   if (!entrypoint) return null;
-  return /claude-vscode/.test(entrypoint) ? 'VS Code' : /claude-cli/.test(entrypoint) ? 'CLI' : null;
+  return /claude-vscode/.test(entrypoint) ? CLIENT_LABELS['claude-code-vscode'] : /claude-cli/.test(entrypoint) ? CLIENT_LABELS['claude-code-cli'] : null;
 }
 
 // ---------- the live view's own spellings ----------

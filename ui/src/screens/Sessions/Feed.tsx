@@ -107,7 +107,13 @@ interface Drawn {
 }
 
 /// One entry's look, for the rows the stream delivered and the echoes of what the reader did.
-function draw(entry: FeedEntry, next: FeedEntry | undefined, session: string, deliver: Deliver): { drawn: Omit<Drawn, 'key' | 'at' | 'took'>; took: number } {
+function draw(
+  entry: FeedEntry,
+  next: FeedEntry | undefined,
+  session: string,
+  deliver: Deliver,
+  question: string | null,
+): { drawn: Omit<Drawn, 'key' | 'at' | 'took'>; took: number } {
   if (entry.kind === 'echo') {
     // What the reader sent, echoed until the transcript has it (SE-C150, SE-C160).
     return {
@@ -169,7 +175,13 @@ function draw(entry: FeedEntry, next: FeedEntry | undefined, session: string, de
           className: '',
           data: { 'data-kind': 'ask' },
           body: row.ask ? (
-            <QuestionForm session={session} ask={row.ask} formKey={`${entry.item.t ?? ''}:${JSON.stringify(row.ask.questions ?? [])}`} deliver={deliver} />
+            <QuestionForm
+              session={session}
+              ask={row.ask}
+              formKey={`${entry.item.t ?? ''}:${JSON.stringify(row.ask.questions ?? [])}`}
+              deliver={deliver}
+              held={question}
+            />
           ) : null,
         },
       };
@@ -214,6 +226,7 @@ export function Feed({
   keys,
   arrived,
   arrivedRef,
+  question = null,
 }: {
   session: string;
   entries: readonly FeedEntry[];
@@ -223,12 +236,15 @@ export function Feed({
   /// The entry an address arrived at, marked for as long as it is there.
   arrived: number | null;
   arrivedRef: Ref<HTMLDivElement>;
+  /// Why a question form cannot be answered from here, in the router's words, else null (SE-C236,
+  /// SE-C237).
+  question?: string | null;
 }) {
   const drawn: Drawn[] = [];
   for (let i = 0; i < entries.length; ) {
     const entry = entries[i];
     if (!entry) break;
-    const { drawn: d, took } = draw(entry, entries[i + 1], session, deliver);
+    const { drawn: d, took } = draw(entry, entries[i + 1], session, deliver, question);
     drawn.push({ ...d, key: keys(entry), at: i, took });
     i += took;
   }

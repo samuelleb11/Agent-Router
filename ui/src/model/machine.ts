@@ -6,7 +6,7 @@
 // router's empty session list says the same "no machine yet" sentence, and links to the screen
 // (SE-C187).
 
-import { span } from './format';
+import { productName, span } from './format';
 
 // ---------- connecting a machine ----------
 
@@ -70,6 +70,21 @@ export interface MachineRow {
   /// Where its Library stands (src/library/push.rs, `Standing`); absent from a router that
   /// keeps none.
   readonly library?: Standing;
+  /// The clients its agent reported, Claude Code first; `[]` when its agent has not said
+  /// (src/clients.rs, `Client`; MA-C8).
+  readonly clients?: readonly ClientRow[] | null;
+}
+
+/// One client a machine's agent reported (src/clients.rs, `Client`).
+export interface ClientRow {
+  /// `claude-code` or `kimi-code`.
+  readonly client: string;
+  /// Its command line, when one is installed; `version` null when it did not answer in time.
+  readonly cli?: { readonly path?: string | null; readonly version?: string | null } | null;
+  /// Its extension, in each editor that has it, by the editor's folder name: `vscode`, `cursor`…
+  readonly extensions?: readonly { readonly editor?: string | null; readonly version?: string | null }[] | null;
+  /// Its home folder, when there is one.
+  readonly home?: string | null;
 }
 
 /// A machine's build compared with the router's: quietly the same, or another, with what updates
@@ -90,8 +105,67 @@ export interface MachineItem {
   /// Whether it runs the router's own build, and the words for it; null until the router's build is
   /// known, or when the machine did not say its own (MA-C4).
   readonly build: { readonly same: boolean; readonly text: string } | null;
-  /// Where its Library stands, in words, and whether it is something to act on (LB-C11).
+  /// Where its Library stands, in words, and whether it is something to act on (LB-C11); null
+  /// where its Claude Code line says it instead (MA-C9).
   readonly library: { readonly text: string; readonly needs: boolean } | null;
+  /// Whether it offers a sync of its Library now: online, on a router that keeps one (LB-C12).
+  readonly syncs: boolean;
+  /// Its clients, one line each, in the order its agent reported them (MA-C8); none when it reported
+  /// none (MA-C10).
+  readonly clients: readonly ClientItem[];
+}
+
+/// One client of a machine, as the screen lists it (MA-C8, MA-C9).
+export interface ClientItem {
+  /// Its id, as the agent sent it: `claude-code`, `kimi-code`.
+  readonly client: string;
+  /// "Claude Code", "Kimi Code".
+  readonly name: string;
+  /// Its command line's version, each editor's extension, and whether its home folder is there.
+  readonly parts: readonly string[];
+  /// Where its own copy of the Library stands; null when it has no standing of its own (MA-C9).
+  readonly library: { readonly text: string; readonly needs: boolean } | null;
+}
+
+/// What a machine that reported no client says (MA-C10).
+export const NO_CLIENTS = 'Its agent has reported no Claude Code or Kimi Code.';
+
+const CLAUDE_CODE = 'claude-code';
+
+const EDITORS: Readonly<Record<string, string>> = {
+  vscode: 'VS Code',
+  'vscode-insiders': 'VS Code Insiders',
+  'vscode-server': 'VS Code Server',
+  cursor: 'Cursor',
+  windsurf: 'Windsurf',
+  vscodium: 'VSCodium',
+};
+
+/// An editor by its name, from the folder name the agent sends (src/clients.rs, `EDITORS`); one the
+/// console does not know as sent (MA-C8).
+export function editorName(editor: string | null | undefined): string {
+  const e = typeof editor === 'string' ? editor.trim() : '';
+  return (Object.hasOwn(EDITORS, e) ? EDITORS[e] : undefined) ?? e;
+}
+
+/// A client's parts in words: "CLI 2.1.267", "CLI, version not read" or "no CLI"; each editor's
+/// extension, "VS Code 2.1.296", or "no editor extension"; "home folder" or "no home folder" (MA-C8).
+export function clientParts(c: ClientRow): string[] {
+  const cli = c.cli ? (c.cli.version ? `CLI ${c.cli.version}` : 'CLI, version not read') : 'no CLI';
+  const extensions = (c.extensions ?? []).filter((x) => !!x).map((x) => [editorName(x.editor), x.version].filter(Boolean).join(' '));
+  return [cli, ...(extensions.length ? extensions : ['no editor extension']), c.home ? 'home folder' : 'no home folder'];
+}
+
+/// A machine's clients, one line each, each ending with where its own copy of the Library stands:
+/// Claude Code's is the row's `library`, whose own fields are Claude Code's, and every other
+/// client's is under its name in `library.clients` (MA-C8, MA-C9).
+export function clientItems(m: Pick<MachineRow, 'clients' | 'library'>): ClientItem[] {
+  return (m.clients ?? [])
+    .filter((c): c is ClientRow => !!c && typeof c.client === 'string')
+    .map((c) => {
+      const own = c.client === CLAUDE_CODE ? m.library : m.library?.clients && Object.hasOwn(m.library.clients, c.client) ? m.library.clients[c.client] : undefined;
+      return { client: c.client, name: productName(c.client), parts: clientParts(c), library: own ? standingWords(own) : null };
+    });
 }
 
 const PLATFORMS: Readonly<Record<string, string>> = { macos: 'macOS', linux: 'Linux', windows: 'Windows' };
@@ -126,6 +200,9 @@ export function machineItems(rows: readonly MachineRow[], routerBuild: string | 
     .map((m): MachineItem => {
       const id = String(m.id ?? '');
       const build = typeof m.build === 'string' ? m.build : '';
+      const clients = clientItems(m);
+      // Claude Code's line says the machine's own standing, so the machine does not say it twice (MA-C9).
+      const told = clients.some((c) => c.client === CLAUDE_CODE && c.library !== null);
       return {
         id,
         label: (typeof m.label === 'string' && m.label.trim()) || id.slice(0, 8),
@@ -133,7 +210,9 @@ export function machineItems(rows: readonly MachineRow[], routerBuild: string | 
         online: m.online === true,
         presence: presence(m, now),
         build: routerBuild && build ? { same: build === routerBuild, text: build === routerBuild ? SAME_BUILD : OTHER_BUILD } : null,
-        library: m.library ? standingWords(m.library) : null,
+        library: m.library && !told ? standingWords(m.library) : null,
+        syncs: m.online === true && !!m.library,
+        clients,
       };
     })
     .sort((a, b) => Number(b.online) - Number(a.online) || machineOrder(a.label, b.label));
@@ -155,6 +234,9 @@ export interface Standing {
   readonly failed: number;
   readonly replaced: readonly string[];
   readonly at_ms: number | null;
+  /// Each other client's standing on the machine, by its name, `kimi-code`; the fields above are
+  /// Claude Code's (MA-C9).
+  readonly clients?: Readonly<Record<string, Standing>> | null;
 }
 
 /// A machine's Library in words, and whether it is something to act on (LB-C11).

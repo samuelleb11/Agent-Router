@@ -5,7 +5,7 @@
 // "online for 3h" is a fact the spec can state.
 import { act, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { AGENTLESS, CONNECT_HOW, ON_THIS_MACHINE, OTHER_BUILD, SAME_BUILD, SEEN, WITH_VS_CODE, type MachineRow } from '~/model/machine';
+import { AGENTLESS, CONNECT_HOW, NO_CLIENTS, ON_THIS_MACHINE, OTHER_BUILD, SAME_BUILD, SEEN, WITH_VS_CODE, type MachineRow } from '~/model/machine';
 import { HOSTED, LOCAL, ok, stubRouter, type Answer } from '~/screens/Settings/testing';
 import { json, press, refusal, renderScreen, unreachable } from '~/test-utils';
 import Machines from './index';
@@ -207,6 +207,81 @@ describe('Machines on a local router', () => {
     expect(await screen.findByText('Could not read what kind of router this is')).toBeInTheDocument();
     expect(screen.getByText('Could not reach the router.')).toBeInTheDocument();
     expect(screen.queryByRole('region', { name: 'Connect a machine' })).toBeNull();
+  });
+});
+
+describe('Machines and their clients', () => {
+  const standing = (state: string, extra: Record<string, unknown> = {}) => ({ state, behind: 0, failed: 0, replaced: [], at_ms: NOW - HOUR, ...extra });
+  const CLAUDE = {
+    client: 'claude-code',
+    cli: { path: '/u/.local/bin/claude', version: '2.1.267' },
+    extensions: [
+      { editor: 'vscode', version: '2.1.296' },
+      { editor: 'cursor', version: '2.1.290' },
+    ],
+    home: '/u/.claude',
+  };
+  const KIMI = { client: 'kimi-code', cli: { path: '/u/.kimi-code/bin/kimi', version: '2.1.1' }, extensions: [], home: '/u/.kimi-code' };
+  const clientsOf = (id: string) => within(item(id)).getByRole('list', { name: /^Clients on / });
+  const lineOf = (id: string, client: string) => {
+    const li = item(id).querySelector<HTMLElement>(`[data-client="${client}"]`);
+    if (!li) throw new Error(`no ${client} on ${id}`);
+    return li;
+  };
+
+  it('MA-C8: each machine lists its clients in the order its agent reported them, each with its CLI’s version, each editor’s extension and whether its home folder is there', async () => {
+    hosted(
+      ok([
+        machine('a1', 'studio', { clients: [CLAUDE, KIMI] }),
+        machine('b2', 'laptop', { clients: [{ client: 'kimi-code', cli: { path: '/u/kimi', version: null }, extensions: [{ editor: 'vscode', version: '0.8.1' }], home: null }] }),
+        machine('c3', 'odd', { clients: [{ client: 'new-thing', cli: null, extensions: [{ editor: 'zed', version: '1.0' }], home: '/u/.new' }] }),
+      ]),
+    );
+    show();
+    await waitFor(() => item('a1'));
+    expect([...clientsOf('a1').querySelectorAll('[data-client]')].map((li) => li.getAttribute('data-client'))).toEqual(['claude-code', 'kimi-code']);
+    expect(lineOf('a1', 'claude-code')).toHaveTextContent(/^Claude Code: CLI 2\.1\.267 · VS Code 2\.1\.296 · Cursor 2\.1\.290 · home folder$/);
+    expect(lineOf('a1', 'kimi-code')).toHaveTextContent(/^Kimi Code: CLI 2\.1\.1 · no editor extension · home folder$/);
+    // A command that did not answer, and no home folder.
+    expect(lineOf('b2', 'kimi-code')).toHaveTextContent(/^Kimi Code: CLI, version not read · VS Code 0\.8\.1 · no home folder$/);
+    // A client and an editor the console does not know, as the agent sent them.
+    expect(lineOf('c3', 'new-thing')).toHaveTextContent(/^new-thing: no CLI · zed 1\.0 · home folder$/);
+  });
+
+  it('MA-C9: each client’s line ends with where its own Library stands, Claude Code’s from the machine’s and Kimi Code’s from library.clients; the machine does not say it twice, and keeps its sync', async () => {
+    hosted(
+      ok([
+        machine('a1', 'studio', { clients: [CLAUDE, KIMI], library: { ...standing('in_step'), clients: { 'kimi-code': standing('behind', { behind: 1 }) } } } as Partial<MachineRow>),
+        machine('b2', 'laptop', { clients: [CLAUDE, KIMI], library: standing('in_step') } as Partial<MachineRow>),
+        machine('c3', 'kimi-only', { clients: [KIMI], library: standing('in_step') } as Partial<MachineRow>),
+      ]),
+    );
+    show();
+    await waitFor(() => item('a1'));
+    const said = (el: HTMLElement) => el.querySelector<HTMLElement>('[data-client-library]');
+    expect(said(lineOf('a1', 'claude-code'))).toHaveTextContent(/^, Library in step$/);
+    expect(said(lineOf('a1', 'claude-code'))?.dataset['clientLibrary']).toBe('well');
+    expect(said(lineOf('a1', 'kimi-code'))).toHaveTextContent(/^, Library behind on 1 item$/);
+    expect(said(lineOf('a1', 'kimi-code'))?.dataset['clientLibrary']).toBe('needs');
+    // Claude Code's line says the machine's standing, so the machine does not say it again.
+    expect(item('a1').querySelector('[data-library]')).toBeNull();
+    expect(within(item('a1')).getByRole('button', { name: 'Sync its Library now' })).toBeInTheDocument();
+    // A client with no standing of its own says nothing of the Library.
+    expect(said(lineOf('b2', 'kimi-code'))).toBeNull();
+    // With no Claude Code line to say it, the machine says its own, as before.
+    expect(item('c3').querySelector('[data-library]')).toHaveTextContent('Library in step');
+  });
+
+  it('MA-C10: a machine whose agent reported no client says so in one sentence, never an empty list, and keeps its Library line', async () => {
+    hosted(ok([machine('a1', 'studio', { clients: [], library: standing('in_step') } as Partial<MachineRow>), machine('b2', 'laptop')]));
+    show();
+    await waitFor(() => item('a1'));
+    for (const id of ['a1', 'b2']) {
+      expect(within(item(id)).getByText(NO_CLIENTS)).toBeInTheDocument();
+      expect(within(item(id)).queryByRole('list', { name: /^Clients on / })).toBeNull();
+    }
+    expect(NO_CLIENTS).toBe('Its agent has reported no Claude Code or Kimi Code.');
+    expect(item('a1').querySelector('[data-library]')).toHaveTextContent('Library in step');
   });
 });
 

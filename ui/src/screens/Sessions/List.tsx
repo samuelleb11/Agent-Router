@@ -40,7 +40,8 @@ export interface RowActions {
 const Said = ({ children }: { children: string }) => <span className={styles.said}>{children}</span>;
 
 /// One session's row: its dot with the halo when live, its name, whether it can be typed into, its
-/// age, its title in at most two lines, what it is doing, and its id with its branch (SE-C26, SE-C28).
+/// client when it is Kimi Code's, its age, its title in at most two lines, what it is doing, and its
+/// id with its branch (SE-C26, SE-C28, SE-C235).
 function Row({ r, actions, shelved }: { r: RowView; actions: RowActions; shelved: boolean }) {
   const coarse = useCoarse();
   const notice = actions.notices.get(r.id) ?? null;
@@ -74,6 +75,15 @@ function Row({ r, actions, shelved }: { r: RowView; actions: RowActions; shelved
           <span className={styles.reach} data-reach={r.reach}>
             {r.reach}
           </span>
+          {/* A Kimi Code session names its client; a Claude Code one names none (SE-C235). */}
+          {r.client && (
+            <>
+              <Said>, </Said>
+              <span className={styles.rowClient} data-client="">
+                {r.client}
+              </span>
+            </>
+          )}
           <Said>, moved </Said>
           <span className={styles.rowAge}>{r.age}</span>
           <Said> ago</Said>

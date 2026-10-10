@@ -86,12 +86,40 @@
   color: var(--ar-warn);
 }
 
-// Where its Library stands: quiet when well, marked when it wants something done (LB-C11).
+// Where its Library stands: quiet when well, marked when it wants something done (LB-C11), the
+// machine's or one client's (MA-C9).
 .library {
   color: $text-secondary;
-  &[data-library='needs'] {
+  &[data-library='needs'],
+  &[data-client-library='needs'] {
     color: $support-warning;
   }
+}
+
+/// Its clients, a line each, wrapping rather than widening a phone (MA-C8).
+.clients {
+  display: grid;
+  gap: $spacing-01;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  min-inline-size: 0;
+}
+
+.client,
+.noClients {
+  @include type-style('helper-text-01');
+  color: $text-secondary;
+  overflow-wrap: anywhere;
+}
+
+.clientName {
+  color: $text-primary;
+  margin-inline-end: $spacing-03;
+}
+
+.client .library {
+  margin-inline-start: $spacing-03;
 }
 
 .sync {

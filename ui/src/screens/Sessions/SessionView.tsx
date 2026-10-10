@@ -13,6 +13,7 @@ import { CONCEPTS } from '~/lib/concepts';
 import { id8 } from '~/model/format';
 import type { SearchHit } from '~/model/search';
 import {
+  controlsOf,
   machineOf,
   notice,
   permissionCard,
@@ -222,6 +223,9 @@ export function SessionView({ id, row, rows, covered, arrival, primary, onBack, 
   // The machine the session runs on, beside its project, whenever a hosted router names one, as
   // both phones' session screens show it (SE-C221).
   const machine = row ? machineOf(row) : null;
+  // What this session takes from here: a Kimi Code one the router only watches takes nothing, and
+  // none takes an effort, a side question or a question's answer (SE-C236, SE-C237).
+  const controls = controlsOf(id, row);
 
   if (covered) return null;
   return (
@@ -263,7 +267,7 @@ export function SessionView({ id, row, rows, covered, arrival, primary, onBack, 
               }
             />
           )}
-          <Feed session={id} entries={entries} deliver={deliver} keys={keys} arrived={arrivedAt} arrivedRef={arrivedEl} />
+          <Feed session={id} entries={entries} deliver={deliver} keys={keys} arrived={arrivedAt} arrivedRef={arrivedEl} question={controls.question} />
         </div>
       </div>
       <div className={styles.dock} data-dock="">
@@ -271,11 +275,11 @@ export function SessionView({ id, row, rows, covered, arrival, primary, onBack, 
             card scrolls inside its own area, so the feed above keeps its room. */}
         {(card || cardNotice) && (
           <div className={styles.cardArea}>
-            {card && <PermissionCard key={card.seen} session={id} card={card} onAnswered={onAnswered} />}
+            {card && <PermissionCard key={card.seen} session={id} card={card} onAnswered={onAnswered} held={controls.held} />}
             <NoticeLine notice={cardNotice} onClose={() => sayCard(null)} />
           </div>
         )}
-        <Composer session={id} sent={feed?.sent ?? EMPTY_SENT} stoppable={header.stop} deliver={deliver} echo={echo} aside={aside} follow={follow} />
+        <Composer session={id} sent={feed?.sent ?? EMPTY_SENT} stoppable={header.stop} deliver={deliver} echo={echo} aside={aside} follow={follow} controls={controls} />
       </div>
     </div>
   );

@@ -200,6 +200,10 @@ export interface SessionRow {
   readonly machine: MachineRef | null;
   readonly git_branch: string | null;
   readonly entrypoint: string | null;
+  /// The client its requests came from, as the router reads their User-Agent (src/analyze.rs,
+  /// `client_of`): `claude-code-cli`, `claude-code-vscode`, `kimi-code-cli`, `kimi-code-web`,
+  /// `kimi-code-vscode`; absent for any other caller (SE-C234).
+  readonly client?: string | null;
   readonly started_at: number | null;
   readonly last_seen_at: number | null;
   readonly requests: number | null;

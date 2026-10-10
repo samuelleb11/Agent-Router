@@ -62,7 +62,10 @@ reading only the open tab: OV-C215 to OV-C217, so the Overview holds 217. On 202
 and the Models page, ST-C117 to ST-C123, so Settings holds 123; a Kimi Code account's card and the
 `kimi` family, OV-C218 to OV-C222, so the Overview holds 222; and the picker by provider, SE-C233, so
 Sessions holds 233. The same day the burn-down gained a short-term trend beside the long one,
-OV-C223 (AGEN-0121), so the Overview holds 223.
+OV-C223 (AGEN-0121), so the Overview holds 223. Also on 2026-10-10 Kimi Code became a client of the
+console (AGEN-0116): its sessions' labels and controls, SE-C234 to SE-C238, and starting a hosted
+one, SE-C239 to SE-C241, so Sessions holds 241; and each machine's clients, MA-C8 to MA-C10, so
+Machines holds 10.
 
 ## Shell
 
@@ -2972,6 +2975,95 @@ one after another, and what each part holds does not change.
   was given. *Regression:* no. *Source:* `ui/src/screens/Sessions/Sessions.module.scss`
   (`.machineTabs`); `scripts/sessions-checks.mjs` measures it at 360 px.
 
+### Kimi Code sessions
+
+Kimi Code is a client of the router beside Claude Code ([Sources](sources-and-models.md),
+AGEN-0112, AGEN-0116). Its sessions are listed with Claude Code's: a row of
+`GET /api/live/sessions` carries `client: "kimi-code"` and `hosted`, and its id is `session_<uuid>`
+where Claude Code's is a bare UUID. Every Kimi Code session is watched — listed, streamed, its
+totals and its prompt read — and only one the router hosts, started from here (SE-C239), is driven;
+the router refuses a control on any other in its own words (`src/kimi/live.rs`).
+
+- **SE-C234** A session's client is named one way wherever the console names it — a live row, the
+  Overview's session lists — from the router's id for it: "CLI" and "VS Code" for Claude Code's
+  `claude-code-cli` and `claude-code-vscode`, as OV-C187 names them, and "Kimi Code CLI", "Kimi Code
+  VS Code" and "Kimi Code web" for `kimi-code-cli`, `kimi-code-vscode` and `kimi-code-web`. The
+  Overview's rows take `client` from `/api/sessions`, which the router reads off the requests'
+  User-Agent; a row without it is named from its entrypoint by OV-C187, and an id the console does
+  not know is not named. *Why:* with two products' clients in one list, "CLI" alone would not say
+  whose; Claude Code's words are kept, since every row before Kimi Code was Claude Code's.
+  *Regression:* no. *Source:* `src/analyze.rs` (`client_of`), `src/api.rs` (`sessions_of`);
+  `ui/src/model/format.ts` (`clientLabel`, `client`).
+- **SE-C235** A Kimi Code session's row names its client beside "live" or "view": "Kimi Code web" for
+  one the router hosts, which runs under Kimi Code's web server, and "Kimi Code" for one it watches,
+  whose terminal or editor the router cannot tell. It is "live" when the router hosts it and "view"
+  otherwise, whatever its `wrapped`, which a Kimi Code row never sets (SE-C28). A Claude Code row
+  names no client, as before. The help beside the list says what live and view mean for each.
+  *Why:* whether a session can be typed into decides what its controls can do, and for Kimi Code
+  that is whether the router hosts it, not the wrapper. *Regression:* no. *Source:*
+  `src/kimi/session.rs` (`discover_in`, `row`); `ui/src/model/session.ts` (`rowView`, `drives`).
+- **SE-C236** A Kimi Code session the router only watches (`hosted: false`) takes no control from
+  here: the composer and Send, Stop, the permission card's buttons, the question form, and the model
+  and mode switchers are drawn disabled, and the router's own sentence says why beside the composer,
+  on the facts strip, on the card and in the form: "This Kimi Code session runs in its own terminal
+  or in VS Code, which takes no outside control. Start a hosted session to drive one." A hosted one
+  (`hosted: true`) takes them as a Claude Code session under the wrapper does. Until the list has
+  listed the session, as just after it is started, nothing is held back, and a refusal is said in
+  the router's words (SE-C183). *Why:* the router refuses each of those with that 409, and a control
+  that can only be refused is shown off, with its reason, rather than left to fail. *Regression:*
+  no. *Source:* `src/kimi/live.rs` (`WATCHED`, `driven`); `ui/src/model/session.ts` (`controlsOf`).
+- **SE-C237** Every Kimi Code session, hosted or not, has its effort switcher and its side question
+  disabled, each with the router's sentence beside it — "A Kimi Code session has no effort to set
+  from here.", "A Kimi Code session has no side question to ask from here." — and its question form
+  disabled, saying "A Kimi Code question is answered in its own window for now." A watched one says
+  SE-C236's sentence in their place, which covers them. A hosted one's permission prompt is answered
+  as a Claude Code one is. *Why:* the router refuses all three for any Kimi Code session; the
+  composer still reaches a hosted one, so its question can be answered by typing. *Regression:* no.
+  *Source:* `src/kimi/live.rs` (`unsupported`, `answer`), `src/live.rs` (`effort`, `aside`).
+- **SE-C238** A Kimi Code session's mode switcher offers Kimi Code's modes, "Manual", "Auto" and
+  "YOLO" (`manual`, `auto`, `yolo`), in place of the router's list, which is Claude Code's, led by
+  the mode in force as SE-C139 leads it. YOLO asks first, as Bypass does (SE-C142), in a modal: "This
+  session will stop asking before it runs commands or edits files." *Why:* the router takes Kimi
+  Code's three, maps Claude Code's `default`, `acceptEdits` and `bypassPermissions` onto them, and
+  refuses every other, `plan` included, with a 400, so Claude Code's six would offer three that can
+  only be refused. YOLO is Kimi Code's bypass. *Regression:* no. *Source:* `src/kimi/live.rs`
+  (`mode_of`, `set_mode`), `src/kimi/web.rs` (`set_mode`).
+
+### Starting a session
+
+`POST /api/live/start {machine, cwd, model}` starts a Kimi Code session the router hosts, on a
+machine with Kimi Code, and answers its id (`src/kimi/live.rs`, `start`); a hosted router relays it
+to the machine named. Claude Code's sessions are started where Claude Code runs; only Kimi Code's
+are started from here (AGEN-0116).
+
+- **SE-C239** The list's header carries "Start a session", which opens "Start a Kimi Code session"
+  in a modal. On a hosted router the form first asks for the machine, among those
+  `GET /api/machines` lists online with Kimi Code among their `clients` (MA-C8), by label in the
+  order the list heads its machines (SE-C220), the first chosen. With none it says "No machine
+  online has Kimi Code." and links to the Machines screen, and nothing can be started. A local
+  router asks for no machine: it starts the session on itself. The machines are read only while the
+  form is open. *Why:* a session is started on a machine, and one offline or without Kimi Code can
+  only be refused. *Regression:* no. *Source:* `src/hosted.rs` (`/api/live/start`, relayed by
+  `machine`); `ui/src/screens/Sessions/StartSession.tsx`.
+- **SE-C240** The form then asks for the directory, typed as its full path on that machine, and for
+  the model, among the catalogue's Kimi Code models (`GET /api/models`, provider `kimi`) by display
+  name, sending the id, the first chosen. With no Kimi Code model it says "No Kimi Code model is in
+  the catalogue — add a Kimi Code account in Settings." and links to Settings → Accounts. Start is
+  disabled until there is a machine where one is asked for, a directory and a model, and while a
+  start is in flight. A read that fails says so in the router's words, never that there is none
+  (SH-C22). *Why:* the router starts Kimi Code with the model as `agent-router/<id>`, so only a
+  catalogue model can be named; a directory differs from machine to machine, so there is no list to
+  choose it from. *Regression:* no. *Source:* `src/kimi/live.rs` (`StartBody`, `alias`),
+  `src/models.rs`.
+- **SE-C241** A start the router takes, `{ok: true, session}`, closes the form, reads the list again
+  and opens the session, `/live?session=<id>` (SE-C189), keeping the list's tab (SE-C228). One it
+  refuses keeps the form and what was typed, and says the router's words in it (SE-C183): a machine
+  with no Kimi Code (409), a directory that is not an absolute one that exists there (400), and on a
+  hosted router a machine it does not know (404, "No such machine.") or one that is offline (503).
+  *Why:* started, the session is what the reader came for; refused, only the router knows why, and
+  nothing typed is lost. *Regression:* no. *Source:* `src/kimi/live.rs` (`start`),
+  `src/machines.rs` (`by_machine`).
+
 ### Navigation
 
 - **SE-C189** The open session lives in the URL as `?session=<id>`, pushed when a session opens and
@@ -3217,6 +3309,37 @@ router takes no machines. Line numbers are as of commit `48533db`.
   reply that is not a list is a failed read. The commands stay in every case. *Why:* a blip is not
   an empty router, and an empty list and an unreadable one are different facts (SH-C14, SH-C22).
   *Regression:* no. *Source:* `ui/src/data/held.ts`, `ui/src/data/machines.ts`.
+
+### Clients
+
+Each machine's agent says which clients it has — Claude Code and Kimi Code — with their versions
+(`src/clients.rs`, AGEN-0116), and `GET /api/machines` gives them as each row's `clients`, `[]` for
+a machine whose agent has not said.
+
+- **MA-C8** Each machine lists its clients under its own lines, in the order its agent reported them,
+  Claude Code first, one line each: its name ("Claude Code", "Kimi Code", and one the console does
+  not know as the agent sent it); its command line's version ("CLI 2.1.267"), "CLI, version not
+  read" when the command did not answer in time, or "no CLI"; each editor's extension by the
+  editor's name and the extension's version ("VS Code 2.1.296", "Cursor 2.1.290"), or "no editor
+  extension"; and whether its home folder is there, "home folder" or "no home folder". *Why:* which
+  clients a machine has decides what can run there — a Kimi Code session is started only on a
+  machine with Kimi Code (SE-C239) — and a version read at a glance says which machine lags.
+  *Regression:* no. *Source:* `src/clients.rs` (`Client`, `EDITORS`), `src/machines.rs` (`api`);
+  `ui/src/model/machine.ts` (`clientItems`).
+- **MA-C9** Each client's line ends with where its Library stands, in LB-C11's words and marked as
+  LB-C11 marks what wants something done: Claude Code's from the row's `library`, whose own fields
+  are Claude Code's, and every other client's from `library.clients` under its name (`kimi-code`). A
+  client with no standing of its own says nothing of the Library. Where Claude Code's line says it,
+  the machine's own Library line (LB-C11) is not drawn as well; "Sync its Library now" (LB-C12)
+  stays the machine's, since a sync is. *Why:* the Library places skills for Kimi Code too, and one
+  line for the machine could not say that Kimi Code's copy is behind while Claude Code's is in step.
+  *Regression:* no. *Source:* `src/library/push.rs` (`Standing`, whose `clients` holds each other
+  client's).
+- **MA-C10** A machine whose `clients` is empty says "Its agent has reported no Claude Code or Kimi
+  Code.", never an empty list, and keeps its Library line (LB-C11). *Why:* an empty list says which
+  empty it is (SH-C22); `[]` is both an agent that has not said and one that found neither, and the
+  sentence is true of both. *Regression:* no. *Source:* `src/machines.rs` (`api`, `[]` when none was
+  reported).
 
 ### A local router
 
