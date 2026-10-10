@@ -498,24 +498,69 @@ async fn fetch_kimi_usages(state: &AppState, base_url: &str, key: &str) -> anyho
     Ok(serde_json::from_slice(&bytes)?)
 }
 
+/// The window a Kimi Code 403 says is spent, by its message (Kimi's error reference): the
+/// 5-hour, the weekly (legacy plans) and the monthly. The concurrency limit is risk control,
+/// not a spent quota, and names none.
+pub fn kimi_spent_window(message: &str) -> Option<&'static str> {
+    let m = message.to_ascii_lowercase();
+    if !m.contains("usage limit") {
+        None
+    } else if m.contains("5-hour") {
+        Some("five_hour")
+    } else if m.contains("weekly") || m.contains("7-day") {
+        Some("seven_day")
+    } else if m.contains("monthly") {
+        Some("month")
+    } else {
+        None
+    }
+}
+
+/// Epoch seconds in RFC 3339, UTC.
+fn iso(at: i64) -> String {
+    let days = at.div_euclid(86_400);
+    let secs = at.rem_euclid(86_400);
+    // Days since 1970-01-01 to a civil date (Howard Hinnant's algorithm).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z", secs / 3600, secs / 60 % 60, secs % 60)
+}
+
+/// The windows a provider said are spent and that have not reset yet, by name: when it said
+/// so, and until when (epoch seconds).
+pub fn spent_windows(conn: &Connection, account_id: &str, now_ms: i64) -> rusqlite::Result<Vec<(String, i64, i64)>> {
+    let mut stmt = conn.prepare(
+        "SELECT window, at, until FROM spent_windows WHERE account_id = ?1 AND until > ?2 ORDER BY window",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![account_id, now_ms / 1000], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+    rows.collect()
+}
+
+/// A reading with what the provider said is spent laid over it: a spent window reads full
+/// until it resets, whatever the usage API still says, since its counters can lag.
+fn with_spent(state: &AppState, account_id: &str, mut v: Value) -> Value {
+    let spent = state.reads.get().ok().and_then(|conn| spent_windows(&conn, account_id, now_ms()).ok()).unwrap_or_default();
+    if spent.is_empty() {
+        return v;
+    }
+    for (window, _, until) in &spent {
+        v[window.as_str()] = json!({ "utilization": 100.0, "resets_at": iso(*until), "spent": true });
+    }
+    v["severity"] = json!("critical");
+    v["spent"] = json!(spent.iter().map(|(w, _, _)| w.clone()).collect::<Vec<_>>());
+    v
+}
+
 /// A reading as `/api/quota` answers, in the shape Anthropic's is answered in: each window's
 /// utilisation 0..100 and its reset in RFC 3339, under the forecast's name for it.
 fn kimi_value(account_id: &str, r: &KimiReading) -> Value {
-    let iso = |at: i64| {
-        let days = at.div_euclid(86_400);
-        let secs = at.rem_euclid(86_400);
-        // Days since 1970-01-01 to a civil date (Howard Hinnant's algorithm).
-        let z = days + 719_468;
-        let era = z.div_euclid(146_097);
-        let doe = z - era * 146_097;
-        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-        let mp = (5 * doy + 2) / 153;
-        let d = doy - (153 * mp + 2) / 5 + 1;
-        let m = if mp < 10 { mp + 3 } else { mp - 9 };
-        let y = yoe + era * 400 + i64::from(m <= 2);
-        format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z", secs / 3600, secs / 60 % 60, secs % 60)
-    };
     let window = |w: &Window| json!({ "utilization": w.used * 100.0, "resets_at": iso(w.reset_at) });
     let most = r.five_hour.iter().chain(r.second.iter().map(|(_, w)| w)).map(|w| w.used).fold(0.0, f64::max);
     let mut v = json!({
@@ -555,6 +600,15 @@ fn store_reading(db: &std::path::Path, account_id: &str, r: &KimiReading) -> any
 /// key), cached and backed off as Anthropic's endpoint is. When asking fails, the newest kept
 /// reading answers, saying so; with none, why there is none.
 pub async fn kimi_quota<F, Fut>(state: &AppState, account: &Account, fetch: F) -> Value
+where
+    F: FnOnce(String) -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<Value>>,
+{
+    let answer = kimi_reading(state, account, fetch).await;
+    with_spent(state, &account.id, answer)
+}
+
+async fn kimi_reading<F, Fut>(state: &AppState, account: &Account, fetch: F) -> Value
 where
     F: FnOnce(String) -> Fut,
     Fut: std::future::Future<Output = anyhow::Result<Value>>,
@@ -902,5 +956,158 @@ mod tests {
         let res = quota_route(State(lab.state.clone()), axum::extract::Query(query)).await;
         let routed: Value = serde_json::from_slice(&axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap()).unwrap();
         assert_eq!((&routed["five_hour"], &routed["month"]), (&got["five_hour"], &got["month"]), "{routed}");
+    }
+
+    /// A router of its own whose captures the test reads: its store, its state, and the
+    /// receiving end of its capture queue, with a Kimi Code account for each id given.
+    fn capturing(
+        tag: &str,
+        kimi: &[&str],
+    ) -> (std::path::PathBuf, Arc<AppState>, tokio::sync::mpsc::Receiver<crate::capture::CaptureEvent>) {
+        let dir = std::env::temp_dir().join(format!("ar-spent-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("agent-router.db");
+        crate::db::Db::open(&db_path).unwrap();
+        crate::pricing::ensure_table(&Connection::open(&db_path).unwrap()).unwrap();
+        for id in kimi {
+            Store::new(db_path.clone())
+                .add(id, id, crate::accounts::Source::Token, Provider::Kimi, Provider::Kimi.default_base_url(), None,
+                     &crate::accounts::AuthStatus::default(), || Ok(()))
+                .unwrap();
+        }
+        rustls::crypto::ring::default_provider().install_default().ok();
+        let config = crate::config::Config {
+            server: false,
+            bind: std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
+            upstream: "https://upstream.invalid".into(),
+            db_path: db_path.clone(),
+            body_cap: 64 * 1024,
+            dump_headers: 0,
+            allow_hosts: Vec::new(),
+            public_url: None,
+            push_keys_dir: None,
+            agents_dir: None,
+            drain: Duration::from_secs(1),
+            stop_delay: Duration::ZERO,
+        };
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+        let (network, _) = crate::network::switch();
+        (dir, AppState::new(config, tx, network).unwrap(), rx)
+    }
+
+    /// One response from Kimi Code to `account`, as the proxy hands it to capture, recorded.
+    async fn answered(
+        state: &Arc<AppState>,
+        rx: &mut tokio::sync::mpsc::Receiver<crate::capture::CaptureEvent>,
+        account: &str,
+        status: i64,
+        body: &str,
+        at: i64,
+    ) -> crate::capture::CaptureEvent {
+        let pending = crate::capture::Pending {
+            request_id: Some(format!("req-{account}-{status}-{at}")),
+            session_id: None,
+            agent_id: None,
+            account_id: account.into(),
+            account_email: None,
+            provider: Provider::Kimi,
+            entrypoint: None,
+            method: "POST".into(),
+            path: "/v1/messages?beta=true".into(),
+            started_at_ms: at,
+            ttfb_ms: 1,
+            status,
+            streaming_requested: true,
+            rl: Default::default(),
+            shape: None,
+            request_bytes: 10,
+        };
+        let mut tee = crate::capture::Tee::new(state.clone(), pending, None, false, 64 * 1024, std::time::Instant::now());
+        tee.feed(body.as_bytes());
+        drop(tee);
+        let ev = rx.recv().await.expect("the capture event");
+        crate::db::Db::open(&state.config.db_path).unwrap().record(&ev).unwrap();
+        ev
+    }
+
+    /// What `/api/quota?account=` answers, with the usage API's last reading at 0%, as its
+    /// lagging counters gave it.
+    async fn quota_of(state: &Arc<AppState>, account: &str) -> Value {
+        let zero = json!({ "account_id": account, "source": "kimi-usages", "severity": "normal",
+                           "five_hour": { "utilization": 0.0, "resets_at": "2099-01-01T00:00:00Z" } });
+        state.quota_cache.write().await.insert(
+            account.into(),
+            Cached { account_id: account.into(), fetched_at: now_ms(), upstream: Ok(zero), retry_after: 0 },
+        );
+        let res = quota_route(State(state.clone()), axum::extract::Query(QuotaQuery { account: Some(account.into()) })).await;
+        serde_json::from_slice(&axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap()).unwrap()
+    }
+
+    fn card(state: &AppState, account: &str) -> Value {
+        let everything = crate::api::Filter { project: None, session: None, account: None, since: None, until: None, tz: None };
+        let got = crate::api::forecast_inner(state, &everything).unwrap();
+        got["accounts"].as_array().unwrap().iter().find(|a| a["id"] == account).unwrap().clone()
+    }
+
+    #[tokio::test]
+    async fn a_kimi_403_for_each_window_marks_the_account_spent() {
+        let (dir, state, mut rx) = capturing("windows", &["kimi-5h", "kimi-week", "kimi-month"]);
+        let now = now_ms();
+        let at = now - 60_000;
+        // The usage API last gave the 5-hour window's reset; the others it never gave.
+        let five_reset = now / 1000 + 2 * 3600;
+        Connection::open(&state.config.db_path)
+            .unwrap()
+            .execute(
+                "INSERT INTO quota_readings (account_id, at, five_hour_used, five_hour_reset) VALUES ('kimi-5h', ?1, 0.0, ?2)",
+                rusqlite::params![now - 120_000, five_reset],
+            )
+            .unwrap();
+        for (account, body, window, until) in [
+            ("kimi-5h", include_str!("../fixtures/kimi/403-five-hour.documented.json"), "five_hour", five_reset),
+            ("kimi-week", include_str!("../fixtures/kimi/403-weekly.documented.json"), "seven_day", (at + 7 * 86_400_000) / 1000),
+            ("kimi-month", include_str!("../fixtures/kimi/403-monthly.documented.json"), "month", (at + 30 * 86_400_000) / 1000),
+        ] {
+            let ev = answered(&state, &mut rx, account, 403, body, at).await;
+            let message: Value = serde_json::from_str(body).unwrap();
+            assert_eq!(ev.error.as_deref(), message["error"]["message"].as_str(), "{account}: the message is recorded");
+
+            let conn = Connection::open(&state.config.db_path).unwrap();
+            assert_eq!(spent_windows(&conn, account, now).unwrap(), [(window.to_string(), at, until)], "{account}");
+
+            let quota = quota_of(&state, account).await;
+            assert_eq!((&quota[window]["spent"], &quota[window]["utilization"]), (&json!(true), &json!(100.0)), "{account}: {quota}");
+            assert_eq!((&quota["severity"], &quota["spent"]), (&json!("critical"), &json!([window])), "{account}");
+
+            let card = card(&state, account);
+            assert_eq!(card["status"], "rejected", "{account}");
+            assert_eq!((&card[window]["spent"], &card[window]["used"], &card[window]["reset_at"]), (&json!(true), &json!(1.0), &json!(until)), "{account}: {card}");
+        }
+        drop(state);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_kimi_concurrency_limit_is_not_a_spent_quota() {
+        let (dir, state, mut rx) = capturing("concurrency", &["kimi-busy"]);
+        let now = now_ms();
+        let too_many = r#"{"error":{"message":"We're receiving too many requests at the moment. Please wait a moment and try again."}}"#;
+        for (status, body) in [(403, include_str!("../fixtures/kimi/403-concurrency.documented.json")), (429, too_many)] {
+            let ev = answered(&state, &mut rx, "kimi-busy", status, body, now - 30_000).await;
+            assert!(ev.error.is_some(), "{status}: its message is recorded");
+        }
+        let conn = Connection::open(&state.config.db_path).unwrap();
+        // Counted as errors: the request list's rule is `status >= 400 OR error IS NOT NULL`.
+        let errors: i64 = conn
+            .query_row("SELECT count(*) FROM requests WHERE account_id = 'kimi-busy' AND status >= 400 AND error IS NOT NULL", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(errors, 2);
+        assert!(spent_windows(&conn, "kimi-busy", now).unwrap().is_empty(), "neither is a spent window");
+        let quota = quota_of(&state, "kimi-busy").await;
+        assert_eq!((&quota["severity"], quota.get("spent")), (&json!("normal"), None), "{quota}");
+        assert_eq!(card(&state, "kimi-busy")["status"], Value::Null);
+        drop(state);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

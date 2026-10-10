@@ -113,6 +113,13 @@ impl SseScanner {
         if let Ok(v) = serde_json::from_slice::<Value>(body) {
             self.absorb_message(&v);
             self.absorb(&v);
+            // Kimi Code's error bodies are `{"error": {"message", "type"}}`, with no
+            // top-level `"type": "error"` for `absorb` to know them by.
+            if self.error.is_none() {
+                if let Some(message) = v.get("error").and_then(|e| e.get("message")).and_then(Value::as_str) {
+                    self.error = Some(message.to_string());
+                }
+            }
         }
     }
 

@@ -1070,10 +1070,16 @@ const WINDOWS: [Win; 2] = [
 /// denominator the burn rate divides by.
 /// An account's windows from the readings its provider's usage API gave (`quota_readings`),
 /// forecast as Anthropic's are: the work in the window is every request the account served,
-/// and each reading is a utilisation at the time it was taken. A window the newest reading
-/// does not give is `null`; one whose reset has passed is `expired`. The second window carries
+/// and each reading is a utilisation at the time it was taken. A window the provider said is
+/// spent (`spent_windows`) reads full until it resets, whatever the readings say, since its
+/// counters can lag; the account is then `rejected`, as a spent Claude account is. A window
+/// nothing gives is `null`; one whose reset has passed is `expired`. The second window carries
 /// its own name: `seven_day`, else `month`.
-fn reading_windows(conn: &Connection, id: &str, now: i64) -> anyhow::Result<(Map<String, Value>, Option<i64>)> {
+fn reading_windows(
+    conn: &Connection,
+    id: &str,
+    now: i64,
+) -> anyhow::Result<(Map<String, Value>, Option<i64>, Option<&'static str>)> {
     use rusqlite::OptionalExtension;
     let mut windows = Map::new();
     windows.insert(crate::forecast::FIVE_HOUR.name.into(), Value::Null);
@@ -1086,13 +1092,22 @@ fn reading_windows(conn: &Connection, id: &str, now: i64) -> anyhow::Result<(Map
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .optional()?;
-    let Some((seen_at, five_reset, second_name, second_reset)) = latest else { return Ok((windows, None)) };
-    let second_kind = if second_name.as_deref() == Some("month") { crate::forecast::MONTH } else { crate::forecast::SEVEN_DAY };
-    for (kind, reset, used_col, reset_col, session_duty) in [
+    let spent = crate::quota::spent_windows(conn, id, now)?;
+    let marker = |name: &str| spent.iter().find(|(w, _, _)| w == name).map(|(_, at, until)| (*at, *until));
+    if latest.is_none() && spent.is_empty() {
+        return Ok((windows, None, None));
+    }
+    let read = latest.is_some();
+    let (read_at, five_reset, second_name, second_reset) = latest.unwrap_or((0, None, None, None));
+    let seen_at = spent.iter().map(|(_, at, _)| *at).chain(read.then_some(read_at)).max();
+    let month = second_name.as_deref() == Some("month") || (second_name.is_none() && marker("month").is_some());
+    let second_kind = if month { crate::forecast::MONTH } else { crate::forecast::SEVEN_DAY };
+    for (kind, reading_reset, used_col, reset_col, session_duty) in [
         (crate::forecast::FIVE_HOUR, five_reset, "five_hour_used", "five_hour_reset", true),
         (second_kind, second_reset, "second_used", "second_reset", false),
     ] {
-        let Some(reset) = reset else { continue };
+        let spent_here = marker(kind.name);
+        let Some(reset) = spent_here.map(|(_, until)| until).or(reading_reset) else { continue };
         if reset.saturating_mul(1000) <= now {
             windows.insert(kind.name.into(), json!({ "expired": true, "reset_at": reset, "seen_at": seen_at }));
             continue;
@@ -1119,6 +1134,11 @@ fn reading_windows(conn: &Connection, id: &str, now: i64) -> anyhow::Result<(Map
                 .collect::<Result<Vec<_>, _>>()?;
             readings.extend(taken);
         }
+        // What the provider said outweighs a reading taken before or after it.
+        if let Some((at, _)) = spent_here {
+            readings.retain(|r| r.util.is_none());
+            readings.push(crate::forecast::Reading { at_ms: at, util: Some(1.0) });
+        }
         readings.sort_by_key(|r| r.at_ms);
         let win = Win { kind, reset_col: "", util_col: "", session_duty };
         let fc = crate::forecast::forecast(&readings, kind, reset, now, None, duty_band_for(conn, id, &win, &readings, reset, now)?);
@@ -1127,10 +1147,11 @@ fn reading_windows(conn: &Connection, id: &str, now: i64) -> anyhow::Result<(Map
             o.insert("expired".into(), json!(false));
             o.insert("seen_at".into(), json!(seen_at));
             o.insert("series".into(), json!([]));
+            o.insert("spent".into(), json!(spent_here.is_some()));
         }
         windows.insert(kind.name.into(), v);
     }
-    Ok((windows, Some(seen_at)))
+    Ok((windows, seen_at, (!spent.is_empty()).then_some("rejected")))
 }
 
 fn window_readings(
@@ -1305,7 +1326,7 @@ pub async fn forecast(State(state): State<Arc<AppState>>, Query(mut f): Query<Fi
     Ok(Json(state.memo.get_or_fill(&key, || forecast_inner(&state, &f))?))
 }
 
-fn forecast_inner(state: &AppState, f: &Filter) -> anyhow::Result<Value> {
+pub(crate) fn forecast_inner(state: &AppState, f: &Filter) -> anyhow::Result<Value> {
     let conn = open(state)?;
     let now = crate::db::now_ms();
     let since = f.since;
@@ -1361,13 +1382,13 @@ fn forecast_inner(state: &AppState, f: &Filter) -> anyhow::Result<Value> {
         // A provider that sends no rate-limit headers reports its windows through its own
         // usage API instead, and the router keeps each reading (`quota::kimi_quota`).
         if item.get("provider").and_then(Value::as_str) == Some("kimi") {
-            let (windows, seen_at) = reading_windows(&conn, id, now)?;
+            let (windows, seen_at, status) = reading_windows(&conn, id, now)?;
             let mut row = item.clone();
             if let Some(o) = row.as_object_mut() {
                 o.insert("usage".into(), usage);
                 o.insert("week".into(), week);
                 o.insert("seen_at".into(), json!(seen_at));
-                o.insert("status".into(), Value::Null);
+                o.insert("status".into(), json!(status));
                 o.insert("pool".into(), Value::Null);
                 o.extend(windows);
             }

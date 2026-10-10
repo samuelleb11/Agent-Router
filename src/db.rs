@@ -7,7 +7,7 @@
 //! their true size is recorded alongside the truncated copy.
 
 use anyhow::{Context, Result};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
 
 use crate::analyze::RequestShape;
@@ -55,6 +55,17 @@ CREATE TABLE IF NOT EXISTS quota_readings (
   second_reset    INTEGER
 );
 CREATE INDEX IF NOT EXISTS quota_readings_account ON quota_readings(account_id, at);
+
+-- A window a provider said is spent, and until when (`quota::kimi_spent_window`): Kimi Code
+-- answers a spent window with a 403 naming it, and sends no header that says so.
+CREATE TABLE IF NOT EXISTS spent_windows (
+  account_id TEXT NOT NULL,
+  window     TEXT NOT NULL,
+  at         INTEGER NOT NULL,
+  until      INTEGER NOT NULL,
+  message    TEXT,
+  PRIMARY KEY (account_id, window)
+);
 
 -- Which account a model's requests go to, when not its provider's active one (`models`).
 CREATE TABLE IF NOT EXISTS model_assignments (
@@ -562,6 +573,40 @@ impl Db {
                 ev.provider.as_str(),
             ],
         )?;
+        // A window Kimi Code said is spent: the account is spent until that window resets,
+        // as the quota reader last gave it, else the window's length from now.
+        if ev.provider == crate::accounts::Provider::Kimi && ev.status == 403 {
+            if let Some(window) = ev.error.as_deref().and_then(crate::quota::kimi_spent_window) {
+                let at = ev.started_at_ms;
+                let (reset_col, name_check) = match window {
+                    "five_hour" => ("five_hour_reset", None),
+                    other => ("second_reset", Some(other)),
+                };
+                let kept: Option<i64> = tx
+                    .query_row(
+                        &format!(
+                            "SELECT {reset_col} FROM quota_readings
+                             WHERE account_id = ?1 AND (?2 IS NULL OR second_window = ?2) AND {reset_col} > ?3
+                             ORDER BY at DESC LIMIT 1"
+                        ),
+                        params![ev.account_id, name_check, at / 1000],
+                        |r| r.get(0),
+                    )
+                    .optional()?
+                    .flatten();
+                let span = match window {
+                    "five_hour" => crate::forecast::FIVE_HOUR.span_ms,
+                    "seven_day" => crate::forecast::SEVEN_DAY.span_ms,
+                    _ => crate::forecast::MONTH.span_ms,
+                };
+                let until = kept.unwrap_or((at + span) / 1000);
+                tx.execute(
+                    "INSERT INTO spent_windows (account_id, window, at, until, message) VALUES (?1, ?2, ?3, ?4, ?5)
+                     ON CONFLICT(account_id, window) DO UPDATE SET at = excluded.at, until = excluded.until, message = excluded.message",
+                    params![ev.account_id, window, at, until, ev.error],
+                )?;
+            }
+        }
         let row_id = tx.last_insert_rowid();
         if row_id == 0 {
             tx.commit()?;
