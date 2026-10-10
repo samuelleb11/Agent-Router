@@ -11,6 +11,10 @@ published, and not modified.
 | `kimi-code.svg` | Kimi's "K only" mark for a light background: a black K with Kimi's blue dot | Moonshot AI | Kimi's brand guide, https://moonshotai.github.io/Branding-Guide/scenarios/04-k-only/k-only-light.svg |
 | `kimi-code-dark.svg` | The same mark for a dark background: a white K with the blue dot | Moonshot AI | https://moonshotai.github.io/Branding-Guide/scenarios/04-k-only/k-only-dark.svg |
 
+The VS Code extension ships the same files in `vscode/media/providers/`, for its status bar's
+tooltip (AGEN-0138), and one more: `anthropic-dark.svg`, the same path filled white for a dark
+editor theme, as the console draws Anthropic's mark in the text colour.
+
 SHA-256, as copied on 2026-10-10:
 - `anthropic.svg`: `1cc599f6ebce2016dc388cf84e54a52c6b13487655c7e243554d654c7bce1882`
 - `kimi-code.svg`: `937616746780d0c7c4bda92820db39f503f6a3e9b7cfebe438a5fb61b62d3991`

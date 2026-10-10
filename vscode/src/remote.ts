@@ -214,6 +214,11 @@ export async function checkPassword(server: string, password: string, timeoutMs 
 export const fetchQuota = (server: string, password: string, timeoutMs = WAN_TIMEOUT_MS): Promise<Answer<Quota>> =>
   getJson<Quota>(`${server}/api/quota`, { password, timeoutMs });
 
+/** Each provider's serving account and its windows (`GET /api/summary?parts=providers`). A
+ *  router from before providers refuses the part; the caller then shows `fetchQuota`'s. */
+export const fetchProviders = (server: string, password: string, timeoutMs = WAN_TIMEOUT_MS): Promise<Answer<unknown>> =>
+  getJson<unknown>(`${server}/api/summary?parts=providers`, { password, timeoutMs });
+
 /** Health is open on every router, hosted ones included, so it is asked without the
  *  password. */
 export const fetchHealth = (server: string, timeoutMs = WAN_TIMEOUT_MS): Promise<Answer<Health>> =>
