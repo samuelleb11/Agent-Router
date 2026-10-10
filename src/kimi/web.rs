@@ -15,8 +15,8 @@
 //!   `POST …/approvals/<id>` answers it.
 //!
 //! The server is started on first use and stopped once nothing it hosts has been used for
-//! `IDLE`.
-#![expect(dead_code, reason = "the live routes drive it, AGEN-0112")]
+//! `IDLE`. Its port and process are kept beside the router's data, so an agent that replaced
+//! the one that started it takes it over rather than leaving it running unowned.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -136,6 +136,7 @@ impl Server {
     }
 
     /// What the session runs on now: `model`, `permission`, `busy`.
+    #[cfg_attr(not(test), expect(dead_code, reason = "scripts/check-kimi-hosting.sh reads it"))]
     pub async fn status(&self, session: &str) -> Result<Value> {
         self.call(Method::GET, &format!("/api/v1/sessions/{session}/status"), None).await
     }
@@ -145,21 +146,36 @@ impl Server {
     }
 }
 
-/// The server process the agent started, and how to reach it.
+/// The server process the agent started, and how to reach it. No child when it was started
+/// by the agent this one replaced, or handed over by a test.
 struct Running {
-    child: tokio::process::Child,
+    child: Option<tokio::process::Child>,
     server: std::sync::Arc<Server>,
+}
+
+impl Running {
+    /// Whether it still answers.
+    async fn alive(&mut self) -> bool {
+        match self.child.as_mut() {
+            Some(child) => child.try_wait().is_ok_and(|done| done.is_none()),
+            None => self.server.call(Method::GET, "/api/v1/sessions?limit=1", None).await.is_ok(),
+        }
+    }
 }
 
 /// What the agent keeps of the sessions it hosts.
 #[derive(Default)]
 struct Hosting {
     running: Option<Running>,
-    /// The sessions it started, kept at `Host::kept` across restarts.
-    hosted: HashSet<String>,
     /// Each hosted session's last prompt, which an interrupt names.
     prompts: HashMap<String, String>,
     used: Option<Instant>,
+}
+
+/// The server the agent started, kept so the agent after it can take it over.
+#[derive(serde::Serialize, Deserialize)]
+struct Started {
+    port: u16,
 }
 
 /// The agent's hosted sessions, and the `kimi web` that runs them.
@@ -169,7 +185,11 @@ pub struct Host {
     /// Set for the server besides what the agent has: `KIMI_CODE_HOME`, and for a check,
     /// `HOME` and the rest of a scratch home.
     env: Vec<(String, String)>,
+    /// Where the sessions it started are kept, and beside it the server it started.
     kept: PathBuf,
+    /// The sessions it started, kept at `kept` across restarts. Read without waiting, for
+    /// the list.
+    hosted: std::sync::Mutex<HashSet<String>>,
     state: Mutex<Hosting>,
 }
 
@@ -178,36 +198,62 @@ impl Host {
     /// `kept`.
     pub fn new(kimi: PathBuf, home: PathBuf, env: Vec<(String, String)>, kept: PathBuf) -> Self {
         let hosted = std::fs::read(&kept).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-        Self { kimi, home, env, kept, state: Mutex::new(Hosting { hosted, ..Default::default() }) }
+        Self { kimi, home, env, kept, hosted: std::sync::Mutex::new(hosted), state: Mutex::new(Hosting::default()) }
+    }
+
+    /// Hosting through a server already running, which it never stops: for tests.
+    #[cfg(test)]
+    pub fn serving(server: Server, kept: PathBuf) -> Self {
+        let host = Self::new(PathBuf::from("/nonexistent/kimi"), PathBuf::from("/nonexistent"), Vec::new(), kept);
+        host.state.try_lock().unwrap().running = Some(Running { child: None, server: std::sync::Arc::new(server) });
+        host
     }
 
     /// This machine's: its Kimi Code, its home, and the sessions kept in the router's data.
     pub fn here() -> Option<Self> {
-        let kimi = crate::clients::here().into_iter().find(|c| c.client == crate::clients::KIMI_CODE)?.cli?.path;
+        let kimi = crate::clients::kimi_command()?;
         let home = super::home()?;
         let kept = crate::config::data_dir().ok()?.join("kimi-hosted.json");
         let env = vec![("KIMI_CODE_HOME".to_string(), home.display().to_string())];
-        Some(Self::new(PathBuf::from(kimi), home, env, kept))
+        Some(Self::new(kimi, home, env, kept))
     }
 
     /// Whether the router started this session, and so may drive it.
-    pub async fn hosts(&self, session: &str) -> bool {
-        self.state.lock().await.hosted.contains(session)
+    pub fn hosts(&self, session: &str) -> bool {
+        self.hosted.lock().unwrap_or_else(|p| p.into_inner()).contains(session)
     }
 
-    /// The server, started if it is not running.
+    fn started_path(&self) -> PathBuf {
+        self.kept.with_file_name("kimi-web.json")
+    }
+
+    /// The server, started if it is not running: the one this agent started, else the one
+    /// the agent before it started, else a new one.
     async fn server(&self) -> Result<std::sync::Arc<Server>> {
         let mut state = self.state.lock().await;
         state.used = Some(Instant::now());
         if let Some(running) = state.running.as_mut() {
-            if running.child.try_wait()?.is_none() {
+            if running.alive().await {
                 return Ok(running.server.clone());
             }
         }
-        let running = self.spawn().await?;
+        let running = match self.adopt().await {
+            Some(running) => running,
+            None => self.spawn().await?,
+        };
         let server = running.server.clone();
         state.running = Some(running);
         Ok(server)
+    }
+
+    /// The server the agent before this one started, if it still answers with this home's
+    /// token.
+    async fn adopt(&self) -> Option<Running> {
+        let started: Started = serde_json::from_slice(&std::fs::read(self.started_path()).ok()?).ok()?;
+        let token = std::fs::read_to_string(self.home.join("server.token")).ok()?;
+        let server = Server::new(&format!("http://127.0.0.1:{}", started.port), token.trim()).ok()?;
+        let mut running = Running { child: None, server: std::sync::Arc::new(server) };
+        running.alive().await.then_some(running)
     }
 
     async fn spawn(&self) -> Result<Running> {
@@ -238,24 +284,28 @@ impl Host {
         }
         let token = std::fs::read_to_string(self.home.join("server.token")).context("Kimi Code's server wrote no token")?;
         let server = std::sync::Arc::new(Server::new(&base, token.trim())?);
-        Ok(Running { child, server })
+        crate::setup::write_atomic(&self.started_path(), serde_json::to_vec(&Started { port })?)?;
+        Ok(Running { child: Some(child), server })
     }
 
     /// Start a hosted session in `cwd` on `model`. Says its id.
     pub async fn start(&self, cwd: &Path, model: &str) -> Result<String> {
         let server = self.server().await?;
         let id = server.start(&cwd.display().to_string(), model).await?;
-        let mut state = self.state.lock().await;
-        state.hosted.insert(id.clone());
-        let mut kept: Vec<&String> = state.hosted.iter().collect();
-        kept.sort();
+        let kept = {
+            let mut hosted = self.hosted.lock().unwrap_or_else(|p| p.into_inner());
+            hosted.insert(id.clone());
+            let mut kept: Vec<String> = hosted.iter().cloned().collect();
+            kept.sort();
+            kept
+        };
         crate::setup::write_atomic(&self.kept, serde_json::to_vec(&kept)?)?;
         Ok(id)
     }
 
     /// The server, for a session the router hosts; refused for any other.
     async fn driving(&self, session: &str) -> Result<std::sync::Arc<Server>> {
-        if !self.hosts(session).await {
+        if !self.hosts(session) {
             bail!("the router did not start this Kimi Code session, so it only watches it");
         }
         self.server().await
@@ -294,23 +344,26 @@ impl Host {
         self.driving(session).await?.profile(session, None, Some(mode)).await
     }
 
+    #[cfg_attr(not(test), expect(dead_code, reason = "scripts/check-kimi-hosting.sh reads it"))]
     pub async fn session(&self, session: &str) -> Result<Value> {
         self.driving(session).await?.session(session).await
     }
 
+    #[cfg_attr(not(test), expect(dead_code, reason = "scripts/check-kimi-hosting.sh reads it"))]
     pub async fn status(&self, session: &str) -> Result<Value> {
         self.driving(session).await?.status(session).await
     }
 
     /// Stop the server if nothing it hosts has been used for `idle` and none is busy.
     pub async fn stop_if_idle(&self, idle: Duration) -> Result<bool> {
-        let (server, hosted) = {
+        let server = {
             let state = self.state.lock().await;
             match (&state.running, state.used) {
-                (Some(r), Some(used)) if used.elapsed() >= idle => (r.server.clone(), state.hosted.clone()),
+                (Some(r), Some(used)) if used.elapsed() >= idle => r.server.clone(),
                 _ => return Ok(false),
             }
         };
+        let hosted: Vec<String> = self.hosted.lock().unwrap_or_else(|p| p.into_inner()).iter().cloned().collect();
         for session in &hosted {
             if server.session(session).await.is_ok_and(|s| s.get("busy").and_then(Value::as_bool) == Some(true)) {
                 return Ok(false);
@@ -322,16 +375,19 @@ impl Host {
 
     /// Stop the server: asked first, ended if it does not go.
     pub async fn stop(&self) {
-        let Some(mut running) = self.state.lock().await.running.take() else { return };
+        let Some(running) = self.state.lock().await.running.take() else { return };
         let _ = running.server.shutdown().await;
-        if tokio::time::timeout(Duration::from_secs(5), running.child.wait()).await.is_err() {
-            let _ = running.child.kill().await;
+        let _ = std::fs::remove_file(self.started_path());
+        if let Some(mut child) = running.child {
+            if tokio::time::timeout(Duration::from_secs(5), child.wait()).await.is_err() {
+                let _ = child.kill().await;
+            }
         }
     }
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use axum::extract::{Path as UrlPath, State};
     use axum::routing::{get, post};
@@ -341,7 +397,7 @@ mod tests {
     /// A stand-in of Kimi Code's server: the answers recorded from the real one, and every
     /// request it was sent.
     #[derive(Clone, Default)]
-    struct Standin {
+    pub(crate) struct Standin {
         heard: Arc<std::sync::Mutex<Vec<(String, String, Value, Option<String>)>>>,
     }
 
@@ -350,7 +406,7 @@ mod tests {
         serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
     }
 
-    async fn standin() -> (String, Standin) {
+    pub(crate) async fn standin() -> (String, Standin) {
         let s = Standin::default();
         let note = |s: &Standin, method: &str, path: String, body: Value, auth: Option<String>| {
             s.heard.lock().unwrap().push((method.into(), path, body, auth));
@@ -362,7 +418,9 @@ mod tests {
                 post(move |State(s): State<Standin>, h: axum::http::HeaderMap, Json(b): Json<Value>| async move {
                     note(&s, "POST", "/api/v1/sessions".into(), b, auth(&h));
                     Json(recorded("created.json"))
-                }),
+                })
+                // Asked only to see the server is up, so not noted.
+                .get(|| async { Json(recorded("sessions.json")) }),
             )
             .route(
                 "/api/v1/sessions/{id}/profile",
@@ -409,7 +467,7 @@ mod tests {
     }
 
     impl Standin {
-        fn heard(&self) -> Vec<(String, String, Value, Option<String>)> {
+        pub(crate) fn heard(&self) -> Vec<(String, String, Value, Option<String>)> {
             std::mem::take(&mut *self.heard.lock().unwrap())
         }
     }
@@ -439,7 +497,7 @@ mod tests {
         let kept = std::env::temp_dir().join(format!("ar-kimi-hosted-{}.json", std::process::id()));
         let _ = std::fs::remove_file(&kept);
         let host = Host::new(PathBuf::from("/nonexistent/kimi"), PathBuf::from("/nonexistent"), Vec::new(), kept.clone());
-        assert!(!host.hosts(SESSION).await);
+        assert!(!host.hosts(SESSION));
         let refused = host.prompt(SESSION, "hello").await.unwrap_err();
         assert!(refused.to_string().contains("only watches it"), "{refused}");
         let _ = std::fs::remove_file(&kept);
@@ -494,7 +552,7 @@ mod tests {
         ];
         let host = Host::new(PathBuf::from(var("AR_KIMI_BIN")), home.clone(), env, work.join("hosted.json"));
         let id = host.start(&work, "agent-router/k3").await.unwrap();
-        assert!(host.hosts(&id).await);
+        assert!(host.hosts(&id));
         println!("started {id}");
 
         async fn until<F, Fut>(what: &str, mut check: F)

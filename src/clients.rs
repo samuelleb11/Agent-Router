@@ -133,10 +133,21 @@ fn folder(dir: &Path) -> Option<String> {
 
 /// The command `name`, from `first`, then `PATH`, then where installers put it.
 fn command(at: &Places, name: &str, first: &[PathBuf]) -> Option<Cli> {
-    let on_path = at.path.as_ref().map(|p| std::env::split_paths(p).collect::<Vec<_>>()).unwrap_or_default();
-    let found = first.iter().chain(&on_path).chain(&at.installed).find_map(|dir| runnable(dir, name))?;
+    let found = locate(at, name, first)?;
     let version = version_of(&found);
     Some(Cli { path: found.display().to_string(), version })
+}
+
+fn locate(at: &Places, name: &str, first: &[PathBuf]) -> Option<PathBuf> {
+    let on_path = at.path.as_ref().map(|p| std::env::split_paths(p).collect::<Vec<_>>()).unwrap_or_default();
+    first.iter().chain(&on_path).chain(&at.installed).find_map(|dir| runnable(dir, name))
+}
+
+/// This machine's `kimi`, found as `find` finds it, without asking its version.
+pub fn kimi_command() -> Option<PathBuf> {
+    let at = Places::here()?;
+    let home = crate::kimi::home_in(&at.home, at.kimi_home.clone());
+    locate(&at, "kimi", &[home.join("bin")])
 }
 
 fn runnable(dir: &Path, name: &str) -> Option<PathBuf> {

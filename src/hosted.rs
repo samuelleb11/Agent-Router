@@ -61,6 +61,7 @@ pub fn routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
         .route("/api/live/mode", post(crate::machines::api::by_body))
         .route("/api/live/aside", post(crate::machines::api::by_body))
         .route("/api/live/archive", post(crate::machines::api::archive))
+        .route("/api/live/start", post(crate::machines::api::by_machine))
         .route("/api/machines", get(crate::machines::api::machines))
         // Where each machine's sessions run and the repositories its directories are
         // checkouts of, reported by its agent every minute (`places`).

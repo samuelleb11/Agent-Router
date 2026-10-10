@@ -120,7 +120,7 @@ const TEXT_CAP: usize = 6000;
 /// The real floor on latency is elsewhere: a message reaches the transcript only when
 /// it is complete, so partial output cannot appear here at any poll rate. This is set
 /// to be well under the gap between completed events rather than to chase tokens.
-const POLL: Duration = Duration::from_millis(200);
+pub(crate) const POLL: Duration = Duration::from_millis(200);
 /// An unchanged status is re-sent this often, so the phones' "· 12s" counters tick. The
 /// counter is recomputed from each frame's `quiet_ms`; any slower and it jumps.
 const HEARTBEAT: Duration = Duration::from_secs(1);
@@ -228,6 +228,10 @@ pub struct LiveSession {
     /// The client running it, when it is not Claude Code: `kimi-code` (`kimi::session`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client: Option<&'static str>,
+    /// For a Kimi Code session: whether the router hosts it, and so drives it
+    /// (`kimi::live`); one it does not is watched only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hosted: Option<bool>,
     /// The router's clock when this was worked out, so a client whose own clock is off
     /// still shows the right elapsed times.
     pub as_of_ms: i64,
@@ -364,6 +368,7 @@ fn list_row(
         tone: a.tone(),
         source: a.source,
         client: None,
+        hosted: None,
         as_of_ms: o.as_of_ms,
     }
 }
@@ -588,6 +593,25 @@ pub struct StreamStatus {
 }
 
 impl StreamStatus {
+    /// The status of a session whose activity is all there is to say: Kimi Code's
+    /// (`kimi::live`), with nothing queued.
+    pub(crate) fn of_activity(a: &Activity, as_of_ms: i64) -> Self {
+        StreamStatus {
+            state: a.legacy_stream_state(),
+            detail: a.detail.clone(),
+            quiet_ms: a.since_ms.map_or(0, |since| (as_of_ms - since).max(0)),
+            queued: 0,
+            activity: a.kind.as_str(),
+            open: a.open,
+            since_ms: a.since_ms,
+            as_of_ms,
+            waiting_on: a.waiting_on.clone(),
+            background: a.background,
+            tone: a.tone(),
+            ended_ms: a.ended_ms,
+        }
+    }
+
     fn of(o: &Observed) -> Self {
         let a = &o.activity;
         StreamStatus {
@@ -625,7 +649,7 @@ impl StreamStatus {
 }
 
 /// Whether to send a status now: on a change, and otherwise once per `HEARTBEAT`.
-fn status_due(last: Option<&StreamStatus>, now: &StreamStatus, since_sent: Duration) -> bool {
+pub(crate) fn status_due(last: Option<&StreamStatus>, now: &StreamStatus, since_sent: Duration) -> bool {
     match last {
         None => true,
         Some(old) => old.differs(now) || since_sent >= HEARTBEAT,
@@ -1238,6 +1262,9 @@ pub async fn send(JsonBody(body): LiveBody<SendBody>) -> Response {
     if text.is_empty() {
         return bad(axum::http::StatusCode::BAD_REQUEST, "Nothing to send.");
     }
+    if crate::kimi::live::is_kimi(&body.session) {
+        return crate::kimi::live::send(crate::kimi::live::host(), &body.session, &text).await;
+    }
     // A wrapped session is addressed by id alone. Only the peer fallback needs the
     // transcript, to work out which process owns it — so requiring one up front would
     // refuse the very sessions we can serve best.
@@ -1587,6 +1614,9 @@ pub struct AnswerBody {
 /// than the one its transcript happened to record: the newest of the prompts that count
 /// (the one the session's status names), and how many there are in all.
 pub async fn prompt(Query(q): Query<StreamQuery>) -> Response {
+    if crate::kimi::live::is_kimi(&q.session) {
+        return crate::kimi::live::prompt(&q.session).await;
+    }
     let session = q.session.clone();
     let seen = tokio::task::spawn_blocking(move || session_activity(&session, now_ms())).await;
     let o = match seen {
@@ -1787,6 +1817,9 @@ fn pick_prompt<'a>(
 
 /// Answer the pending question — the editor's Submit, from anywhere.
 pub async fn answer(JsonBody(body): LiveBody<AnswerBody>) -> Response {
+    if crate::kimi::live::is_kimi(&body.session) {
+        return crate::kimi::live::answer(crate::kimi::live::host(), &body).await;
+    }
     let session = body.session.clone();
     let done = tokio::task::spawn_blocking(move || {
         let reg = crate::registry::snapshot();
@@ -2004,6 +2037,9 @@ pub async fn set_model(JsonBody(body): LiveBody<ModelBody>) -> Response {
     if !valid_model(&model) {
         return bad(axum::http::StatusCode::BAD_REQUEST, "That is not a model name.");
     }
+    if crate::kimi::live::is_kimi(&body.session) {
+        return crate::kimi::live::set_model(crate::kimi::live::host(), &body.session, &model).await;
+    }
     if !crate::peer::wrapper_alive(&body.session) {
         return bad(axum::http::StatusCode::SERVICE_UNAVAILABLE, "Only a session under the wrapper can change model; restart it after installing the wrapper.");
     }
@@ -2043,6 +2079,9 @@ pub struct EffortBody {
 
 /// Set the effort level, as `/effort <level>` typed into the session.
 pub async fn set_effort(JsonBody(body): LiveBody<EffortBody>) -> Response {
+    if crate::kimi::live::is_kimi(&body.session) {
+        return crate::kimi::live::unsupported("effort to set");
+    }
     let level = body.effort.trim().to_ascii_lowercase();
     if !EFFORTS.contains(&level.as_str()) {
         return bad(axum::http::StatusCode::BAD_REQUEST, "Effort is one of low, medium, high, xhigh, max.");
@@ -2075,6 +2114,9 @@ pub struct ModeBody {
 /// for and the CLI's own sentence is passed back, rather than reporting a success the
 /// session did not agree to.
 pub async fn set_mode(JsonBody(body): LiveBody<ModeBody>) -> Response {
+    if crate::kimi::live::is_kimi(&body.session) {
+        return crate::kimi::live::set_mode(crate::kimi::live::host(), &body.session, &body.mode).await;
+    }
     let mode = body.mode.trim().to_string();
     if !MODES.iter().any(|(v, _)| *v == mode) {
         return bad(axum::http::StatusCode::BAD_REQUEST, "That is not a permission mode.");
@@ -2177,6 +2219,9 @@ fn stop_refusal(kind: Kind) -> Option<&'static str> {
 /// Only wrapped sessions can be stopped: an interrupt is a control frame on stdin, and
 /// the peer socket carries user messages, not control.
 pub async fn interrupt(JsonBody(body): LiveBody<InterruptBody>) -> Response {
+    if crate::kimi::live::is_kimi(&body.session) {
+        return crate::kimi::live::interrupt(crate::kimi::live::host(), &body.session).await;
+    }
     let session = body.session.clone();
     let done = tokio::task::spawn_blocking(move || -> Result<(), (StatusCode, String)> {
         let kind = session_activity(&session, now_ms()).activity.kind;
@@ -2276,6 +2321,9 @@ fn shelve(session_id: &str) {
 /// a brief answer, and the fork shelved so it does not clutter the list. It costs one
 /// replay of the session's context, mostly cached.
 pub async fn aside(JsonBody(body): LiveBody<AsideBody>) -> Response {
+    if crate::kimi::live::is_kimi(&body.session) {
+        return crate::kimi::live::unsupported("side question to ask");
+    }
     let text = body.text.trim().to_string();
     if text.is_empty() {
         return bad(axum::http::StatusCode::BAD_REQUEST, "Nothing to ask.");
@@ -2354,9 +2402,14 @@ pub struct StreamQuery {
 /// Polling rather than filesystem events: a 500 ms poll of a file whose length is all
 /// that matters costs a `stat`, works identically on every platform, and cannot miss a
 /// write the way a coalesced event can.
-pub async fn stream(
-    Query(q): Query<StreamQuery>,
-) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+pub async fn stream(Query(q): Query<StreamQuery>) -> Response {
+    if crate::kimi::live::is_kimi(&q.session) {
+        return crate::kimi::live::stream(&q.session);
+    }
+    claude_stream(q).into_response()
+}
+
+fn claude_stream(q: StreamQuery) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let path = transcript_path(&q.session);
     let session = q.session.clone();
 

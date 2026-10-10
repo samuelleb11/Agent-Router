@@ -708,6 +708,39 @@ pub mod api {
         }
     }
 
+    /// What a request that starts something must name: the machine to start it on.
+    #[derive(Deserialize)]
+    struct OnMachine {
+        machine: String,
+    }
+
+    /// A request that names its machine in its JSON body: a hosted Kimi Code session started
+    /// there (`kimi::live::start`). Refused here as the machine would refuse a body it cannot
+    /// read, and as offline when that machine is not connected.
+    pub async fn by_machine(State(state): State<Arc<AppState>>, req: Request) -> Response {
+        let (method, path, headers) = (req.method().clone(), path_of(&req), carried_headers(&req));
+        let (parts, body) = req.into_parts();
+        let Ok(body) = axum::body::to_bytes(body, MAX_BODY).await else {
+            return (StatusCode::PAYLOAD_TOO_LARGE, Json(json!({ "ok": false, "error": "that request is too long" }))).into_response();
+        };
+        let named = Request::from_parts(parts, Body::from(body.clone()));
+        let id = match <LiveBody<OnMachine> as FromRequest<()>>::from_request(named, &()).await {
+            Ok(JsonBody(OnMachine { machine })) => machine,
+            Err(refused) => return refused,
+        };
+        let Some(machine) = state.machines.online(&id) else {
+            let label = state.machines.seen().into_iter().find(|m| m.id == id).map(|m| m.label);
+            return match label {
+                Some(label) => Relay::Offline(label).into_response(),
+                None => (StatusCode::NOT_FOUND, Json(json!({ "ok": false, "error": "No such machine." }))).into_response(),
+            };
+        };
+        match machine.request(&method, &path, headers, &body, HEAD_WAIT).await {
+            Ok(response) => response,
+            Err(why) => why.into_response(),
+        }
+    }
+
     /// `GET /api/live/project`: one working directory's totals, from every machine that
     /// has sessions there, added up.
     pub async fn project(State(state): State<Arc<AppState>>, req: Request) -> Response {
@@ -856,6 +889,36 @@ mod tests {
     fn query_values_are_encoded() {
         assert_eq!(encode("req:abc-1_2.3~"), "req%3Aabc-1_2.3~");
         assert_eq!(encode("a b&c"), "a%20b%26c");
+    }
+
+    /// A hosted router relays a start to the machine its body names, as that machine's
+    /// agent answers it; a machine it does not know is refused.
+    #[tokio::test]
+    async fn the_hosted_router_relays_a_start_to_its_machine() {
+        let lab = crate::api_refusals::Lab::hosted("relays-start").await;
+        let (m, mut sent) = machine();
+        locked(&lab.state.machines.online).insert("m-1".into(), m.clone());
+        lab.state.machines.note(&m, true);
+        let body = json!({ "machine": "m-1", "cwd": "/Users/u/code/demo", "model": "k3" });
+        let agent = async {
+            let frame = sent.recv().await.unwrap();
+            let (kind, id, payload) = tunnel::decode(&frame).unwrap();
+            assert_eq!(kind, tunnel::REQUEST);
+            let req: tunnel::Request = serde_json::from_slice(payload).unwrap();
+            assert_eq!((req.method.as_str(), req.path.as_str()), ("POST", "/api/live/start"));
+            let head = serde_json::to_vec(&Head { status: 200, headers: vec![("content-type".into(), "application/json".into())] }).unwrap();
+            m.dispatch(&tunnel::encode(tunnel::HEAD, id, &head));
+            m.dispatch(&tunnel::encode(tunnel::BODY, id, br#"{"ok":true,"session":"session_new"}"#));
+            m.dispatch(&tunnel::encode(tunnel::END, id, b""));
+        };
+        let body = body.to_string();
+        let ((status, answer), ()) = tokio::join!(lab.post("/api/live/start", &body), agent);
+        assert_eq!(status, StatusCode::OK, "{answer}");
+        assert_eq!(answer["session"], "session_new");
+
+        let elsewhere = json!({ "machine": "m-2", "cwd": "/Users/u", "model": "k3" });
+        let (status, _) = lab.post("/api/live/start", &elsewhere.to_string()).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
     /// The clients a machine reports with its places come back on `/api/machines`; a report

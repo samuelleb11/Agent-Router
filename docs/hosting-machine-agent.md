@@ -246,7 +246,8 @@ answers it 404.
 | --- | --- |
 | `GET /api/live/sessions` | Every connected agent's list, merged and filtered by the shelf. Each row gains `machine: {id, label}`, and carries `repository` from its agent where the session's directory has a git remote. Old phones ignore both keys. |
 | `GET /api/live/stream`, `/stats`, `/prompt` | Tunneled to the session's machine. A stream is relayed byte for byte. |
-| `POST /api/live/send`, `/interrupt`, `/answer`, `/model`, `/effort`, `/mode`, `/aside` | Tunneled to the session's machine. |
+| `POST /api/live/send`, `/interrupt`, `/answer`, `/model`, `/effort`, `/mode`, `/aside` | Tunneled to the session's machine. A Kimi Code session (`client: "kimi-code"`) is driven only when its row says `hosted: true`, through the `kimi web` its agent runs (`src/kimi/live.rs`); any other is refused with 409 and the reason. |
+| `POST /api/live/start {machine, cwd, model}` | Tunneled to the machine the body names, which starts a hosted Kimi Code session in `cwd` on `model` and answers `{ok, session}`. |
 | `GET /api/live/project?project=<key>` | Every agent's answer for that project, summed: the sessions whose repository is the key, else whose directory is. One repository's clones and worktrees on every machine add up. |
 | `POST /api/live/archive` | On the router: the shelf. |
 | `GET /api/push/pending` | The waiting keys of connected agents, plus the announced keys of machines that are offline. |

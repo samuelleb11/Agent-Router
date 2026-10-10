@@ -3,6 +3,7 @@
 //! kimi`), which keeps the [`registry`] of its live sessions.
 
 pub mod config;
+pub mod live;
 pub mod registry;
 pub mod session;
 pub mod web;

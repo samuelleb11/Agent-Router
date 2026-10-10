@@ -52,16 +52,33 @@ const LISTED_WITHIN_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 /// again only when its wire has grown or its state changed.
 pub fn discover(archived: &HashMap<String, i64>, now: i64) -> Vec<LiveSession> {
     let Some(home) = super::home() else { return Vec::new() };
-    let hooked: HashMap<String, Record> =
-        registry::dir().map(|d| registry::read(&d, now)).unwrap_or_default().into_iter().map(|r| (r.session.clone(), r)).collect();
-    sessions_in(&home)
+    let hooked = registry::dir().map(|d| registry::read(&d, now)).unwrap_or_default();
+    let host = super::live::host();
+    discover_in(&home, &hooked, &|id| host.is_some_and(|h| h.hosts(id)), archived, now)
+}
+
+/// `discover` with every input explicit: the home, what the hooks said, which sessions the
+/// router hosts.
+pub fn discover_in(
+    home: &Path,
+    hooked: &[Record],
+    hosted: &dyn Fn(&str) -> bool,
+    archived: &HashMap<String, i64>,
+    now: i64,
+) -> Vec<LiveSession> {
+    let hooked: HashMap<&str, &Record> = hooked.iter().map(|r| (r.session.as_str(), r)).collect();
+    sessions_in(home)
         .into_iter()
         .filter_map(|dir| {
             let session = cached(&dir)?;
-            let hook = hooked.get(&session.id);
+            let hook = hooked.get(session.id.as_str()).copied();
             let live = hook.is_some_and(|r| r.status != registry::Status::Ended);
             let last = session.fold.last_ms.or(session.created_ms).unwrap_or(0);
-            (live || now - last <= LISTED_WITHIN_MS).then(|| session.row(hook, archived, now))
+            (live || now - last <= LISTED_WITHIN_MS).then(|| {
+                let mut row = session.row(hook, archived, now);
+                row.hosted = Some(hosted(&session.id));
+                row
+            })
         })
         .collect()
 }
@@ -264,7 +281,6 @@ fn iso_ms(ms: i64) -> String {
 
 impl Session {
     /// What it said and did, in order.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the live stream serves it, AGEN-0112"))]
     pub fn feed(&self) -> &[Item] {
         &self.fold.items
     }
@@ -385,6 +401,7 @@ impl Session {
             tone: a.tone(),
             source: a.source,
             client: Some(CLIENT),
+            hosted: None,
             as_of_ms: now,
         }
     }
@@ -480,6 +497,40 @@ mod tests {
         let st = s.stats();
         assert_eq!(st.model.as_deref(), Some("k3"));
         assert_eq!((st.input, st.output, st.cache_read, st.turns), (2_000, 40, 1_000, 2));
+    }
+
+    #[test]
+    fn live_sessions_list_kimi_sessions_watched_and_hosted() {
+        let home = Home::new("listed", "wire.jsonl", "state.json");
+        // A second session, the router's own: the same files under another id.
+        let theirs = home.0.join("sessions/wd_demo_b034f63fc2a8/session_fd31bc41-dc2f-432b-8be3-2ae7f81240a6");
+        let ours = home.0.join("sessions/wd_demo_b034f63fc2a8/session_0a0a0a0a-0000-4000-8000-000000000001");
+        std::fs::create_dir_all(ours.join("agents/main")).unwrap();
+        std::fs::copy(theirs.join("agents/main/wire.jsonl"), ours.join("agents/main/wire.jsonl")).unwrap();
+        let state = std::fs::read_to_string(theirs.join("state.json")).unwrap();
+        std::fs::write(ours.join("state.json"), state.replace("session_fd31bc41-dc2f-432b-8be3-2ae7f81240a6", "session_0a0a0a0a-0000-4000-8000-000000000001"))
+            .unwrap();
+
+        let hosted = |id: &str| id == "session_0a0a0a0a-0000-4000-8000-000000000001";
+        let mut rows = discover_in(&home.0, &[], &hosted, &HashMap::new(), DONE_AT + 1_000);
+        rows.sort_by(|a, b| a.session_id.cmp(&b.session_id));
+        let listed: Vec<(&str, Option<&str>, Option<bool>)> =
+            rows.iter().map(|r| (r.session_id.as_str(), r.client, r.hosted)).collect();
+        assert_eq!(
+            listed,
+            [
+                ("session_0a0a0a0a-0000-4000-8000-000000000001", Some(CLIENT), Some(true)),
+                ("session_fd31bc41-dc2f-432b-8be3-2ae7f81240a6", Some(CLIENT), Some(false)),
+            ]
+        );
+        let json = serde_json::to_value(&rows[1]).unwrap();
+        assert_eq!((json["client"].as_str(), json["hosted"].as_bool()), (Some("kimi-code"), Some(false)));
+
+        // A week on, a session nobody holds is no longer listed; one its hooks say is live is.
+        let later = DONE_AT + LISTED_WITHIN_MS + 1;
+        assert!(discover_in(&home.0, &[], &hosted, &HashMap::new(), later).is_empty());
+        let live = Record { heard_ms: later, ..hooked(registry::Status::Idle, later) };
+        assert_eq!(discover_in(&home.0, &[live], &hosted, &HashMap::new(), later).len(), 1);
     }
 
     #[test]

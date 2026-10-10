@@ -528,6 +528,7 @@ async fn serve_here(args: config::ServeArgs) -> anyhow::Result<()> {
     // This machine's places, every minute, as an agent reports its own to a hosted router:
     // which repository each session works in.
     tokio::spawn(places::keep_here(db_path.clone()));
+    tokio::spawn(kimi::live::keep_host());
     tokio::spawn(keep_local_kimi_config(format!("http://127.0.0.1:{}", loopback_addr().port())));
 
     // The wider listener, when there is to be one, serves this same app from a second
@@ -635,6 +636,7 @@ fn machine_routes(router: Router<Arc<proxy::AppState>>) -> Router<Arc<proxy::App
         .route("/api/live/effort", post(live::set_effort))
         .route("/api/live/mode", post(live::set_mode))
         .route("/api/live/aside", post(live::aside))
+        .route("/api/live/start", post(kimi::live::start_route))
         // A router on a developer's machine keeps no Library, and says so at its addresses
         // rather than passing them to the proxy.
         .route("/api/library", any(library::api::not_offered))

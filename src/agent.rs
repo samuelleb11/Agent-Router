@@ -320,6 +320,7 @@ fn routes(library: Option<Library>) -> Router {
         .route("/api/live/effort", post(live::set_effort))
         .route("/api/live/mode", post(live::set_mode))
         .route("/api/live/aside", post(live::aside))
+        .route("/api/live/start", post(crate::kimi::live::start_route))
         .route("/agent/waiting", get(waiting))
         .route("/agent/still-waiting", get(still_waiting))
         .route(crate::library::push::PATH, post(move || library_sync(library.clone())))
@@ -1151,6 +1152,9 @@ async fn work(args: RunArgs, dir: PathBuf, stopping: crate::lifecycle::Stopping)
             }
         }));
     }
+
+    // Kimi Code's server for the sessions this machine hosts, stopped once unused.
+    tokio::spawn(crate::kimi::live::keep_host());
 
     // The clients, at every connection and every fifteen minutes between (`keep_clients`):
     // Claude Code's /model picker gets a row for each of the router's non-Claude models, so a
