@@ -23,9 +23,16 @@ use crate::accounts::Provider;
 /// The router's provider, and the prefix of its models' names.
 pub const PROVIDER: &str = "agent-router";
 
-/// The events whose hooks tell the agent about a session.
-pub const HOOK_EVENTS: &[&str] =
-    &["SessionStart", "SessionEnd", "SessionHeartbeat", "Stop", "PermissionRequest", "PermissionResult"];
+/// The events whose hooks tell the agent about a session (`registry`).
+pub const HOOK_EVENTS: &[&str] = &[
+    "SessionStart",
+    "SessionEnd",
+    "SessionHeartbeat",
+    "UserPromptSubmit",
+    "Stop",
+    "PermissionRequest",
+    "PermissionResult",
+];
 
 /// What each of the router's hooks runs, after the program.
 const HOOK_ARGS: &str = "hook kimi";

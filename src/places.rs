@@ -131,13 +131,19 @@ pub fn record(conn: &Connection, report: &Report, now: i64) -> Result<Recorded> 
 /// This machine's places, from its own list of sessions, and its clients: what an agent sends
 /// and a local router records. Blocking: it reads the transcripts and asks `git`.
 pub fn here(machine: &str, label: Option<&str>, platform: Option<&str>) -> Report {
-    let listed = crate::live::discover();
+    let mut listed: Vec<Listed> =
+        crate::live::discover().into_iter().map(|s| Listed { session: s.session_id, cwd: s.cwd }).collect();
+    // Kimi Code's, from its hooks: the ids its requests are filed under (`kimi::registry`).
+    if let Ok(dir) = crate::kimi::registry::dir() {
+        let kimi = crate::kimi::registry::read(&dir, crate::db::now_ms());
+        listed.extend(kimi.into_iter().map(|r| Listed { session: r.session, cwd: r.cwd }));
+    }
     let cwds: BTreeSet<String> = listed.iter().filter_map(|s| s.cwd.clone()).collect();
     Report {
         machine: machine.to_string(),
         label: label.map(str::to_owned),
         platform: platform.map(str::to_owned),
-        sessions: listed.into_iter().map(|s| Listed { session: s.session_id, cwd: s.cwd }).collect(),
+        sessions: listed,
         directories: cwds.into_iter().map(|cwd| Directory { remotes: repository::remotes_cached(&cwd), cwd }).collect(),
         clients: Some(crate::clients::here()),
     }
