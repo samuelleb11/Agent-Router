@@ -253,8 +253,28 @@ fn cmd_install(args: &[String]) -> anyhow::Result<()> {
         setup::Applied::AlreadySet => println!("config    already pointing at {url}"),
     }
     println!("          {} ({scope})", path.display());
+    match local_picker_rows() {
+        Ok(0) => {}
+        Ok(n) => println!("picker    {n} model(s) of other providers offered in Claude Code's /model"),
+        Err(e) => println!("picker    left alone ({e:#})"),
+    }
     println!("\ndashboard {url}");
     Ok(())
+}
+
+/// Offer the router's non-Claude models in Claude Code's `/model` picker, from this
+/// machine's own store: rows of `modelPicker.options` in the user's settings
+/// (`setup::sync_picker_rows`). A store not made yet has no other provider to offer.
+fn local_picker_rows() -> anyhow::Result<usize> {
+    let db = config::db_path()?;
+    if !db.exists() {
+        return Ok(0);
+    }
+    let conn = rusqlite::Connection::open(&db)?;
+    let catalogue: Vec<serde_json::Value> = models::catalogue(&conn)?.iter().map(models::row).collect();
+    let rows = setup::picker_models(&catalogue);
+    setup::sync_picker_rows(&setup::settings_path(None)?, &rows)?;
+    Ok(rows.len())
 }
 
 fn cmd_uninstall() -> anyhow::Result<()> {

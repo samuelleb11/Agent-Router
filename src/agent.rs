@@ -369,6 +369,35 @@ async fn library_sync(library: Option<Library>) -> axum::response::Response {
     }
 }
 
+/// The rows of Claude Code's `/model` picker the router keeps in the user's `settings`: one
+/// for each non-Claude model of `catalogue` (`GET /api/models`) while that Claude Code talks
+/// to `server`, which its settings say as `ANTHROPIC_BASE_URL`; none once it does not. The
+/// owner's own rows are never touched (`setup::sync_picker_rows`). Says whether the file
+/// changed.
+fn picker_rows_for(settings: &Path, server: &str, catalogue: &[Value]) -> Result<bool> {
+    let ours = crate::setup::base_url_in(settings)?
+        .is_some_and(|url| url.trim_end_matches('/') == server.trim_end_matches('/'));
+    let rows = if ours { crate::setup::picker_models(catalogue) } else { Vec::new() };
+    crate::setup::sync_picker_rows(settings, &rows)
+}
+
+/// Ask the router for its catalogue, and keep the picker's rows in step with it. A router
+/// from before the catalogue answers 404, and there is nothing to keep.
+async fn keep_picker_rows(router: &crate::library::sync::Router, server: &str) -> Result<()> {
+    let (status, _, body) = router.send(axum::http::Method::GET, "/api/models", Vec::new(), Bytes::new()).await?;
+    if status == axum::http::StatusCode::NOT_FOUND {
+        return Ok(());
+    }
+    if !status.is_success() {
+        bail!("{server} answered {status} for its models");
+    }
+    let catalogue: Vec<Value> = serde_json::from_slice(&body).context("the router's models were not a list")?;
+    let settings = crate::setup::settings_path(None)?;
+    let server = server.to_string();
+    tokio::task::spawn_blocking(move || picker_rows_for(&settings, &server, &catalogue)).await??;
+    Ok(())
+}
+
 /// What is waiting on a person here, named the way a banner names it.
 async fn waiting() -> Json<Value> {
     let rows = tokio::task::spawn_blocking(|| {
@@ -1104,6 +1133,22 @@ async fn work(args: RunArgs, dir: PathBuf, stopping: crate::lifecycle::Stopping)
         }));
     }
 
+    // Claude Code's /model picker: a row for each of the router's non-Claude models, at every
+    // connection and every fifteen minutes between, so a model the router gains or loses is
+    // offered or taken away without a reinstall (`keep_picker_rows`).
+    {
+        let router = Arc::new(crate::library::sync::Router::new(&server, &password)?);
+        let server = server.clone();
+        tokio::spawn(crate::library::sync::keep_in_step(connected.subscribe(), crate::library::sync::EVERY, move || {
+            let (router, server) = (router.clone(), server.clone());
+            async move {
+                if let Err(e) = keep_picker_rows(&router, &server).await {
+                    tracing::warn!("Claude Code's /model rows could not be kept in step: {e:#}");
+                }
+            }
+        }));
+    }
+
     // Said to the keeper: the first time the tunnel is up, so it can stop the worker this one
     // replaces; every time after, so it can check its router's build.
     {
@@ -1347,6 +1392,13 @@ async fn install(args: &[String]) -> Result<()> {
         crate::setup::apply_key(&path, crate::setup::TOKEN_KEY, &password, scope)?;
         println!("config    ANTHROPIC_BASE_URL={server} and ANTHROPIC_AUTH_TOKEN");
         println!("          {} ({scope}); uninstall puts back what was there", path.display());
+        let offered = match crate::library::sync::Router::new(&server, &password) {
+            Ok(router) => keep_picker_rows(&router, &server).await,
+            Err(e) => Err(e),
+        };
+        if let Err(e) = offered {
+            println!("picker    Claude Code's /model rows left alone ({e:#}); the agent tries again when it connects");
+        }
     }
 
     if args.no_service {
@@ -2059,5 +2111,40 @@ mod tests {
         assert_eq!(routes(None).oneshot(options).await.unwrap().status(), 404);
         let setup = axum::http::Request::builder().method("POST").uri("/api/setup/shim").body(Body::empty()).unwrap();
         assert_eq!(routes(None).oneshot(setup).await.unwrap().status(), 404);
+    }
+
+    #[test]
+    fn the_agent_keeps_picker_rows_in_step_with_the_catalogue() {
+        let dir = std::env::temp_dir().join(format!("ar-agent-picker-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let settings = dir.join("settings.json");
+        let server = "https://router.example.invalid";
+        std::fs::write(
+            &settings,
+            format!(r#"{{"env":{{"ANTHROPIC_BASE_URL":"{server}"}},"modelPicker":{{"options":[{{"model":"opus","label":"Mine"}}]}}}}"#),
+        )
+        .unwrap();
+        let catalogue = |ids: &[&str]| -> Vec<Value> {
+            ids.iter().map(|id| json!({ "id": id, "provider": if id.starts_with("claude") { "anthropic" } else { "kimi" }, "display_name": id })).collect()
+        };
+        let rows = |path: &Path| -> Vec<String> {
+            let got: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+            got["modelPicker"]["options"].as_array().unwrap().iter().map(|r| r["model"].as_str().unwrap().to_string()).collect()
+        };
+
+        assert!(picker_rows_for(&settings, server, &catalogue(&["claude-opus-5-5", "k3", "k3-256k"])).unwrap());
+        assert_eq!(rows(&settings), ["opus", "k3", "k3-256k"]);
+        // A model that joined the catalogue gets a row, and one that left loses its own.
+        assert!(picker_rows_for(&settings, server, &catalogue(&["k3", "kimi-for-coding"])).unwrap());
+        assert_eq!(rows(&settings), ["opus", "k3", "kimi-for-coding"]);
+        assert!(!picker_rows_for(&settings, &format!("{server}/"), &catalogue(&["k3", "kimi-for-coding"])).unwrap(), "in step");
+
+        // A Claude Code pointed at another router is offered none of this one's models.
+        let elsewhere = dir.join("elsewhere.json");
+        std::fs::write(&elsewhere, std::fs::read_to_string(&settings).unwrap().replace(server, "http://127.0.0.1:8787")).unwrap();
+        assert!(picker_rows_for(&elsewhere, server, &catalogue(&["k3"])).unwrap());
+        assert_eq!(rows(&elsewhere), ["opus"], "its rows go; the owner's stays");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

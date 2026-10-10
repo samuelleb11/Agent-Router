@@ -239,7 +239,8 @@ impl From<rusqlite::Error> for AssignError {
     }
 }
 
-fn row(m: &Model) -> Value {
+/// A model as `GET /api/models` answers it, and as the installers read it.
+pub(crate) fn row(m: &Model) -> Value {
     json!({
         "id": m.id,
         "provider": m.provider.as_str(),

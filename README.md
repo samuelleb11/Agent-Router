@@ -171,6 +171,25 @@ router or of Claude Code.
 An isolated profile cannot disturb your main login: a fresh `CLAUDE_CONFIG_DIR` reports
 "not logged in" even with the default profile's `.claude.json` copied into it.
 
+### Other providers' models
+
+An account can also be at another Anthropic-compatible provider. The first is **Kimi
+Code**: add its console key with the API (`"provider": "kimi"`), and its models (`k3`,
+`k3-256k`, `kimi-for-coding`, `kimi-for-coding-highspeed`, as your plan allows) join the
+router's catalogue. Each request goes to the account its model is assigned to, so switching
+provider is switching model: `/model k3` in Claude Code, and `/model opus` to come back.
+`GET /api/models` lists the catalogue and `POST /api/models/assign` gives a model to
+another account of its provider. The plan is [docs/sources-and-models.md](docs/sources-and-models.md).
+
+* **The picker.** Claude Code's `/model` picker lists only Claude's models by itself, so
+  the installer and the machine agent add a row for each of the router's other models to
+  `modelPicker` in `~/.claude/settings.json`. Your own rows are left as they are.
+* **Background work follows the main model.** Titles and summaries run on the model the
+  session uses, so a session on `k3` spends Kimi Code's quota on them too. To keep them on
+  Claude, set `ANTHROPIC_DEFAULT_HAIKU_MODEL` to a Claude model id in your settings' `env`.
+* Anthropic does not support Claude Code against non-Claude models through a gateway; Kimi
+  Code's own guide points Claude Code at it directly, and it works in practice.
+
 ## Upgrading without dropping sessions
 
 Build the new binary and just start it — no need to stop the old one:

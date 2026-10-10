@@ -230,6 +230,100 @@ pub fn apply_key(path: &Path, key: &str, value: &str, scope: &str) -> Result<App
     })
 }
 
+/// The router a settings file points Claude Code at, if it names one.
+pub fn base_url_in(path: &Path) -> Result<Option<String>> {
+    Ok(read_settings(path)?
+        .get("env")
+        .and_then(|e| e.get(ENV_KEY))
+        .and_then(Value::as_str)
+        .map(str::to_owned))
+}
+
+/// What marks a row of Claude Code's `/model` picker as the router's: the end of its
+/// description. Every other row is the owner's, and left exactly as it is.
+const PICKER_MARK: &str = "via Agent Router";
+
+/// One model to offer in Claude Code's `/model` picker.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PickerModel {
+    pub id: String,
+    pub label: String,
+    /// The provider's name, as the row's description says it.
+    pub provider: String,
+}
+
+/// The models of a catalogue, as `GET /api/models` answers it, that Claude Code's picker
+/// would never list by itself: every one that is not Claude's. Its gateway discovery keeps
+/// only ids containing `claude` (docs/sources-and-models.md, "Clients"), so these are
+/// offered as rows of `modelPicker.options` instead.
+pub fn picker_models(catalogue: &[Value]) -> Vec<PickerModel> {
+    catalogue
+        .iter()
+        .filter_map(|m| {
+            let id = m.get("id")?.as_str()?;
+            let provider = crate::accounts::Provider::parse(m.get("provider")?.as_str()?).ok()?;
+            (provider != crate::accounts::Provider::Anthropic).then(|| PickerModel {
+                id: id.to_string(),
+                label: m.get("display_name").and_then(Value::as_str).unwrap_or(id).to_string(),
+                provider: provider.name().to_string(),
+            })
+        })
+        .collect()
+}
+
+fn ours(row: &Value) -> bool {
+    row.get("description").and_then(Value::as_str).is_some_and(|d| d.ends_with(PICKER_MARK))
+}
+
+/// Keep the router's rows of `modelPicker.options` in the settings file at `path` in step
+/// with `models`: a row for each, after the owner's rows, and none for a model no longer
+/// given. A row the router did not write is never touched, nor is a model the owner already
+/// has a row for given a second, and `replaceBuiltInOptions` is never set. Claude Code reads
+/// `modelPicker` from the user's settings only. Says whether the file changed.
+pub fn sync_picker_rows(path: &Path, models: &[PickerModel]) -> Result<bool> {
+    let mut settings = read_settings(path)?;
+    let before = settings.get("modelPicker").cloned();
+    let options: Vec<Value> = before
+        .as_ref()
+        .and_then(|p| p.get("options"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut rows: Vec<Value> = options.into_iter().filter(|r| !ours(r)).collect();
+    let theirs: Vec<String> =
+        rows.iter().filter_map(|r| r.get("model").and_then(Value::as_str).map(str::to_owned)).collect();
+    for m in models.iter().filter(|m| !theirs.contains(&m.id)) {
+        rows.push(serde_json::json!({
+            "model": m.id,
+            "label": m.label,
+            "description": format!("{} · {PICKER_MARK}", m.provider),
+        }));
+    }
+    let after = match before.clone() {
+        // Nothing of the router's to write, and no picker of the owner's to keep.
+        None if rows.is_empty() => None,
+        None => Some(serde_json::json!({ "options": rows })),
+        Some(Value::Object(mut picker)) => {
+            picker.insert("options".into(), Value::Array(rows));
+            Some(Value::Object(picker))
+        }
+        Some(_) => return Err(anyhow!("\"modelPicker\" in {} is not an object", path.display())),
+    };
+    if after == before {
+        return Ok(false);
+    }
+    match after {
+        Some(picker) => {
+            settings.insert("modelPicker".into(), picker);
+        }
+        None => {
+            settings.remove("modelPicker");
+        }
+    }
+    write_atomic(path, &(serde_json::to_string_pretty(&Value::Object(settings))? + "\n"))?;
+    Ok(true)
+}
+
 pub enum Reverted {
     Restored { to: String },
     Removed,
@@ -1551,5 +1645,85 @@ mod tests {
             assert!(apply(&path, "http://127.0.0.1:8787", "global").is_err());
             assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ this is not json");
         });
+    }
+}
+
+#[cfg(test)]
+mod picker_tests {
+    use super::*;
+
+    /// A user settings file of its own, holding `json`.
+    fn settings(tag: &str, json: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("ar-picker-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, json).unwrap();
+        path
+    }
+
+    fn read(path: &Path) -> Value {
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    /// The catalogue as `GET /api/models` answers it, with a Claude model among Kimi Code's.
+    fn catalogue(ids: &[(&str, &str, &str)]) -> Vec<Value> {
+        ids.iter()
+            .map(|(id, provider, name)| serde_json::json!({ "id": id, "provider": provider, "display_name": name, "assigned": null, "serving": "a" }))
+            .collect()
+    }
+
+    #[test]
+    fn install_writes_a_picker_row_for_each_non_claude_model() {
+        let path = settings("rows", r#"{"env":{"ANTHROPIC_BASE_URL":"http://127.0.0.1:8787"},"theme":"dark"}"#);
+        let models = picker_models(&catalogue(&[
+            ("claude-opus-5-5", "anthropic", "claude-opus-5-5"),
+            ("k3", "kimi", "Kimi K3"),
+            ("kimi-for-coding", "kimi", "Kimi for Coding"),
+        ]));
+        assert!(sync_picker_rows(&path, &models).unwrap());
+        let got = read(&path);
+        assert_eq!(
+            got["modelPicker"],
+            serde_json::json!({ "options": [
+                { "model": "k3", "label": "Kimi K3", "description": "Kimi Code · via Agent Router" },
+                { "model": "kimi-for-coding", "label": "Kimi for Coding", "description": "Kimi Code · via Agent Router" },
+            ] }),
+            "Claude's models are the picker's own; only the others get a row"
+        );
+        assert_eq!(got["env"]["ANTHROPIC_BASE_URL"], "http://127.0.0.1:8787");
+        assert_eq!(got["theme"], "dark", "nothing else in the file changes");
+        assert!(got["modelPicker"].get("replaceBuiltInOptions").is_none());
+        assert!(!sync_picker_rows(&path, &models).unwrap(), "in step already: the file is not written again");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn the_owners_own_picker_rows_are_left_alone() {
+        let path = settings(
+            "owner",
+            r#"{"modelPicker":{"replaceBuiltInOptions":false,"options":[
+                {"model":"opus","label":"Mine"},
+                {"model":"k3","label":"My K3","description":"set by hand"},
+                {"model":"k3-256k","label":"Kimi K3 (256K)","description":"Kimi Code · via Agent Router"}
+            ]}}"#,
+        );
+        let models = picker_models(&catalogue(&[("k3", "kimi", "Kimi K3"), ("kimi-for-coding", "kimi", "Kimi for Coding")]));
+        assert!(sync_picker_rows(&path, &models).unwrap());
+        assert_eq!(
+            read(&path)["modelPicker"],
+            serde_json::json!({ "replaceBuiltInOptions": false, "options": [
+                { "model": "opus", "label": "Mine" },
+                { "model": "k3", "label": "My K3", "description": "set by hand" },
+                { "model": "kimi-for-coding", "label": "Kimi for Coding", "description": "Kimi Code · via Agent Router" },
+            ] }),
+            "the owner's rows stay as they were, k3 gets no second row, and the router's stale row goes"
+        );
+
+        // Nothing left to offer takes out the router's rows and nothing else.
+        assert!(sync_picker_rows(&path, &[]).unwrap());
+        let rows = read(&path)["modelPicker"]["options"].as_array().unwrap().len();
+        assert_eq!(rows, 2);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 }
