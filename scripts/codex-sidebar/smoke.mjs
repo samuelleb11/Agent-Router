@@ -112,6 +112,7 @@ async function launch() {
     env: environment, timeout: 60_000,
   });
   page = await app.firstWindow();
+  await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.locator('.monaco-workbench').waitFor({ timeout: 60_000 });
   await palette('Codex: Open Codex Sidebar');
   const frame = await sidebar();
@@ -125,7 +126,7 @@ try {
     await picker(frame);
     const name = catalogue.find(row => row.id === model)?.display_name;
     assert.ok(name, `Missing server model ${model}`);
-    await modelRow(frame, name).click({ timeout: 15_000 });
+    await modelRow(frame, name).press('Enter', { timeout: 15_000 });
     console.log(`NATIVE_SIDEBAR_PHASE selected ${model}`);
     // A native sidebar turn: execute and replay a command through the router.
     const composer = frame.locator('[contenteditable="true"]').first();
@@ -149,7 +150,7 @@ try {
   frame = await launch();
   await picker(frame);
   await modelRow(frame, 'TEAM SERVER NEW').waitFor({ timeout: 15_000 });
-  await modelRow(frame, 'TEAM SERVER NEW').click();
+  await modelRow(frame, 'TEAM SERVER NEW').press('Enter');
   await app.close(); app = undefined;
   await registry('DELETE', '/team-sidebar-new');
   execFileSync(process.env.AR_ROUTER_BIN, ['codex', 'models', 'refresh'], { env: environment, stdio: 'inherit', timeout: 30_000 });
