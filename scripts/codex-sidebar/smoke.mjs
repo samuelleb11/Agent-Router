@@ -139,6 +139,7 @@ try {
   await app.close(); app = undefined;
   const savedConversations = await rollouts();
   assert.ok(savedConversations.size >= 6, 'Native CLI and sidebar conversations must be persisted');
+  await writeFile(path.join(artifacts, 'history-before.json'), JSON.stringify(Object.fromEntries(savedConversations), null, 2));
   await registry('POST', '', { alias: 'team-sidebar-new', display_name: 'TEAM SERVER NEW',
     service: 'openai', account_id: 'openai', upstream_model: 'gpt-5.4' });
   execFileSync(process.env.AR_ROUTER_BIN, ['codex', 'models', 'refresh'], { env: environment, stdio: 'inherit', timeout: 30_000 });
@@ -155,8 +156,19 @@ try {
   catalogue = await models();
   assert.equal(catalogue.some(row => row.id === 'team-sidebar-new'), false);
   const resumedConversations = await rollouts();
+  await writeFile(path.join(artifacts, 'history-after.json'), JSON.stringify(Object.fromEntries(resumedConversations), null, 2));
+  const archived = await rollouts(path.join(codex, 'archived_sessions')).catch(() => new Map());
+  await writeFile(path.join(artifacts, 'history-archived.json'), JSON.stringify(Object.fromEntries(archived), null, 2));
   for (const [file, history] of savedConversations) {
-    assert.ok(resumedConversations.get(file)?.startsWith(history), `Refresh lost or rewrote conversation ${path.basename(file)}`);
+    const current = resumedConversations.get(file);
+    if (!current?.startsWith(history)) {
+      let at = 0;
+      if (current) while (at < history.length && history[at] === current[at]) at++;
+      console.error(JSON.stringify({ historyMismatch: path.basename(file), exists: current !== undefined,
+        beforeBytes: history.length, afterBytes: current?.length, firstDifference: at,
+        before: history.slice(Math.max(0, at - 100), at + 500), after: current?.slice(Math.max(0, at - 100), at + 500) }));
+    }
+    assert.ok(current?.startsWith(history), `Refresh lost or rewrote conversation ${path.basename(file)}`);
   }
   console.log('NATIVE_SIDEBAR_OK models=3 added=1 removed=1');
 } catch (error) {
