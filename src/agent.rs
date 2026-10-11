@@ -1839,6 +1839,35 @@ mod tests {
     }
 
     #[cfg(unix)]
+    fn wait_for_legacy_probe(file: &std::fs::File, _budget: Duration) -> std::result::Result<(), std::fs::TryLockError> {
+        file.try_lock()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn legacy_lock_waits_for_an_inherited_probe_descriptor() {
+        let dir = scratch("inherited-probe");
+        std::fs::write(dir.join("agent.lock"), "4242 tree:old\n").unwrap();
+        let probe = open_lock(&dir).unwrap();
+        probe.try_lock().unwrap();
+        let legacy = open_lock(&dir).unwrap();
+        assert!(matches!(legacy.try_lock(), Err(std::fs::TryLockError::WouldBlock)));
+        // The descriptor outlives the parent probe, as it can between fork/exec.
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(250));
+            drop(probe);
+        });
+        let acquired = wait_for_legacy_probe(&legacy, Duration::from_secs(5));
+        release.join().unwrap();
+        if acquired.is_ok() {
+            assert_eq!(peek(&dir).unwrap().unwrap(), Holder { pid: 4242, build: "tree:old".into(), keeper: false });
+        }
+        drop(legacy);
+        let _ = std::fs::remove_dir_all(&dir);
+        acquired.expect("legacy acquisition must wait for the inherited probe descriptor");
+    }
+
+    #[cfg(unix)]
     #[test]
     fn a_keeper_is_left_alone_and_a_legacy_agent_is_named() {
         let dir = scratch("lock");
