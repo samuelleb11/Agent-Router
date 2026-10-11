@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import { _electron as electron } from 'playwright';
 import { execFileSync } from 'node:child_process';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 assert.equal(process.env.CI, 'true', 'Editor hosts run only in CI');
@@ -39,6 +39,15 @@ const environment = {
 execFileSync('git', ['init', '--quiet', project], { env: environment });
 let app;
 let page;
+async function rollouts(directory = path.join(codex, 'sessions')) {
+  const result = new Map();
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const file = path.join(directory, entry.name);
+    if (entry.isDirectory()) for (const row of await rollouts(file)) result.set(...row);
+    else if (entry.name.endsWith('.jsonl')) result.set(file, await readFile(file, 'utf8'));
+  }
+  return result;
+}
 async function palette(command) {
   await page.keyboard.press('Control+Shift+P');
   const input = page.locator('.quick-input-widget input');
@@ -98,12 +107,15 @@ try {
     await composer.fill('Read fixture.txt using a command tool, then report the result.');
     await composer.press('Enter');
     await frame.getByText(`SMOKE_OK ${model}`, { exact: true }).waitFor({ timeout: 45_000 });
+    await frame.getByRole('button', { name: /^Stop/ }).waitFor({ state: 'hidden', timeout: 15_000 });
     await palette('Codex: New Chat in ChatGPT Sidebar');
     frame = await sidebar();
   }
   // Changes do not restart a live owner. Close the editor after the turns,
   // refresh the files, then reopen its same saved workspace/conversations.
   await app.close(); app = undefined;
+  const savedConversations = await rollouts();
+  assert.ok(savedConversations.size >= 6, 'Native CLI and sidebar conversations must be persisted');
   await registry('POST', '', { alias: 'team-sidebar-new', display_name: 'TEAM SERVER NEW',
     service: 'openai', account_id: 'openai', upstream_model: 'gpt-5.4' });
   execFileSync(process.env.AR_ROUTER_BIN, ['codex', 'models', 'refresh'], { env: environment, stdio: 'inherit', timeout: 30_000 });
@@ -119,6 +131,10 @@ try {
   assert.equal(await frame.getByText('TEAM SERVER NEW', { exact: true }).count(), 0, 'Removed server model persisted in native picker');
   catalogue = await models();
   assert.equal(catalogue.some(row => row.id === 'team-sidebar-new'), false);
+  const resumedConversations = await rollouts();
+  for (const [file, history] of savedConversations) {
+    assert.ok(resumedConversations.get(file)?.startsWith(history), `Refresh lost or rewrote conversation ${path.basename(file)}`);
+  }
   console.log('NATIVE_SIDEBAR_OK models=3 added=1 removed=1');
 } catch (error) {
   if (page) {
