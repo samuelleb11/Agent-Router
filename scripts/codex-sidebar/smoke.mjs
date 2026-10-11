@@ -49,12 +49,6 @@ async function rollouts(directory = path.join(codex, 'sessions')) {
   }
   return result;
 }
-async function palette(command) {
-  await page.keyboard.press('Control+Shift+P');
-  const input = page.locator('.quick-input-widget input');
-  await input.fill(command);
-  await page.keyboard.press('Enter');
-}
 async function sidebar() {
   for (let attempt = 0; attempt < 120; attempt++) {
     for (const frame of page.frames()) {
@@ -114,7 +108,8 @@ async function launch() {
   page = await app.firstWindow();
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.locator('.monaco-workbench').waitFor({ timeout: 60_000 });
-  await palette('Codex: Open Codex Sidebar');
+  // openOnStartup is a published native setting. Restored webview focus can
+  // intercept workbench palette shortcuts, so let the extension open itself.
   const frame = await sidebar();
   console.log('NATIVE_SIDEBAR_PHASE composer-ready');
   return frame;
