@@ -120,11 +120,12 @@ try {
     // A native sidebar turn: execute and replay a command through the router.
     const composer = frame.locator('[contenteditable="true"]').first();
     await composer.fill('Read fixture.txt using a command tool, then report the result.');
-    await composer.press('Enter');
+    await frame.getByRole('button', { name: 'Send', exact: true }).click();
     await frame.getByText(`SMOKE_OK ${model}`, { exact: true }).waitFor({ timeout: 45_000 });
     await frame.getByRole('button', { name: /^Stop/ }).waitFor({ state: 'hidden', timeout: 15_000 });
     console.log(`NATIVE_SIDEBAR_PHASE tool-turn-complete ${model}`);
-    await palette('Codex: New Chat in ChatGPT Sidebar');
+    await frame.getByRole('button', { name: 'New chat', exact: true }).click();
+    await frame.getByText(`SMOKE_OK ${model}`, { exact: true }).waitFor({ state: 'hidden', timeout: 15_000 });
     frame = await sidebar();
   }
   // Changes do not restart a live owner. Close the editor after the turns,
