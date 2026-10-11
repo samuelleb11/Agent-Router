@@ -65,6 +65,12 @@ rejects an explicit larger budget and bounds omitted or translation-generated bu
 before forwarding. A bounded route refuses native ChatGPT Codex subscription inference
 because that backend removes output budgets; use an API-key account for such a route.
 
+Codex is now the primary deep-integration target. The
+[primary-client design](multi-provider-clients.md#primary-client-direction) separates the
+reusable OpenAI-compatible gateway from managed native session controls. This document
+describes the implemented transport scope; the new catalogue, runtime and lifecycle
+acceptance work remains open under Northstar AGEN-0157.
+
 ## Configure Codex
 
 Settings → Clients offers model selection, a readiness check, a configuration preview
