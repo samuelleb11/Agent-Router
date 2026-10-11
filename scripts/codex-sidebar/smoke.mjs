@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import { _electron as electron } from 'playwright';
 import { execFileSync } from 'node:child_process';
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { cp, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 assert.equal(process.env.CI, 'true', 'Editor hosts run only in CI');
@@ -56,18 +56,31 @@ async function palette(command) {
   await page.keyboard.press('Enter');
 }
 async function sidebar() {
-  for (let attempt = 0; attempt < 60; attempt++) {
+  for (let attempt = 0; attempt < 120; attempt++) {
     for (const frame of page.frames()) {
-      if (await frame.locator('[contenteditable="true"]').count()) return frame;
+      // VS Code replaces its bootstrap webview frame while the extension loads.
+      // A frame snapshot can become detached before the DOM query completes.
+      const count = await frame.locator('[contenteditable="true"]').count().catch(error => {
+        if (frame.isDetached()) return 0;
+        throw error;
+      });
+      if (count) return frame;
     }
     await new Promise(resolve => setTimeout(resolve, 500));
   }
   throw new Error('Native Codex sidebar composer did not appear');
 }
 async function picker(frame) {
-  // The published UI exposes Ctrl+Shift+M and a "Select model" action.
-  await frame.locator('[contenteditable="true"]').first().click();
-  await page.keyboard.press('Control+Shift+M');
+  // Prefer the visible selected-model control; its label comes from model/list.
+  // The published UI also exposes Ctrl+Shift+M and a "Select model" action.
+  const labels = (await models()).flatMap(row => [row.display_name, row.display_name.replace(/^gpt[- ]?/i, '')])
+    .filter(Boolean).map(label => label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  const trigger = frame.getByRole('button', { name: new RegExp(labels.join('|')) }).first();
+  if (labels.length && await trigger.isVisible()) await trigger.click();
+  else {
+    await frame.locator('[contenteditable="true"]').first().click();
+    await page.keyboard.press('Control+Shift+M');
+  }
   const select = frame.getByRole('button', { name: 'Select model', exact: true });
   await select.waitFor({ state: 'visible', timeout: 15_000 });
   await select.click();
@@ -93,7 +106,9 @@ async function launch() {
   page = await app.firstWindow();
   await page.locator('.monaco-workbench').waitFor({ timeout: 60_000 });
   await palette('Codex: Open Codex Sidebar');
-  return sidebar();
+  const frame = await sidebar();
+  console.log('NATIVE_SIDEBAR_PHASE composer-ready');
+  return frame;
 }
 try {
   let frame = await launch();
@@ -103,12 +118,14 @@ try {
     const name = catalogue.find(row => row.id === model)?.display_name;
     assert.ok(name, `Missing server model ${model}`);
     await frame.getByText(name, { exact: true }).last().click({ timeout: 15_000 });
+    console.log(`NATIVE_SIDEBAR_PHASE selected ${model}`);
     // A native sidebar turn: execute and replay a command through the router.
     const composer = frame.locator('[contenteditable="true"]').first();
     await composer.fill('Read fixture.txt using a command tool, then report the result.');
     await composer.press('Enter');
     await frame.getByText(`SMOKE_OK ${model}`, { exact: true }).waitFor({ timeout: 45_000 });
     await frame.getByRole('button', { name: /^Stop/ }).waitFor({ state: 'hidden', timeout: 15_000 });
+    console.log(`NATIVE_SIDEBAR_PHASE tool-turn-complete ${model}`);
     await palette('Codex: New Chat in ChatGPT Sidebar');
     frame = await sidebar();
   }
@@ -142,8 +159,13 @@ try {
     await page.screenshot({ path: path.join(artifacts, 'sidebar-failure.png') }).catch(() => {});
     for (const [index, frame] of page.frames().entries()) {
       await writeFile(path.join(artifacts, `frame-${index}.txt`), await frame.locator('body').innerText().catch(() => 'Frame inaccessible'));
+      const buttons = await frame.getByRole('button').evaluateAll(elements => elements.map(element => ({
+        label: element.getAttribute('aria-label'), title: element.getAttribute('title'), text: element.innerText,
+      }))).catch(() => []);
+      await writeFile(path.join(artifacts, `frame-${index}-buttons.json`), JSON.stringify(buttons, null, 2));
     }
   }
+  await cp(path.join(userData, 'logs'), path.join(artifacts, 'vscode-logs'), { recursive: true }).catch(() => {});
   throw error;
 } finally {
   if (app) await app.close();
