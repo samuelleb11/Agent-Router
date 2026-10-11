@@ -248,6 +248,15 @@ async fn official_openai_sdk_routes_three_providers() {
                 .any(|(_, _, body)| body.to_string().contains("json_schema")),
             "structured output missing"
         );
+        let updates:Vec<_>=rows.iter().filter(|(_,_,body)|body.to_string().contains("SDK_LATE_CONTEXT")).collect();
+        assert!(updates.len()>=6,"Responses developer updates must exercise every output/stream mode");
+        assert!(updates.iter().any(|(_,_,body)|body.to_string().contains("SDK_LATE_TOOL_POLICY")),"post-tool policy update missing");
+        if provider!=Provider::OpenAI {
+            for (_,_,body) in updates {
+                assert!(body["system"].as_str().is_some_and(|s|s.contains("SDK_BASE_CONTEXT\n\nSDK_LATE_CONTEXT")));
+                assert!(body["messages"].as_array().unwrap().iter().all(|m|m["role"]=="user"||m["role"]=="assistant"));
+            }
+        }
         for (_, headers, body) in rows {
             assert!(!headers.contains_key("x-agent-router-token"));
             assert!(headers.values().all(|v| v

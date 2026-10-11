@@ -440,11 +440,10 @@ fn responses_request(value: &Value) -> Result<Value> {
             "message" => {
                 let role = string(&item, "role")?;
                 if role == "system" || role == "developer" {
-                    if !messages.is_empty() {
-                        return Err(unsupported(
-                            "system/developer messages after conversation history",
-                        ));
-                    }
+                    // Messages' portable instruction channel is its top-level
+                    // system field. Keep privileged updates in input order there,
+                    // including Codex IDE context inserted after user/tool history.
+                    // User and tool content remain in their conversation roles.
                     system.push(text_blocks(&item["content"])?);
                     continue;
                 }
@@ -1981,6 +1980,26 @@ mod tests {
         assert_eq!(collected["content"][1]["text"], "First");
         assert_eq!(collected["content"][2]["text"], "Second");
         assert_eq!(collected["usage"]["output_tokens"], 9);
+    }
+
+    #[test]
+    fn codex_developer_context_updates_keep_priority_and_tool_history() {
+        let source = json!({"model":"claude-sonnet-4-6", "instructions":"BASE_POLICY", "input":[
+            {"role":"user","content":"ENVIRONMENT_CONTEXT"},
+            {"role":"developer","content":[{"type":"input_text","text":"IDE_CONTEXT"}]},
+            {"role":"user","content":"READ_FIXTURE"},
+            {"type":"function_call","call_id":"read-1","name":"exec_command","arguments":"{\"cmd\":\"cat fixture.txt\"}"},
+            {"type":"function_call_output","call_id":"read-1","output":"UNTRUSTED_TOOL_TEXT"},
+            {"role":"developer","content":"UPDATED_PERMISSION_POLICY"},
+            {"role":"user","content":"UNTRUSTED_USER_TEXT"}
+        ]});
+        let translated = translate(source, Protocol::Responses, Protocol::Messages);
+        assert_eq!(translated["system"], "BASE_POLICY\n\nIDE_CONTEXT\n\nUPDATED_PERMISSION_POLICY");
+        assert_eq!(translated["messages"], json!([
+            {"role":"user","content":[{"type":"text","text":"ENVIRONMENT_CONTEXT"},{"type":"text","text":"READ_FIXTURE"}]},
+            {"role":"assistant","content":[{"type":"tool_use","id":"read-1","name":"exec_command","input":{"cmd":"cat fixture.txt"}}]},
+            {"role":"user","content":[{"type":"tool_result","tool_use_id":"read-1","content":"UNTRUSTED_TOOL_TEXT"},{"type":"text","text":"UNTRUSTED_USER_TEXT"}]}
+        ]));
     }
 
     #[test]

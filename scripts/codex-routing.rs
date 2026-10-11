@@ -181,7 +181,7 @@ async fn the_real_codex_cli_routes_three_providers() {
     }
     let project = scratch.join("project").canonicalize().unwrap();
     std::fs::write(project.join("fixture.txt"), "LOCAL_TOOL_FIXTURE_OK\n").unwrap();
-    let (observed, mut requests) = tokio::sync::mpsc::channel(16);
+    let (observed, mut requests) = tokio::sync::mpsc::channel(64);
     let handler = move |req: Request<Body>| {
         let observed = observed.clone();
         async move {
@@ -222,7 +222,7 @@ async fn the_real_codex_cli_routes_three_providers() {
         drain: Duration::from_secs(1),
         stop_delay: Duration::ZERO,
     };
-    let (capture, mut captured) = tokio::sync::mpsc::channel(16);
+    let (capture, mut captured) = tokio::sync::mpsc::channel(64);
     let (network, _) = crate::network::switch();
     let mut state = AppState::new(config, capture, network).unwrap();
     let tls = hyper_rustls::HttpsConnectorBuilder::new()
@@ -447,16 +447,46 @@ async fn the_real_codex_cli_routes_three_providers() {
         println!("{stdout}");
         // Actual native sidebar prompts must complete a local command and replay
         // its result through each provider, in addition to model-picker proof.
+        // The native sidebar also generates titles with its auxiliary model.
+        // Validate those requests separately, without counting them as prompts.
+        let auxiliary=["gpt-6-luna","gpt-5.6-luna"];
+        let mut routed=Vec::new();
+        while let Ok(row)=requests.try_recv() {routed.push(row);}
+        for (path,headers,body) in &routed {
+            assert!(headers.values().all(|h|h.to_str().is_ok_and(|h|!h.contains(&token))));
+            assert!(!body.to_string().contains(&token));
+            if !cases.iter().any(|(model,_)|body["model"]==*model) {
+                let model=body["model"].as_str().unwrap();
+                assert!(auxiliary.contains(&model),"unexpected sidebar model {model}");
+                assert_eq!(path,"/v1/responses");
+                println!("Native sidebar auxiliary request: {model}");
+            }
+        }
+        let mut events=Vec::new();
+        while events.iter().filter(|event:&&crate::capture::CaptureEvent|cases.iter().any(|(model,_)|event.model.as_deref()==Some(*model))).count()<6 {
+            events.push(tokio::time::timeout(Duration::from_secs(5),captured.recv()).await.unwrap().unwrap());
+        }
+        while let Ok(event)=captured.try_recv() {events.push(event);}
+        for event in &events {
+            assert_eq!(event.status,200);
+            if !cases.iter().any(|(model,_)|event.model.as_deref()==Some(*model)) {
+                assert!(auxiliary.contains(&event.model.as_deref().unwrap()),"unexpected sidebar capture {:?}",event.model);
+                assert_eq!(event.provider,Provider::OpenAI);
+            }
+        }
         for (model,provider) in cases {
-            for turn in 0..2 {
-                let (path,headers,body)=tokio::time::timeout(Duration::from_secs(5),requests.recv()).await.unwrap().unwrap();
-                assert_eq!(body["model"],model);
+            let rows:Vec<_>=routed.iter().filter(|(_,_,body)|body["model"]==model).collect();
+            assert_eq!(rows.len(),2,"{model}: native sidebar prompt/tool requests must execute");
+            for (turn,(path,_,body)) in rows.into_iter().enumerate() {
                 assert_eq!(path,if provider==Provider::OpenAI {"/v1/responses"} else {"/v1/messages"});
-                assert!(headers.values().all(|h|h.to_str().is_ok_and(|h|!h.contains(&token))));
                 if turn==1 {assert!(body.to_string().contains("LOCAL_TOOL_FIXTURE_OK"));}
-                let event=tokio::time::timeout(Duration::from_secs(5),captured.recv()).await.unwrap().unwrap();
-                assert_eq!(event.status,200);assert_eq!(event.provider,provider);
-                assert_eq!(crate::analyze::client_of(event.entrypoint.as_deref().unwrap()),Some("codex-vscode"));
+            }
+            let rows:Vec<_>=events.iter().filter(|event|event.model.as_deref()==Some(model)).collect();
+            assert_eq!(rows.len(),2,"{model}: native sidebar capture must execute");
+            for event in rows {
+                assert_eq!(event.provider,provider);
+                assert_eq!(event.usage.input_tokens,42);assert_eq!(event.usage.output_tokens,13);
+                assert_eq!(crate::analyze::client_of(event.entrypoint.as_deref().unwrap()),Some("codex-vscode"),"native sidebar entrypoint: {:?}",event.entrypoint);
             }
         }
     }

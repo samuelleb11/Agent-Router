@@ -46,7 +46,10 @@ for model in ("claude-sdk-test", "gpt-sdk-test", "kimi-for-coding"):
     for streaming in (False, True):
         for kind in ("text", "tool", "structured"):
             prompt = "TOOL_REQUEST" if kind == "tool" else "hello"
-            options = {"model":model, "input":prompt, "stream":streaming, "store":False}
+            source_history = [{"role":"developer", "content":"SDK_BASE_CONTEXT"},
+                              {"role":"user", "content":prompt},
+                              {"role":"developer", "content":"SDK_LATE_CONTEXT"}]
+            options = {"model":model, "input":source_history, "stream":streaming, "store":False}
             if kind == "tool":
                 options["tools"] = [{"type":"function", **function}]
             if kind == "structured":
@@ -68,8 +71,9 @@ for model in ("claude-sdk-test", "gpt-sdk-test", "kimi-for-coding"):
                 assert call.type == "function_call" and call.name == "read"
                 assert json.loads(call.arguments) == {"path":"fixture"}
                 # Stateless continuation: send the original input, call and output.
-                history = [{"role":"user", "content":prompt}, call.model_dump(exclude_none=True),
-                           {"type":"function_call_output", "call_id":call.call_id, "output":"SDK_TOOL_RESULT"}]
+                history = source_history + [call.model_dump(exclude_none=True),
+                           {"type":"function_call_output", "call_id":call.call_id, "output":"SDK_TOOL_RESULT"},
+                           {"role":"developer", "content":"SDK_LATE_TOOL_POLICY"}]
                 continued = client.responses.create(model=model, input=history, tools=[{"type":"function", **function}], store=False)
                 assert continued.output_text == "SDK_OK"
             else:

@@ -178,7 +178,7 @@ a Messages provider.
 
 | Feature | Cross-protocol behavior |
 | --- | --- |
-| Text, leading system instructions and full portable history | Translated; late Responses system/developer updates are refused |
+| Text, privileged instructions and full portable history | Translated; Responses system/developer text is collected in the Messages system field in input order |
 | Images in user messages and tool results | Translated for supported image blocks |
 | Function tools and tool results | Translated, including parallel calls |
 | Namespaced tools | Names are flattened for Messages and restored in Responses output |
@@ -199,6 +199,13 @@ a Messages provider.
 Native requests retain their own provider features. Requesting encrypted reasoning in
 Responses output does not prevent an otherwise portable request from being translated;
 opaque encrypted items in its input do.
+
+Codex's sidebar inserts developer context after initial user/environment messages.
+For Messages targets, the router keeps that privileged text in the top-level system
+field, including updates after tool history. User messages and tool results keep their
+original conversation roles. This portable mapping changes the prompt-prefix placement
+of later instructions and can invalidate a provider's prefix cache; it does not use
+model-specific inline-system features.
 
 ## Sessions and validation
 
