@@ -9,6 +9,8 @@ Claude Code and Codex were the original primary clients. On 2026-10-11 the owner
 directed the next phase toward one fully integrated client: it must use a
 server-provided model catalogue, support plugins or skills and MCP servers, and expose
 complete session control through Agent Router from the CLI and VS Code extension.
+The selected client must ship its own VS Code extension; Agent Router's extension
+alone does not satisfy the client requirement.
 The client owns its agent loop and tools; Agent Router owns provider accounts, routing,
 protocol adaptation, usage capture and the managed runtime's integration.
 
@@ -27,7 +29,7 @@ entitlement and refresh limits.
 
 ## Primary client direction
 
-**OpenCode is the primary integration target.** Stable 1.19.0 has already passed the
+**OpenCode is the proposed primary integration target.** Stable 1.19.0 has already passed the
 router's native three-provider routing checks. Its headless server exposes session,
 prompt, cancellation, permission and event APIs; its CLI can attach to an existing
 server. It supports plugins, `SKILL.md` skills and local/remote MCP servers.
@@ -36,14 +38,23 @@ server. It supports plugins, `SKILL.md` skills and local/remote MCP servers.
 [skills](https://opencode.ai/docs/skills/) and
 [MCP](https://opencode.ai/docs/mcp-servers/) document those extension points.
 
+OpenCode has an official VS Code extension. It opens the client in a split integrated
+terminal and shares file/selection context. It does not provide a native chat sidebar
+in the pinned release. Whether this editor experience meets the owner's requirement
+is pending clarification; requiring a native chat/sidebar would reopen client selection.
+[IDE documentation](https://opencode.ai/docs/ide/) and the
+[pinned extension source](https://github.com/anomalyco/opencode/blob/v1.19.0/sdks/vscode/src/extension.ts)
+describe the current behavior.
+
 The intended integration is:
 
 - The machine agent supervises an authenticated loopback OpenCode backend with an
   explicit workspace. Remote controls use the existing outbound machine tunnel.
-- Agent Router's CLI and VS Code extension attach to that managed backend. They share
+- The CLI and the selected client's VS Code extension attach to that managed backend,
+  coordinated through Agent Router. They share
   session identity, prompts, approvals, model selection and events with the web and
   phone controls. The upstream IDE extension currently launches its own OpenCode
-  process; our extension needs an explicit managed attachment path.
+  process; an explicit managed attachment path must work in the actual client extension.
 - An Agent Router-owned provider plugin/configuration adapter obtains model aliases,
   labels, capabilities and known token limits from the router. The native picker
   updates at startup and catalogue refresh, including additions and removals. A
