@@ -1839,8 +1839,16 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn wait_for_legacy_probe(file: &std::fs::File, _budget: Duration) -> std::result::Result<(), std::fs::TryLockError> {
-        file.try_lock()
+    fn wait_for_legacy_probe(file: &std::fs::File, budget: Duration) -> std::result::Result<(), std::fs::TryLockError> {
+        let deadline = Instant::now() + budget;
+        loop {
+            match file.try_lock() {
+                Err(std::fs::TryLockError::WouldBlock) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                result => return result,
+            }
+        }
     }
 
     #[cfg(unix)]
@@ -1893,7 +1901,9 @@ mod tests {
         // beside it does not name it a keeper.
         std::fs::write(dir.join("agent.lock"), "4242 tree:old\n").unwrap();
         let legacy = open_lock(&dir).unwrap();
-        legacy.try_lock().unwrap();
+        // The last peek can itself be inherited by a concurrent fork. Wait on
+        // the acquisition we need, instead of relying on a separate free probe.
+        wait_for_legacy_probe(&legacy, Duration::from_secs(5)).unwrap();
         let h = peek(&dir).unwrap().unwrap();
         assert_eq!(h, Holder { pid: 4242, build: "tree:old".into(), keeper: false });
         assert_eq!(on_busy(&h), Busy::Replace(4242));
