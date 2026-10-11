@@ -447,8 +447,9 @@ async fn the_real_codex_cli_routes_three_providers() {
         println!("{stdout}");
         // Actual native sidebar prompts must complete a local command and replay
         // its result through each provider, in addition to model-picker proof.
-        // The native sidebar also generates titles with its auxiliary model.
-        // Validate those requests separately, without counting them as prompts.
+        // Title threads may use the default router model, so distinguish them
+        // by native thread metadata rather than by model name. Validate every
+        // request and capture; require exactly two composer requests per model.
         let auxiliary=["gpt-6-luna","gpt-5.6-luna"];
         let mut routed=Vec::new();
         while let Ok(row)=requests.try_recv() {routed.push(row);}
@@ -464,40 +465,71 @@ async fn the_real_codex_cli_routes_three_providers() {
             "messages":body.get("messages").and_then(|v|v.as_array()).map(|v|v.len()),
             "input":body.get("input").and_then(|v|v.as_array()).map(|v|v.len()),
         })).collect::<Vec<_>>()));
-        for (path,headers,body) in &routed {
+        let metadata:Vec<Value>=routed.iter().map(|(_,headers,_)| {
+            serde_json::from_str(headers.get("x-codex-turn-metadata").expect("native turn metadata")
+                .to_str().unwrap()).expect("valid native turn metadata")
+        }).collect();
+        for ((path,headers,body),meta) in routed.iter().zip(&metadata) {
             assert!(headers.values().all(|h|h.to_str().is_ok_and(|h|!h.contains(&token))));
             assert!(!body.to_string().contains(&token));
-            if !cases.iter().any(|(model,_)|body["model"]==*model) {
-                let model=body["model"].as_str().unwrap();
-                assert!(auxiliary.contains(&model),"unexpected sidebar model {model}");
-                assert_eq!(path,"/v1/responses");
-                println!("Native sidebar auxiliary request: {model}");
+            let session=format!("codex:{}",meta["thread_id"].as_str().unwrap());
+            assert_eq!(header_session_of(headers).as_deref(),Some(session.as_str()));
+            assert_eq!(meta["session_id"],meta["thread_id"]);
+            assert_eq!(meta["request_kind"],"turn");
+            let model=body["model"].as_str().unwrap();
+            let provider=cases.iter().find(|(m,_)|*m==model).map(|(_,p)|*p)
+                .unwrap_or_else(|| {
+                    assert!(auxiliary.contains(&model),"unexpected sidebar model {model}");
+                    Provider::OpenAI
+                });
+            assert_eq!(path,if provider==Provider::OpenAI {"/v1/responses"} else {"/v1/messages"});
+            if meta["thread_source"]=="user" {
+                assert_eq!(meta["turn_trigger"],"composer");
+                assert_eq!(meta["client_type"],"extension");
+                assert!(cases.iter().any(|(m,_)|*m==model),"unexpected composer model {model}");
+            } else {
+                assert_eq!(meta["thread_source"],"thread_title","unexpected native thread: {meta}");
+                assert_eq!(meta["turn_trigger"],"thread_title");
+                assert!(body.to_string().contains("User prompt:"),"title request must contain its title task");
+                println!("Native sidebar title request: {model} {session}");
             }
         }
         let mut events=Vec::new();
-        while events.iter().filter(|event:&&crate::capture::CaptureEvent|cases.iter().any(|(model,_)|event.model.as_deref()==Some(*model))).count()<6 {
+        for _ in 0..routed.len() {
             events.push(tokio::time::timeout(Duration::from_secs(5),captured.recv()).await.unwrap().unwrap());
         }
-        while let Ok(event)=captured.try_recv() {events.push(event);}
+        assert!(captured.try_recv().is_err(),"unexpected sidebar capture");
         for event in &events {
             assert_eq!(event.status,200);
-            if !cases.iter().any(|(model,_)|event.model.as_deref()==Some(*model)) {
-                assert!(auxiliary.contains(&event.model.as_deref().unwrap()),"unexpected sidebar capture {:?}",event.model);
-                assert_eq!(event.provider,Provider::OpenAI);
-            }
+            assert_eq!(event.usage.input_tokens,42);
+            assert_eq!(event.usage.output_tokens,13);
+            let row=routed.iter().find(|(_,headers,body)| {
+                header_session_of(headers)==event.session_id && body["model"].as_str()==event.model.as_deref()
+            }).expect("every capture must match an observed native request");
+            let provider=cases.iter().find(|(model,_)|Some(*model)==event.model.as_deref())
+                .map_or(Provider::OpenAI,|(_,provider)|*provider);
+            assert_eq!(event.provider,provider);
+            assert_eq!(event.account_id,provider.as_str());
+            assert_eq!(event.path,"/v1/responses");
+            assert_eq!(events.iter().filter(|ev|ev.session_id==event.session_id && ev.model==event.model).count(),
+                routed.iter().filter(|(_,headers,body)|header_session_of(headers)==event.session_id && body["model"].as_str()==event.model.as_deref()).count(),
+                "capture count must match its native thread");
+            assert!(row.2.to_string().contains("fixture.txt"));
         }
         for (model,provider) in cases {
-            let rows:Vec<_>=routed.iter().filter(|(_,_,body)|body["model"]==model).collect();
+            let rows:Vec<_>=routed.iter().zip(&metadata).filter(|((_,_,body),meta)|body["model"]==model && meta["thread_source"]=="user").collect();
             assert_eq!(rows.len(),2,"{model}: native sidebar prompt/tool requests must execute");
-            for (turn,(path,_,body)) in rows.into_iter().enumerate() {
+            let session=header_session_of(&rows[0].0.1).unwrap();
+            for (turn,((path,headers,body),_)) in rows.into_iter().enumerate() {
+                assert_eq!(header_session_of(headers).as_deref(),Some(session.as_str()));
                 assert_eq!(path,if provider==Provider::OpenAI {"/v1/responses"} else {"/v1/messages"});
                 if turn==1 {assert!(body.to_string().contains("LOCAL_TOOL_FIXTURE_OK"));}
             }
-            let rows:Vec<_>=events.iter().filter(|event|event.model.as_deref()==Some(model)).collect();
+            let rows:Vec<_>=events.iter().filter(|event|event.session_id.as_deref()==Some(session.as_str())).collect();
             assert_eq!(rows.len(),2,"{model}: native sidebar capture must execute");
             for event in rows {
-                assert_eq!(event.provider,provider);
-                assert_eq!(event.usage.input_tokens,42);assert_eq!(event.usage.output_tokens,13);
+                assert_eq!(event.model.as_deref(),Some(model));
+                assert_eq!(event.shape.as_ref().and_then(|shape|shape.cwd.as_deref()),project.to_str());
                 assert_eq!(crate::analyze::client_of(event.entrypoint.as_deref().unwrap()),Some("codex-vscode"),"native sidebar entrypoint: {:?}",event.entrypoint);
             }
         }
