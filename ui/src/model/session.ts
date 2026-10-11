@@ -24,6 +24,8 @@
 // - every dot carries its words, a heading's and a tab's included (SE-C20).
 
 import { DASH, clientLabel, factUsd, id8, productName, rowDuration, span } from './format';
+import { CODEX, CODEX_WATCHED, isCodex } from './clients';
+export { CODEX, CODEX_WATCHED, isCodex } from './clients';
 import { AGENTLESS, machineOrder, type MachineRow } from './machine';
 import { md, type Block } from './markdown';
 import type { FindScope } from './search';
@@ -1035,12 +1037,14 @@ export function isKimi(id: string, row: Pick<SessionRow, 'client'> | null | unde
 /// Whether a session takes a typed message and a Stop from here: a Kimi Code one when the router
 /// hosts it, a Claude Code one when it runs under the wrapper (SE-C28, SE-C235).
 export function drives(r: Pick<SessionRow, 'session_id' | 'client' | 'hosted' | 'wrapped'>): boolean {
+  if (isCodex(String(r.session_id ?? ''), r)) return false;
   return isKimi(String(r.session_id ?? ''), r) ? r.hosted === true : !!r.wrapped;
 }
 
 /// The client a row names: "Kimi Code web" for a Kimi Code session the router hosts, under Kimi
 /// Code's web server, and "Kimi Code" for one it watches; none for Claude Code's (SE-C235).
 export function rowClient(r: Pick<SessionRow, 'client' | 'hosted'>): string | null {
+  if (r.client === CODEX) return productName(CODEX);
   if (r.client !== KIMI_CODE) return null;
   return r.hosted === true ? clientLabel('kimi-code-web') : productName(KIMI_CODE);
 }
@@ -1080,6 +1084,7 @@ const EVERY_CONTROL: Controls = { held: null, effort: null, aside: null, questio
 /// router only watches it. Before the list has said whether the router hosts it, nothing is held
 /// back, and a refusal says the router's words (SE-C236, SE-C237).
 export function controlsOf(id: string, row: Pick<SessionRow, 'client' | 'hosted'> | null | undefined): Controls {
+  if (isCodex(id, row)) return { held: CODEX_WATCHED, effort: CODEX_WATCHED, aside: CODEX_WATCHED, question: CODEX_WATCHED, modes: null, bypass: BYPASS };
   if (!isKimi(id, row)) return EVERY_CONTROL;
   const held = row && row.hosted !== true ? KIMI_WATCHED : null;
   return { held, effort: KIMI_NO_EFFORT, aside: KIMI_NO_ASIDE, question: held ?? KIMI_QUESTION, modes: KIMI_MODES, bypass: KIMI_YOLO };

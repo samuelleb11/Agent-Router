@@ -536,6 +536,35 @@ describe('Accounts: adding', () => {
   };
   const choose = (form: HTMLElement, way: RegExp) => fireEvent.click(within(form).getByRole('radio', { name: way }));
 
+  it('adds an OpenAI API key under its provider and checks its prefix', async () => {
+    const r = show({ auth: HOSTED, more: { 'POST /api/accounts': ok({ id: 'openai-work', ready: true }) } });
+    const form = await open();
+    choose(form, /^OpenAI/);
+    expect(within(form).queryByRole('group', { name: 'How to add it' })).toBeNull();
+    fireEvent.change(within(form).getByLabelText('Name'), { target: { value: 'openai-work' } });
+    const key = within(form).getByLabelText('OpenAI API key');
+    fireEvent.change(key, { target: { value: 'sk-ant-oat01-wrong' } });
+    fireEvent.submit(form);
+    expect(await within(form).findByText('that is an Anthropic token — an OpenAI account takes an OpenAI API key')).toBeInTheDocument();
+    expect(r.posts('/api/accounts')).toEqual([]);
+    fireEvent.change(key, { target: { value: 'sk-proj-example' } });
+    fireEvent.submit(form);
+    await waitFor(() => expect(r.posts('/api/accounts')).toEqual([{ label: 'openai-work', source: 'token', provider: 'openai', token: 'sk-proj-example' }]));
+  });
+
+  it('keeps a local Codex login built in and edits no credential or Claude session key', async () => {
+    const a: AccountRow = { id: 'codex-default', label: 'Codex login', source: 'codex', provider: 'openai', active: 1, ready: true };
+    show({ accounts: [a] });
+    const c = await cardOf('Codex login');
+    expect(within(c).queryByRole('button', { name: 'Remove' })).toBeNull();
+    expect(within(c).getByText('built in')).toBeInTheDocument();
+    fireEvent.click(within(c).getByRole('button', { name: 'Edit' }));
+    const edit = within(c).getByRole('form', { name: 'Edit Codex login' });
+    expect(within(edit).getByLabelText('Identity')).toHaveAttribute('readonly');
+    expect(within(edit).queryByLabelText('Credential')).toBeNull();
+    expect(within(edit).queryByLabelText('claude.ai session key')).toBeNull();
+  });
+
   it('ST-C39, ST-C3: a visible Add account button opens the form in place, not in a dialog', async () => {
     show();
     const add = await screen.findByRole('button', { name: 'Add account' });
@@ -553,7 +582,7 @@ describe('Accounts: adding', () => {
     expect(radios).toHaveLength(3);
     radios.forEach((r, i) => expect(r.labels?.[0]?.textContent?.startsWith(titles[i]!), titles[i]).toBe(true));
     // Each carries its own explanation, in its own choice.
-    expect(radios[1]!.labels?.[0]).toHaveTextContent('The value claude setup-token prints');
+    expect(radios[1]!.labels?.[0]).toHaveTextContent('An Anthropic API key, or the subscription value claude setup-token prints');
     expect(radios[2]!.labels?.[0]).toHaveTextContent('The router creates an isolated profile directory');
     expect(radios[0]).toBeChecked();
     expect(form).toHaveTextContent('The router runs claude setup-token for you and issues a long-lived (one-year) credential, so it never needs refreshing.');
@@ -632,14 +661,14 @@ describe('Accounts: adding', () => {
     const form = await open();
     const providers = within(form).getByRole('group', { name: 'Provider' });
     const radios = within(providers).getAllByRole('radio') as HTMLInputElement[];
-    expect(radios).toHaveLength(2);
+    expect(radios).toHaveLength(3);
     const [anthropic, kimi] = radios as [HTMLInputElement, HTMLInputElement];
     expect(anthropic.labels?.[0]?.textContent?.startsWith('Anthropic')).toBe(true);
     expect(kimi.labels?.[0]?.textContent?.startsWith('Kimi Code')).toBe(true);
     // Each by the shared mark beside its name (SH-C56).
     expect(anthropic.labels?.[0]?.querySelector('[data-provider="anthropic"] [data-glyph="anthropic"]')).not.toBeNull();
     expect(kimi.labels?.[0]?.querySelector('[data-provider="kimi"] [data-glyph="kimi"]')).not.toBeNull();
-    expect(anthropic.labels?.[0]).toHaveTextContent('Claude’s models, signed by a Claude subscription.');
+    expect(anthropic.labels?.[0]).toHaveTextContent('Claude’s models, signed by an Anthropic API key or a Claude subscription.');
     expect(kimi.labels?.[0]).toHaveTextContent('Kimi’s models (k3, kimi-for-coding), signed by a key from the Kimi Code console.');
     expect(anthropic).toBeChecked();
     expect(kimi).not.toBeChecked();
@@ -656,7 +685,7 @@ describe('Accounts: adding', () => {
     expect(within(form).getByRole('radio', { name: /^Anthropic/ })).toBeChecked();
     expect(within(form).queryByRole('group', { name: 'How to add it' })).toBeNull();
     // The providers are the only choice left.
-    expect(within(form).getAllByRole('radio')).toHaveLength(2);
+    expect(within(form).getAllByRole('radio')).toHaveLength(3);
     expect(within(form).getByLabelText('Token')).toHaveAccessibleDescription(/claude setup-token.*on any machine.*will not authenticate/);
     expect(within(form).getByRole('button', { name: 'Add account' })).toBeInTheDocument();
     expect(form).not.toHaveTextContent('Sign in from here');

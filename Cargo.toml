@@ -6,7 +6,7 @@ name = "agent-router"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "A local proxy between Claude Code and Anthropic: several accounts on one machine, and exact per-session token accounting."
+description = "Routes coding clients across Anthropic, OpenAI and Kimi with protocol translation and per-session usage accounting."
 repository = "https://github.com/samuelleb11/agent-router"
 
 [dependencies]

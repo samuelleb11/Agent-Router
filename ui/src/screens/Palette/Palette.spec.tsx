@@ -10,6 +10,7 @@ import { Notices } from '~/app/notices';
 import { dismiss, snapshot } from '~/app/notify';
 import type { ProjectRow } from '~/data/router';
 import { Unreachable } from '~/lib/errors';
+import { CODEX_WATCHED } from '~/model/clients';
 import { json, refusal, renderScreen, settle, stubFetch, stubNarrow, unreachable, type Answers } from '~/test-utils';
 import type { Account, LiveOptions, LiveSession, SearchAnswer, SearchHit } from './api';
 import { MAX_JUMPS, SEARCH_LIMIT, markRuns, resolve, sessionHref, switchPost, validModel, type Context } from './hits';
@@ -865,6 +866,24 @@ describe('resolve (the rules, without a modal)', () => {
     theme: 'system',
     search: { status: 'read', answer: PALETTE },
     ...over,
+  });
+
+  it('holds Codex switches with its own reason before its row arrives and in a saved step', () => {
+    const id = 'codex:12345678-1234';
+    const run = resolve('>', ctx({ onScreen: id })).runs.find((r) => r.key === 'commands:session');
+    expect(run?.hits.filter((h) => h.action === null).map((h) => h.why)).toEqual([CODEX_WATCHED, CODEX_WATCHED, CODEX_WATCHED]);
+    const step = { kind: 'value', setting: 'model', session: { id, name: 'Codex' } } as const;
+    const values = resolve('', ctx({ step }));
+    expect(values.runs).toEqual([]);
+    expect(values.notices[0]?.text).toBe(CODEX_WATCHED);
+  });
+
+  it('labels OpenAI account commands by their provider', () => {
+    const accounts: Account[] = [{ id: 'openai-work', label: 'OpenAI work', email: null, active: 0, provider: 'openai' }];
+    const run = resolve('>', ctx({ accounts: { state: 'read', value: accounts } })).runs.find((r) => r.key === 'commands:account');
+    expect(run?.hits[0]?.label).toBe('Use OpenAI work for OpenAI');
+    const action = run?.hits[0]?.action;
+    expect(action?.type === 'post' ? action.post.done({ ok: true }).title : null).toBe('OpenAI work signs OpenAI’s requests now');
   });
 
   it('OV-C50: runs the hits by kind in the order the best of each came, a system prompt in its word and a new kind as sent', () => {

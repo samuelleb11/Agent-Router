@@ -280,7 +280,7 @@ describe('Machines and their clients', () => {
       expect(within(item(id)).getByText(NO_CLIENTS)).toBeInTheDocument();
       expect(within(item(id)).queryByRole('list', { name: /^Clients on / })).toBeNull();
     }
-    expect(NO_CLIENTS).toBe('Its agent has reported no Claude Code or Kimi Code.');
+    expect(NO_CLIENTS).toBe('Its agent has reported no Claude Code, Kimi Code or Codex.');
     expect(item('a1').querySelector('[data-library]')).toHaveTextContent('Library in step');
   });
 });

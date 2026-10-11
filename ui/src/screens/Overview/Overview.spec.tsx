@@ -1255,11 +1255,12 @@ describe('a hosted router', () => {
     show('/?range=all&tab=projects');
     await loaded();
     await screen.findByRole('heading', { level: 2, name: 'Projects' });
-    expect(await within(panel('Projects')).findByText('No projects yet — point Claude Code or Kimi Code at this router and run it.')).toBeInTheDocument();
+    expect(await within(panel('Projects')).findByText('No projects yet — point Claude Code, Kimi Code or Codex at this router and run it.')).toBeInTheDocument();
     const how = await within(panel('Projects')).findByRole('list', { name: 'How to start' });
-    const [claude, kimi] = within(how).getAllByRole('listitem') as [HTMLElement, HTMLElement];
+    const [claude, kimi, codex] = within(how).getAllByRole('listitem') as [HTMLElement, HTMLElement, HTMLElement];
     expect(claude).toHaveTextContent(/^Claude Code Settings → Claude Code routes every project through it\.$/);
     expect(kimi).toHaveTextContent(/^Kimi Code agent-router install writes the router into Kimi Code’s config\.toml, and agent-router kimi starts a hosted session from a terminal\.$/);
+    expect(codex).toHaveTextContent(/^Codex agent-router install connects Codex through the router\. Start it in its terminal or VS Code, then follow its sessions here\.$/);
   });
 
   it('OV-C208: a hosted router speaks of its deployment, and a local one in its own words', async () => {

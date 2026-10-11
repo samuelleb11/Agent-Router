@@ -1,6 +1,6 @@
 # Agent Router — Architecture
 
-Agent Router is a local proxy that sits between Claude Code and Anthropic. It exists to do
+Agent Router connects Claude Code, Codex, Kimi Code and OpenCode to model providers. It exists to do
 two things well:
 
 1. **Separate accounts on one machine.** Several Claude subscriptions live side by side; you
@@ -10,12 +10,23 @@ two things well:
    model, per tool — and kept in a single SQLite file you can mine later.
 
 It is **not** a load balancer for evading rate limits, not an optimiser, and not a research
-profiler. It never rewrites a request's semantics: the body goes upstream as the client sent
-it. On the wire it changes the credential and the host,
-chosen by the request's model: each model is served by an account at its provider
-(Anthropic, Kimi Code). See [docs/sources-and-models.md](docs/sources-and-models.md).
+profiler. Each model is served by an account at its provider (Anthropic, Kimi Code or
+OpenAI). The client and provider are independent: Messages clients can use Responses
+providers, and Responses clients can use Messages providers. Same-protocol traffic is
+byte faithful; `src/translate.rs` adapts requests, JSON replies and SSE incrementally
+when protocols differ. Unsupported provider-specific features are refused explicitly.
+See [docs/codex-and-protocol-translation.md](docs/codex-and-protocol-translation.md).
 
 ## Locked decisions
+
+**Multiple providers are a core requirement.** Clients are replaceable integrations:
+Claude Code and Codex remain supported, and a generic client such as OpenCode or Cline
+can provide another interface. Provider selection, account ownership, model routing and
+usage capture belong to Agent Router. A client's native provider support does not expand
+the router's supported upstreams automatically. The current implementation has Anthropic,
+Kimi Code and OpenAI; extensible provider registration is the next architectural step.
+The assessment and proposed registry are in
+[docs/multi-provider-clients.md](docs/multi-provider-clients.md).
 
 | Area | Decision | Why |
 | --- | --- | --- |
@@ -152,14 +163,14 @@ it is joined on `requestId`, which equals the `request-id` response header the p
 ## Component overview
 
 ```
-Claude Code (VSCode ext / CLI)
-  |  ANTHROPIC_BASE_URL=http://127.0.0.1:8787
+Claude Code / Codex / Kimi Code (VSCode ext / CLI)
+  |  Messages or Responses at http://127.0.0.1:8787/v1
   v
 +------------------------------------------------+
 | agent-router (one binary, one port)            |
 |                                                |
-|  proxy/     listener, auth swap, byte-faithful |
-|             streaming + async tee              |
+|  proxy/     model routing, auth swap, async tee |
+|  translate/ Messages <-> Responses, JSON + SSE  |
 |  auth/      OAuth PKCE, refresh, Keychain      |
 |  accounts/  registry, active selection         |
 |  capture/   parse SSE usage -> SQLite          |
@@ -171,32 +182,36 @@ Claude Code (VSCode ext / CLI)
 +------------------------------------------------+
   |  Authorization: Bearer <active account token>
   v
-api.anthropic.com
+Anthropic / Kimi Code / OpenAI
 ```
 
 ## Request lifecycle
 
-1. **Ingress.** A request arrives at `/v1/messages`. The path is forwarded verbatim; there is
-   nothing to strip. Requests outside `/v1/` are refused locally, as are requests that present
+1. **Ingress.** A request arrives at `/v1/messages` or `/v1/responses` (also accepted at
+   `/codex/responses`). Requests outside the allowed API paths are refused locally, as are requests that present
    no credential of their own — the router must never lend its token to a stray browser tab
    that finds the port.
-2. **Auth swap.** The router discards whatever `Authorization` / `x-api-key` header arrived and
-   attaches the active account's access token, refreshing first if it is near expiry.
-3. **Passthrough.** Forwarded upstream over HTTPS byte-for-byte. The response — including the
-   SSE stream — is piped straight back to the agent **unbuffered**. Nothing on the hot path
-   waits on capture, parsing or disk.
+2. **Route and sign.** The requested model chooses its assigned account or its provider's
+   active account. The router discards the client's credentials and any router-password
+   header, then signs for the provider. Native Codex login is read without taking ownership
+   of refresh; its subscription credential uses the ChatGPT Codex backend.
+3. **Forward or translate.** The provider's native endpoint receives the request over
+   HTTPS. Same-protocol bodies and streams are byte faithful. Otherwise the translator
+   maps messages, tools and usage into the client's protocol, emitting SSE incrementally.
+   A JSON caller using a streaming-only upstream waits for the terminal envelope.
 4. **Tee (async).** Request and response bytes are cloned into a bounded `tokio::mpsc` channel
    consumed by a capture task. If the channel fills, capture drops events; it never applies
    backpressure to the agent.
 5. **Capture.** The task records the session id, the response's `request-id`, the account used,
-   latency, status, rate-limit headers, and the usage totals from the SSE `message_start` /
-   `message_delta` events. Project is resolved from the session id by filename lookup.
+   latency, status, rate-limit headers, and the usage totals from Messages or Responses
+   events. Capture reads the upstream representation independently of translation.
 6. **Enrich.** A watcher tails `~/.claude/projects/**/*.jsonl` and joins `requestId` to the
    captured row, adding git branch, the sidechain flag and the message/tool structure.
+   Native Codex rollouts under `CODEX_HOME` add watched sessions with `codex:` IDs.
 
 ## Account switching
 
-One account is active at a time, chosen in the UI. Because the credential is attached at proxy
+One account per provider is active at a time, chosen in the UI. Because the credential is attached at proxy
 time rather than held by the agent, switching takes effect on the **next request** — mid-session,
 with no restart of Claude Code and no `/login`.
 
@@ -407,17 +422,26 @@ and clears the wrapper setting.
   widened deliberately — the dashboard switch, which stores the answer, or
   `AGENT_ROUTER_BIND`, which overrides it for one run (`network.rs`). `SO_REUSEPORT` lets
   the two share the port and the kernel steers by most-specific match, so the switch can
-  be thrown mid-session without unbinding anything. Widened, every
-  caller that is not on this machine must present the router's password (`auth.rs`): as
-  HTTP Basic from a browser, or as `Authorization: Bearer <password>` from an agent, which
-  is what a Claude Code elsewhere sends when `ANTHROPIC_AUTH_TOKEN` is set to it. With no
-  password set, off-host callers are refused outright, so the first one can only be set
-  from the machine itself — which is also how a forgotten one is replaced. Loopback is
-  never asked: whoever sits here already holds the Keychain. Stored as PBKDF2-HMAC-SHA256
-  (600k iterations) in the `settings` table, verified once per credential and remembered
-  by digest, one verification at a time with a 400 ms penalty per miss. It travels as
-  plain HTTP: the bind already assumes a network you trust. No telemetry, no cloud
-  dependency.
+  be thrown mid-session without unbinding anything. Widened, every caller that is not
+  on this machine must present an access token or router password (`auth.rs`,
+  `auth/tokens.rs`). With neither configured, off-host callers are refused outright.
+  Local loopback without an explicit router token retains the single-user owner
+  behavior; an explicit token is always checked and scoped, including on loopback.
+  Hosted mode requires a credential from everyone.
+- Access tokens contain 256 random bits and are shown only when created. SQLite's
+  `auth_tokens` table stores a SHA-256 digest, name, scope, creation/expiry/revocation
+  times and last use. Client and Machine scopes allow exact methods and paths;
+  Administrator permits the dashboard and administrative APIs (`guard.rs`). Each
+  request reads the store afresh, so expiry and revocation do not depend on a cache.
+  Machine connections also check their token every five seconds and close when it
+  expires or is revoked. Tokens work through Bearer, `x-api-key`, Basic password
+  fields and the dedicated `x-agent-router-token` header.
+- The legacy dashboard password remains available for bootstrap and recovery. It is
+  stored as PBKDF2-HMAC-SHA256 (600k iterations) in the `settings` table, verified once
+  per credential and remembered by digest, one verification at a time with a 400 ms
+  penalty per miss. Password changes clear that cache under the verification lock.
+  Use HTTPS when sending router credentials over an untrusted network. No telemetry,
+  no cloud dependency.
 - OAuth tokens live in the macOS Keychain, never in the SQLite file or in config,
   and never appear in a process argument: reads use `find-generic-password -w`, which
   writes only to stdout, and writes go through `security -i` with the command supplied
@@ -428,9 +452,12 @@ and clears the wrapper setting.
   which any process running as the user can also invoke — the same footing as Claude
   Code's credential entry, and reversible by code-signing the binary with a stable
   identity.
-- Inbound `Authorization` / `x-api-key` headers are discarded, never persisted.
-- The credential is attached only to `/v1/` requests that already presented one of their own.
-  Anything else is refused before it reaches Anthropic.
+- Inbound router credentials are stripped before provider and machine forwarding.
+  Request-header diagnostics redact them.
+- A provider credential is attached only to supported model API requests that already
+  presented a credential of their own. Scoped tokens cannot access unrelated provider
+  API paths.
+- Writes and WebSocket upgrades reject an `Origin` that names another site.
 - The transcript watcher is strictly read-only; it never writes to Claude Code's files.
 - Captured bodies may contain source code. The database is local and gitignored.
 - The web console (`console.rs`) is served under a content security policy that admits this
@@ -453,7 +480,7 @@ everything that assumed otherwise, is in
 
 **Trust (`guard`, `auth`).**
 - The Host check also admits the names the server was given.
-- Loopback is asked for the password.
+- Loopback is asked for a router credential too.
 - The password is pinned from the deployment at every start (`Auth::pin`), the pattern
   of Northstar's ADR 0022.
 
@@ -470,8 +497,8 @@ covers sessions on other machines and SDK sessions with no transcript on this on
 **Live sessions through the machine agent (`agent`, `tunnel`, `machines`).** What a pod
 cannot do alone is everything under "Reaching a running session" below, so each developer
 machine runs the same binary as `agent-router agent`:
-- The agent dials out to `/_router/agent` over one WebSocket, with the router password,
-  and listens on nothing.
+- The agent dials out to `/_router/agent` over one WebSocket, with a Machine access
+  token or the legacy router password, and listens on nothing.
 - The router sends each live request down that socket as framed HTTP (`tunnel`). The
   agent answers it with the same `live` handlers a local router serves, in-process, and
   the response comes back the same way, event streams included.

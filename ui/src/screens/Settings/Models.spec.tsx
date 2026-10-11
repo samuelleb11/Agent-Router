@@ -26,7 +26,7 @@ const MODELS: ModelRow[] = [
 
 function show({ auth = LOCAL, models = MODELS, more = {} }: { auth?: typeof LOCAL; models?: ModelRow[]; more?: Record<string, Answer> } = {}) {
   let rows = models;
-  const router = stubRouter({ '/api/auth': ok(auth), '/api/accounts': ok([...ACCOUNTS, ...KIMI]), '/api/models': () => json(rows), ...more });
+  const router = stubRouter({ '/api/auth': ok(auth), '/api/accounts': ok([...ACCOUNTS, ...KIMI]), '/api/models': () => json(rows), '/api/provider-registry': ok({ services: [], models: [] }), ...more });
   const view = renderScreen(<ModelsPage />, { path: '/settings/models', at: '/settings/models' });
   return { ...router, ...view, setRows: (next: ModelRow[]) => (rows = next) };
 }
@@ -68,7 +68,7 @@ describe('Settings → Models', () => {
     first.unmount();
     vi.unstubAllGlobals();
     show({ models: [] });
-    expect(await screen.findByText(/^No model yet\. A Claude model is listed once a request has asked for it/)).toBeInTheDocument();
+    expect(await screen.findByText(/^No model yet\. Add a provider account/)).toBeInTheDocument();
   });
 
   it('ST-C123: a model’s list box offers its provider’s active account first, then its own provider’s accounts that can sign here; on a hosted router only a pasted key, or the one it is assigned', async () => {

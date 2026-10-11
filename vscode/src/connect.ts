@@ -143,8 +143,8 @@ export async function connect(context: vscode.ExtensionContext, log: vscode.Outp
     const entered = await vscode.window.showInputBox({
       title: `Connect to ${host} (2/2)`,
       prompt: refused
-        ? `${host} refused that password. Enter it again.`
-        : 'The router\'s password. It is kept in VS Code\'s secret storage, never in settings.',
+        ? `${host} refused that credential. Enter a valid Machine access token or router password.`
+        : 'A Machine access token from Settings → Access tokens (recommended), or the router password. Kept in VS Code’s secret storage, never in settings.',
       password: true,
       ignoreFocusOut: true,
     });
@@ -153,7 +153,7 @@ export async function connect(context: vscode.ExtensionContext, log: vscode.Outp
     // work there anyway.
     const candidate = entered?.trim();
     if (!candidate) { return; }
-    const answer = await progress(`Checking the password with ${host}…`, () => remote.checkPassword(server, candidate));
+    const answer = await progress(`Checking the router credential with ${host}…`, () => remote.checkPassword(server, candidate));
     if (answer.kind === 'ok') {
       // The agent refuses any router that is not hosted, so this one would connect and
       // then fail to set up. Said now, before anything is stored.
@@ -167,7 +167,7 @@ export async function connect(context: vscode.ExtensionContext, log: vscode.Outp
       break;
     }
     if (answer.kind === 'rejected' && answer.status === 401) {
-      log.appendLine(`connect: ${host} refused the password (401)`);
+      log.appendLine(`connect: ${host} refused the credential (401)`);
       refused = true;
       continue;
     }
@@ -213,7 +213,7 @@ export async function disconnect(context: vscode.ExtensionContext, log: vscode.O
     `Disconnect from ${host}?`,
     {
       modal: true,
-      detail: 'Claude Code stops going through the server, the agent\'s login item is removed, and this machine forgets the password. What the server keeps (captured requests and responses, accounts) stays on the server.',
+      detail: 'Claude Code stops going through the server, the agent\'s login item is removed, and this machine forgets the credential. What the server keeps (captured requests and responses, accounts) stays on the server.',
     },
     'Disconnect');
   if (sure !== 'Disconnect') { return; }
@@ -237,8 +237,8 @@ export async function disconnect(context: vscode.ExtensionContext, log: vscode.O
   await settings().update('server', undefined, vscode.ConfigurationTarget.Global);
   log.appendLine(`disconnected from ${host}`);
   void vscode.window.showInformationMessage(remote.localModeAvailable()
-    ? `Disconnected from ${host}. This machine forgot the password, and Agent Router is back in local mode.`
-    : `Disconnected from ${host}. This machine forgot the password.`);
+    ? `Disconnected from ${host}. This machine forgot the credential, and Agent Router is back in local mode.`
+    : `Disconnected from ${host}. This machine forgot the credential.`);
 }
 
 /** Agent Router: Set Up on This Machine, in remote mode. */
@@ -356,7 +356,7 @@ export async function startUp(context: vscode.ExtensionContext, log: vscode.Outp
   if (agent.isSetUpFor(context, server)) { agent.start(log); return; }
   const password = await remote.readPassword(context.secrets, server);
   if (!password) {
-    log.appendLine(`no password saved for ${host}: run Agent Router: Connect to a Server`);
+    log.appendLine(`no credential saved for ${host}: run Agent Router: Connect to a Server`);
     return;
   }
   if (agent.declinedFor(context, server)) {

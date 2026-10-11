@@ -75,6 +75,11 @@ function HowToStart({ auth }: { auth: Auth | null }) {
         <strong>Kimi Code</strong> <code className={styles.mono}>agent-router install</code> writes the router into Kimi Code’s config.toml, and{' '}
         <code className={styles.mono}>agent-router kimi</code> starts a hosted session from a terminal.
       </li>
+      <li className={styles.note} data-client="codex">
+        <strong>Codex</strong>{' '}
+        {local ? <><code className={styles.mono}>agent-router install</code> connects Codex through the router.</> : <>The machine installer connects Codex to this router.</>}{' '}
+        Start it in its terminal or VS Code, then follow its sessions here.
+      </li>
     </ul>
   );
 }

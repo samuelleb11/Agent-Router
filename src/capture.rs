@@ -203,6 +203,7 @@ pub struct Tee {
     is_sse: bool,
     started: std::time::Instant,
     transport_error: Option<String>,
+    upstream_protocol: Option<crate::translate::Protocol>,
 }
 
 impl Tee {
@@ -226,7 +227,12 @@ impl Tee {
             is_sse,
             started,
             transport_error: None,
+            upstream_protocol: None,
         }
+    }
+
+    pub fn set_upstream_protocol(&mut self, protocol: crate::translate::Protocol) {
+        self.upstream_protocol = Some(protocol);
     }
 
     /// Feed bytes exactly as they came off the wire, still compressed.
@@ -274,11 +280,11 @@ impl Drop for Tee {
             account_email: p.account_email,
             provider: p.provider,
             entrypoint: p.entrypoint,
-            model: self
-                .scanner
-                .model
-                .clone()
-                .or_else(|| p.shape.as_ref().and_then(|s| s.model.clone())),
+            model: if p.shape.as_ref().is_some_and(|shape| shape.service_id.is_some()) {
+                p.shape.as_ref().and_then(|shape| shape.model.clone())
+            } else {
+                self.scanner.model.clone().or_else(|| p.shape.as_ref().and_then(|s| s.model.clone()))
+            },
             method: p.method,
             path: p.path,
             started_at_ms: p.started_at_ms,
@@ -290,7 +296,11 @@ impl Drop for Tee {
             service_tier: self.scanner.service_tier.clone(),
             error: self.transport_error.clone().or_else(|| self.scanner.error.clone()),
             rl: p.rl,
-            usage: self.scanner.usage.clone().in_anthropic_terms(p.provider),
+            usage: if self.upstream_protocol == Some(crate::translate::Protocol::Responses) {
+                self.scanner.usage.clone()
+            } else {
+                self.scanner.usage.clone().in_anthropic_terms(p.provider)
+            },
             tool_calls: self.scanner.tool_calls.clone(),
             response_body: StoredBody::streamed(std::mem::take(&mut self.raw), self.plain_bytes),
             request_bytes: p.request_bytes,
@@ -638,6 +648,7 @@ mod tests {
             ("kimi-code-vscode/0.8.1", Some("kimi-code-vscode")),
             ("claude-cli/2.1.267 (external, cli)", Some("claude-code-cli")),
             ("claude-cli/2.1.267 (external, claude-vscode)", Some("claude-code-vscode")),
+            ("opencode/1.19.0 ai-sdk/provider-utils/4.0.46 runtime/bun/1.3.14", Some("opencode")),
             ("curl/8.7.1", None),
         ] {
             assert_eq!(crate::analyze::client_of(ua), client, "{ua}");

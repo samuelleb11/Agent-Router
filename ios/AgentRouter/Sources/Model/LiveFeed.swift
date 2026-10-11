@@ -93,7 +93,7 @@ final class LiveFeed {
     /// out on the click, as the web view does. Only while a turn is running — not for
     /// background work alone, whose results an interrupt could discard — and only while
     /// the stream is current: a stale status would offer Stop for a turn long over.
-    var canStop: Bool { session.wrapped && connected && (status?.isBusy ?? false) }
+    var canStop: Bool { session.canControl && connected && (status?.isBusy ?? false) }
 
     /// The header's line while the stream does not vouch for a status: why the router
     /// refused it, or else that it is connecting, for the first time or again. Never the
@@ -195,6 +195,7 @@ final class LiveFeed {
     }
 
     func send(_ raw: String) async {
+        if let why = session.watchedReason { notice = Notice(text: why, ok: false); return }
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, let client else { return }
         sending = true
@@ -219,6 +220,7 @@ final class LiveFeed {
     }
 
     func interrupt() async {
+        if let why = session.watchedReason { notice = Notice(text: why, ok: false); return }
         guard let client else { return }
         stopping = true
         defer { stopping = false }
@@ -237,6 +239,7 @@ final class LiveFeed {
     /// — the choices are still worth sending as a message, and saying so beats losing what
     /// was picked.
     func answer(_ answers: [String: String], questions: [String], fallback: [String], row id: UUID) async {
+        if let why = session.watchedReason { notice = Notice(text: why, ok: false); return }
         guard let client else { return }
         // What is waiting now, not what the last poll saw up to two seconds ago: a form
         // stays on screen after its question was answered in the editor, and the model may
@@ -313,6 +316,7 @@ final class LiveFeed {
     /// side question and never as queued. A refusal leaves it as it was asked, with no answer
     /// under it; the router's words are the notice.
     func aside(_ raw: String) async {
+        if let why = session.watchedReason { notice = Notice(text: why, ok: false); return }
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, let client else { return }
         switching = true
@@ -331,6 +335,7 @@ final class LiveFeed {
     /// The model is the editor's picker over the control channel; the CLI confirms or
     /// refuses and that is what the notice says. Effort is `/effort <level>` typed in.
     func setModel(_ model: String) async {
+        if let why = session.watchedReason { notice = Notice(text: why, ok: false); return }
         guard let client else { return }
         switching = true
         defer { switching = false }
@@ -348,6 +353,7 @@ final class LiveFeed {
     /// needs the session to have been launched with `--dangerously-skip-permissions`, and
     /// `auto` can be gated — so its own sentence is what gets shown.
     func setMode(_ mode: String) async {
+        if let why = session.watchedReason { notice = Notice(text: why, ok: false); return }
         guard let client else { return }
         switching = true
         defer { switching = false }
@@ -378,6 +384,7 @@ final class LiveFeed {
     /// have arrived since, and a tap on one must never settle the other — the router
     /// refuses instead, and the card is refreshed to show what is waiting now.
     func answerPermission(_ prompt: LivePrompt, allow: Bool, suggestion: Int? = nil, said: String) async {
+        if let why = session.watchedReason { notice = Notice(text: why, ok: false); return }
         guard let client else { return }
         switching = true
         defer { switching = false }
@@ -396,6 +403,7 @@ final class LiveFeed {
     }
 
     func setEffort(_ level: String) async {
+        if let why = session.watchedReason { notice = Notice(text: why, ok: false); return }
         guard let client else { return }
         switching = true
         defer { switching = false }

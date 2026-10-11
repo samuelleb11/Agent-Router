@@ -1,5 +1,10 @@
 # Sources: models from more than one provider, picked by model
 
+2026-10-10 update: OpenAI accounts and bidirectional Messages/Responses translation are
+implemented. Client identity is independent of provider selection. This document retains
+the original provider-routing plan; current Codex setup and protocol compatibility are in
+[Codex setup and protocol translation](codex-and-protocol-translation.md).
+
 2026-10-09. A plan for routing each request to an account at any Anthropic-compatible
 provider, chosen by the model the request asks for. Kimi Code is the first provider after
 Anthropic. Switching provider is switching model in the client — `/model k3` in Claude

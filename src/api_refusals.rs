@@ -174,7 +174,7 @@ async fn the_network_switch_is_refused_without_a_password_and_for_an_address_it_
     let refused = lab.post("/api/network", r#"{"enable":true}"#).await;
     assert_eq!(
         words(refused, StatusCode::CONFLICT),
-        "set a password first — until one exists, callers from other machines are refused"
+        "create an access token or set a password first — callers from other machines need a router credential"
     );
 
     // With a password set, what is left to refuse is the address itself.

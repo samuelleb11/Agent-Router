@@ -80,7 +80,7 @@ struct SessionView: View {
                         } label: {
                             Label("Model" + (model.isEmpty ? "" : " · \(model)"), systemImage: "cpu")
                         }
-                        .disabled(!session.wrapped || feed.switching)
+                        .disabled(!session.canControl || feed.switching)
                         Menu {
                             ForEach(opts?.efforts ?? ["low", "medium", "high", "xhigh", "max"], id: \.self) { e in
                                 Button { Task { await feed.setEffort(e) } } label: {
@@ -90,7 +90,7 @@ struct SessionView: View {
                         } label: {
                             Label("Effort" + (feed.stats?.effort.map { " · \($0)" } ?? ""), systemImage: "gauge.with.needle")
                         }
-                        .disabled(!session.wrapped || feed.switching)
+                        .disabled(!session.canControl || feed.switching)
                         Menu {
                             ForEach(opts?.modes ?? [], id: \.self) { m in
                                 Button {
@@ -104,12 +104,12 @@ struct SessionView: View {
                         } label: {
                             Label("Mode" + (modeLabel.map { " · \($0)" } ?? ""), systemImage: "hand.raised")
                         }
-                        .disabled(!session.wrapped || feed.switching)
-                        if !session.wrapped {
-                            Text("Read-only session: model, effort and mode cannot be changed from here.")
+                        .disabled(!session.canControl || feed.switching)
+                        if !session.canControl {
+                            Text(session.watchedReason ?? "Read-only session: model, effort and mode cannot be changed from here.")
                         }
                         Button("Ask on the side…", systemImage: "text.bubble") { asideText = draft; askAside = true }
-                            .disabled(feed.switching)
+                            .disabled(!session.canAskAside || feed.switching)
                         Divider()
                     }
                     Button(session.archived ? "Restore session" : "Archive session",
@@ -219,6 +219,12 @@ struct SessionView: View {
 
     @ViewBuilder private func content(_ feed: LiveFeed) -> some View {
         VStack(spacing: 0) {
+            if let client = session.clientName {
+                Text(client).font(.caption).foregroundStyle(.secondary).padding(.top, 6)
+            }
+            if let why = session.watchedReason {
+                Text(why).font(.caption).foregroundStyle(.secondary).padding(8)
+            }
             let tabs = siblings
             if tabs.count > 1 {
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -367,6 +373,7 @@ struct SessionView: View {
                 .accessibilityLabel("Recent messages")
             }
             TextField(session.wrapped ? "Message" : "Message (read-only session)", text: $draft, axis: .vertical)
+                .disabled(!session.canSend)
                 .lineLimit(1...6)
                 .focused($composing)
                 .accessibilityIdentifier("composer")
@@ -391,7 +398,7 @@ struct SessionView: View {
             } label: {
                 Image(systemName: "arrow.up.circle.fill").font(.system(size: 30))
             }
-            .disabled(feed.sending || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .disabled(!session.canSend || feed.sending || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             .accessibilityLabel(feed.canStop ? "Queue" : "Send")
         }
         .padding(.horizontal, 12)
@@ -400,6 +407,7 @@ struct SessionView: View {
     }
 
     private func submit(_ feed: LiveFeed) {
+        guard session.canSend else { return }
         let text = draft
         draft = ""
         following = true

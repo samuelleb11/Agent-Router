@@ -192,6 +192,7 @@ export const clearSessionKey = (accountId: string) => postJson<{ ok: true }>('/a
 export type NewAccount =
   | { readonly source: 'token'; readonly token: string }
   | { readonly source: 'kimi'; readonly token: string; readonly base_url?: string }
+  | { readonly source: 'openai'; readonly token: string; readonly base_url?: string }
   | { readonly source: 'profile' };
 
 /// An Anthropic token goes as it always did, naming no provider; a Kimi Code key is a token account
@@ -200,7 +201,7 @@ export function addAccount(label: string, how: NewAccount) {
   if (how.source === 'profile') return postJson<Added>('/api/accounts', { label, source: 'profile' });
   if (how.source === 'token') return postJson<Added>('/api/accounts', { label, source: 'token', token: how.token });
   const baseUrl = how.base_url?.trim();
-  return postJson<Added>('/api/accounts', { label, source: 'token', provider: 'kimi', token: how.token, ...(baseUrl ? { base_url: baseUrl } : {}) });
+  return postJson<Added>('/api/accounts', { label, source: 'token', provider: how.source, token: how.token, ...(baseUrl ? { base_url: baseUrl } : {}) });
 }
 export const probeProfile = (id: string) => postJson<ProfileStatus>('/api/accounts/probe', { id });
 

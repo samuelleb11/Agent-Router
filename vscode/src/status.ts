@@ -148,8 +148,8 @@ export class StatusBar implements vscode.Disposable {
     const password = await remote.readPassword(this.context.secrets, server);
     if (seq !== this.seq) { return; }
     if (!password) {
-      this.note(`no password saved for ${host}`);
-      this.show('$(key) Router: connect', `Agent Router is set to use ${host}, and this machine holds no password for it. Click to connect.`,
+      this.note(`no credential saved for ${host}`);
+      this.show('$(key) Router: connect', `Agent Router is set to use ${host}, and this machine holds no credential for it. Click to connect with a Machine access token or router password.`,
         'agentRouter.connect');
       return;
     }
@@ -167,9 +167,9 @@ export class StatusBar implements vscode.Disposable {
           'agentRouter.refreshStatus');
         return;
       case 'rejected':
-        this.note(`password rejected (${q.status})${q.detail ? `: ${q.detail}` : ''}`);
-        this.show('$(key) Router: password rejected',
-          `${host} refused the saved password (${q.status}${q.detail ? `: ${q.detail}` : ''}). Click to connect again.`,
+        this.note(`credential rejected (${q.status})${q.detail ? `: ${q.detail}` : ''}`);
+        this.show('$(key) Router: credential rejected',
+          `${host} refused the saved credential (${q.status}${q.detail ? `: ${q.detail}` : ''}). It may be expired, revoked or lack Machine permissions. Click to connect again.`,
           'agentRouter.connect', 'statusBarItem.warningBackground');
         return;
       case 'unexpected':

@@ -8,6 +8,8 @@ the maintainer who has to act on them. What the code does and why is in
 
 | Document | Date | One line |
 | --- | --- | --- |
+| [Multiple providers and generic clients](multi-provider-clients.md) | 2026-10-11 | Anthropic, OpenAI and Kimi are the first provider set; OpenCode uses a shared Messages connection while broader provider registration remains future work. |
+| [Codex setup and protocol translation](codex-and-protocol-translation.md) | 2026-10-10 | Claude Code and Codex route by model across Messages and Responses, with explicit limits for provider-specific features. |
 | [Shipping Agent Router as a VS Code extension](vscode-extension-research.md) | 2026-09-13 | It is possible; the extension supervises a machine-wide daemon rather than being one, and Claude Code's own process-wrapper setting replaces the file-level shim. |
 | [What publishing a VS Code extension costs](vscode-extension-publishing-costs.md) | 2026-09-14 | Nothing in fees; accounts, a build Mac, and time. |
 | [What Apple push notifications need](apple-push-requirements.md) | 2026-09-13 | One signing key made once by the account holder, a push-enabled App ID from a signed-in Xcode, nothing else provisioned after install. |

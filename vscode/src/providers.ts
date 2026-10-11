@@ -16,9 +16,9 @@ export interface ProviderQuota {
 export interface ProvidersAnswer { providers?: ProviderQuota[] }
 
 /** What the bar calls each provider, short: its models' name. */
-const SHORT: Readonly<Record<string, string>> = { anthropic: 'Claude', kimi: 'Kimi' };
+const SHORT: Readonly<Record<string, string>> = { anthropic: 'Claude', kimi: 'Kimi', openai: 'OpenAI' };
 /** Each provider's own name, for the tooltip. */
-const NAME: Readonly<Record<string, string>> = { anthropic: 'Anthropic', kimi: 'Kimi Code' };
+const NAME: Readonly<Record<string, string>> = { anthropic: 'Anthropic', kimi: 'Kimi Code', openai: 'OpenAI' };
 /** Each window, short for the bar and whole for the tooltip, in the order they are shown. */
 const WINDOWS: readonly (readonly [string, string, string])[] = [
   ['five_hour', '5h', '5-hour window'],

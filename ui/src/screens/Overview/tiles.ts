@@ -139,7 +139,7 @@ export function headline(t: Totals, latency: Latency | null | undefined, scope: 
       value: compact(t.prompt_tokens),
       // What it counts and over what span; with nothing recorded, how to start (OV-C99).
       // Each client by its name (OV-C230).
-      detail: t.first_seen ? `${tod(t.first_seen, now)} → ${tod(t.last_seen, now)} · everything the model read, cached or not` : 'nothing recorded yet — point Claude Code or Kimi Code at this router',
+      detail: t.first_seen ? `${tod(t.first_seen, now)} → ${tod(t.last_seen, now)} · everything the model read, cached or not` : 'nothing recorded yet — point Claude Code, Kimi Code or Codex at this router',
       meaning: 'Every prompt token the model read in scope, from cache or paid in full.',
     },
     {

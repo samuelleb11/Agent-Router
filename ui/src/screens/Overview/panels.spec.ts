@@ -276,8 +276,8 @@ describe('the lists', () => {
 
   it('OV-C145: every empty panel says which empty it is: nothing recorded at all with how to start, nothing in the range, nothing in this scope', () => {
     // Each client by its name (OV-C230).
-    expect(emptyWords('projects', UNSCOPED)).toBe('No projects yet — point Claude Code or Kimi Code at this router and run it.');
-    expect(emptyWords('sessions', UNSCOPED)).toBe('No sessions yet — point Claude Code or Kimi Code at this router and run it.');
+    expect(emptyWords('projects', UNSCOPED)).toBe('No projects yet — point Claude Code, Kimi Code or Codex at this router and run it.');
+    expect(emptyWords('sessions', UNSCOPED)).toBe('No sessions yet — point Claude Code, Kimi Code or Codex at this router and run it.');
     expect(emptyWords('projects', scoped({ range: '24h' }))).toBe('No project sent a request in the last 24h.');
     expect(emptyWords('sessions', scoped({ range: '7d' }))).toBe('No session ran in the last 7d.');
     expect(emptyWords('toolOutput', scoped({ account: 'primary' }))).toBe('No tool results in this scope.');

@@ -12,14 +12,16 @@ import SettingsSection from './Section';
 import { NO_MACHINE } from './rules';
 import { HOSTED, LOCAL, ok, stubRouter, type Answer } from './testing';
 
-const SEVEN = ['Accounts', 'Models', 'Claude Code', 'Network', 'Password', 'Notifications', 'Router'];
+const SEVEN = ['Accounts', 'Models', 'Clients', 'Claude Code', 'Network', 'Access tokens', 'Password', 'Notifications', 'Router'];
 
 const pages = (
   <Route path="/settings" element={<SettingsLayout />}>
     <Route path="accounts" element={<div>ACCOUNTS PAGE</div>} />
     <Route path="models" element={<div>MODELS PAGE</div>} />
+    <Route path="clients" element={<div>CLIENTS PAGE</div>} />
     <Route path="claude-code" element={<div>CLAUDE CODE PAGE</div>} />
     <Route path="network" element={<div>NETWORK PAGE</div>} />
+    <Route path="access-tokens" element={<div>ACCESS TOKENS PAGE</div>} />
     <Route path="password" element={<div>PASSWORD PAGE</div>} />
     <Route path="notifications" element={<div>NOTIFICATIONS PAGE</div>} />
     <Route path="router" element={<div>ROUTER PAGE</div>} />
@@ -61,7 +63,7 @@ describe('SettingsLayout', () => {
   it('each tab is an anchor to its page', async () => {
     show('/settings/router');
     await screen.findByRole('tab', { name: 'Network' });
-    const slugs = ['accounts', 'models', 'claude-code', 'network', 'password', 'notifications', 'router'];
+    const slugs = ['accounts', 'models', 'clients', 'claude-code', 'network', 'access-tokens', 'password', 'notifications', 'router'];
     SEVEN.forEach((name, i) => {
       const tab = screen.getByRole('tab', { name });
       expect(tab.tagName).toBe('A');
@@ -163,7 +165,7 @@ describe('Settings, as the router allows', () => {
     answer(null);
     real('/settings/network');
     expect(await screen.findByText('Asking the router what kind it is…')).toBeInTheDocument();
-    expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual(['Accounts', 'Models', 'Password', 'Notifications', 'Router']);
+    expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual(['Accounts', 'Models', 'Clients', 'Access tokens', 'Password', 'Notifications', 'Router']);
     expect(screen.queryByRole('switch')).toBeNull();
   });
 
@@ -179,7 +181,7 @@ describe('Settings, as the router allows', () => {
     real('/settings/network');
     expect(await screen.findByText(NO_MACHINE)).toBeInTheDocument();
     expect(screen.getByText('Network is not on this router')).toBeInTheDocument();
-    expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual(['Accounts', 'Models', 'Password', 'Notifications', 'Router', 'Forges', 'Library']);
+    expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual(['Accounts', 'Models', 'Clients', 'Access tokens', 'Password', 'Notifications', 'Router', 'Forges', 'Library']);
     expect(screen.queryByRole('tab', { selected: true })).toBeNull();
     vi.unstubAllGlobals();
     document.body.innerHTML = '';

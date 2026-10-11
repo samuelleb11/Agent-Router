@@ -71,7 +71,14 @@ export function kimiKeyProblem(key: string): string | null {
 
 /// A credential checked by its account's provider's rule: the `sk-ant-` rule is Anthropic's alone
 /// (ST-C11, ST-C118).
-export const keyProblem = (provider: Provider, key: string): string | null => (provider === 'kimi' ? kimiKeyProblem(key) : tokenProblem(key));
+export function openaiKeyProblem(key: string): string | null {
+  const k = key.trim();
+  if (k === '') return null;
+  if (k.startsWith('sk-ant-')) return 'that is an Anthropic token — an OpenAI account takes an OpenAI API key';
+  return k.startsWith('sk-') ? null : 'expected an OpenAI API key starting sk-; use the Codex login source for a ChatGPT subscription';
+}
+
+export const keyProblem = (provider: Provider, key: string): string | null => provider === 'kimi' ? kimiKeyProblem(key) : provider === 'openai' ? openaiKeyProblem(key) : tokenProblem(key);
 
 /// What the router answers a token account added with no token (src/api.rs, `accounts_add`), a Kimi
 /// Code account's key included.
@@ -136,6 +143,7 @@ export const accountName = (a: Pick<Account, 'id' | 'label' | 'email'>): string 
 /// Where an account's credential comes from, in words.
 export function sourceWord(source: string | null | undefined): string {
   if (source === 'keychain') return 'Claude Code login';
+  if (source === 'codex') return 'Codex login';
   if (source === 'profile') return 'Claude Code profile';
   if (source === 'token') return 'token';
   return source || DASH;
@@ -190,11 +198,11 @@ export function nextSigner<T extends Pick<AccountRow, 'id' | 'active' | 'created
 export function removeWords(accounts: readonly AccountRow[], id: string): string[] {
   const a = accounts.find((x) => x.id === id);
   const name = a ? accountName(a) : id;
-  const kimi = a !== undefined && providerOf(a) === 'kimi';
+  const keyed = a !== undefined && providerOf(a) !== 'anthropic';
   const said = [
-    kimi ? `Remove ${name} from the router? Its stored key is deleted with it.` : `Remove ${name} from the router? Its stored credential and its claude.ai session key are deleted with it.`,
+    keyed ? `Remove ${name} from the router? Its stored key is deleted with it.` : `Remove ${name} from the router? Its stored credential and its claude.ai session key are deleted with it.`,
   ];
-  const whose = kimi ? 'signing Kimi Code’s requests' : 'signing requests';
+  const whose = keyed ? `signing ${providerName(providerOf(a!))}’s requests` : 'signing requests';
   const next = nextSigner(accounts, id);
   if (next === null) said.push(`It is the account ${whose} now, and no other is left to sign with.`);
   else if (next) said.push(`It is the account ${whose} now: ${accountName(next)}, the oldest one left, signs from the next request.`);
@@ -232,6 +240,8 @@ export function activeWords(a: Pick<Account, 'provider'>): string {
 
 /// The explanation the "built in" marker carries as visible text (ST-C23).
 export const BUILT_IN = 'Discovered from the Claude Code login on this machine, so the router does not own it.';
+export const CODEX_BUILT_IN = 'Discovered from the Codex login on this machine, so the router does not own it.';
+export const CODEX_NOT_ON_A_SERVER = "a hosted router cannot read a machine's Codex login — add an OpenAI API key as a token account";
 
 /// The explanation the "usage key" tag carries as visible text (ST-C23).
 export const USAGE_KEY = 'A claude.ai session key is stored for this account, used only to read usage.';

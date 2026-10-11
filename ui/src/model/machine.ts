@@ -17,7 +17,7 @@ export const CONNECT = 'Connect a machine';
 /// A hosted router serves the sessions of the machines connected to it, and a machine connects by
 /// running the installer the router serves without a password, which installs the Agent Router
 /// agent and asks there for the router's password (MA-C2).
-export const CONNECT_HOW = 'Run this on a machine to connect it — it asks for this router’s password.';
+export const CONNECT_HOW = 'Run this on a machine to connect it — paste a Machine access token from this router into its password field. The existing router password also works.';
 
 /// What else the installer does where VS Code is: it adds the Agent Router extension, which wraps
 /// Claude Code there, so the machine's sessions can be typed into and not only followed (MA-C2).
@@ -128,7 +128,7 @@ export interface ClientItem {
 }
 
 /// What a machine that reported no client says (MA-C10).
-export const NO_CLIENTS = 'Its agent has reported no Claude Code or Kimi Code.';
+export const NO_CLIENTS = 'Its agent has reported no Claude Code, Kimi Code or Codex.';
 
 const CLAUDE_CODE = 'claude-code';
 

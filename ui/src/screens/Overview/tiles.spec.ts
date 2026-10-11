@@ -22,7 +22,7 @@ describe('Totals in scope', () => {
 
   it('OV-C99, OV-C230: the largest says what it counts and over what span, and with nothing recorded how to start, naming each client', () => {
     expect(tile('prompt')).toMatchObject({ value: '12.40M', detail: `${tod(NOW - 3 * HOUR, NOW)} → ${tod(NOW - 2 * MIN, NOW)} · everything the model read, cached or not` });
-    expect(tile('prompt', tiles(totals({ first_seen: null, last_seen: null, prompt_tokens: 0 }))).detail).toBe('nothing recorded yet — point Claude Code or Kimi Code at this router');
+    expect(tile('prompt', tiles(totals({ first_seen: null, last_seen: null, prompt_tokens: 0 }))).detail).toBe('nothing recorded yet — point Claude Code, Kimi Code or Codex at this router');
   });
 
   it('OV-C100: Spend is subtitled with cached reads and output, and with nothing priced says so', () => {

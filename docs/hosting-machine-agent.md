@@ -10,11 +10,16 @@ Written for the maintainer, and as the contract the pieces of phase 2 are built 
 Built the same day; [Status](#status) says what has run where, and what still has to be
 tried on a Windows machine.
 
+Access-token update (2026-10-11): create a **Machine** token in Settings → Access tokens
+for each agent. Existing password fields and `AGENT_ROUTER_PASSWORD` accept the token;
+the legacy router password still works. Revocation or expiry closes its established
+connection within five seconds. See [Access tokens](../README.md#access-tokens).
+
 ## Decisions (owner, 2026-10-05)
 
 | Question | Answer |
 | --- | --- |
-| How an agent proves itself | The router password, which every machine already holds for Claude Code (`ANTHROPIC_AUTH_TOKEN`). No per-machine tokens. |
+| How an agent proves itself | A Machine access token, or the legacy router password, sent as Bearer authentication. The credential can also serve Claude Code (`ANTHROPIC_AUTH_TOKEN`). |
 | What keeps it running | A login item, from `agent-router agent install --server <url>` (launchd on macOS, a launcher in the Startup folder on Windows). The VS Code extension also starts it when a window opens. |
 | Platforms | macOS and Windows. Windows ships with both following and steering working, not one before the other. Linux later. |
 | How a machine gets the agent (2026-10-07) | From the hosted router itself: `install.sh` and `install.ps1`, which fetch the agent and the editor package from the router's own image. No release or store is needed. Windows ships on every route, though it has not run on Windows yet. |
@@ -28,7 +33,7 @@ phone / browser ──https──▶ hosted router ◀──wss, outbound── 
 ```
 
 - **The agent connects out.** It keeps one WebSocket to the router at
-  `wss://<host>/_router/agent`, authenticated with the router password, and reconnects
+  `wss://<host>/_router/agent`, authenticated with a Machine token or router password, and reconnects
   with backoff when it drops. It listens on nothing.
 - **The router forwards live requests to the agent.** Each request for a session (follow
   it, answer a prompt, send a message, stop, change the model) goes down that socket
@@ -57,7 +62,7 @@ query or JSON body plus the machine it runs on.
 ## Connecting a machine
 
 A hosted router hands out its own agent, so a machine needs nothing but the router's
-address and password:
+address and credential:
 
 ```
 curl -fsSL https://<router>/agent/install.sh | sh     # macOS and Linux
@@ -100,7 +105,8 @@ agent-router agent uninstall
 agent-router agent status
 ```
 
-**The password.** It comes from `AGENT_ROUTER_PASSWORD`, or from `<data-dir>/agent.json`,
+**The credential.** Use a Machine token in the existing password field. It comes from
+`AGENT_ROUTER_PASSWORD`, or from `<data-dir>/agent.json`,
 which `install` writes. That file holds `{server, password, machine, label}`, is
 owner-only (0600), and on Windows sits in the user's profile.
 

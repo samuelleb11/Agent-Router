@@ -17,7 +17,9 @@ mod api_refusals;
 mod apns;
 mod auth;
 mod capture;
+mod chat_completions;
 mod clients;
+mod client_setup;
 mod config;
 mod console;
 mod db;
@@ -38,6 +40,7 @@ mod places;
 mod pricing;
 mod login;
 mod models;
+mod provider_registry;
 mod notify;
 mod proxy;
 mod quota;
@@ -47,6 +50,9 @@ mod repository;
 mod setup;
 mod shim;
 mod transcript;
+mod responses;
+mod translate;
+mod codex;
 mod tunnel;
 
 use std::sync::Arc;
@@ -273,6 +279,11 @@ fn cmd_install(args: &[String]) -> anyhow::Result<()> {
         Ok(None) => {}
         Err(e) => println!("kimi      Kimi Code's config.toml left alone ({e:#})"),
     }
+    match codex::here(&url, "agent-router", true, true) {
+        Ok(Some(_)) => println!("codex     Codex's config.toml: Responses through Agent Router; uninstall restores its provider"),
+        Ok(None) => {},
+        Err(e) => println!("codex     Codex's config.toml left alone ({e:#})"),
+    }
     println!("\ndashboard {url}");
     Ok(())
 }
@@ -292,6 +303,13 @@ fn local_catalogue() -> anyhow::Result<Vec<serde_json::Value>> {
 fn local_kimi_config(url: &str, install: bool) -> anyhow::Result<Option<bool>> {
     let consented = setup::base_url_in(&setup::settings_path(None)?)?
         .is_some_and(|set| set.trim_end_matches('/') == url.trim_end_matches('/'));
+    let db = config::db_path()?;
+    if db.exists() {
+        if let Err(e) = codex::discover_account(&db) { tracing::warn!("Codex account discovery: {e:#}"); }
+    }
+    if !install {
+        if let Err(e) = codex::here(url, "agent-router", false, consented) { tracing::warn!("Codex config could not be kept in step: {e:#}"); }
+    }
     kimi::config::here(url, "agent-router", &local_catalogue()?, install, consented)
 }
 
@@ -344,6 +362,11 @@ fn cmd_uninstall() -> anyhow::Result<()> {
         Ok(Some(true)) => println!("kimi      the router's entries taken out of Kimi Code's config.toml"),
         Ok(_) => {}
         Err(e) => println!("kimi      Kimi Code's config.toml left alone ({e:#})"),
+    }
+    match codex::take_out() {
+        Ok(Some(true)) => println!("codex     the previous Codex provider restored"),
+        Ok(_) => {},
+        Err(e) => println!("codex     Codex's config.toml left alone ({e:#})"),
     }
     setup::service::uninstall()?;
     println!("service   unregistered");
@@ -445,6 +468,7 @@ async fn serve_here(args: config::ServeArgs) -> anyhow::Result<()> {
                 .clone()
                 .unwrap_or_else(|| "Claude Code (default profile)".to_string());
             db.upsert_default_account(proxy::ACCOUNT_ID, &label, &status)?;
+            codex::discover_account(&db_path)?;
             match wide {
                 // The wide listener announces itself as it comes up, in `network`.
                 Some(ip) => tracing::info!("agent-router listening on http://{bind} and on {ip}"),
@@ -587,6 +611,8 @@ fn app_with(state: Arc<proxy::AppState>, console: console::Files) -> Router {
         .route("/api/accounts/edit", post(api::accounts_edit))
         .route("/api/forecast", get(api::forecast))
         .route("/api/auth", get(auth::api::status).post(auth::api::set))
+        .route("/api/auth/tokens", get(auth::tokens::list).post(auth::tokens::create))
+        .route("/api/auth/tokens/{id}", axum::routing::delete(auth::tokens::revoke))
         .route("/api/push", get(notify::api::status))
         .route("/api/push/config", post(notify::api::config))
         .route("/api/push/register", post(notify::api::register))
@@ -597,9 +623,20 @@ fn app_with(state: Arc<proxy::AppState>, console: console::Files) -> Router {
         .route("/api/usage-token", post(quota::set_usage_token))
         .route("/api/live/options", get(live::options))
         .route("/api/models", get(models::list))
+        .route("/api/clients", get(client_setup::status))
+        .route("/api/clients/{client}/preview", post(client_setup::preview))
+        .route("/api/clients/{client}/apply", post(client_setup::apply))
+        .route("/api/clients/{client}/restore", post(client_setup::restore))
+        .route("/api/clients/{client}/check", post(client_setup::check))
+        .route("/api/provider-registry", get(provider_registry::status))
+        .route("/api/provider-registry/services", post(provider_registry::add_service))
+        .route("/api/provider-registry/services/{id}", axum::routing::delete(provider_registry::remove_service))
+        .route("/api/provider-registry/models", post(provider_registry::add_model))
+        .route("/api/provider-registry/models/{alias}", axum::routing::delete(provider_registry::remove_model))
         .route("/api/models/assign", post(models::assign_route))
         // Answered from the catalogue, never forwarded (`models::v1_models`).
         .route("/v1/models", get(models::v1_models))
+        .route("/v1/chat/completions", post(chat_completions::handle))
         .route("/_router/health", get(api::health));
     let routes = if state.config.server { hosted::routes(common) } else { machine_routes(common) };
     routes

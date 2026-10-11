@@ -5,7 +5,9 @@ import type { Availability } from '~/data/held';
 import { projectKey, projectName, UNRESOLVED } from '~/data/projects';
 import type { ProjectRow } from '~/data/router';
 import { SECTIONS, routes, settingsPath } from '~/lib/routes';
-import { kindRun, marks } from '~/model/format';
+import { id8, kindRun, marks } from '~/model/format';
+import { CODEX_WATCHED, isCodex } from '~/model/clients';
+import { providerName, providerOf } from '~/model/settings';
 import type { Account, LiveOptions, LiveSession, SearchAnswer, SearchHit, SearchKind } from './api';
 
 /// What the palette resolves a line of typing into. Pure, so the rules can be tested without a
@@ -173,7 +175,7 @@ function matchesWords(needle: string, ...hay: (string | null | undefined)[]): bo
 }
 
 /// A session's id the way the lists shorten it: its first eight characters (SE-C26).
-export const shortId = (id: string): string => id.slice(0, 8);
+export const shortId = (id: string): string => id8(id);
 
 /// What a reader knows a session by: its title, else its short id.
 export function sessionName(s: Pick<LiveSession, 'session_id' | 'title'>): string {
@@ -363,7 +365,7 @@ export function activatePost(account: Account): Post {
     body: { id: account.id },
     doing: `Switching to ${name}…`,
     refused: `Could not switch to ${name}`,
-    done: () => ({ title: account.provider === 'kimi' ? `${name} signs Kimi Code’s requests now` : `${name} signs requests now` }),
+    done: () => ({ title: providerOf(account) !== 'anthropic' ? `${name} signs ${providerName(providerOf(account))}’s requests now` : `${name} signs requests now` }),
   };
 }
 
@@ -394,13 +396,14 @@ function sessionCommands(ctx: Context): Hit[] {
   const listed = ctx.sessions.value.find((s) => s.session_id === id);
   const session: SessionRef = { id, name: listed ? sessionName(listed) : shortId(id) };
   const unwrapped = listed !== undefined && !listed.wrapped;
+  const held = isCodex(id, listed) ? CODEX_WATCHED : unwrapped ? NOT_WRAPPED : null;
   const switches = SETTINGS.map((setting): Hit => ({
     id: `cmd:${setting}`,
     label: COMMAND_LABEL[setting].here,
     detail: session.name,
     keywords: 'session switch',
-    action: unwrapped ? null : { type: 'step', step: { kind: 'value', setting, session } },
-    ...(unwrapped ? { why: NOT_WRAPPED } : {}),
+    action: held ? null : { type: 'step', step: { kind: 'value', setting, session } },
+    ...(held ? { why: held } : {}),
   }));
   const archived = listed?.archived === true;
   return [
@@ -422,12 +425,13 @@ function sessionCommands(ctx: Context): Hit[] {
 function accountCommands(ctx: Context): Hit[] {
   return ctx.accounts.value.map((a): Hit => {
     const serving = Number(a.active) === 1;
-    const kimi = a.provider === 'kimi';
+    const provider = providerOf(a);
+    const other = provider !== 'anthropic';
     return {
       id: `cmd:account:${a.id}`,
-      label: kimi ? `Use ${a.email || a.label} for Kimi Code` : `Use ${a.email || a.label}`,
+      label: other ? `Use ${a.email || a.label} for ${providerName(provider)}` : `Use ${a.email || a.label}`,
       ident: a.id,
-      keywords: kimi ? 'account switch sign kimi' : 'account switch sign',
+      keywords: other ? `account switch sign ${provider}` : 'account switch sign',
       ...(serving ? { note: 'serving now' } : {}),
       action: serving ? null : { type: 'post', post: activatePost(a) },
     };
@@ -497,6 +501,7 @@ function pickSession(s: LiveSession, command: SessionCommand): Hit {
   if (command === 'archive' || command === 'restore') {
     return { ...base, action: { type: 'post', post: archivePost(session, command === 'archive') } };
   }
+  if (isCodex(s.session_id, s)) return { ...base, action: null, why: CODEX_WATCHED };
   if (!s.wrapped) return { ...base, action: null, why: NOT_WRAPPED };
   return { ...base, action: { type: 'step', step: { kind: 'value', setting: command, session } } };
 }
@@ -606,6 +611,12 @@ export function resolve(query: string, ctx: Context): Resolved {
   const raw = query.trim();
 
   if (ctx.step) {
+    if (ctx.step.kind === 'value' || ctx.step.kind === 'bypass') {
+      const id = ctx.step.session.id;
+      if (isCodex(id, ctx.sessions.value.find((s) => s.session_id === id))) {
+        return { mode: 'step', runs: [], notices: [{ tone: 'warning', title: 'View only', text: CODEX_WATCHED }] };
+      }
+    }
     switch (ctx.step.kind) {
       case 'session':
         return sessionStep(ctx.step.command, raw.toLowerCase(), ctx);

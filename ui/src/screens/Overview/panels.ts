@@ -41,8 +41,8 @@ export function emptyWords(what: Empty, scope: Scope): string {
   if (!narrowed && range === 'all') {
     return {
       // Each client by its name (OV-C230).
-      projects: 'No projects yet — point Claude Code or Kimi Code at this router and run it.',
-      sessions: 'No sessions yet — point Claude Code or Kimi Code at this router and run it.',
+      projects: 'No projects yet — point Claude Code, Kimi Code or Codex at this router and run it.',
+      sessions: 'No sessions yet — point Claude Code, Kimi Code or Codex at this router and run it.',
       toolOutput: 'No tool results captured yet.',
       toolCalls: 'No tool calls captured yet.',
       read: 'Nothing read yet.',

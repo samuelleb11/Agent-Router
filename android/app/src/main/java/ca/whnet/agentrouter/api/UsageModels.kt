@@ -167,6 +167,7 @@ data class Account(
     @SerialName("subscription_type") val subscriptionType: String? = null,
     val active: Int = 0,
     val source: String? = null,
+    val provider: String? = null,
     val ready: Boolean? = null,
     val detail: String? = null,
     @SerialName("expires_at") val expiresAt: Long? = null,
@@ -176,6 +177,9 @@ data class Account(
     val isActive: Boolean get() = active == 1
     val title: String get() = email ?: label
     val hasUsageKey: Boolean get() = (usageKey ?: 0) == 1
+    val providerName: String get() = when(provider) { "openai" -> "OpenAI"; "kimi" -> "Kimi Code"; else -> "Anthropic" }
+    val isCodexLogin: Boolean get() = source == "codex"
+    val takesUsageKey: Boolean get() = provider == null || provider == "anthropic"
 }
 
 @Serializable

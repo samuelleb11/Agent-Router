@@ -28,7 +28,7 @@ sealed class RouterFailure(message: String) : Exception(message) {
     class Unreachable(val why: String) : RouterFailure("Can't reach the router — $why")
 
     /** 401: the router has a password and this is not it. */
-    data object Unauthorized : RouterFailure("Wrong password for this router")
+    data object Unauthorized : RouterFailure("Router credential is invalid, expired or revoked")
 
     /**
      * 403 with the router's own message: nobody has set a password on it yet. The message
@@ -36,9 +36,9 @@ sealed class RouterFailure(message: String) : Exception(message) {
      * [ca.whnet.agentrouter.data.RouterState.describe] is told the router is.
      */
     data object NoPasswordSet :
-        RouterFailure("This router has no password yet — set one on its dashboard, on the Mac") {
+        RouterFailure("This router has no credential configured — create an Administrator token or set a password in its dashboard") {
         /** A hosted router's password is never set from a dashboard: only its deployment sets it. */
-        const val HOSTED = "This router has no password yet — a hosted router's password is set by its deployment"
+        const val HOSTED = "This hosted router has no credential configured — create an Administrator token in its dashboard or configure its deployment password"
     }
 
     /**

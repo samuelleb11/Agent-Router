@@ -41,7 +41,7 @@ export function normaliseServerUrl(input: string): Normalised {
     return { ok: false, why: 'The address must start with https:// (or http:// on a network you trust).' };
   }
   if (u.username || u.password) {
-    return { ok: false, why: 'Leave the password out of the address: it is asked for separately and kept in VS Code\'s secret storage.' };
+    return { ok: false, why: 'Leave tokens and passwords out of the address: the credential is asked for separately and kept in VS Code\'s secret storage.' };
   }
   if (!u.hostname) { return { ok: false, why: 'The address has no host.' }; }
   if (u.pathname !== '/') {
@@ -51,7 +51,7 @@ export function normaliseServerUrl(input: string): Normalised {
     return { ok: false, why: 'Give the router\'s address without a query or a fragment.' };
   }
   return u.protocol === 'http:'
-    ? { ok: true, url: u.origin, note: 'plain http sends the password unencrypted; use it only on a network you trust' }
+    ? { ok: true, url: u.origin, note: 'plain http sends the credential unencrypted; use it only on a network you trust' }
     : { ok: true, url: u.origin };
 }
 
@@ -162,7 +162,7 @@ export interface QuotaWindow { utilization?: number | null; resets_at?: string |
 export interface Quota { five_hour?: QuotaWindow; seven_day?: QuotaWindow; severity?: string; error?: string }
 export interface Health { ok?: boolean; pid?: number; version?: string; build?: string }
 /** `GET /api/auth`, the fields read here. `mode` is `server` on a hosted router. */
-export interface AuthStatus { configured?: boolean; mode?: string; password_pinned?: boolean; public_url?: string | null }
+export interface AuthStatus { configured?: boolean; access_tokens?: number; mode?: string; password_pinned?: boolean; public_url?: string | null }
 
 /** GET a JSON document. Redirects are not followed: the password must reach the server
  *  it was given for and no other, and a redirect usually means the address is wrong

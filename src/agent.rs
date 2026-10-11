@@ -399,21 +399,23 @@ async fn catalogue_of(router: &crate::library::sync::Router, server: &str) -> Re
 struct ClientsKept {
     /// Kimi Code's `config.toml`: None when there was nothing to set up.
     kimi: Option<bool>,
+    codex: Option<bool>,
 }
 
 /// Keep this machine's clients in step with the router's catalogue: Claude Code's `/model`
 /// rows (`picker_rows_for`), and Kimi Code's `config.toml` (`kimi::config`), set up the first
 /// time on `install` and put back at every sync after, since Kimi Code updates itself.
 async fn keep_clients(router: &crate::library::sync::Router, server: &str, password: &str, install: bool) -> Result<ClientsKept> {
-    let Some(catalogue) = catalogue_of(router, server).await? else { return Ok(ClientsKept { kimi: None }) };
+    let Some(catalogue) = catalogue_of(router, server).await? else { return Ok(ClientsKept { kimi: None, codex: None }) };
     let settings = crate::setup::settings_path(None)?;
     let (server, password) = (server.to_string(), password.to_string());
     tokio::task::spawn_blocking(move || -> Result<ClientsKept> {
         picker_rows_for(&settings, &server, &catalogue)?;
         let consented = crate::setup::base_url_in(&settings)?
             .is_some_and(|url| url.trim_end_matches('/') == server.trim_end_matches('/'));
-        let kimi = crate::kimi::config::here(&server, &password, &catalogue, install, consented)?;
-        Ok(ClientsKept { kimi })
+        let kimi = crate::kimi::config::here(&server, &password, &catalogue, install, consented);
+        let codex = crate::codex::here(&server, &password, install, consented);
+        Ok(ClientsKept { kimi: kimi?, codex: codex? })
     })
     .await?
 }
@@ -1164,8 +1166,10 @@ async fn work(args: RunArgs, dir: PathBuf, stopping: crate::lifecycle::Stopping)
             let (router, server, password) = (router.clone(), server.clone(), password.clone());
             async move {
                 match keep_clients(&router, &server, &password, false).await {
-                    Ok(ClientsKept { kimi: Some(true) }) => tracing::info!("Kimi Code's config.toml: the router's entries put back"),
-                    Ok(_) => {}
+                    Ok(ClientsKept { kimi, codex }) => {
+                        if kimi == Some(true) { tracing::info!("Kimi Code's config.toml: the router's entries put back"); }
+                        if codex == Some(true) { tracing::info!("Codex's config.toml: the router's entries put back"); }
+                    },
                     Err(e) => tracing::warn!("the clients could not be kept in step: {e:#}"),
                 }
             }
@@ -1420,13 +1424,15 @@ async fn install(args: &[String]) -> Result<()> {
             Err(e) => Err(e),
         };
         match offered {
-            Ok(ClientsKept { kimi: Some(_) }) => {
-                println!("kimi      Kimi Code's config.toml: the router's provider, its Kimi models and hooks");
-                println!("          uninstall takes them out and puts back the default model")
-            }
-            Ok(ClientsKept { kimi: None }) => {}
+            Ok(ClientsKept { kimi, codex }) => {
+                if kimi.is_some() {
+                    println!("kimi      Kimi Code's config.toml: the router's provider, its Kimi models and hooks");
+                    println!("          uninstall takes them out and puts back the default model");
+                }
+                if codex.is_some() { println!("codex     Codex's config.toml: Responses through Agent Router; uninstall restores its provider"); }
+            },
             Err(e) => {
-                println!("clients   Claude Code's /model rows and Kimi Code's config left alone ({e:#}); the agent tries again when it connects")
+                println!("clients   some client settings could not be updated ({e:#}); the agent tries again when it connects")
             }
         }
     }
@@ -1494,6 +1500,11 @@ fn uninstall(args: &[String]) -> Result<()> {
         Ok(Some(true)) => println!("kimi      the router's entries taken out of Kimi Code's config.toml"),
         Ok(_) => {}
         Err(e) => println!("kimi      Kimi Code's config.toml left alone ({e:#})"),
+    }
+    match crate::codex::take_out() {
+        Ok(Some(true)) => println!("codex     the previous Codex provider restored"),
+        Ok(_) => {},
+        Err(e) => println!("codex     Codex's config.toml left alone ({e:#})"),
     }
     crate::setup::agent_service::uninstall()?;
     // launchd stops what it started; anything else still running (the editor's, or one

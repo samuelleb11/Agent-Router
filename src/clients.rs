@@ -1,11 +1,11 @@
-//! Which coding clients a machine has: Claude Code and Kimi Code, each as a command, an
+//! Which coding clients a machine has: Claude Code, Kimi Code and Codex, each as a command, an
 //! editor extension and a home folder, with their versions. The agent reports them with its
 //! places (`places::Report::clients`), at every connection and every minute, and
 //! `/api/machines` gives each machine's.
 //!
 //! Found by looking, never by asking either client to do anything but print its version: a
 //! command on `PATH` or in the folders its installers use, an extension in each editor's
-//! extensions folder, and the home folder (`~/.claude`, `KIMI_CODE_HOME`).
+//! extensions folder, and the home folder (`~/.claude`, `KIMI_CODE_HOME`, `CODEX_HOME`).
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -17,11 +17,13 @@ use serde::{Deserialize, Serialize};
 
 pub const CLAUDE_CODE: &str = "claude-code";
 pub const KIMI_CODE: &str = "kimi-code";
+pub const CODEX: &str = "codex";
+pub const OPENCODE: &str = "opencode";
 
 /// One client on a machine: what of it is there, with versions.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Client {
-    /// `claude-code` or `kimi-code`.
+    /// `claude-code`, `kimi-code`, `codex` or `opencode`.
     pub client: String,
     /// Its command line, when one is installed.
     #[serde(default)]
@@ -57,6 +59,8 @@ pub struct Places {
     pub path: Option<OsString>,
     /// `KIMI_CODE_HOME`, when set.
     pub kimi_home: Option<PathBuf>,
+    /// `CODEX_HOME`, when set; otherwise `~/.codex`.
+    pub codex_home: Option<PathBuf>,
     /// Where each client's command may be, after `PATH`: a service's `PATH` is short, and
     /// the installers put the command in these.
     pub installed: Vec<PathBuf>,
@@ -69,6 +73,7 @@ impl Places {
             installed: installed(&home),
             path: std::env::var_os("PATH"),
             kimi_home: std::env::var_os("KIMI_CODE_HOME").filter(|h| !h.is_empty()).map(PathBuf::from),
+            codex_home: std::env::var_os("CODEX_HOME").filter(|h| !h.is_empty()).map(PathBuf::from),
             home,
         })
     }
@@ -111,6 +116,7 @@ pub fn here() -> Vec<Client> {
 pub fn find(at: &Places) -> Vec<Client> {
     let claude_home = at.home.join(".claude");
     let kimi_home = crate::kimi::home_in(&at.home, at.kimi_home.clone());
+    let codex_home = at.codex_home.clone().unwrap_or_else(|| at.home.join(".codex"));
     let claude = Client {
         client: CLAUDE_CODE.into(),
         cli: command(at, "claude", &[at.home.join(".claude/local")]),
@@ -124,7 +130,19 @@ pub fn find(at: &Places) -> Vec<Client> {
         extensions: extensions(&at.home, "moonshot-ai.kimi-code-"),
         home: folder(&kimi_home),
     };
-    [claude, kimi].into_iter().filter(|c| c.cli.is_some() || !c.extensions.is_empty() || c.home.is_some()).collect()
+    let codex = Client {
+        client: CODEX.into(),
+        cli: command(at, "codex", &[]),
+        extensions: extensions(&at.home, "openai.chatgpt-"),
+        home: folder(&codex_home),
+    };
+    let opencode = Client {
+        client: OPENCODE.into(),
+        cli: command(at, "opencode", &[at.home.join(".opencode/bin")]),
+        extensions: Vec::new(),
+        home: folder(&at.home.join(".config/opencode")),
+    };
+    [claude, kimi, codex, opencode].into_iter().filter(|c| c.cli.is_some() || !c.extensions.is_empty() || c.home.is_some()).collect()
 }
 
 fn folder(dir: &Path) -> Option<String> {
@@ -295,7 +313,7 @@ mod tests {
         extension(&h, ".vscode/extensions", "ms-python.python-2026.1.0", Some("2026.1.0"));
 
         // The folders a machine shares with every home are not this test's.
-        let at = Places { home: h.clone(), path: Some(bin.clone().into_os_string()), kimi_home: None, installed: Vec::new() };
+        let at = Places { home: h.clone(), path: Some(bin.clone().into_os_string()), kimi_home: None, codex_home: None, installed: Vec::new() };
         let found = find(&at);
         assert_eq!(found.len(), 2, "{found:?}");
         let (claude, kimi) = (&found[0], &found[1]);
@@ -324,7 +342,7 @@ mod tests {
         // KIMI_CODE_HOME moves Kimi Code's home, and its command with it.
         let moved = h.join("elsewhere");
         std::fs::rename(h.join(".kimi-code"), &moved).unwrap();
-        let at = Places { home: h.clone(), path: Some(bin.into_os_string()), kimi_home: Some(moved.clone()), installed: Vec::new() };
+        let at = Places { home: h.clone(), path: Some(bin.into_os_string()), kimi_home: Some(moved.clone()), codex_home: None, installed: Vec::new() };
         let kimi = find(&at).into_iter().find(|c| c.client == KIMI_CODE).unwrap();
         assert_eq!(kimi.home, Some(moved.display().to_string()));
         assert_eq!(kimi.cli.unwrap().path, moved.join("bin/kimi").display().to_string());
@@ -332,7 +350,7 @@ mod tests {
         let empty = home("neither");
         // Every folder under the home an installer uses, none of the machine's own.
         let under_home = installed(&empty).into_iter().filter(|d| d.starts_with(&empty)).collect();
-        let at = Places { home: empty.clone(), path: Some(empty.join("bin").into_os_string()), kimi_home: None, installed: under_home };
+        let at = Places { home: empty.clone(), path: Some(empty.join("bin").into_os_string()), kimi_home: None, codex_home: None, installed: under_home };
         let none = find(&at);
         assert!(none.is_empty(), "a home with neither finds neither: {none:?}");
 
@@ -345,6 +363,59 @@ mod tests {
         assert_eq!(version_in("2.1.267 (Claude Code)\n").as_deref(), Some("2.1.267"));
         assert_eq!(version_in("kimi, version 2.1.1").as_deref(), Some("2.1.1"));
         assert_eq!(version_in("v1.2.3").as_deref(), Some("1.2.3"));
+        assert_eq!(version_in("codex-cli 0.114.0").as_deref(), Some("0.114.0"));
         assert_eq!(version_in("usage: kimi [options]"), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_reports_its_cli_editor_and_overridden_home() {
+        let h = home("codex");
+        let bin = h.join("bin");
+        script(&bin.join("codex"), "codex-cli 0.114.0");
+        let own = h.join("codex-state");
+        std::fs::create_dir_all(&own).unwrap();
+        extension(
+            &h,
+            ".vscode/extensions",
+            "openai.chatgpt-0.4.0-darwin-arm64",
+            Some("0.4.0"),
+        );
+        let at = Places {
+            home: h.clone(),
+            path: Some(bin.into_os_string()),
+            kimi_home: None,
+            codex_home: Some(own.clone()),
+            installed: Vec::new(),
+        };
+        let found = find(&at);
+        assert_eq!(found.len(), 1);
+        let c = &found[0];
+        assert_eq!(c.client, CODEX);
+        assert_eq!(c.cli.as_ref().unwrap().version.as_deref(), Some("0.114.0"));
+        assert_eq!(c.home.as_deref(), Some(own.to_str().unwrap()));
+        assert_eq!(
+            c.extensions,
+            vec![Extension {
+                editor: "vscode".into(),
+                version: "0.4.0".into()
+            }]
+        );
+        let _ = std::fs::remove_dir_all(h);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn opencode_reports_its_native_cli_and_configuration_home() {
+        let h = home("opencode");
+        script(&h.join(".opencode/bin/opencode"), "1.19.0");
+        std::fs::create_dir_all(h.join(".config/opencode")).unwrap();
+        let at = Places { home:h.clone(),path:None,kimi_home:None,codex_home:None,installed:Vec::new() };
+        let found = find(&at);
+        assert_eq!(found.len(),1);
+        assert_eq!(found[0].client,OPENCODE);
+        assert_eq!(found[0].cli.as_ref().unwrap().version.as_deref(),Some("1.19.0"));
+        assert_eq!(found[0].home.as_deref(),Some(h.join(".config/opencode").to_str().unwrap()));
+        let _ = std::fs::remove_dir_all(h);
     }
 }

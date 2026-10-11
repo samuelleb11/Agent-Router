@@ -11,6 +11,7 @@ import { CopyButton } from '~/components/CopyButton';
 import { Page } from '~/components/Page';
 import { setNetwork, useAuth, useReread } from '~/data/settings';
 import { settingsPath } from '~/lib/routes';
+import { hasRouterCredential } from '~/model/settings';
 import { Switch } from './ClaudeCode';
 import { Confirm, Explain, ReadFailed, Reading } from './parts';
 import { networkWhere } from './rules';
@@ -36,7 +37,7 @@ export default function NetworkPage() {
 
   if (!a) return auth.unreachable ? <ReadFailed what="Could not read how the router listens" error={auth.error} /> : <Reading what="Reading how the router listens…" />;
 
-  const passwordFirst = !on && !a.configured;
+  const credentialFirst = !on && !hasRouterCredential(a);
   return (
     <Page.Section title="Listen on your network">
       <p className={styles.lead}>{on ? 'on' : 'this Mac only'}</p>
@@ -44,7 +45,7 @@ export default function NetworkPage() {
         label="Listen on your network"
         on={on}
         // Off is always offered; on, only once a password is set (ST-C68).
-        disabled={passwordFirst}
+        disabled={credentialFirst}
         onToggle={(next) => {
           write.reset();
           if (next) write.mutate(true);
@@ -56,12 +57,12 @@ export default function NetworkPage() {
       >
         <Explain>
           Off, the router answers only on this Mac. On, it also listens on your local network, so the phone apps — and a Claude Code on another machine —
-          can reach it; every one of them is asked for the password. It takes effect at once, with nothing restarted and no session dropped, and it is
+          can reach it; every one of them must present an access token or the router password. It takes effect at once, with nothing restarted and no session dropped, and it is
           remembered across a reboot.
         </Explain>
-        {passwordFirst ? (
+        {credentialFirst ? (
           <Explain className={styles.warn}>
-            Set a password first, on the <Link to={settingsPath('password')}>Password</Link> page — until one exists, other devices are refused anyway.
+            Create an <Link to={settingsPath('access-tokens')}>access token</Link> or set a <Link to={settingsPath('password')}>password</Link> first — other devices need a router credential.
           </Explain>
         ) : null}
         {a.env_override ? (

@@ -33,6 +33,8 @@ pub enum Source {
     Keychain,
     Token,
     Profile,
+    /// Codex's own local sign-in, read from its credential store.
+    Codex,
 }
 
 impl Source {
@@ -41,6 +43,7 @@ impl Source {
             Source::Keychain => "keychain",
             Source::Token => "token",
             Source::Profile => "profile",
+            Source::Codex => "codex",
         }
     }
     pub fn parse(s: &str) -> Result<Self> {
@@ -48,6 +51,7 @@ impl Source {
             "keychain" => Ok(Source::Keychain),
             "token" => Ok(Source::Token),
             "profile" => Ok(Source::Profile),
+            "codex" => Ok(Source::Codex),
             other => Err(anyhow!("unknown account source {other:?}")),
         }
     }
@@ -63,6 +67,7 @@ pub enum Provider {
     Anthropic,
     /// Kimi Code, Moonshot's coding subscription, through its Anthropic-compatible endpoint.
     Kimi,
+    OpenAI,
 }
 
 impl Provider {
@@ -70,6 +75,7 @@ impl Provider {
         match self {
             Provider::Anthropic => "anthropic",
             Provider::Kimi => "kimi",
+            Provider::OpenAI => "openai",
         }
     }
 
@@ -77,6 +83,7 @@ impl Provider {
         match s {
             "anthropic" => Ok(Provider::Anthropic),
             "kimi" => Ok(Provider::Kimi),
+            "openai" => Ok(Provider::OpenAI),
             other => Err(anyhow!("unknown provider {other:?}")),
         }
     }
@@ -86,6 +93,7 @@ impl Provider {
         match self {
             Provider::Anthropic => "Anthropic",
             Provider::Kimi => "Kimi Code",
+            Provider::OpenAI => "OpenAI",
         }
     }
 
@@ -94,6 +102,7 @@ impl Provider {
         match self {
             Provider::Anthropic => "an",
             Provider::Kimi => "a",
+            Provider::OpenAI => "an",
         }
     }
 
@@ -103,6 +112,7 @@ impl Provider {
         match self {
             Provider::Anthropic => None,
             Provider::Kimi => Some("https://api.kimi.ai/coding"),
+            Provider::OpenAI => Some("https://api.openai.com"),
         }
     }
 
@@ -121,6 +131,12 @@ impl Provider {
             Provider::Kimi if key.starts_with("sk-ant-") => Some(
                 "that is an Anthropic token — a Kimi Code account takes a key from the \
                  Kimi Code console",
+            ),
+            Provider::OpenAI if key.starts_with("sk-ant-") => Some(
+                "that is an Anthropic token — an OpenAI account takes an OpenAI API key",
+            ),
+            Provider::OpenAI if !key.starts_with("sk-") => Some(
+                "expected an OpenAI API key starting sk-; use the Codex login source for a ChatGPT subscription",
             ),
             _ => None,
         }
@@ -151,6 +167,10 @@ pub struct Resolved {
     pub identity: Option<String>,
     /// Milliseconds since the Unix epoch, or 0 when the token has no known expiry.
     pub expires_at_ms: i64,
+    /// ChatGPT sign-ins use Codex's backend rather than the public API endpoint.
+    pub openai_chatgpt: bool,
+    /// The selected workspace, sent as ChatGPT-Account-Id for a Codex sign-in.
+    pub chatgpt_account_id: Option<String>,
 }
 
 fn now_ms() -> i64 {
@@ -227,7 +247,7 @@ pub fn resolve(account: &Account) -> Result<Resolved> {
         Source::Keychain => {
             if let Ok(token) = std::env::var("AGENT_ROUTER_ACCESS_TOKEN") {
                 if !token.is_empty() {
-                    return Ok(Resolved { token, identity: None, expires_at_ms: 0 });
+                    return Ok(Resolved { token, identity: None, expires_at_ms: 0, openai_chatgpt: false, chatgpt_account_id: None });
                 }
             }
             if crate::config::is_server() {
@@ -253,6 +273,8 @@ pub fn resolve(account: &Account) -> Result<Resolved> {
                 token: token.trim().to_string(),
                 identity: account.email.clone(),
                 expires_at_ms: 0,
+                openai_chatgpt: false,
+                chatgpt_account_id: None,
             })
         }
         Source::Profile => {
@@ -277,6 +299,16 @@ pub fn resolve(account: &Account) -> Result<Resolved> {
                 .or_else(|| account.email.clone());
             Ok(resolved)
         }
+        Source::Codex => {
+            if account.provider != Provider::OpenAI {
+                bail!("a Codex login can only sign for an OpenAI account");
+            }
+            if crate::config::is_server() {
+                bail!("a hosted router cannot read a machine's Codex login — add an OpenAI API key as a token account");
+            }
+            let dir = account.profile_dir.as_ref().map(PathBuf::from).map(Ok).unwrap_or_else(codex_home)?;
+            parse_codex_credentials(&read_codex_credentials(&dir)?)
+        }
     }
 }
 
@@ -288,7 +320,101 @@ fn parse_stored(raw: &str) -> Result<Resolved> {
         token: stored.oauth.access_token,
         identity: None,
         expires_at_ms: stored.oauth.expires_at,
+        openai_chatgpt: false,
+        chatgpt_account_id: None,
     })
+}
+
+/// The home used by Codex's CLI and IDE extension. No credential is created or changed.
+pub fn codex_home() -> Result<PathBuf> {
+    match std::env::var_os("CODEX_HOME").filter(|h| !h.is_empty()) {
+        Some(home) => Ok(PathBuf::from(home)),
+        None => Ok(crate::setup::home_dir()?.join(".codex")),
+    }
+}
+
+fn read_codex_credentials(home: &Path) -> Result<String> {
+    let config = match std::fs::read_to_string(home.join("config.toml")) {
+        Ok(text) => text.parse::<toml_edit::DocumentMut>().map_err(|_| anyhow!("Codex config.toml is not valid TOML"))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => toml_edit::DocumentMut::new(),
+        Err(e) => return Err(e).context("reading Codex config.toml"),
+    };
+    let mode = config.get("cli_auth_credentials_store").and_then(toml_edit::Item::as_str).unwrap_or("file");
+    if !matches!(mode, "file" | "keyring" | "auto" | "ephemeral") {
+        bail!("Codex's configured credential store is not supported");
+    }
+    if mode == "ephemeral" {
+        bail!("Codex's login is held in its process only — use an OpenAI API key account");
+    }
+    if mode == "keyring" || mode == "auto" {
+        #[cfg(target_os = "macos")]
+        {
+            use sha2::{Digest, Sha256};
+            if config.get("features").and_then(|f| f.get("secret_auth_storage")).and_then(toml_edit::Item::as_bool) == Some(true) {
+                bail!("Codex's encrypted credential store cannot be read here — use an OpenAI API key account");
+            }
+            let canonical = home.canonicalize().unwrap_or_else(|_| home.to_path_buf());
+            let digest = format!("{:x}", Sha256::digest(canonical.to_string_lossy().as_bytes()));
+            let key = format!("cli|{}", &digest[..16]);
+            match keychain_read("Codex Auth", &key) {
+                Ok(raw) => return Ok(raw),
+                Err(e) if mode == "keyring" => return Err(e).context("reading Codex's Keychain login — run `codex login` first"),
+                Err(_) => {}
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        if mode == "keyring" {
+            bail!("Codex's keyring login cannot be read on this platform — use an OpenAI API key account");
+        }
+    }
+    std::fs::read_to_string(home.join("auth.json")).context("reading Codex auth.json — run `codex login` first")
+}
+
+/// Read the two supported native Codex login forms. JWT claims describe the credential;
+/// their signature is checked by OpenAI, never treated as router authentication.
+pub fn parse_codex_credentials(raw: &str) -> Result<Resolved> {
+    let v: serde_json::Value = serde_json::from_str(raw).context("Codex credentials are not valid JSON")?;
+    let mode = v.get("auth_mode").and_then(serde_json::Value::as_str);
+    if !matches!(mode, None | Some("apikey" | "chatgpt" | "chatgptAuthTokens")) {
+        bail!("this Codex login mode is not supported; use ChatGPT sign-in or an OpenAI API key");
+    }
+    let api_key = v.get("OPENAI_API_KEY").and_then(serde_json::Value::as_str).filter(|s| !s.trim().is_empty());
+    if matches!(mode, None | Some("apikey")) {
+        if let Some(key) = api_key {
+            return Ok(Resolved { token: key.trim().to_owned(), identity: None, expires_at_ms: 0,
+                openai_chatgpt: false, chatgpt_account_id: None });
+        }
+        if mode == Some("apikey") {
+            bail!("Codex's API key login has no API key — run `codex login` first");
+        }
+    }
+    let tokens = v.get("tokens").ok_or_else(|| anyhow!("Codex has no saved login — run `codex login` first"))?;
+    let access = tokens.get("access_token").and_then(serde_json::Value::as_str)
+        .filter(|s| !s.trim().is_empty()).ok_or_else(|| anyhow!("Codex's saved login has no access token"))?;
+    let claims = jwt_claims(access).unwrap_or_default();
+    let id_claims = tokens.get("id_token").and_then(serde_json::Value::as_str).and_then(jwt_claims).unwrap_or_default();
+    let text = |v: &serde_json::Value, key: &str| v.get(key).and_then(serde_json::Value::as_str)
+        .filter(|s| !s.trim().is_empty()).map(str::to_owned);
+    let auth = id_claims.get("https://api.openai.com/auth").or_else(|| claims.get("https://api.openai.com/auth"));
+    let account_id = text(tokens, "account_id").or_else(|| auth.and_then(|a| text(a, "chatgpt_account_id")));
+    let identity = text(&id_claims, "email")
+        .or_else(|| id_claims.get("https://api.openai.com/profile").and_then(|p| text(p, "email")))
+        .or_else(|| text(&claims, "email"));
+    Ok(Resolved {
+        token: access.to_owned(), identity,
+        expires_at_ms: claims.get("exp").and_then(serde_json::Value::as_i64).unwrap_or(0).saturating_mul(1000),
+        openai_chatgpt: true, chatgpt_account_id: account_id,
+    })
+}
+
+fn jwt_claims(jwt: &str) -> Option<serde_json::Value> {
+    let mut parts = jwt.split('.');
+    let (header, payload, signature) = (parts.next()?, parts.next()?, parts.next()?);
+    if header.is_empty() || payload.is_empty() || signature.is_empty() || parts.next().is_some() {
+        return None;
+    }
+    let bytes = crate::auth::base64_decode(&payload.replace('-', "+").replace('_', "/"))?;
+    serde_json::from_slice(&bytes).ok()
 }
 
 /// Router-owned secrets live in a 0600 file, not the Keychain.
@@ -657,6 +783,9 @@ impl Store {
     pub fn check_free(&self, id: &str) -> Result<()> {
         match self.holder(id)? {
             Some(holder) => Err(Conflict::NameTaken { id: id.to_string(), holder }.into()),
+            None if id == crate::codex::ACCOUNT_ID => Err(Conflict::NameTaken {
+                id: id.to_owned(), holder: "Codex login (discovered automatically)".into(),
+            }.into()),
             None => Ok(()),
         }
     }
@@ -683,6 +812,9 @@ impl Store {
         status: &AuthStatus,
         credential: impl FnOnce() -> Result<()>,
     ) -> Result<()> {
+        if id == crate::codex::ACCOUNT_ID {
+            self.check_free(id)?;
+        }
         let conn = self.conn()?;
         let added = conn.execute(
             "INSERT INTO accounts (id, label, source, provider, base_url, profile_dir, email,
@@ -909,6 +1041,9 @@ pub fn credential_kind(provider: Provider, token: &str) -> &str {
         Provider::Kimi if token.trim().is_empty() => "<empty>",
         Provider::Kimi => "Kimi Code key",
         Provider::Anthropic => token_kind(token),
+        Provider::OpenAI if token.trim().is_empty() => "<empty>",
+        Provider::OpenAI if token.starts_with("sk-") => "OpenAI API key",
+        Provider::OpenAI => "Codex ChatGPT login",
     }
 }
 
@@ -955,6 +1090,38 @@ mod tests {
         assert_eq!(credential_kind(Provider::Kimi, " "), "<empty>");
         assert_eq!(credential_kind(Provider::Anthropic, "sk-ant-oat01-SECRET"), "sk-ant-oat01 (subscription OAuth)");
         assert_eq!(credential_kind(Provider::Anthropic, "sk-kimi-SECRET"), "<unrecognised>", "an Anthropic account's is still its token's family");
+    }
+
+    #[test]
+    fn codex_credentials_keep_api_and_subscription_auth_distinct() {
+        let key = parse_codex_credentials(r#"{"auth_mode":"apikey","OPENAI_API_KEY":"sk-test-secret"}"#).unwrap();
+        assert_eq!(key.token, "sk-test-secret");
+        assert!(!key.openai_chatgpt);
+        assert!(key.chatgpt_account_id.is_none());
+        assert_eq!(credential_kind(Provider::OpenAI, &key.token), "OpenAI API key");
+
+        let claims = serde_json::json!({ "exp": 1900000000, "email": "person@example.com",
+            "https://api.openai.com/auth": { "chatgpt_account_id": "workspace-from-claim" } });
+        let encoded = crate::tunnel::base64(claims.to_string().as_bytes()).trim_end_matches('=')
+            .replace('+', "-").replace('/', "_");
+        let jwt = format!("header.{encoded}.signature");
+        let raw = serde_json::json!({ "auth_mode": "chatgpt", "OPENAI_API_KEY": "sk-stale-key",
+            "tokens": { "access_token": jwt, "id_token": jwt, "account_id": "selected-workspace" } });
+        let login = parse_codex_credentials(&raw.to_string()).unwrap();
+        assert!(login.openai_chatgpt, "the selected auth mode overrides a stale API key");
+        assert_eq!(login.token, jwt);
+        assert_eq!(login.expires_at_ms, 1900000000000);
+        assert_eq!(login.identity.as_deref(), Some("person@example.com"));
+        assert_eq!(login.chatgpt_account_id.as_deref(), Some("selected-workspace"));
+        assert_eq!(credential_kind(Provider::OpenAI, &login.token), "Codex ChatGPT login");
+
+        assert!(parse_codex_credentials(r#"{"auth_mode":"apikey","tokens":{"access_token":"stale"}}"#).is_err());
+        assert!(parse_codex_credentials(r#"{"tokens":{"access_token":""}}"#).is_err());
+        assert!(parse_codex_credentials(r#"{"auth_mode":"agentIdentity"}"#).is_err());
+        assert!(Provider::OpenAI.key_problem("sk-ant-oat01-other").is_some());
+        assert!(Provider::OpenAI.key_problem("jwt-token").is_some());
+        assert!(Provider::OpenAI.key_problem("sk-proj-test").is_none());
+        assert_eq!(Source::parse("codex").unwrap(), Source::Codex);
     }
 
     /// A store of its own under the temp directory, opened as the router opens one at start.

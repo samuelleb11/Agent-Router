@@ -240,7 +240,7 @@ describe('the dashboard, as scripts/check-dashboard-ui.js checked it', () => {
   // ported from scripts/check-dashboard-ui.js: the connection snippet is the page's own origin, with the password wherever it is asked
   it("OV-C207, ST-C96: the connection snippet is the page's own origin, with the password wherever it is asked", () => {
     const env = (origin: string, auth: typeof LOCAL) => (JSON.parse(connectSnippet(origin, auth)) as { env: unknown }).env;
-    const TOKEN = '<the router password>';
+    const TOKEN = '<Client access token or router password>';
     expect(env('https://router.example', HOSTED), 'a hosted router').toEqual({ ANTHROPIC_BASE_URL: 'https://router.example', ANTHROPIC_AUTH_TOKEN: TOKEN });
     // Every caller of a hosted router gives it, a kubectl port-forward to localhost included.
     expect(env('http://localhost:8787', { ...HOSTED, from_loopback: true }), 'through a port-forward').toEqual({ ANTHROPIC_BASE_URL: 'http://localhost:8787', ANTHROPIC_AUTH_TOKEN: TOKEN });
@@ -356,7 +356,7 @@ describe('the dashboard, as scripts/check-dashboard-ui.js checked it', () => {
     expect(routerFacts(health, LOCAL, 'host').some((f) => f.value == null || f.value === 'null'), 'a left-out row reached the page as "null"').toBe(false);
     expect(pushKeyHint(push, LOCAL), "a local router's key hint").toMatch(/~\/\.agent-router/);
     expect(facts(HOSTED), "a hosted router's facts").toEqual(['Listening on', 'Version']);
-    expect(connectSnippet('http://host', HOSTED)).toContain('"ANTHROPIC_AUTH_TOKEN": "<the router password>"');
+    expect(connectSnippet('http://host', HOSTED)).toContain('"ANTHROPIC_AUTH_TOKEN": "<Client access token or router password>"');
     expect(routerFacts(health, HOSTED, 'host').some((f) => f.value == null || f.value === 'null'), 'a left-out row reached the page as "null"').toBe(false);
     expect(pushKeyHint(push, HOSTED), "a hosted router's key hint").toMatch(/push Secret/);
     expect(pushKeyHint(push, HOSTED)).not.toMatch(/agent-router/);

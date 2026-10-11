@@ -51,15 +51,24 @@ describe('Network', () => {
     expect(await screen.findByText('This Mac only. Turning it on would put it at http://192.168.1.20:8787.')).toBeInTheDocument();
   });
 
-  it('ST-C68: turning it on is offered only once a password is set, and until then the page says to set one first; off is always offered', async () => {
+  it('ST-C68: turning it on requires a router credential, with links to create a token or set a password; off is always offered', async () => {
     show({ ...OFF, configured: false });
     expect(await sw()).toBeDisabled();
-    expect(screen.getByText(/^Set a password first/)).toHaveTextContent('until one exists, other devices are refused anyway');
-    expect(screen.getByRole('link', { name: 'Password' })).toHaveAttribute('href', '/settings/password');
+    expect(screen.getByText(/^Create an/)).toHaveTextContent('other devices need a router credential');
+    expect(screen.getByRole('link', { name: 'password' })).toHaveAttribute('href', '/settings/password');
+    expect(screen.getByRole('link', { name: 'access token' })).toHaveAttribute('href', '/settings/access-tokens');
     vi.unstubAllGlobals();
     document.body.innerHTML = '';
     show({ ...LOCAL, configured: false });
     expect(await sw()).toBeEnabled();
+  });
+
+  it('allows network access when a token is configured and no legacy password is set', async () => {
+    const r = show({ ...OFF, configured: false, access_tokens: 1 }, { 'POST /api/network': ok({ ok: true }) });
+    expect(await sw()).toBeEnabled();
+    expect(screen.queryByRole('link', { name: 'access token' })).toBeNull();
+    fireEvent.click(await sw());
+    await waitFor(() => expect(r.posts('/api/network')).toEqual([{ enable: true }]));
   });
 
   it('ST-C69: with AGENT_ROUTER_BIND set, the page says beside the switch that the variable decides the next start', async () => {
@@ -73,7 +82,7 @@ describe('Network', () => {
     show();
     const s = await sw();
     expect(s.closest('[class*="control"]')).toHaveTextContent(
-      'Off, the router answers only on this Mac. On, it also listens on your local network, so the phone apps — and a Claude Code on another machine — can reach it; every one of them is asked for the password. It takes effect at once, with nothing restarted and no session dropped, and it is remembered across a reboot.',
+      'Off, the router answers only on this Mac. On, it also listens on your local network, so the phone apps — and a Claude Code on another machine — can reach it; every one of them must present an access token or the router password. It takes effect at once, with nothing restarted and no session dropped, and it is remembered across a reboot.',
     );
   });
 

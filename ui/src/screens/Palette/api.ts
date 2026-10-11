@@ -74,6 +74,8 @@ export interface LiveSession {
   readonly archived: boolean;
   /// Under the wrapper and answering on its socket: only such a session can be switched.
   readonly wrapped: boolean;
+  readonly client?: string | null;
+  readonly hosted?: boolean | null;
 }
 
 export const readLiveSessions = (signal?: AbortSignal) => getJson<LiveSession[]>('/api/live/sessions', { signal });

@@ -10,8 +10,10 @@
 export const SECTIONS = [
   { slug: 'accounts', label: 'Accounts' },
   { slug: 'models', label: 'Models' },
+  { slug: 'clients', label: 'Clients' },
   { slug: 'claude-code', label: 'Claude Code' },
   { slug: 'network', label: 'Network' },
+  { slug: 'access-tokens', label: 'Access tokens' },
   { slug: 'password', label: 'Password' },
   { slug: 'notifications', label: 'Notifications' },
   { slug: 'router', label: 'Router' },

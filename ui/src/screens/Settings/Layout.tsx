@@ -59,8 +59,8 @@ export default function SettingsLayout() {
           title="Settings"
           meta={
             <span>
-              This router's own: the accounts it serves and which model goes to which, how Claude Code reaches it,
-              who on the network may, its password and where it sends notifications. Held in its store on the
+              This router's own: the accounts it serves and which model goes to which, how clients reach it,
+              access tokens, its password and where it sends notifications. Held in its store on the
               machine it runs on.
             </span>
           }

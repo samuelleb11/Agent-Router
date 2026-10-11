@@ -34,6 +34,27 @@ import org.junit.Test
 
 /** The feed must read the router's stream exactly as the web view and the iPhone do. */
 class LiveTest {
+    @Test
+    fun `OpenAI accounts decode their local Codex login and API keys name their provider`() {
+        val a = routerJson.decodeFromString<ca.whnet.agentrouter.api.Account>("""{"id":"codex-default","label":"Codex login","provider":"openai","source":"codex"}""")
+        assertEquals("OpenAI", a.providerName)
+        assertTrue(a.isCodexLogin)
+        assertFalse(a.takesUsageKey)
+        val body = ca.whnet.agentrouter.api.AddAccountBody("OpenAI", "token", "sk-proj-example", "openai")
+        assertTrue(routerJson.encodeToString(ca.whnet.agentrouter.api.AddAccountBody.serializer(), body).contains("\"provider\":\"openai\""))
+    }
+
+    @Test
+    fun `Codex sessions are named and watched even if wrapped is set`() {
+        val s = routerJson.decodeFromString<LiveSession>("""{"session_id":"codex:12345678-abcd","client":"codex","wrapped":true,"hosted":false}""")
+        assertEquals("Codex", s.clientName)
+        assertEquals("12345678", s.shortId)
+        assertFalse(s.canControl)
+        assertFalse(s.canSend)
+        assertFalse(s.canAskAside)
+        assertTrue(s.watchedReason?.contains("Codex") == true)
+    }
+
 
     @Test
     fun `sse frames assemble and keep-alives are ignored`() {

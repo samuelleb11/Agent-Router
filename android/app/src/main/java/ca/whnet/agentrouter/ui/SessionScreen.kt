@@ -162,6 +162,7 @@ fun SessionScreen(app: AppState, router: Router, opened: LiveSession, onBack: ((
             TopAppBar(
                 title = {
                     Column {
+                        session.clientName?.let { Text(it, style = MaterialTheme.typography.labelSmall) }
                         val machine = session.machineLabel
                         if (machine == null) {
                             Text(session.label, style = MaterialTheme.typography.titleMedium, maxLines = 1)
@@ -201,7 +202,7 @@ fun SessionScreen(app: AppState, router: Router, opened: LiveSession, onBack: ((
                     val fresh = feed.statusFresh
                     // Only while the stream is current: a Stop offered from a status the
                     // phone can no longer vouch for may interrupt a turn that has moved on.
-                    if (fresh && s?.isBusy == true && session.wrapped) {
+                    if (fresh && s?.isBusy == true && session.canControl) {
                         TextButton(enabled = !feed.stopping, onClick = { scope.launch { feed.interrupt() } }) {
                             Text("Stop")
                         }
@@ -237,7 +238,7 @@ fun SessionScreen(app: AppState, router: Router, opened: LiveSession, onBack: ((
 
                         // Switching model or effort needs the wrapper: both are control
                         // frames on the CLI's stdin, which only the wrapper holds.
-                        if (session.wrapped) {
+                        if (session.canControl) {
                             feed.options?.models?.forEach { m ->
                                 DropdownMenuItem(
                                     text = { Text(m) },
@@ -278,6 +279,7 @@ fun SessionScreen(app: AppState, router: Router, opened: LiveSession, onBack: ((
                         DropdownMenuItem(
                             text = { Text("Ask on the side") },
                             onClick = { menu = false; aside.show() },
+                            enabled = session.canAskAside,
                         )
                         DropdownMenuItem(
                             text = { Text("Put away") },
@@ -316,12 +318,13 @@ fun SessionScreen(app: AppState, router: Router, opened: LiveSession, onBack: ((
                     OutlinedTextField(
                         value = composing,
                         onValueChange = { composing = it },
-                        placeholder = { Text(if (session.wrapped) "Message" else "Message (not wrapped)") },
+                        placeholder = { Text(if (session.isCodex) "Message (read-only session)" else if (session.wrapped) "Message" else "Message (not wrapped)") },
+                        enabled = session.canSend,
                         modifier = Modifier.weight(1f),
                         maxLines = 5,
                     )
                     IconButton(
-                        enabled = composing.isNotBlank() && !feed.sending,
+                        enabled = session.canSend && composing.isNotBlank() && !feed.sending,
                         onClick = {
                             val text = composing
                             composing = ""
@@ -334,6 +337,7 @@ fun SessionScreen(app: AppState, router: Router, opened: LiveSession, onBack: ((
         },
     ) { pad ->
         Column(Modifier.fillMaxSize().padding(pad)) {
+        session.watchedReason?.let { Text(it, Modifier.padding(horizontal = 14.dp, vertical = 6.dp), style = MaterialTheme.typography.bodySmall) }
         if (siblings.size > 1) {
             Row(
                 Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())

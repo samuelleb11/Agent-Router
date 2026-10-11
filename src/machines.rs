@@ -37,6 +37,8 @@ const ASK_WAIT: Duration = Duration::from_secs(4);
 /// The router pings this often, and gives up on a connection silent for `IDLE_LIMIT`.
 const PING_EVERY: Duration = Duration::from_secs(20);
 const IDLE_LIMIT: Duration = Duration::from_secs(60);
+/// A revoked or expired access token must release its already-connected machine too.
+const TOKEN_CHECK_EVERY: Duration = Duration::from_secs(5);
 /// A collected answer (a list, the notifier's evidence) is never bigger than this.
 const MAX_COLLECTED: usize = 16 * 1024 * 1024;
 
@@ -299,11 +301,35 @@ impl Machines {
 
     /// One agent's connection, for as long as it lasts.
     pub async fn serve(self: Arc<Self>, socket: WebSocket) {
+        self.serve_authorized(socket, None).await;
+    }
+
+    pub async fn serve_with_token(
+        self: Arc<Self>,
+        socket: WebSocket,
+        db: std::path::PathBuf,
+        token: crate::auth::tokens::Token,
+    ) {
+        self.serve_authorized(socket, Some((db, token))).await;
+    }
+
+    async fn serve_authorized(
+        self: Arc<Self>,
+        socket: WebSocket,
+        token: Option<(std::path::PathBuf, crate::auth::tokens::Token)>,
+    ) {
         if self.is_stopping() {
             return;
         }
+        let invalidated = token_invalidated(token);
+        tokio::pin!(invalidated);
         let (mut sink, mut stream) = socket.split();
-        let hello = match tokio::time::timeout(Duration::from_secs(10), stream.next()).await {
+        let first = tokio::select! {
+            first = tokio::time::timeout(Duration::from_secs(10), stream.next()) => first,
+            () = &mut invalidated => return,
+            () = self.until_stopped() => return,
+        };
+        let hello = match first {
             Ok(Some(Ok(Message::Binary(data)))) => match tunnel::decode(&data) {
                 Some((tunnel::HELLO, _, payload)) => serde_json::from_slice::<Hello>(payload).ok(),
                 _ => None,
@@ -323,7 +349,8 @@ impl Machines {
             next: AtomicU32::new(1),
             pending: Mutex::new(HashMap::new()),
         });
-        if let Some(previous) = locked(&self.online).insert(hello.machine.clone(), machine.clone()) {
+        if let Some(previous) = locked(&self.online).insert(hello.machine.clone(), machine.clone())
+        {
             previous.fail_all("the machine reconnected");
         }
         locked(&self.heard).remove(&hello.machine);
@@ -347,6 +374,7 @@ impl Machines {
             let next = tokio::select! {
                 next = tokio::time::timeout(IDLE_LIMIT, stream.next()) => next,
                 () = self.until_stopped() => break,
+                () = &mut invalidated => break,
             };
             match next {
                 Ok(Some(Ok(Message::Binary(data)))) => machine.dispatch(&data),
@@ -360,7 +388,9 @@ impl Machines {
         // have taken its place.
         let current = {
             let mut online = locked(&self.online);
-            let current = online.get(&hello.machine).is_some_and(|m| Arc::ptr_eq(m, &machine));
+            let current = online
+                .get(&hello.machine)
+                .is_some_and(|m| Arc::ptr_eq(m, &machine));
             if current {
                 online.remove(&hello.machine);
             }
@@ -556,6 +586,24 @@ impl Machines {
     }
 }
 
+/// Polling also covers expiration and revocation from another router process sharing
+/// the store. No raw credential is retained after the HTTP upgrade.
+async fn token_invalidated(token: Option<(std::path::PathBuf, crate::auth::tokens::Token)>) {
+    let Some((db, token)) = token else {
+        return std::future::pending().await;
+    };
+    loop {
+        match crate::auth::tokens::is_active(&db, &token.id).await {
+            Ok(true) => tokio::time::sleep(TOKEN_CHECK_EVERY).await,
+            Ok(false) => return,
+            Err(error) => {
+                tracing::warn!(%error, "machine access token could not be checked; closing the connection");
+                return;
+            }
+        }
+    }
+}
+
 /// Percent-encoding for a query value.
 pub fn encode(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
@@ -575,7 +623,7 @@ pub mod api {
 
     use axum::body::Body;
     use axum::extract::ws::WebSocketUpgrade;
-    use axum::extract::{FromRequest, Request, State};
+    use axum::extract::{Extension, FromRequest, Request, State};
     use axum::http::StatusCode;
     use axum::response::{IntoResponse, Response};
     use axum::Json;
@@ -593,7 +641,11 @@ pub mod api {
 
     /// `GET /_router/agent`: an agent connecting. A stopping router turns it away, and the
     /// agent tries again, through the load balancer, to the router replacing it.
-    pub async fn connect(State(state): State<Arc<AppState>>, ws: WebSocketUpgrade) -> Response {
+    pub async fn connect(
+        State(state): State<Arc<AppState>>,
+        token: Option<Extension<crate::auth::tokens::Token>>,
+        ws: WebSocketUpgrade,
+    ) -> Response {
         if state.machines.is_stopping() {
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -602,9 +654,15 @@ pub mod api {
                 .into_response();
         }
         let machines = state.machines.clone();
+        let db = state.config.db_path.clone();
         ws.max_message_size(crate::tunnel::MAX_MESSAGE)
             .max_frame_size(crate::tunnel::MAX_MESSAGE)
-            .on_upgrade(move |socket| machines.serve(socket))
+            .on_upgrade(move |socket| async move {
+                match token {
+                    Some(Extension(token)) => machines.serve_with_token(socket, db, token).await,
+                    None => machines.serve(socket).await,
+                }
+            })
     }
 
     /// `GET /api/machines`: each machine, with where its Library stands (`library::push`),
@@ -639,7 +697,15 @@ pub mod api {
         req.headers()
             .iter()
             .filter(|(name, _)| crate::tunnel::carried(name.as_str()))
-            .filter_map(|(name, value)| Some((name.as_str().to_string(), value.to_str().ok()?.to_string())))
+            .filter(|(name, _)| {
+                !matches!(
+                    name.as_str(),
+                    "x-api-key" | "x-agent-router-password" | "x-agent-router-token"
+                )
+            })
+            .filter_map(|(name, value)| {
+                Some((name.as_str().to_string(), value.to_str().ok()?.to_string()))
+            })
             .collect()
     }
 
@@ -803,6 +869,7 @@ pub mod api {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tower::ServiceExt;
 
     fn machine() -> (Arc<Machine>, mpsc::UnboundedReceiver<Vec<u8>>) {
         let (out, rx) = mpsc::unbounded_channel();
@@ -919,6 +986,205 @@ mod tests {
         let elsewhere = json!({ "machine": "m-2", "cwd": "/Users/u", "model": "k3" });
         let (status, _) = lab.post("/api/live/start", &elsewhere.to_string()).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    /// The router's credential belongs to the router, whichever header carried it.
+    /// An agent still receives the headers its handler needs to stream a response.
+    #[tokio::test]
+    async fn credentials_stay_out_of_requests_relayed_to_a_machine() {
+        let lab = crate::api_refusals::Lab::hosted("relay-credentials").await;
+        let (m, mut sent) = machine();
+        locked(&lab.state.machines.online).insert("m-1".into(), m.clone());
+        let request = axum::http::Request::post("/api/live/start")
+            .header("authorization", "Bearer SECRET-BEARER")
+            .header("cookie", "router=SECRET-COOKIE")
+            .header("x-api-key", "SECRET-API-KEY")
+            .header("x-agent-router-password", "SECRET-PASSWORD")
+            .header("x-agent-router-token", "SECRET-TOKEN")
+            .header("content-type", "application/json")
+            .header("accept", "text/event-stream")
+            .header("last-event-id", "event-7")
+            .body(Body::from(r#"{"machine":"m-1","cwd":"/tmp","model":"k3"}"#))
+            .unwrap();
+        let agent = async {
+            let frame = sent.recv().await.unwrap();
+            let (kind, id, payload) = tunnel::decode(&frame).unwrap();
+            assert_eq!(kind, tunnel::REQUEST);
+            let req: tunnel::Request = serde_json::from_slice(payload).unwrap();
+            assert!(
+                req.headers
+                    .iter()
+                    .all(|(_, value)| !value.contains("SECRET")),
+                "router credentials must not travel to its agents"
+            );
+            for (name, value) in [
+                ("content-type", "application/json"),
+                ("accept", "text/event-stream"),
+                ("last-event-id", "event-7"),
+            ] {
+                assert!(
+                    req.headers.contains(&(name.to_string(), value.to_string())),
+                    "{name} must still reach the agent"
+                );
+            }
+            let head = serde_json::to_vec(&Head {
+                status: 200,
+                headers: vec![],
+            })
+            .unwrap();
+            m.dispatch(&tunnel::encode(tunnel::HEAD, id, &head));
+            m.dispatch(&tunnel::encode(tunnel::END, id, b""));
+        };
+        let (response, ()) = tokio::join!(
+            api::by_machine(axum::extract::State(lab.state.clone()), request),
+            agent
+        );
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    async fn invalidated_token_disconnects_machine(expire: bool) {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+        let lab = crate::api_refusals::Lab::hosted(if expire {
+            "machine-token-expiry"
+        } else {
+            "machine-token-revoke"
+        })
+        .await;
+        let (status, made) = lab
+            .post(
+                "/api/auth/tokens",
+                r#"{"name":"test machine","scope":"machine"}"#,
+            )
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "{made}");
+        let (id, token) = (
+            made["id"].as_str().unwrap(),
+            made["token"].as_str().unwrap(),
+        );
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = lab
+            .app
+            .clone()
+            .into_make_service_with_connect_info::<std::net::SocketAddr>();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await });
+        let mut request = format!("ws://{addr}{}", tunnel::PATH)
+            .into_client_request()
+            .unwrap();
+        request
+            .headers_mut()
+            .insert("authorization", format!("Bearer {token}").parse().unwrap());
+        let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let (mut socket, _) = tokio_tungstenite::client_async(request, tcp).await.unwrap();
+        let hello = Hello {
+            machine: "token-machine".into(),
+            label: "test machine".into(),
+            platform: "test".into(),
+            version: "test".into(),
+            build: "test".into(),
+        };
+        socket
+            .send(tokio_tungstenite::tungstenite::Message::Binary(
+                tunnel::encode(tunnel::HELLO, 0, &serde_json::to_vec(&hello).unwrap()).into(),
+            ))
+            .await
+            .unwrap();
+        let machine = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if let Some(machine) = lab.state.machines.online(&hello.machine) {
+                    break machine;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the valid token connects a machine");
+        let pending = tokio::spawn(async move {
+            machine
+                .request(
+                    &Method::GET,
+                    "/api/live/stats?session=s",
+                    vec![],
+                    &[],
+                    Duration::from_secs(20),
+                )
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if let Some(Ok(tokio_tungstenite::tungstenite::Message::Binary(frame))) =
+                    socket.next().await
+                {
+                    if tunnel::decode(&frame).is_some_and(|(kind, _, _)| kind == tunnel::REQUEST) {
+                        break;
+                    }
+                }
+            }
+        })
+        .await
+        .expect("the machine has an outstanding request");
+
+        if expire {
+            rusqlite::Connection::open(&lab.state.config.db_path)
+                .unwrap()
+                .execute(
+                    "UPDATE auth_tokens SET expires_at = ?2 WHERE id = ?1",
+                    rusqlite::params![id, crate::db::now_ms() - 1],
+                )
+                .unwrap();
+        } else {
+            let mut request = axum::http::Request::delete(format!("/api/auth/tokens/{id}"))
+                .header("host", "127.0.0.1")
+                .header("authorization", format!("Bearer {}", lab.password.unwrap()))
+                .body(Body::empty())
+                .unwrap();
+            request.extensions_mut().insert(axum::extract::ConnectInfo(
+                std::net::SocketAddr::from(([127, 0, 0, 1], 50_000)),
+            ));
+            let response = lab.app.clone().oneshot(request).await.unwrap();
+            assert!(response.status().is_success(), "revocation must succeed");
+        }
+        let failed = tokio::time::timeout(TOKEN_CHECK_EVERY + Duration::from_secs(3), pending)
+            .await
+            .expect("invalidating the token releases its existing connection")
+            .unwrap();
+        assert!(
+            matches!(failed, Err(Relay::Failed(ref why)) if why.contains("offline")),
+            "the outstanding request must fail immediately: {failed:?}"
+        );
+        assert!(lab.state.machines.online(&hello.machine).is_none());
+        assert!(lab
+            .state
+            .machines
+            .seen()
+            .iter()
+            .any(|m| m.id == hello.machine && !m.online));
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                match socket.next().await {
+                    None
+                    | Some(Err(_))
+                    | Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_))) => break,
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .expect("the old WebSocket must close");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn revoking_a_machine_token_closes_its_existing_connection() {
+        invalidated_token_disconnects_machine(false).await;
+    }
+
+    #[tokio::test]
+    async fn expiring_a_machine_token_closes_its_existing_connection() {
+        invalidated_token_disconnects_machine(true).await;
     }
 
     /// The clients a machine reports with its places come back on `/api/machines`; a report

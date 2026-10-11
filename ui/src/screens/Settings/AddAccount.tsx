@@ -11,11 +11,11 @@ import { keys } from '~/app/query';
 import { CopyButton } from '~/components/CopyButton';
 import { ProviderMark } from '~/components/ProviderMark';
 import { addAccount, probeProfile, readLogin, startSignin, useReread, type AccountRow } from '~/data/settings';
-import { accountSources, ADD_PROVIDERS, addForm, KIMI_BASE_URL, notes, type AddProvider, type Auth, type Source } from '~/model/settings';
+import { accountSources, ADD_PROVIDERS, addForm, KIMI_BASE_URL, OPENAI_BASE_URL, notes, providerName, type AddProvider, type Auth, type Source } from '~/model/settings';
 import {
   accountId,
   baseUrlProblem,
-  kimiKeyProblem,
+  keyProblem,
   looksLikeEmail,
   nameProblem,
   PROFILE_POLL_MS,
@@ -35,8 +35,9 @@ type Parts = readonly (string | { readonly code: string } | { readonly b: string
 
 /// Each provider, as its choice explains it; its mark and name are the shared ones (ST-C124, SH-C56).
 const PROVIDER: Readonly<Record<AddProvider, Parts>> = {
-  anthropic: ['Claude’s models, signed by a Claude subscription.'],
+  anthropic: ['Claude’s models, signed by an Anthropic API key or a Claude subscription.'],
   kimi: ['Kimi’s models (', { code: 'k3' }, ', ', { code: 'kimi-for-coding' }, '), signed by a key from the Kimi Code console.'],
+  openai: ['OpenAI’s models, signed by an OpenAI API key. On a local router, the Codex login is discovered automatically.'],
 };
 
 /// Each of Anthropic's ways in, as its choice says it (ST-C40, ST-C43).
@@ -53,7 +54,7 @@ const CHOICE: Readonly<Record<Source, { readonly title: string; readonly body: P
   },
   token: {
     title: 'Paste a token I already have',
-    body: ['The value ', { code: 'claude setup-token' }, ' prints, ', { code: 'sk-ant-oat01-…' }, ', signed in as the account to add.'],
+    body: ['An Anthropic API key, or the subscription value ', { code: 'claude setup-token' }, ' prints, ', { code: 'sk-ant-oat01-…' }, ', signed in as the account to add.'],
   },
   profile: {
     title: 'Separate Claude Code profile',
@@ -149,18 +150,24 @@ export function AddAccount({ auth, accounts, onDone, onClose }: { auth: Auth | n
   // Anthropic first, chosen as the form opens, on every router (ST-C124).
   const [provider, setProvider] = useState<AddProvider>(ADD_PROVIDERS[0]);
   const kimi = provider === 'kimi';
+  const keyed = provider !== 'anthropic';
+  const defaultBase = kimi ? KIMI_BASE_URL : OPENAI_BASE_URL;
   const sources = accountSources(auth);
   const offered = sources.join(',');
   const [picked, setPicked] = useState<Source>(sources[0] ?? 'token');
   // A choice the router no longer offers (it said it is hosted) gives way to the first one left.
   const source: Source = sources.includes(picked) ? picked : (sources[0] ?? 'token');
   // Anthropic's way, or none for Kimi Code, which has its key only.
-  const way: Source | null = kimi ? null : source;
+  const way: Source | null = keyed ? null : source;
   const [label, setLabel] = useState('');
   const [token, setToken] = useState('');
   // A Kimi Code key has fields of its own: a token typed for Anthropic is not one.
-  const [key, setKey] = useState('');
-  const [baseUrl, setBaseUrl] = useState('');
+  const [providerKeys, setProviderKeys] = useState<Partial<Record<AddProvider, string>>>({});
+  const [providerUrls, setProviderUrls] = useState<Partial<Record<AddProvider, string>>>({});
+  const key = providerKeys[provider] ?? '';
+  const baseUrl = providerUrls[provider] ?? '';
+  const setKey = (value: string) => setProviderKeys((old) => ({ ...old, [provider]: value }));
+  const setBaseUrl = (value: string) => setProviderUrls((old) => ({ ...old, [provider]: value }));
   const [tried, setTried] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
@@ -174,8 +181,8 @@ export function AddAccount({ auth, accounts, onDone, onClose }: { auth: Auth | n
   const showName = (label.trim() !== '' || tried) && !!nameIssue;
   // Each provider's key by its own rule: `sk-ant-` is Anthropic's alone (ST-C118).
   const tokenIssue = way === 'token' ? (token.trim() === '' ? TOKEN_NEEDED : tokenProblem(token)) : null;
-  const keyIssue = kimi ? (key.trim() === '' ? TOKEN_NEEDED : kimiKeyProblem(key)) : null;
-  const urlIssue = kimi ? baseUrlProblem(baseUrl) : null;
+  const keyIssue = keyed ? (key.trim() === '' ? TOKEN_NEEDED : keyProblem(provider, key)) : null;
+  const urlIssue = keyed ? baseUrlProblem(baseUrl) : null;
   const id = accountId(label);
 
   const finish = (said: string) => {
@@ -202,7 +209,7 @@ export function AddAccount({ auth, accounts, onDone, onClose }: { auth: Auth | n
     try {
       if (way === null) {
         // Sent as it always was (ST-C117).
-        await addAccount(label, { source: 'kimi', token: key, base_url: baseUrl });
+        await addAccount(label, { source: kimi ? 'kimi' : 'openai', token: key, base_url: baseUrl });
         setKey('');
         finish(`Added ${label.trim()}.`);
       } else if (way === 'signin') {
@@ -239,6 +246,7 @@ export function AddAccount({ auth, accounts, onDone, onClose }: { auth: Auth | n
     <Tile className={styles.addForm}>
       <Form aria-label="Add an account" onSubmit={(e) => void submit(e)} onKeyDown={escape} className={styles.form}>
         <h3 className={styles.cardTitle}>Add an account</h3>
+        <Explain>Add a provider credential here. Client and Machine access tokens authenticate to Agent Router and are created on the Access tokens page.</Explain>
         {/* The provider first, each by its mark and name, then its explanation (ST-C124). */}
         <TileGroup legend="Provider" name={`${groupName}-provider`} valueSelected={provider} onChange={(v) => setProvider(v as AddProvider)} className={styles.choices}>
           {ADD_PROVIDERS.map((p) => (
@@ -255,7 +263,7 @@ export function AddAccount({ auth, accounts, onDone, onClose }: { auth: Auth | n
 
         {/* Anthropic's ways, when the router offers more than one: a hosted router's one way, the
             setup token, is no choice, and its field below explains it (ST-C124, ST-C48). */}
-        {!kimi && sources.length > 1 ? (
+        {!keyed && sources.length > 1 ? (
           <TileGroup key={offered} legend="How to add it" name={`${groupName}-way`} valueSelected={source} onChange={(v) => setPicked(v as Source)} className={styles.choices}>
             {sources.map((s) => (
               <RadioTile key={s} id={`${groupName}-way-${s}`} value={s} className={styles.choice}>
@@ -278,7 +286,7 @@ export function AddAccount({ auth, accounts, onDone, onClose }: { auth: Auth | n
           invalid={showName}
           invalidText={nameIssue ?? undefined}
           helperText={
-            (kimi || way === 'token') && looksLikeEmail(label)
+            (keyed || way === 'token') && looksLikeEmail(label)
               ? 'This name is an email address, so it becomes the account’s identity: a long-lived token cannot report which account it belongs to.'
               : id
                 ? `Its id will be “${id}”.`
@@ -298,35 +306,35 @@ export function AddAccount({ auth, accounts, onDone, onClose }: { auth: Auth | n
             onChange={(e) => setToken(e.target.value)}
             invalid={tried && !!tokenIssue}
             invalidText={tokenIssue ?? undefined}
-            helperText={<Words segments={notes(auth).token} />}
+            helperText={<><span>An Anthropic API key also works. </span><Words segments={notes(auth).token} /></>}
           />
         ) : null}
 
-        {kimi ? (
+        {keyed ? (
           <>
             <PasswordInput
               id={`${groupName}-key-field`}
-              labelText="Key"
-              placeholder="the key from the Kimi Code console"
+              labelText={kimi ? 'Key' : 'OpenAI API key'}
+              placeholder={kimi ? 'the key from the Kimi Code console' : 'sk-proj-…'}
               autoComplete="new-password"
               spellCheck={false}
               value={key}
               onChange={(e) => setKey(e.target.value)}
               invalid={tried && !!keyIssue}
               invalidText={keyIssue ?? undefined}
-              helperText="Made in the Kimi Code console, signed in to your plan. An Anthropic token is not one: it cannot sign Kimi Code’s requests."
+              helperText={kimi ? 'Made in the Kimi Code console, signed in to your plan. An Anthropic token is not one: it cannot sign Kimi Code’s requests.' : 'Made in your OpenAI API project. The router uses this key to sign requests to OpenAI.'}
             />
             <TextInput
               id={`${groupName}-base-url-field`}
               labelText="Base URL (optional)"
-              placeholder={KIMI_BASE_URL}
+              placeholder={defaultBase}
               autoComplete="off"
               spellCheck={false}
               value={baseUrl}
               onChange={(e) => setBaseUrl(e.target.value)}
               invalid={tried && !!urlIssue}
               invalidText={urlIssue ?? undefined}
-              helperText={`Where its requests go. Left blank, Kimi Code’s own: ${KIMI_BASE_URL}.`}
+              helperText={`Where its requests go. Left blank, ${providerName(provider)}’s own: ${defaultBase}.`}
             />
           </>
         ) : null}

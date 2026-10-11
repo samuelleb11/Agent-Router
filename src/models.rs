@@ -45,6 +45,10 @@ pub fn provider_of(model: &str) -> Option<Provider> {
         Some(Provider::Anthropic)
     } else if KIMI.iter().any(|(k, _)| *k == id) {
         Some(Provider::Kimi)
+    } else if id.starts_with("gpt-") || id.strip_prefix("gpt").and_then(|tail| tail.chars().next()).is_some_and(|c| c.is_ascii_digit()) || id.starts_with("codex-")
+        || ["o1", "o3", "o4"].iter().any(|family| id == *family || id.starts_with(&format!("{family}-")))
+    {
+        Some(Provider::OpenAI)
     } else {
         None
     }
@@ -100,7 +104,7 @@ fn assignments(conn: &Connection) -> rusqlite::Result<HashMap<String, String>> {
 
 /// The Claude models the request log has seen, from the pricing module's table of model
 /// names (one row per name, kept as requests arrive), so listing them never reads the log.
-fn seen_claude_models(conn: &Connection) -> rusqlite::Result<Vec<String>> {
+fn seen_models(conn: &Connection, provider: Provider) -> rusqlite::Result<Vec<String>> {
     let kept: i64 = conn.query_row(
         "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'model_rate'",
         [],
@@ -114,11 +118,51 @@ fn seen_claude_models(conn: &Connection) -> rusqlite::Result<Vec<String>> {
     let mut out = Vec::new();
     for model in rows {
         let model = normal(&model?);
-        if model.contains("claude") && !out.contains(&model) {
+        if provider_of(&model) == Some(provider) && !out.contains(&model) {
             out.push(model);
         }
     }
     Ok(out)
+}
+
+/// Codex's own model catalogue, when it has cached one. It describes the installed
+/// client, not a promise that the current account is entitled to every listed model.
+/// Credentials and model instructions from the cache never enter a router response.
+fn codex_models() -> Vec<(String, String)> {
+    let Some(raw) = crate::accounts::codex_home().ok()
+        .and_then(|home| std::fs::read(home.join("models_cache.json")).ok()) else { return Vec::new() };
+    cached_codex_models(&raw)
+}
+
+fn cached_codex_models(raw: &[u8]) -> Vec<(String, String)> {
+    let Ok(cache) = serde_json::from_slice::<Value>(raw) else { return Vec::new() };
+    cache.get("models").and_then(Value::as_array).into_iter().flatten().filter_map(|m| {
+        if m.get("visibility").and_then(Value::as_str).is_some_and(|v| v != "list") {
+            return None;
+        }
+        let id = m.get("slug").or_else(|| m.get("id"))?.as_str()?;
+        if provider_of(id) != Some(Provider::OpenAI) { return None; }
+        Some((id.to_owned(), m.get("display_name").and_then(Value::as_str).unwrap_or(id).to_owned()))
+    }).collect()
+}
+
+/// Keep names learned from an OpenAI Models API response, without pinning a release's
+/// catalogue in code. Audio, image and realtime endpoints are outside coding clients.
+pub fn record_openai_models(conn: &Connection, response: &Value) -> rusqlite::Result<usize> {
+    let mut count = 0;
+    for id in response.get("data").and_then(Value::as_array).into_iter().flatten()
+        .filter_map(|m| m.get("id").and_then(Value::as_str))
+    {
+        let model = normal(id);
+        if provider_of(&model) != Some(Provider::OpenAI)
+            || ["image", "audio", "realtime", "transcribe", "tts"].iter().any(|part| model.split('-').any(|word| word == *part))
+        {
+            continue;
+        }
+        crate::pricing::resolve_one(conn, &model)?;
+        count += 1;
+    }
+    Ok(count)
 }
 
 /// Every model the router can serve now. A provider's models are listed once it has an
@@ -132,7 +176,7 @@ pub fn catalogue(conn: &Connection) -> rusqlite::Result<Vec<Model>> {
         let active = active_of(conn, provider)?;
         let mut models: Vec<(String, String)> = match provider {
             Provider::Anthropic => {
-                let mut ids = seen_claude_models(conn)?;
+                let mut ids = seen_models(conn, Provider::Anthropic)?;
                 for model in assigned.keys() {
                     if provider_of(model) == Some(Provider::Anthropic) && !ids.contains(model) {
                         ids.push(model.clone());
@@ -142,6 +186,18 @@ pub fn catalogue(conn: &Connection) -> rusqlite::Result<Vec<Model>> {
                 ids.into_iter().map(|id| (id.clone(), id)).collect()
             }
             Provider::Kimi => KIMI.iter().map(|(id, name)| (id.to_string(), name.to_string())).collect(),
+            Provider::OpenAI => {
+                let mut models = codex_models();
+                for id in seen_models(conn, Provider::OpenAI)?.into_iter()
+                    .chain(assigned.keys().filter(|id| provider_of(id) == Some(Provider::OpenAI)).cloned())
+                {
+                    if !models.iter().any(|(known, _)| known == &id) {
+                        models.push((id.clone(), id));
+                    }
+                }
+                models.sort_by(|a, b| a.0.cmp(&b.0));
+                models
+            }
         };
         for (id, display_name) in models.drain(..) {
             let assigned = assigned.get(&id).cloned();
@@ -155,6 +211,14 @@ pub fn catalogue(conn: &Connection) -> rusqlite::Result<Vec<Model>> {
             });
         }
     }
+    for route in crate::provider_registry::model_routes(conn).map_err(|e|rusqlite::Error::ToSqlConversionFailure(e.into()))? {
+        let Some(service)=crate::provider_registry::service(conn,&route.service).map_err(|e|rusqlite::Error::ToSqlConversionFailure(e.into()))? else {continue};
+        let account:Option<(String,String)>=conn.query_row("SELECT provider,strftime('%Y-%m-%dT%H:%M:%SZ',created_at/1000,'unixepoch') FROM accounts WHERE id=?1",[&route.account_id],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+        let serving=account.as_ref().filter(|(provider,_)|provider==service.provider.as_str()).map(|_|route.account_id.clone());
+        let created_at=account.map(|(_,since)|since).unwrap_or_else(||"1970-01-01T00:00:00Z".into());
+        out.retain(|model|model.id!=route.alias);
+        out.push(Model{id:route.alias.clone(),provider:service.provider,display_name:route.display_name.unwrap_or(route.alias),assigned:Some(route.account_id),serving,created_at});
+    }
     Ok(out)
 }
 
@@ -162,6 +226,14 @@ pub fn catalogue(conn: &Connection) -> rusqlite::Result<Vec<Model>> {
 /// assigned, else its provider's active account. `None` when no provider serves the model,
 /// or its provider has no account.
 pub fn account_for(conn: &Connection, model: &str) -> rusqlite::Result<Option<(String, Provider)>> {
+    if let Some(route)=crate::provider_registry::model_route(conn,model.trim()).map_err(|e|rusqlite::Error::ToSqlConversionFailure(e.into()))? {
+        let service=crate::provider_registry::service(conn,&route.service).map_err(|e|rusqlite::Error::ToSqlConversionFailure(e.into()))?;
+        if let Some(service)=service {
+            let provider:Option<String>=conn.query_row("SELECT provider FROM accounts WHERE id=?1",[&route.account_id],|r|r.get(0)).optional()?;
+            return Ok(provider.filter(|provider|provider==service.provider.as_str()).map(|_|(route.account_id,service.provider)));
+        }
+        return Ok(None);
+    }
     let Some(provider) = provider_of(model) else {
         return Ok(None);
     };
@@ -193,6 +265,12 @@ pub enum Refused {
 /// account. Only to an account of the model's own provider: a Kimi Code key cannot serve a
 /// Claude model.
 pub fn assign(conn: &Connection, model: &str, account: Option<&str>) -> Result<(), AssignError> {
+    if let Some(mut route)=crate::provider_registry::model_route(conn,model.trim()).map_err(|e|rusqlite::Error::ToSqlConversionFailure(e.into()))? {
+        let Some(account)=account else { return Err(AssignError::Refused(Refused::Account("registered models require an explicit account; edit or remove the route in the provider registry".into()))); };
+        route.account_id=account.into();
+        crate::provider_registry::put_model(conn,route).map_err(|e|AssignError::Refused(Refused::Account(e.to_string())))?;
+        return Ok(());
+    }
     let Some(provider) = provider_of(model) else {
         return Err(AssignError::Refused(Refused::NoProvider(format!(
             "no source serves the model {:?}",
@@ -313,6 +391,42 @@ pub async fn v1_models(State(state): State<Arc<AppState>>, headers: axum::http::
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn openai_models_are_discovered_without_a_fixed_release_catalogue() {
+        for id in ["gpt-future", "gpt6synthetic", "codex-mini-latest", "o1", "o3-mini", "o4-mini"] {
+            assert_eq!(provider_of(id), Some(Provider::OpenAI), "{id}");
+        }
+        assert_eq!(provider_of("unknown-model"), None);
+        let cache = br#"{"models":[
+            {"slug":"gpt-test","display_name":"Test","visibility":"list","base_instructions":"private prompt"},
+            {"slug":"gpt6synthetic","display_name":"Synthetic native model","visibility":"list"},
+            {"slug":"gpt-hidden","visibility":"hide"},
+            {"slug":"claude-test","visibility":"list"}
+        ]}"#;
+        assert_eq!(cached_codex_models(cache), vec![("gpt-test".into(), "Test".into()), ("gpt6synthetic".into(), "Synthetic native model".into())]);
+
+        let s = scratch("openai-models");
+        s.conn.execute_batch("INSERT INTO accounts (id,label,source,provider,active,created_at)
+            VALUES ('openai','OpenAI','token','openai',1,1760000003000);
+            INSERT INTO model_rate (model,key) VALUES ('gpt-observed',NULL);").unwrap();
+        assign(&s.conn, "gpt-future", Some("openai")).unwrap();
+        assert_eq!(account_for(&s.conn, "gpt-future").unwrap(), Some(("openai".into(), Provider::OpenAI)));
+        assert_eq!(account_for(&s.conn, "gpt-unseen").unwrap(), Some(("openai".into(), Provider::OpenAI)));
+        let listed = catalogue(&s.conn).unwrap();
+        for id in ["gpt-future", "gpt-observed"] {
+            let model = listed.iter().find(|m| m.id == id).unwrap();
+            assert_eq!(model.provider, Provider::OpenAI);
+            assert_eq!(model.serving.as_deref(), Some("openai"));
+        }
+        assert!(assign(&s.conn, "gpt-future", Some("work")).is_err());
+        let fetched = json!({ "data": [ { "id": "gpt-new-model" }, { "id": "o3-mini" },
+            { "id": "gpt-image-1" }, { "id": "gpt-4o-mini-tts" }, { "id": "gpt-realtime" }, { "id": "unrelated" } ] });
+        assert_eq!(record_openai_models(&s.conn, &fetched).unwrap(), 2);
+        let list = catalogue(&s.conn).unwrap();
+        assert!(list.iter().any(|m| m.id == "gpt-new-model"));
+        assert!(!list.iter().any(|m| m.id == "gpt-image-1"));
+    }
 
     /// A store of its own, opened as the router opens one, with the pricing module's table of
     /// model names.
@@ -466,7 +580,11 @@ mod tests {
         );
         assert_eq!(
             assign(&s.conn, "gpt-9", Some("work")).unwrap_err().refusal(),
-            Some(Refused::NoProvider(r#"no source serves the model "gpt-9""#.into()))
+            Some(Refused::Account(r#""work" is an Anthropic account, and "gpt-9" is OpenAI's"#.into()))
+        );
+        assert_eq!(
+            assign(&s.conn, "unknown-model", Some("work")).unwrap_err().refusal(),
+            Some(Refused::NoProvider(r#"no source serves the model "unknown-model""#.into()))
         );
         assert_eq!(
             assign(&s.conn, "k3", Some("nobody")).unwrap_err().refusal(),
@@ -484,7 +602,9 @@ mod tests {
             r#""models-across-kimi" is a Kimi Code account, and "claude-opus-5-5" is Anthropic's"#
         );
         let refused = lab.post("/api/models/assign", r#"{"model":"gpt-9","account":"models-across-work"}"#).await;
-        assert_eq!(words(refused, StatusCode::BAD_REQUEST), r#"no source serves the model "gpt-9""#);
+        assert_eq!(words(refused, StatusCode::CONFLICT), r#""models-across-work" is an Anthropic account, and "gpt-9" is OpenAI's"#);
+        let refused = lab.post("/api/models/assign", r#"{"model":"unknown-model","account":"models-across-work"}"#).await;
+        assert_eq!(words(refused, StatusCode::BAD_REQUEST), r#"no source serves the model "unknown-model""#);
         let conn = Connection::open(&lab.state.config.db_path).unwrap();
         assert!(assignments(&conn).unwrap().is_empty(), "nothing refused was kept");
     }
@@ -495,7 +615,7 @@ mod tests {
         assert_eq!(provider_of("claude-opus-6-0"), Some(Provider::Anthropic));
         assert_eq!(provider_of("claude-sonnet-5-5[1m]"), Some(Provider::Anthropic));
         assert_eq!(provider_of("K3"), Some(Provider::Kimi));
-        assert_eq!(provider_of("gpt-9"), None);
+        assert_eq!(provider_of("gpt-9"), Some(Provider::OpenAI));
         assert!(catalogue(&s.conn).unwrap().iter().all(|m| m.id != "claude-opus-6-0"), "never seen, so not listed");
         assert_eq!(account_for(&s.conn, "claude-opus-6-0").unwrap(), Some(("work".into(), Provider::Anthropic)), "and still served");
     }

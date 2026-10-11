@@ -42,6 +42,17 @@ CREATE TABLE IF NOT EXISTS accounts (
   created_at        INTEGER NOT NULL
 );
 
+-- A client-visible alias selects a service and account explicitly. Builtin services
+-- remain metadata in code; user-registered services and routes survive restarts.
+CREATE TABLE IF NOT EXISTS provider_services (
+  id TEXT PRIMARY KEY,
+  definition TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS provider_model_routes (
+  alias TEXT PRIMARY KEY,
+  definition TEXT NOT NULL
+);
+
 -- A provider's own reading of an account's windows, from its usage API rather than from
 -- response headers (Kimi Code's `/v1/usages`; `quota`). Utilisation is 0..1 and a reset is
 -- epoch seconds, as the `rl_*` columns of `requests` hold them.
@@ -198,6 +209,20 @@ CREATE TABLE IF NOT EXISTS settings (
   key        TEXT PRIMARY KEY,
   value      TEXT NOT NULL,
   updated_at INTEGER NOT NULL
+);
+
+-- Router access credentials, separate from upstream provider credentials and Library
+-- publish tokens. Their values are returned once; only SHA-256 digests are persisted.
+CREATE TABLE IF NOT EXISTS auth_tokens (
+  id           TEXT PRIMARY KEY,
+  name         TEXT NOT NULL,
+  prefix       TEXT NOT NULL,
+  hash         TEXT NOT NULL UNIQUE,
+  scope        TEXT NOT NULL CHECK(scope IN ('client', 'machine', 'admin')),
+  created_at   INTEGER NOT NULL,
+  last_used_at INTEGER,
+  expires_at   INTEGER,
+  revoked_at   INTEGER
 );
 
 -- Phones that asked to be told when a session is waiting on a person. `platform` says
@@ -509,6 +534,8 @@ impl Db {
         // outlives the account. Every request recorded before there was a second provider
         // was Anthropic's; the API reads a missing one as that.
         ensure_column(&conn, "requests", "provider", "TEXT")?;
+        ensure_column(&conn, "requests", "service_id", "TEXT")?;
+        ensure_column(&conn, "requests", "upstream_model", "TEXT")?;
         // The coding clients a machine said it has (`clients`), as JSON.
         ensure_column(&conn, "machines", "clients", "TEXT")?;
         // A request whose tokens were corrected without its response to read them from
@@ -630,8 +657,8 @@ impl Db {
                started_at, ttfb_ms, duration_ms, status, streaming, stop_reason,
                service_tier, error, rl_status, rl_5h_utilization, rl_7d_utilization,
                rl_5h_reset, rl_7d_reset, request_bytes, response_bytes,
-               agent_id, is_sidechain, account_email, provider)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26)
+               agent_id, is_sidechain, account_email, provider, service_id, upstream_model)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28)
              ON CONFLICT(request_id) DO NOTHING",
             params![
                 ev.request_id,
@@ -660,6 +687,8 @@ impl Db {
                 ev.agent_id.is_some() as i64,
                 ev.account_email,
                 ev.provider.as_str(),
+                ev.shape.as_ref().and_then(|shape| shape.service_id.as_deref()),
+                ev.shape.as_ref().and_then(|shape| shape.upstream_model.as_deref()),
             ],
         )?;
         // A window Kimi Code said is spent: the account is spent until that window resets,
@@ -1254,6 +1283,48 @@ mod tests {
         );
         drop(db);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn registered_route_attribution_survives_registry_changes() {
+        let dir = std::env::temp_dir().join(format!("ar-registry-attribution-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("store.db");
+        // A store predating explicit routes must gain nullable attribution columns.
+        let old = Connection::open(&path).unwrap();
+        old.execute_batch(SCHEMA).unwrap();
+        drop(old);
+        let mut db = Db::open(&path).unwrap();
+        crate::pricing::ensure_table(&db.conn).unwrap();
+        for (index, service, alias) in [(0, "service-east", "project-fast"), (1, "service-west", "project-private")] {
+            let mut event = an_event(alias);
+            event.request_id = Some(format!("registered-{index}"));
+            event.account_id = format!("account-{index}");
+            event.started_at_ms += index;
+            event.shape = Some(crate::analyze::RequestShape {
+                model: Some(alias.into()), service_id: Some(service.into()),
+                upstream_model: Some("same-physical-model".into()), ..Default::default()
+            });
+            db.record(&event).unwrap();
+        }
+        // Accounts can disappear after the call; the durable attribution belongs
+        // to the request and must be returned without consulting current routes.
+        db.conn.execute("DELETE FROM accounts", []).unwrap();
+        drop(db);
+        let db = Db::open(&path).unwrap();
+        let filter = crate::api::Filter { project: None, session: None, account: None, since: None, until: None, tz: None, provider: None };
+        let list = crate::api::requests_of(&db.conn, &filter).unwrap();
+        let rows = list.as_array().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["model"], "project-private");
+        assert_eq!(rows[0]["service_id"], "service-west");
+        assert_eq!(rows[0]["account_id"], "account-1");
+        assert_eq!(rows[1]["model"], "project-fast");
+        assert_eq!(rows[1]["service_id"], "service-east");
+        assert!(rows.iter().all(|row| row["upstream_model"] == "same-physical-model"));
+        drop(db);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// The replay problem in miniature. Two requests one turn apart: the second resends

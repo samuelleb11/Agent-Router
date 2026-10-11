@@ -5,6 +5,8 @@
 // see a phone wrap them.
 import type { AccountRow, LoginStatus, ModelRow, Push, Setup, Shim } from '~/data/settings';
 import type { Auth } from '~/model/settings';
+import type { ClientSetup } from '~/model/client-setup';
+import { DEFAULT_CAPABILITIES, type ProviderRegistry } from '~/model/provider-registry';
 
 const AT = Date.UTC(2026, 9, 5, 9, 0, 0);
 const DAY = 86_400_000;
@@ -134,6 +136,26 @@ export const MODELS: readonly ModelRow[] = [
   { id: 'claude-sonnet-5-5', provider: 'anthropic', display_name: 'claude-sonnet-5-5', assigned: null, serving: 'default' },
 ];
 
+export const REGISTRY: ProviderRegistry = {
+  services: [
+    { id: 'anthropic', label: 'Anthropic', provider: 'anthropic', base_url: 'https://api.anthropic.com', protocol: 'messages', auth_profile: 'api_key', builtin: true, capabilities: DEFAULT_CAPABILITIES },
+    { id: 'openai', label: 'OpenAI', provider: 'openai', base_url: 'https://api.openai.com', protocol: 'responses', auth_profile: 'bearer', builtin: true, capabilities: { ...DEFAULT_CAPABILITIES, compaction: true } },
+    { id: 'kimi', label: 'Kimi', provider: 'kimi', base_url: 'https://api.moonshot.ai', protocol: 'messages', auth_profile: 'bearer', builtin: true, capabilities: DEFAULT_CAPABILITIES },
+  ],
+  models: [],
+};
+
+export const CLIENTS: ClientSetup = {
+  mode: 'local',
+  url: SETUP.url ?? 'http://127.0.0.1:8787',
+  clients: [
+    { id: 'claude-code', name: 'Claude Code', protocol: 'messages', installed: true, version: '2.0.78', configured: true, managed: true, config_path: '/Users/sample/.claude/settings.json', can_apply: true },
+    { id: 'codex', name: 'Codex', protocol: 'responses', installed: true, version: '0.80.0', configured: false, managed: false, config_path: '/Users/sample/.codex/config.toml', can_apply: true },
+    { id: 'opencode', name: 'OpenCode', protocol: 'messages', installed: false, version: null, configured: false, managed: false, config_path: '/Users/sample/.config/opencode/opencode.json', can_apply: true },
+  ],
+  models: MODELS.map((model) => ({ id: model.id, provider: model.provider, display_name: model.display_name ?? model.id, account_id: model.serving ?? null, available: true, service_id: 'anthropic', native_protocol: 'messages', capabilities: DEFAULT_CAPABILITIES })),
+};
+
 /// No sign-in has run: what the router answers before the first one (ST-C46).
 export const LOGIN: LoginStatus = { phase: 'failed', url: null, label: '', account_id: null, email: null, error: null };
 
@@ -151,5 +173,7 @@ export function settingsRead(path: string, query: URLSearchParams): Response | n
   if (path === '/api/push' && only()) return json(PUSH);
   if (path === '/api/login/status' && only()) return json(LOGIN);
   if (path === '/api/models' && only()) return json(MODELS);
+  if (path === '/api/provider-registry' && only()) return json(REGISTRY);
+  if (path === '/api/clients' && only()) return json(CLIENTS);
   return null;
 }

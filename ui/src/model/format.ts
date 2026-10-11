@@ -278,12 +278,12 @@ export function projectName(path: string | null | undefined): string {
 }
 
 /// A session by the first eight characters of its id (OV-C186).
-export const id8 = (id: string | null | undefined): string => String(id ?? '').slice(0, 8);
+export const id8 = (id: string | null | undefined): string => String(id ?? '').replace(/^(?:codex:|opencode:ses_)/, '').slice(0, 8);
 
 /// The clients the router names a session's requests by, read off their User-Agent
 /// (src/analyze.rs, `client_of`): Claude Code's terminal and VS Code, and Kimi Code's terminal,
 /// VS Code and web.
-export type ClientId = 'claude-code-cli' | 'claude-code-vscode' | 'kimi-code-cli' | 'kimi-code-vscode' | 'kimi-code-web';
+export type ClientId = 'claude-code-cli' | 'claude-code-vscode' | 'kimi-code-cli' | 'kimi-code-vscode' | 'kimi-code-web' | 'codex-cli' | 'codex-vscode' | 'opencode';
 
 /// Each client's label, one spelling wherever the console names a session's client (SE-C234).
 /// Claude Code's keep the words its entrypoint was always named by (OV-C187); Kimi Code's say whose
@@ -294,6 +294,9 @@ const CLIENT_LABELS: Readonly<Record<ClientId, string>> = {
   'kimi-code-cli': 'Kimi Code CLI',
   'kimi-code-vscode': 'Kimi Code VS Code',
   'kimi-code-web': 'Kimi Code web',
+  'codex-cli': 'Codex CLI',
+  'codex-vscode': 'Codex VS Code',
+  opencode: 'OpenCode',
 };
 
 /// A client's label by the router's id for it; null for an id the console does not know, which is
@@ -303,7 +306,7 @@ export function clientLabel(id: string | null | undefined): string | null {
 }
 
 /// The products a machine's agent reports (src/clients.rs, `Client`), by their names.
-const PRODUCTS: Readonly<Record<string, string>> = { 'claude-code': 'Claude Code', 'kimi-code': 'Kimi Code' };
+const PRODUCTS: Readonly<Record<string, string>> = { 'claude-code': 'Claude Code', 'kimi-code': 'Kimi Code', codex: 'Codex' };
 
 /// A product by its name — "Claude Code", "Kimi Code" — and one the console does not know as sent
 /// (MA-C8, SE-C235).
@@ -319,6 +322,9 @@ export function client(entrypoint: string | null | undefined, id?: string | null
   const named = clientLabel(id);
   if (named) return named;
   if (!entrypoint) return null;
+  if (entrypoint.startsWith('opencode/')) return CLIENT_LABELS.opencode;
+  if (/codex[_-](?:vscode|vsc)|vscode.*codex/.test(entrypoint)) return CLIENT_LABELS['codex-vscode'];
+  if (/codex[_-]cli/.test(entrypoint)) return CLIENT_LABELS['codex-cli'];
   return /claude-vscode/.test(entrypoint) ? CLIENT_LABELS['claude-code-vscode'] : /claude-cli/.test(entrypoint) ? CLIENT_LABELS['claude-code-cli'] : null;
 }
 

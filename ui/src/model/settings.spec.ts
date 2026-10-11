@@ -16,14 +16,14 @@ describe('settings', () => {
   });
 
   it('ST-C101, ST-C117, ST-C122, ST-C124: until /api/auth has said which kind of router this is, no machine-only control is offered, which the page offered; Models and Kimi Code, a provider asked for before Anthropic’s ways, are offered on every router', () => {
-    expect(settingsPages(null)).toEqual(['accounts', 'models', 'password', 'notifications', 'router']);
+    expect(settingsPages(null)).toEqual(['accounts', 'models', 'clients', 'access-tokens', 'password', 'notifications', 'router']);
     expect([accountSources(null), readsSetup(null)]).toEqual([['token'], false]);
     // A router that predates `mode` is local, with nothing changed (ST-C100).
-    expect(settingsPages({})).toEqual(['accounts', 'models', 'claude-code', 'network', 'password', 'notifications', 'router']);
+    expect(settingsPages({})).toEqual(['accounts', 'models', 'clients', 'claude-code', 'network', 'access-tokens', 'password', 'notifications', 'router']);
     expect(accountSources({})).toEqual(['signin', 'token', 'profile']);
-    expect(settingsPages({ mode: 'server' })).toEqual(['accounts', 'models', 'password', 'notifications', 'router', 'forges', 'library']);
+    expect(settingsPages({ mode: 'server' })).toEqual(['accounts', 'models', 'clients', 'access-tokens', 'password', 'notifications', 'router', 'forges', 'library']);
     // The providers, Anthropic first and chosen as the form opens.
-    expect(ADD_PROVIDERS).toEqual(['anthropic', 'kimi']);
+    expect(ADD_PROVIDERS).toEqual(['anthropic', 'kimi', 'openai']);
   });
 
   it('ST-C125: the accounts by provider — one group per provider that has any, Anthropic’s first, each in the router’s order; a row naming none is Anthropic’s', () => {
@@ -57,5 +57,12 @@ describe('settings', () => {
       explanation: 'Reachable from your network, but other devices are refused until a password is set',
     });
     expect(networkStatus({ remote_bind: true, configured: true })?.explanation).toBe('Reachable from your network; other devices must give the password');
+  });
+
+  it('an active access token guards the network and makes a legacy password optional', () => {
+    const auth = { configured: false, remote_bind: true, access_tokens: 1 };
+    expect(networkStatus(auth)).toEqual({ tone: 'ok', text: 'network · access tokens', explanation: 'Reachable from your network; other devices must present a router credential' });
+    expect(passwordStatus(auth)).toBe('not set — access tokens are configured');
+    expect(networkStatus({ ...auth, access_tokens: 0 })?.tone).toBe('bad');
   });
 });

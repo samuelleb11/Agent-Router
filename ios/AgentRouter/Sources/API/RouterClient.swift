@@ -30,8 +30,8 @@ struct RouterClient: Sendable {
         var errorDescription: String? {
             switch self {
             case .unreachable(let why): "Can't reach the router — \(why)"
-            case .unauthorized: "Wrong password for this router"
-            case .noPasswordSet: "This router has no password yet — set one on its dashboard, on the Mac"
+            case .unauthorized: "Router credential is invalid, expired or revoked"
+            case .noPasswordSet: "This router has no credential configured — create an Administrator token or set a password in its dashboard"
             case .refused(_, let words): words
             case .status(let code, let body): "Router returned \(code)\(body.isEmpty ? "" : ": \(body)")"
             case .decoding(let why): "Unexpected reply from the router — \(why)"

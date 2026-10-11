@@ -4,6 +4,42 @@ import XCTest
 /// The router's real payloads decode. The forecast fixture is a captured
 /// `/api/forecast` with the identities replaced.
 final class DecodingTests: XCTestCase {
+    func testTokenOnlyRouterAuthStatusKeepsActiveTokenCount() throws {
+        let auth = try JSONDecoder().decode(AuthStatus.self, from: Data(#"{"configured":false,"access_tokens":3,"remote_bind":true,"from_loopback":false,"mode":"server"}"#.utf8))
+        XCTAssertEqual(auth.accessTokens, 3, "A token-only router must not be reported as unguarded")
+        XCTAssertTrue(auth.hasCredentials)
+        XCTAssertEqual(auth.credentialStatus, "access tokens")
+        for tokens in ["", #","access_tokens":null"#, #","access_tokens":0"#] {
+            let data = Data("{\"configured\":false,\"remote_bind\":true,\"from_loopback\":false\(tokens)}".utf8)
+            let empty = try JSONDecoder().decode(AuthStatus.self, from: data)
+            XCTAssertEqual(empty.accessTokens, 0)
+            XCTAssertFalse(empty.hasCredentials)
+        }
+        let legacy = try JSONDecoder().decode(AuthStatus.self, from: Data(#"{"configured":true,"remote_bind":true,"from_loopback":false}"#.utf8))
+        XCTAssertTrue(legacy.hasCredentials)
+    }
+
+    func testCodexSessionIsNamedAndWatchedEvenIfWrappedIsSet() throws {
+        let s = try JSONDecoder().decode(LiveSession.self, from: Data(#"{"session_id":"codex:12345678-abcd","project":"app","last_activity_ms":0,"active":false,"state":"idle","archived":false,"wrapped":true,"bytes":0,"client":"codex","hosted":false}"#.utf8))
+        XCTAssertEqual(s.clientName, "Codex")
+        XCTAssertEqual(s.shortId, "12345678")
+        XCTAssertFalse(s.canControl)
+        XCTAssertFalse(s.canSend)
+        XCTAssertFalse(s.canAskAside)
+        XCTAssertNotNil(s.watchedReason)
+    }
+
+    func testOpenAIAccountDecodesItsCodexLoginAndEncodesAPIKeyProvider() throws {
+        let a = try JSONDecoder().decode(Account.self, from: Data(#"{"id":"codex-default","label":"Codex login","active":1,"source":"codex","provider":"openai"}"#.utf8))
+        XCTAssertEqual(a.providerName, "OpenAI")
+        XCTAssertTrue(a.isCodexLogin)
+        XCTAssertFalse(a.takesUsageKey)
+        let body = AddAccountBody(label: "OpenAI", source: "token", token: "sk-proj-example", provider: "openai")
+        let fields = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(body)) as? [String: String])
+        XCTAssertEqual(fields["provider"], "openai")
+        XCTAssertEqual(fields["source"], "token")
+    }
+
     private func fixture(_ name: String) throws -> Data {
         let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: name, withExtension: "json"))
         return try Data(contentsOf: url)

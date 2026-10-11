@@ -1154,6 +1154,7 @@ pub(crate) fn requests_of(conn: &Connection, f: &Filter) -> anyhow::Result<Value
     let sql = format!(
         "SELECT r.id, r.request_id, r.session_id, s.project AS project, r.model, r.status,
                 r.account_id, coalesce(r.provider, 'anthropic') AS provider,
+                r.service_id, r.upstream_model,
                 r.ttfb_ms, r.duration_ms, r.stop_reason, r.is_sidechain, r.agent_id,
                 r.started_at, substr(r.error, 1, 200) AS error,
                 u.prompt_tokens, u.input_tokens, u.output_tokens, u.thinking_tokens,
@@ -2108,6 +2109,7 @@ pub async fn accounts_add(
                 "the default Keychain account is discovered automatically and cannot be added",
             )
         }
+        (Source::Codex, _) => return refuse(StatusCode::BAD_REQUEST, "the Codex login account is discovered automatically and cannot be added"),
         (Source::Token, None) => {
             return refuse(StatusCode::BAD_REQUEST, "a token is required for this account type")
         }
@@ -2175,7 +2177,18 @@ pub async fn accounts_add(
     })
     .await;
     match done {
-        Ok(Ok(added)) => Json(added).into_response(),
+        Ok(Ok(added)) => {
+            if provider == Provider::OpenAI && !cfg!(test) {
+                if let Some(id) = added["id"].as_str().map(str::to_owned) {
+                    tokio::spawn(async move {
+                        if let Err(e) = crate::codex::refresh_models(&state, &id).await {
+                            tracing::warn!(account = id, "OpenAI model catalogue could not be refreshed: {e:#}");
+                        }
+                    });
+                }
+            }
+            Json(added).into_response()
+        },
         Ok(Err(e)) => not_made(e),
         Err(e) => failed(e),
     }
@@ -2270,7 +2283,7 @@ pub async fn accounts_remove(
     // On a hosted router there is no discovery to bring it back, and a `default` row
     // can only have come with a store copied from a machine: it can never sign there.
     // 400 on a machine: whatever the store holds, the next start would put it back.
-    if req.id == crate::proxy::ACCOUNT_ID && !state.config.server {
+    if (req.id == crate::proxy::ACCOUNT_ID || req.id == "codex-default") && !state.config.server {
         return refuse(
             StatusCode::BAD_REQUEST,
             "the default account is discovered automatically and cannot be removed",
@@ -2607,7 +2620,10 @@ mod tests {
         let parse = |q: &str| Query::<Filter>::try_from_uri(&format!("/api/summary?{q}").parse::<axum::http::Uri>().unwrap()).map(|q| q.0);
         let kimi = parse("since=0&provider=kimi").unwrap();
         assert_eq!(kimi.provider, Some(crate::accounts::Provider::Kimi));
-        assert!(parse("provider=openai").is_err(), "a provider the router does not have");
+        let openai = parse("provider=openai").unwrap();
+        assert_eq!(openai.provider, Some(crate::accounts::Provider::OpenAI));
+        assert_eq!(summary_parts_of(&conn, &openai, &["totals"]).unwrap()["totals"]["requests"], 0);
+        assert!(parse("provider=unknown").is_err(), "a provider the router does not have");
         let anthropic = parse("provider=anthropic").unwrap();
 
         let part = summary_parts_of(&conn, &kimi, &["totals", "models", "by_account"]).unwrap();
@@ -3262,7 +3278,7 @@ mod tests {
                 json!({ "label": "kimi-format", "source": "profile", "provider": "kimi" }),
                 "a Kimi Code account is added from its key, as a token account",
             ),
-            (json!({ "label": "kimi-format", "source": "token", "provider": "openai", "token": KIMI_KEY }), r#"unknown provider "openai""#),
+            (json!({ "label": "kimi-format", "source": "token", "provider": "unknown", "token": KIMI_KEY }), r#"unknown provider "unknown""#),
             (
                 json!({ "label": "kimi-format", "source": "token", "provider": "kimi", "token": KIMI_KEY, "base_url": "http://api.kimi.ai/coding" }),
                 r#""http://api.kimi.ai/coding" is not an https:// address"#,

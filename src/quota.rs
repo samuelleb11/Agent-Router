@@ -412,6 +412,9 @@ pub async fn quota_route(State(state): State<Arc<AppState>>, axum::extract::Quer
         };
         return Json(kimi_quota(&state, &account, fetch).await).into_response();
     }
+    if account.provider == Provider::OpenAI {
+        return Json(fallback(&state, &account.id, "OpenAI account quota is available only when the upstream reports a subscription window")).into_response();
+    }
     match state.signing_credential().await {
         Ok((signing, _)) if signing == account.id => quota(State(state)).await.into_response(),
         _ => Json(fallback(&state, &account.id, "only the signing account's quota is asked of Anthropic")).into_response(),

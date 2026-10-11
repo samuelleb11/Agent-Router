@@ -15,10 +15,12 @@ import {
   KIMI_YOLO,
   controlsOf,
   isKimi,
+  isCodex,
   liveProjectKey,
   notice,
   OTHER_MODEL,
   rowClient,
+  rowProvider,
   switcherOptions,
   switcherSections,
   switchNotice,
@@ -70,6 +72,8 @@ export function Facts({ session, row }: { session: string; row: SessionRow | nul
   // A Kimi Code session is switched through the router that hosts it, never through the wrapper,
   // so its switchers are drawn whatever its `wrapped`, and held back where they cannot act (SE-C236).
   const kimi = isKimi(session, row);
+  const codex = isCodex(session, row);
+  const provider = row ? rowProvider(row) : kimi ? 'kimi' : null;
   const client = row ? rowClient(row) : null;
   const why = controls.held ?? controls.effort;
   return (
@@ -87,23 +91,23 @@ export function Facts({ session, row }: { session: string; row: SessionRow | nul
             </span>
           ))
         )}
-        {kimi && (
+        {(kimi || codex) && (
           // Its client's words name the provider, so beside them the mark is not heard again; before the
           // list has listed it, the provider alone, by its mark and name (SE-C242).
           <span className={styles.fact} data-client-fact="">
-            {client ? (
+            {codex ? (client ?? 'Codex') : client ? (
               <>
-                <ProviderMark provider="kimi" decorative className={styles.rowProvider} />
+                <ProviderMark provider={provider} decorative className={styles.rowProvider} />
                 {client}
               </>
             ) : (
-              <ProviderMark provider="kimi" />
+              <ProviderMark provider={provider} />
             )}
           </span>
         )}
         {total && <span className={styles.projectTotal}>{total}</span>}
       </p>
-      {(kimi || row?.wrapped) && !stats.isPending ? (
+      {codex ? <p className={styles.muted} data-held="">{controls.held}</p> : (kimi || row?.wrapped) && !stats.isPending ? (
         <>
           <Switchers session={session} stats={stats.data ?? null} options={options.data ?? null} controls={controls} say={say} />
           {why && (

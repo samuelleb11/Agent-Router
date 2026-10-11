@@ -111,6 +111,13 @@ impl SseScanner {
     /// A non-streaming JSON response body, parsed whole.
     pub fn absorb_json_body(&mut self, body: &[u8]) {
         if let Ok(v) = serde_json::from_slice::<Value>(body) {
+            if let Some(detail) = v.get("detail").and_then(Value::as_str) {
+                self.error = Some(detail.to_owned());
+                return;
+            }
+            if crate::responses::absorb(self, &v) {
+                return;
+            }
             self.absorb_message(&v);
             self.absorb(&v);
             // Kimi Code's error bodies are `{"error": {"message", "type"}}`, with no
@@ -125,6 +132,9 @@ impl SseScanner {
 
     fn absorb(&mut self, v: &Value) {
         self.saw_any_event = true;
+        if crate::responses::absorb(self, v) {
+            return;
+        }
         match v.get("type").and_then(Value::as_str) {
             Some("message_start") => {
                 if let Some(m) = v.get("message") {
@@ -154,6 +164,7 @@ impl SseScanner {
                 self.error = Some(
                     v.get("error")
                         .and_then(|e| e.get("message"))
+                        .or_else(|| v.get("message"))
                         .and_then(Value::as_str)
                         .unwrap_or("unknown error")
                         .to_string(),
@@ -208,6 +219,10 @@ pub struct ToolResult {
 #[derive(Debug, Default)]
 pub struct RequestShape {
     pub model: Option<String>,
+    /// Explicit route attribution, retained when a registered alias differs from
+    /// the upstream model. These values describe this request at send time.
+    pub service_id: Option<String>,
+    pub upstream_model: Option<String>,
     pub streaming: bool,
     pub message_count: i64,
     pub system_chars: i64,
@@ -230,11 +245,16 @@ pub struct RequestShape {
     pub body_session: Option<String>,
 }
 
-/// The client a User-Agent names, as the dashboards label it: Claude Code's terminal and
-/// VS Code, Kimi Code's terminal, VS Code and web. `None` for any other caller.
+/// The client a User-Agent names, as the dashboards label it. `None` for any other caller.
 pub fn client_of(user_agent: &str) -> Option<&'static str> {
     let ua = user_agent.trim();
-    if let Some(rest) = ua.strip_prefix("kimi-code-cli/") {
+    if ua.starts_with("codex_cli_rs/") || ua.starts_with("codex_exec/") || ua.starts_with("codex/") || ua.starts_with("codex-cli/") {
+        Some("codex-cli")
+    } else if ua.starts_with("codex_vscode/") || ua.starts_with("codex-vscode/") {
+        Some("codex-vscode")
+    } else if ua.starts_with("opencode/") {
+        Some("opencode")
+    } else if let Some(rest) = ua.strip_prefix("kimi-code-cli/") {
         Some(if rest.contains("(web)") { "kimi-code-web" } else { "kimi-code-cli" })
     } else if ua.starts_with("kimi-code-vscode/") {
         Some("kimi-code-vscode")
@@ -656,6 +676,14 @@ fn json_chars(v: &Value) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_codex_exec_requests_are_attributed_to_the_cli() {
+        assert_eq!(client_of("codex_exec/0.162.0-alpha.17.2 (Mac OS 26.6.2; arm64) unknown (codex_exec; 0.162.0-alpha.17.2)"), Some("codex-cli"));
+        assert_eq!(client_of("codex_cli_rs/0.162.0"), Some("codex-cli"));
+        assert_eq!(client_of("codex_vscode/0.162.0"), Some("codex-vscode"));
+        assert_eq!(client_of("some_other_codex_exec/0.162.0"), None);
+    }
     use serde_json::json;
 
     fn env_of(v: Value) -> (Option<String>, Option<String>) {

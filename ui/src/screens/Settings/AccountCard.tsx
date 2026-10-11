@@ -8,11 +8,13 @@ import { useMutation } from '@tanstack/react-query';
 import { Button, Form, PasswordInput, Tag, TextInput, Tile } from '@carbon/react';
 import { keys } from '~/app/query';
 import { clearSessionKey, editAccount, removeAccount, setSessionKey, useReread, type AccountEdit, type AccountRow } from '~/data/settings';
-import { identityNote, KIMI_BASE_URL, notes, providerName, providerOf, removable, type Auth } from '~/model/settings';
+import { identityNote, KIMI_BASE_URL, OPENAI_BASE_URL, notes, providerName, providerOf, removable, type Auth } from '~/model/settings';
 import {
   accountName,
   activeWords,
   BUILT_IN,
+  CODEX_BUILT_IN,
+  CODEX_NOT_ON_A_SERVER,
   credential,
   expiry,
   flag,
@@ -36,7 +38,7 @@ export function AccountCard({ account, accounts, auth, hosted }: { account: Acco
   const active = flag(account.active);
   const name = accountName(account);
   const cred = credential(account);
-  const builtIn = account.source === 'keychain' && !hosted;
+  const builtIn = (account.source === 'keychain' || account.source === 'codex') && !hosted;
   const anthropic = providerOf(account) === 'anthropic';
 
   // Remove re-reads the list whatever the router said, and a refusal stays on this card in the
@@ -74,11 +76,11 @@ export function AccountCard({ account, accounts, auth, hosted }: { account: Acco
             <Fact term="Org">{account.org_name || '—'}</Fact>
             <Fact term="Plan">{account.subscription_type || '—'}</Fact>
           </>
-        ) : (
+        ) : account.source !== 'codex' ? (
           <Fact term="Base URL" mono>
-            {account.base_url || (providerOf(account) === 'kimi' ? KIMI_BASE_URL : '—')}
+            {account.base_url || (providerOf(account) === 'kimi' ? KIMI_BASE_URL : providerOf(account) === 'openai' ? OPENAI_BASE_URL : '—')}
           </Fact>
-        )}
+        ) : null}
         <Fact term="Source">
           <span className={styles.inline}>
             <Tag type="gray" size="sm">
@@ -103,7 +105,7 @@ export function AccountCard({ account, accounts, auth, hosted }: { account: Acco
       {active ? <Explain>{activeWords(account)}</Explain> : null}
       {!usable(account, hosted) ? (
         <Explain className={styles.bad}>
-          It cannot sign on this router: {cred.kind === 'failed' ? cred.text : NOT_ON_A_SERVER}
+          It cannot sign on this router: {cred.kind === 'failed' ? cred.text : account.source === 'codex' ? CODEX_NOT_ON_A_SERVER : NOT_ON_A_SERVER}
         </Explain>
       ) : null}
 
@@ -129,7 +131,7 @@ export function AccountCard({ account, accounts, auth, hosted }: { account: Acco
           <Tag type="cool-gray" size="sm">
             built in
           </Tag>
-          <span className={styles.subtle}>{BUILT_IN}</span>
+          <span className={styles.subtle}>{account.source === 'codex' ? CODEX_BUILT_IN : BUILT_IN}</span>
         </div>
       ) : null}
       <Outcome error={remove.error} />
@@ -181,12 +183,12 @@ function AccountEditor({ account, auth, onClose }: { account: AccountRow; auth: 
     onSuccess: () => setClearing(false),
   });
 
-  const builtIn = account.source === 'keychain';
+  const builtIn = account.source === 'keychain' || account.source === 'codex';
   const ownsToken = account.source === 'token';
   const provider = providerOf(account);
   const kimi = provider === 'kimi';
   // A claude.ai session key reads Anthropic's usage; a Kimi Code account has none to read (ST-C120).
-  const takesSessionKey = !kimi;
+  const takesSessionKey = provider === 'anthropic';
   const hasKey = flag(account.usage_key);
   const id = `edit-${account.id}`;
 
@@ -287,7 +289,7 @@ function AccountEditor({ account, auth, onClose }: { account: AccountRow; auth: 
           labelText="Credential"
           autoComplete="new-password"
           spellCheck={false}
-          placeholder={flag(account.has_token) ? HELD : kimi ? 'the key from the Kimi Code console' : 'sk-ant-oat01-…'}
+          placeholder={flag(account.has_token) ? HELD : kimi ? 'the key from the Kimi Code console' : provider === 'openai' ? 'sk-proj-…' : 'sk-ant-oat01-…'}
           value={token}
           onChange={(e) => setToken(e.target.value)}
           invalid={tried && !!problems.token}
@@ -298,6 +300,8 @@ function AccountEditor({ account, auth, onClose }: { account: AccountRow; auth: 
                 {tokenState} A fresh key from the Kimi Code console, if the current one was revoked or you want to rotate it. The account keeps its id, so
                 everything already recorded against it stays intact.
               </>
+            ) : provider === 'openai' ? (
+              <>{tokenState} A fresh OpenAI API key replaces the stored key and keeps this account’s recorded traffic.</>
             ) : (
               <>
                 {tokenState} A fresh <code>claude setup-token</code> value, if the current one was revoked or you want to rotate it. The account keeps its

@@ -245,6 +245,7 @@ pub fn discover() -> Vec<LiveSession> {
     let mut rows = discover_in(&Roots::system(), &reg, &archived, now);
     // Kimi Code's, from its own files and hooks (`kimi::session`).
     rows.extend(crate::kimi::session::discover(&archived, now));
+    rows.extend(crate::codex::session::discover(&archived, now));
     rows.sort_by_key(|r| std::cmp::Reverse(r.last_activity_ms));
     rows
 }
@@ -539,7 +540,7 @@ fn first_user_text(v: &Value) -> Option<String> {
 }
 
 /// One rendered row in the live view.
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct Item {
     /// Millisecond timestamp from the transcript, when it carries one.
     pub t: Option<String>,
@@ -1262,6 +1263,9 @@ pub async fn send(JsonBody(body): LiveBody<SendBody>) -> Response {
     if text.is_empty() {
         return bad(axum::http::StatusCode::BAD_REQUEST, "Nothing to send.");
     }
+    if crate::codex::live::is_codex(&body.session) {
+        return crate::codex::live::unsupported();
+    }
     if crate::kimi::live::is_kimi(&body.session) {
         return crate::kimi::live::send(crate::kimi::live::host(), &body.session, &text).await;
     }
@@ -1373,6 +1377,11 @@ pub struct Stats {
 /// session, including ones that never went through the proxy.
 pub async fn stats(Query(q): Query<StreamQuery>) -> Response {
     let out = tokio::task::spawn_blocking(move || {
+        if crate::codex::live::is_codex(&q.session) {
+            let mut st = crate::codex::session::find(&q.session)?.stats();
+            st.cost = price(&st);
+            return Some(st);
+        }
         // Kimi Code's sessions are read from its own files (`kimi::session`).
         if let Some(kimi) = crate::kimi::session::find(&q.session) {
             let mut st = kimi.stats();
@@ -1511,17 +1520,28 @@ fn project_stats_in(roots: &Roots, reg: &Snapshot, archived: &HashMap<String, i6
     let mut sessions = 0i64;
     let mut models: std::collections::BTreeSet<String> = Default::default();
 
-    for s in discover_in(roots, reg, archived, now) {
+    let mut listed = discover_in(roots, reg, archived, now);
+    if roots.projects == projects_root() {
+        listed.extend(crate::kimi::session::discover(archived, now));
+        listed.extend(crate::codex::session::discover(archived, now));
+    }
+    for s in listed {
         if project_of(&s) != Some(project) {
             continue;
         }
         if is_shelved(archived, &s.session_id, s.last_activity_ms) {
             continue;
         }
-        let Some(path) = transcript_path_in(&roots.projects, &s.session_id) else {
-            continue;
+        let st = if crate::codex::live::is_codex(&s.session_id) {
+            let Some(session) = crate::codex::session::find(&s.session_id) else { continue };
+            let mut st = session.stats(); st.cost = price(&st); st
+        } else if crate::kimi::live::is_kimi(&s.session_id) {
+            let Some(session) = crate::kimi::session::find(&s.session_id) else { continue };
+            let mut st = session.stats(); st.cost = price(&st); st
+        } else {
+            let Some(path) = transcript_path_in(&roots.projects, &s.session_id) else { continue };
+            scan_stats(&path)
         };
-        let st = scan_stats(&path);
         if let Some(m) = st.model.clone() {
             models.insert(m);
         }
@@ -1562,7 +1582,12 @@ pub struct ArchiveBody {
 /// Stored as a plain list of ids rather than in the database, because it is the
 /// reader's shelf and should survive the database being deleted or rebuilt.
 pub async fn archive(JsonBody(body): LiveBody<ArchiveBody>) -> Response {
-    if transcript_path(&body.session).is_none() {
+    let exists = if crate::codex::live::is_codex(&body.session) {
+        crate::codex::session::find(&body.session).is_some()
+    } else if crate::kimi::live::is_kimi(&body.session) {
+        crate::kimi::session::find(&body.session).is_some()
+    } else { transcript_path(&body.session).is_some() };
+    if !exists {
         return bad(axum::http::StatusCode::NOT_FOUND, "No such session.");
     }
     let done = tokio::task::spawn_blocking(move || -> anyhow::Result<usize> {
@@ -1614,6 +1639,9 @@ pub struct AnswerBody {
 /// than the one its transcript happened to record: the newest of the prompts that count
 /// (the one the session's status names), and how many there are in all.
 pub async fn prompt(Query(q): Query<StreamQuery>) -> Response {
+    if crate::codex::live::is_codex(&q.session) {
+        return crate::codex::live::prompt();
+    }
     if crate::kimi::live::is_kimi(&q.session) {
         return crate::kimi::live::prompt(&q.session).await;
     }
@@ -1817,6 +1845,9 @@ fn pick_prompt<'a>(
 
 /// Answer the pending question — the editor's Submit, from anywhere.
 pub async fn answer(JsonBody(body): LiveBody<AnswerBody>) -> Response {
+    if crate::codex::live::is_codex(&body.session) {
+        return crate::codex::live::unsupported();
+    }
     if crate::kimi::live::is_kimi(&body.session) {
         return crate::kimi::live::answer(crate::kimi::live::host(), &body).await;
     }
@@ -2037,6 +2068,9 @@ pub async fn set_model(JsonBody(body): LiveBody<ModelBody>) -> Response {
     if !valid_model(&model) {
         return bad(axum::http::StatusCode::BAD_REQUEST, "That is not a model name.");
     }
+    if crate::codex::live::is_codex(&body.session) {
+        return crate::codex::live::unsupported();
+    }
     if crate::kimi::live::is_kimi(&body.session) {
         return crate::kimi::live::set_model(crate::kimi::live::host(), &body.session, &model).await;
     }
@@ -2079,6 +2113,9 @@ pub struct EffortBody {
 
 /// Set the effort level, as `/effort <level>` typed into the session.
 pub async fn set_effort(JsonBody(body): LiveBody<EffortBody>) -> Response {
+    if crate::codex::live::is_codex(&body.session) {
+        return crate::codex::live::unsupported();
+    }
     if crate::kimi::live::is_kimi(&body.session) {
         return crate::kimi::live::unsupported("effort to set");
     }
@@ -2114,6 +2151,9 @@ pub struct ModeBody {
 /// for and the CLI's own sentence is passed back, rather than reporting a success the
 /// session did not agree to.
 pub async fn set_mode(JsonBody(body): LiveBody<ModeBody>) -> Response {
+    if crate::codex::live::is_codex(&body.session) {
+        return crate::codex::live::unsupported();
+    }
     if crate::kimi::live::is_kimi(&body.session) {
         return crate::kimi::live::set_mode(crate::kimi::live::host(), &body.session, &body.mode).await;
     }
@@ -2219,6 +2259,9 @@ fn stop_refusal(kind: Kind) -> Option<&'static str> {
 /// Only wrapped sessions can be stopped: an interrupt is a control frame on stdin, and
 /// the peer socket carries user messages, not control.
 pub async fn interrupt(JsonBody(body): LiveBody<InterruptBody>) -> Response {
+    if crate::codex::live::is_codex(&body.session) {
+        return crate::codex::live::unsupported();
+    }
     if crate::kimi::live::is_kimi(&body.session) {
         return crate::kimi::live::interrupt(crate::kimi::live::host(), &body.session).await;
     }
@@ -2321,6 +2364,9 @@ fn shelve(session_id: &str) {
 /// a brief answer, and the fork shelved so it does not clutter the list. It costs one
 /// replay of the session's context, mostly cached.
 pub async fn aside(JsonBody(body): LiveBody<AsideBody>) -> Response {
+    if crate::codex::live::is_codex(&body.session) {
+        return crate::codex::live::unsupported();
+    }
     if crate::kimi::live::is_kimi(&body.session) {
         return crate::kimi::live::unsupported("side question to ask");
     }
@@ -2403,6 +2449,9 @@ pub struct StreamQuery {
 /// that matters costs a `stat`, works identically on every platform, and cannot miss a
 /// write the way a coalesced event can.
 pub async fn stream(Query(q): Query<StreamQuery>) -> Response {
+    if crate::codex::live::is_codex(&q.session) {
+        return crate::codex::live::stream(&q.session);
+    }
     if crate::kimi::live::is_kimi(&q.session) {
         return crate::kimi::live::stream(&q.session);
     }
@@ -2508,6 +2557,11 @@ fn observe_session(session_id: &str, path: Option<&Path>, now: i64) -> Observed 
 
 /// What to call a session in a notification: its project, and its title if it has one.
 pub fn session_label(session_id: &str) -> Option<(String, Option<String>)> {
+    if crate::codex::live::is_codex(session_id) {
+        let session = crate::codex::session::find(session_id)?;
+        let project = session.cwd.as_deref().map(basename).filter(|s| !s.is_empty()).unwrap_or("session").to_owned();
+        return Some((project, session.title.clone()));
+    }
     let path = transcript_path(session_id)?;
     let seen = tracked(&path)?;
     let project = seen
@@ -3652,7 +3706,7 @@ mod tests {
         let ask = |model: &str| serde_json::json!({ "session": session, "model": model }).to_string();
         // No session by that id is under a wrapper here, so anything that got past the router's
         // own check would be answered "only a session under the wrapper", 503.
-        for (model, code) in [("gpt-9", StatusCode::BAD_REQUEST), ("k3", StatusCode::CONFLICT)] {
+        for (model, code) in [("gpt-9", StatusCode::CONFLICT), ("unknown-model", StatusCode::BAD_REQUEST), ("k3", StatusCode::CONFLICT)] {
             let (status, body) = lab.post("/api/live/model", &ask(model)).await;
             assert_eq!(status, code, "{model}: {body}");
             assert_eq!(body["reason"], format!("no source serves the model \"{model}\""), "{model}");
