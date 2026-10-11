@@ -120,13 +120,17 @@ OpenCode's [official IDE extension](https://opencode.ai/docs/ide/) is terminal-b
 Cline documents its [IDE](https://docs.cline.bot/usage/ide) and
 [CLI](https://docs.cline.bot/cli/cli-reference) interfaces.
 
-Northstar **AGEN-0157** now tracks the Codex-primary direction. Its open tasks are
-catalogue **AGEN-0168**, runtime **AGEN-0169**, Library **AGEN-0170**, native frontends
-**AGEN-0171**, compaction **AGEN-0172**, reusable gateway **AGEN-0173** and lifecycle
-acceptance **AGEN-0174**. The unimplemented OpenCode plan **AGEN-0158–AGEN-0162** and
-preliminary Claude-primary acceptance plan **AGEN-0163–AGEN-0167** were withdrawn as
-superseded. New acceptance commands are planned and have not been run. The earlier
-three-client transport work remains completed under **AGEN-0148**.
+Northstar **AGEN-0157** tracks the Codex-primary direction. The portable gateway
+**AGEN-0173** is verified against the official OpenAI SDK, including all three providers,
+streaming, tool replay, structured output, errors and scoped-token lifecycle. Catalogue
+**AGEN-0168** includes a complete CLI/native sidebar CI gate; its acceptance result is
+recorded in Northstar. The remaining managed-integration items are runtime **AGEN-0169**,
+Library **AGEN-0170**, native frontends **AGEN-0171**, compaction **AGEN-0172** and lifecycle
+acceptance **AGEN-0174**. Model discovery and inference qualification alone do not prove
+remote session control or full primary-client support. The unimplemented OpenCode plan
+**AGEN-0158–AGEN-0162** and preliminary Claude-primary acceptance plan **AGEN-0163–AGEN-0167**
+were withdrawn as superseded. The earlier three-client transport work remains completed
+under **AGEN-0148**.
 
 ## Current implementation
 
