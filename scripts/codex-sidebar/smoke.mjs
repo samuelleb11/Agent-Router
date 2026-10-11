@@ -36,6 +36,7 @@ const environment = {
   XDG_CACHE_HOME: path.join(scratch, 'cache'), XDG_DATA_HOME: path.join(scratch, 'data'),
   XDG_STATE_HOME: path.join(scratch, 'state'), LANG: 'en_US.UTF-8', CI: 'true',
 };
+execFileSync('git', ['init', '--quiet', project], { env: environment });
 let app;
 let page;
 async function palette(command) {

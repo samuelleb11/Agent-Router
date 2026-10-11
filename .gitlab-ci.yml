@@ -163,6 +163,7 @@ check primary codex:
   extends: .rules-rust-check
   image: mcr.microsoft.com/playwright:v1.64.0-noble
   timeout: 30m
+  needs: ["check console"]
   variables:
     GIT_DEPTH: "0"
   cache:
@@ -176,7 +177,7 @@ check primary codex:
     - apt-get -qq update
     - apt-get -qq install -y curl git build-essential pkg-config python3 python3-venv xvfb xauth
     - curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.98.0
-    - export PATH="$HOME/.cargo/bin:$PATH"
+    - export PATH="$CARGO_HOME/bin:$PATH"
     - npm ci --ignore-scripts --no-audit --no-fund --prefix scripts/codex-sidebar
     - node scripts/codex-sidebar/prepare.mjs
     - export AR_SIDEBAR_SETUP="$CI_PROJECT_DIR/.ci/codex-editor/setup.json"
