@@ -5,9 +5,12 @@
 ## Requirement
 
 Agent Router must support multiple providers independently of the selected client.
-Claude Code and Codex are the original primary clients. A generic client such as OpenCode
-or Cline is also acceptable. The client owns its agent loop and tools; Agent Router owns
-provider accounts, routing, protocol adaptation and usage capture.
+Claude Code and Codex were the original primary clients. On 2026-10-11 the owner
+directed the next phase toward one fully integrated client: it must use a
+server-provided model catalogue, support plugins or skills and MCP servers, and expose
+complete session control through Agent Router from the CLI and VS Code extension.
+The client owns its agent loop and tools; Agent Router owns provider accounts, routing,
+protocol adaptation, usage capture and the managed runtime's integration.
 
 The first version supports Anthropic, OpenAI and Kimi Code, as confirmed by the user.
 Compatible services can be registered explicitly. API keys provide the baseline for
@@ -21,6 +24,52 @@ entitlement and refresh limits.
 | Provider registration | Service identity, endpoint, authentication and capability profile |
 | Account | Credential storage and refresh ownership for one provider |
 | Model route | Client-visible ID, provider, upstream model, selected account and capabilities |
+
+## Primary client direction
+
+**OpenCode is the primary integration target.** Stable 1.19.0 has already passed the
+router's native three-provider routing checks. Its headless server exposes session,
+prompt, cancellation, permission and event APIs; its CLI can attach to an existing
+server. It supports plugins, `SKILL.md` skills and local/remote MCP servers.
+[Server API](https://opencode.ai/docs/server/),
+[CLI attachment](https://opencode.ai/docs/cli/#attach),
+[skills](https://opencode.ai/docs/skills/) and
+[MCP](https://opencode.ai/docs/mcp-servers/) document those extension points.
+
+The intended integration is:
+
+- The machine agent supervises an authenticated loopback OpenCode backend with an
+  explicit workspace. Remote controls use the existing outbound machine tunnel.
+- Agent Router's CLI and VS Code extension attach to that managed backend. They share
+  session identity, prompts, approvals, model selection and events with the web and
+  phone controls. The upstream IDE extension currently launches its own OpenCode
+  process; our extension needs an explicit managed attachment path.
+- An Agent Router-owned provider plugin/configuration adapter obtains model aliases,
+  labels, capabilities and known token limits from the router. The native picker
+  updates at startup and catalogue refresh, including additions and removals. A
+  hand-maintained model map does not meet the requirement.
+- Library sync supplies managed skills, plugins and MCP configuration while preserving
+  user edits and keeping provider credentials on Agent Router.
+- One pinned release passes native acceptance for catalogue refresh, tools, MCP and
+  skills, permissions/questions, cancellation, model/agent selection, compaction,
+  resume and the shared CLI/editor/remote session. Major-version upgrades require the
+  same checks before adoption.
+
+The server-provided catalogue requires integration work. OpenCode V1's custom provider
+configuration defines a model map; its asynchronous plugin `config` hook runs before
+those providers are loaded and can populate it from the router. Remote organizational
+configuration is also supported, but has lower precedence than local/project settings
+and is not evidence of automatic in-session refresh.
+[V1 plugin hooks](https://github.com/anomalyco/opencode/blob/v1.19.0/packages/plugin/src/index.ts),
+[V1 provider loading](https://github.com/anomalyco/opencode/blob/v1.19.0/packages/opencode/src/provider/provider.ts)
+and [configuration precedence](https://opencode.ai/docs/config/) support this design.
+
+**This managed integration is planned, not implemented.** Today's OpenCode support is
+configuration, inference routing, tools and capture. New work is tracked in Northstar
+as **AGEN-0157**, with catalogue, runtime, Library, CLI/VS Code and acceptance children
+**AGEN-0158–AGEN-0162**. The earlier three-client routing work remains completed under
+AGEN-0148. Claude Code and Codex retain their existing protocol compatibility; new deep
+client integration work focuses on OpenCode.
 
 ## Current implementation
 
