@@ -34,6 +34,7 @@ await writeFile(path.join(userData, 'User/settings.json'), JSON.stringify({
 await writeFile(path.join(project, 'fixture.txt'), 'MANAGED_SELECTION_CONTEXT_789\nLOCAL_TOOL_FIXTURE_OK\n');
 execFileSync('git', ['init', '--quiet', project], { env: environment });
 let app, page;
+let editorStderr = '';
 async function api(route, body) {
   const response = await fetch(`${server}${route}`, { method: body ? 'POST' : 'GET',
     headers: { Authorization: `Bearer ${process.env.AR_SIDEBAR_ADMIN}`, 'Content-Type': 'application/json' },
@@ -74,10 +75,16 @@ function modelRow(frame, label) {
   return frame.getByRole('menuitemradio').filter({ has: text });
 }
 async function launch() {
+  editorStderr = '';
   app = await electron.launch({ executablePath: setup.vscodeExecutable,
-    args: ['--no-sandbox', '--disable-gpu', '--skip-welcome', '--skip-release-notes',
+    // Kubernetes job containers have a small /dev/shm. Use the isolated fixture
+    // temp directory for Chromium's shared memory, including webview renderers.
+    args: ['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage', '--skip-welcome', '--skip-release-notes',
       '--user-data-dir', userData, '--extensions-dir', setup.extensionsDir, project,
       '--goto', `${path.join(project, 'fixture.txt')}:1:1`], env: environment, timeout: 60_000 });
+  app.process().stderr?.on('data', bytes => {
+    editorStderr = (editorStderr + bytes.toString()).slice(-256 * 1024);
+  });
   page = await app.firstWindow(); await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.locator('.monaco-workbench').waitFor({ timeout: 60_000 });
   const frame = await sidebar();
@@ -181,6 +188,7 @@ try {
   await writeFile(path.join(artifacts, 'managed-sidebar-sessions.json'), JSON.stringify(sessions, null, 2));
   console.log('MANAGED_SIDEBAR_OK models=3 remote=3 model-change=1 approval=1 cancel=1 same-history=1');
 } catch (error) {
+  await writeFile(path.join(artifacts, 'managed-vscode-stderr.log'), editorStderr);
   if (page) {
     await page.screenshot({ path: path.join(artifacts, 'managed-sidebar-failure.png') }).catch(() => {});
     for (const [index,frame] of page.frames().entries()) {

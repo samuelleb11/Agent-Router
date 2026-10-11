@@ -102,7 +102,7 @@ async function registry(method, suffix, body) {
 }
 async function launch() {
   app = await electron.launch({ executablePath: setup.vscodeExecutable,
-    args: ['--no-sandbox', '--disable-gpu', '--skip-welcome', '--skip-release-notes',
+    args: ['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage', '--skip-welcome', '--skip-release-notes',
       '--user-data-dir', userData, '--extensions-dir', setup.extensionsDir, project],
     env: environment, timeout: 60_000,
   });
