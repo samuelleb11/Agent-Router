@@ -467,7 +467,8 @@ mod tests {
         use axum::http::{header, Request};
         use tower::ServiceExt;
 
-        let mut req = Request::get(path).header(header::HOST, "127.0.0.1").body(Body::empty()).unwrap();
+        let mut req = Request::get(path).header(header::HOST, "127.0.0.1")
+            .header("x-api-key", "the client's own").body(Body::empty()).unwrap();
         req.extensions_mut().insert(ConnectInfo(std::net::SocketAddr::from(([127, 0, 0, 1], 50_000))));
         let res = lab.app.clone().oneshot(req).await.unwrap();
         let status = res.status();
@@ -650,6 +651,42 @@ mod tests {
             "created_at is RFC 3339: {body}"
         );
         assert_eq!((&body["has_more"], &body["first_id"], &body["last_id"]), (&json!(false), &json!("k3"), &json!("kimi-for-coding-highspeed")));
+    }
+
+    #[tokio::test]
+    async fn openai_model_discovery_uses_standard_objects() {
+        let lab = lab_with_both("openai-model-discovery").await;
+        let (status, body) = get(&lab, "/v1/models").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["object"], "list", "OpenAI SDK model discovery: {body}");
+        let models = body["data"].as_array().unwrap();
+        assert!(!models.is_empty());
+        for model in models {
+            assert_eq!(model["object"], "model");
+            assert!(model["created"].as_i64().is_some_and(|n| n > 0));
+            assert!(matches!(model["owned_by"].as_str(), Some("anthropic" | "kimi")));
+            assert!(model.get("serving").is_none());
+            assert!(model.get("assigned").is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn client_model_metadata_has_capabilities_without_provider_secrets() {
+        let lab = lab_with_both("client-model-metadata").await;
+        let (status, body) = get(&lab, "/_router/models").await;
+        assert_eq!(status, StatusCode::OK, "client-scoped metadata: {body}");
+        assert_eq!(body["schema_version"], 1);
+        let models = body["models"].as_array().unwrap();
+        assert!(!models.is_empty());
+        for model in models {
+            assert!(model["id"].as_str().is_some());
+            assert!(model["display_name"].as_str().is_some());
+            assert!(model["capabilities"]["tools"].as_bool().is_some());
+            assert!(model.get("account_id").is_none());
+            assert!(model.get("base_url").is_none());
+            assert!(model.get("upstream_model").is_none());
+        }
+        assert!(!body.to_string().contains("not-a-credential"));
     }
 
     impl AssignError {

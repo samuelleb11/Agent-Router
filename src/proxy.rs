@@ -1324,4 +1324,5 @@ mod tests {
     include!("../scripts/codex-routing.rs");
     include!("../scripts/claude-routing.rs");
     include!("../scripts/live-client-routing.rs");
+    include!("../scripts/openai-sdk-routing.rs");
 }
