@@ -73,15 +73,14 @@ async function sidebar() {
 async function picker(frame) {
   // The toolbar button opens the power panel. Its menu action opens the model
   // list; inactive panels remain mounted, so use accessible roles throughout.
-  const icon = frame.getByRole('button', { name: 'Select model', exact: true });
-  if (await icon.isVisible()) await icon.click();
-  else {
-    // An explicitly selected GPT model uses a labelled model/effort button.
-    const labels = (await models()).flatMap(row => [row.display_name, row.display_name.replace(/^gpt[- ]?/i, '')]);
-    labels.push('Custom');
-    const pattern = new RegExp(labels.filter(Boolean).map(label => label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'));
-    await frame.getByRole('button', { name: pattern }).click();
-  }
+  // Startup can replace the labelled control with the icon while clicking.
+  // One locator lets Playwright re-query either representation after detachment.
+  const labels = (await models()).flatMap(row => [row.display_name, row.display_name.replace(/^gpt[- ]?/i, '')]);
+  labels.push('Custom');
+  const pattern = new RegExp(labels.filter(Boolean).map(label => label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'));
+  const toolbar = frame.getByRole('button', { name: 'Select model', exact: true })
+    .or(frame.getByRole('button', { name: pattern })).first();
+  await toolbar.click();
   const action = frame.getByRole('menuitem', { name: 'Select model', exact: true });
   const rows = frame.getByRole('menuitemradio');
   await action.or(rows.first()).first().waitFor({ state: 'visible', timeout: 15_000 });
