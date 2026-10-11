@@ -73,9 +73,20 @@ async function sidebar() {
 async function picker(frame) {
   // The toolbar button opens the power panel. Its menu action opens the model
   // list; inactive panels remain mounted, so use accessible roles throughout.
-  await frame.getByRole('button', { name: 'Select model', exact: true }).click();
-  await frame.getByRole('menuitem', { name: 'Select model', exact: true }).click();
-  await frame.getByRole('menuitemradio').first().waitFor({ state: 'visible', timeout: 15_000 });
+  const icon = frame.getByRole('button', { name: 'Select model', exact: true });
+  if (await icon.isVisible()) await icon.click();
+  else {
+    // An explicitly selected GPT model uses a labelled model/effort button.
+    const labels = (await models()).flatMap(row => [row.display_name, row.display_name.replace(/^gpt[- ]?/i, '')]);
+    labels.push('Custom');
+    const pattern = new RegExp(labels.filter(Boolean).map(label => label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'));
+    await frame.getByRole('button', { name: pattern }).click();
+  }
+  const action = frame.getByRole('menuitem', { name: 'Select model', exact: true });
+  const rows = frame.getByRole('menuitemradio');
+  await action.or(rows.first()).first().waitFor({ state: 'visible', timeout: 15_000 });
+  if (await action.isVisible()) await action.click();
+  await rows.first().waitFor({ state: 'visible', timeout: 15_000 });
 }
 function modelRow(frame, label) {
   // The native UI strips GPT prefixes from labels in its model picker.
