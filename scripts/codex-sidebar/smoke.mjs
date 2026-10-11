@@ -31,7 +31,8 @@ await writeFile(path.join(userData, 'User/settings.json'), JSON.stringify({
   'chatgpt.openOnStartup': true,
 }));
 const environment = {
-  PATH: process.env.PATH, DISPLAY: process.env.DISPLAY, HOME: home, CODEX_HOME: codex,
+  PATH: process.env.PATH, DISPLAY: process.env.DISPLAY, XAUTHORITY: process.env.XAUTHORITY,
+  HOME: home, CODEX_HOME: codex,
   TMPDIR: path.join(scratch, 'tmp'), XDG_CONFIG_HOME: path.join(scratch, 'config'),
   XDG_CACHE_HOME: path.join(scratch, 'cache'), XDG_DATA_HOME: path.join(scratch, 'data'),
   XDG_STATE_HOME: path.join(scratch, 'state'), LANG: 'en_US.UTF-8', CI: 'true',
