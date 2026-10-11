@@ -21,7 +21,7 @@ import styles from './Sessions.module.scss';
 
 /// The button, over the list, and its form.
 export const START = 'Start a session';
-export const START_TITLE = 'Start a Kimi Code session';
+export const START_TITLE = 'Start a session';
 /// With no machine to start one on, or no model to start it with (SE-C239, SE-C240).
 export const NO_MACHINE = 'No machine online has Kimi Code.';
 export const NO_MODEL = 'No Kimi Code model is in the catalogue — add a Kimi Code account in Settings.';
@@ -58,8 +58,9 @@ function StartForm({ hosted, onClose, onStarted }: { hosted: boolean | null; onC
   // hosted router; a local one starts the session on itself (SE-C239).
   const machinesRead = useRead({ queryKey: machineKeys.list, queryFn: ({ signal }) => readMachines(signal), enabled: hosted === true, refetchInterval: POLL_MS, retry: false, staleTime: 0 });
   const modelsRead = useModels();
-  const machines = startMachines(machinesRead.value ?? []);
-  const models = startModels(modelsRead.value ?? []);
+  const [client, setClient] = useState<'kimi-code' | 'codex'>('kimi-code');
+  const machines = startMachines(machinesRead.value ?? [], client);
+  const models = startModels(modelsRead.value ?? [], client);
 
   const [machinePick, setMachinePick] = useState('');
   const [cwd, setCwd] = useState('');
@@ -78,7 +79,7 @@ function StartForm({ hosted, onClose, onStarted }: { hosted: boolean | null; onC
     if (!ready || busy || hosted === null) return;
     setBusy(true);
     setRefused(null);
-    const r = await postLive<{ session?: unknown }>('/api/live/start', startBody(hosted, machine, cwd, model));
+    const r = await postLive<{ session?: unknown }>('/api/live/start', startBody(hosted, machine, cwd, model, client));
     setBusy(false);
     if (r.ok && typeof r.body.session === 'string' && r.body.session) {
       onStarted(r.body.session);
@@ -100,7 +101,11 @@ function StartForm({ hosted, onClose, onStarted }: { hosted: boolean | null; onC
       onClose={onClose}
       focusId={`${id}-cwd`}
     >
-      <p className={styles.muted}>The router starts Kimi Code there and hosts the session, so it takes messages, answers and a Stop from here.</p>
+      <p className={styles.muted}>The router hosts the session there, so it takes messages, answers and a Stop from here.</p>
+      <Select id={`${id}-client`} labelText="Client" value={client} onChange={(e) => setClient(e.target.value === 'codex' ? 'codex' : 'kimi-code')}>
+        <SelectItem value="codex" text="Codex" />
+        <SelectItem value="kimi-code" text="Kimi Code" />
+      </Select>
       {hosted === null ? (
         <p className={styles.muted}>Asking the router what kind it is…</p>
       ) : hosted ? (
@@ -121,7 +126,7 @@ function StartForm({ hosted, onClose, onStarted }: { hosted: boolean | null; onC
           </Select>
         ) : (
           <p className={styles.muted}>
-            {NO_MACHINE}{' '}
+            {client === 'codex' ? 'No machine online has Codex.' : NO_MACHINE}{' '}
             <RouterLink className="cds--link" to={routes.machines}>
               Open Machines
             </RouterLink>
@@ -152,7 +157,7 @@ function StartForm({ hosted, onClose, onStarted }: { hosted: boolean | null; onC
         </Select>
       ) : (
         <p className={styles.muted}>
-          {NO_MODEL}{' '}
+          {client === 'codex' ? 'No model is available for Codex — configure a provider in Settings.' : NO_MODEL}{' '}
           <RouterLink className="cds--link" to={settingsPath('accounts')}>
             Open Settings → Accounts
           </RouterLink>

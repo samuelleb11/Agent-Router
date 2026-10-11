@@ -210,6 +210,51 @@ original conversation roles. This portable mapping changes the prompt-prefix pla
 of later instructions and can invalidate a provider's prefix cache; it does not use
 model-specific inline-system features.
 
+## Managed remote control and local stdio attachment
+
+Configure inference first with Settings → Clients using a Client token. Then select
+the version-matched native executable:
+
+```sh
+agent-router codex configure /absolute/path/to/codex
+agent-router codex run
+```
+
+Configure prints the private launcher path. The Agent Router VS Code extension's
+**Connect Managed Codex** command configures the published Codex sidebar to use it;
+**Restore Codex Launch Configuration** restores the previous executable setting while
+preserving subsequent user edits. Finish active turns and reload the editor after
+changing the launcher. This adapter is qualified against extension 26.1007.21434 and
+Codex 0.162.0-alpha.17.2; the extension's custom executable setting is labelled for
+development use upstream, so other versions are refused pending qualification.
+
+The local supervisor owns one native app-server listening on a private Unix socket.
+Codex's socket transport uses WebSocket framing. Its native `app-server proxy` relays
+raw socket bytes; Agent Router adds the WebSocket handshake and converts JSONL for
+`agent-router codex proxy` and the sidebar launcher. The actual terminal UI uses native
+`--remote unix://...` attachment. No app-server listener is exposed to the network.
+Remote commands use the existing authenticated outbound machine tunnel.
+
+Managed threads support acknowledged prompts/steering, interruption, model/effort/mode
+changes, approvals/questions, explicit resume and native archive/unarchive. The console
+marks only managed reachable threads as controllable. Approval replies name their
+thread and connection and wait for native resolution; disconnects clear pending ownership.
+Unknown or disconnected actions fail without automatic replay. Unmanaged sessions keep
+their watched-only behavior. Client tokens authorize inference, not remote controls;
+the machine tunnel and Administrator access authorize those separately.
+
+The backend survives frontend and router-agent exits. To load changed catalogue metadata,
+finish active turns and run `agent-router codex restart`, then reconnect the sidebar or
+resume the saved CLI thread. Restart/stop refuse an observed active turn. Explicit
+resume retains native thread identity and history after backend recovery. Cross-provider
+compaction and opaque encrypted OpenAI history remain separate work under AGEN-0172;
+side questions and native authentication ceremonies are not driven through this bridge.
+
+`bash scripts/check-primary-codex.sh runtime` exercises the real pinned backend and
+machine tunnel, including actual native terminal attachment. `frontends` also runs the
+published native sidebar, editor context and remote controls in Linux CI. Northstar
+AGEN-0169/AGEN-0171 hold the measurements; a passing work-tree check alone does not close them.
+
 ## Sessions and validation
 
 Codex CLI and VS Code installations are detected and displayed as clients. Native
@@ -217,7 +262,7 @@ Codex CLI and VS Code installations are detected and displayed as clients. Nativ
 fallbacks. Local rollout files supply watched session feeds, tools and usage. Session
 IDs are prefixed `codex:` to
 keep them distinct from Claude Code IDs. The web console, iOS and Android display them
-without controls that require owning the client process. Process liveness and native
+with controls only for threads owned by the managed backend. Process liveness and native
 paginated history are not established from these rollout files.
 
 Regression coverage includes credential-store decoding, model routing, session parsing,

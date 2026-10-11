@@ -248,7 +248,9 @@ pub struct RequestShape {
 /// The client a User-Agent names, as the dashboards label it. `None` for any other caller.
 pub fn client_of(user_agent: &str) -> Option<&'static str> {
     let ua = user_agent.trim();
-    if ua.starts_with("codex_cli_rs/") || ua.starts_with("codex_exec/") || ua.starts_with("codex/") || ua.starts_with("codex-cli/") {
+    if ua.starts_with("agent_router_codex/") {
+        Some("codex-managed")
+    } else if ua.starts_with("codex_cli_rs/") || ua.starts_with("codex_exec/") || ua.starts_with("codex/") || ua.starts_with("codex-cli/") {
         Some("codex-cli")
     } else if ua.starts_with("codex_vscode/") || ua.starts_with("codex-vscode/") {
         Some("codex-vscode")

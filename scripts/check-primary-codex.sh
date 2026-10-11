@@ -37,5 +37,21 @@ case "${1:-}" in
             bash scripts/check-codex-sidebar.sh
         fi
         ;;
-    *) echo "Usage: $0 gateway|catalogue|catalogue-core" >&2; exit 2 ;;
+    runtime|frontends)
+        test_case codex::runtime::tests::replies_match_ids_even_when_the_native_peer_reorders_them
+        test_case codex::runtime::tests::disconnects_fail_unacknowledged_actions_and_clear_approval_ownership
+        test_case codex::runtime::tests::approvals_are_bound_to_connection_and_thread_and_wait_for_resolution
+        test_case codex::runtime::tests::native_refusals_and_malformed_frames_never_become_success
+        cli=${CODEX_BIN:-$(command -v codex || true)}
+        [[ -n "$cli" && -x "$cli" ]] || { echo "Set CODEX_BIN to the qualified native executable" >&2; exit 127; }
+        export AR_CODEX_BIN="$cli"
+        cargo build --locked -p agent-router --quiet
+        export AR_ROUTER_BIN="$repo/target/debug/agent-router"
+        if [[ "$1" == frontends ]]; then
+            [[ "${CI:-}" == true ]] || { echo "Native frontend acceptance runs in CI only." >&2; exit 126; }
+            export AR_CODEX_MANAGED_DRIVER="$repo/scripts/codex-sidebar/managed.mjs"
+        fi
+        test_case proxy::tests::managed_codex_controls_cross_the_machine_tunnel --ignored
+        ;;
+    *) echo "Usage: $0 gateway|catalogue|catalogue-core|runtime|frontends" >&2; exit 2 ;;
 esac

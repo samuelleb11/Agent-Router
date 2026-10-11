@@ -192,6 +192,15 @@ check primary codex:
       - .ci/codex-measurements/
       - .ci/codex-artifacts/
 
+# Keep native control/attachment proof separate from the qualified discovery gate.
+check managed codex:
+  extends: check primary codex
+  variables:
+    GIT_DEPTH: "0"
+    AR_CODEX_BASELINE: "a4d00323caafd9c1145686f1e35b8d2b4c9b307b"
+  script:
+    - xvfb-run -a python3 scripts/measure-primary-codex.py runtime frontends
+
 check chart:
   stage: check
   extends: .rules-agent-router

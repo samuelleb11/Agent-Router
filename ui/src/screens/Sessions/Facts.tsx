@@ -107,7 +107,7 @@ export function Facts({ session, row }: { session: string; row: SessionRow | nul
         )}
         {total && <span className={styles.projectTotal}>{total}</span>}
       </p>
-      {codex ? <p className={styles.muted} data-held="">{controls.held}</p> : (kimi || row?.wrapped) && !stats.isPending ? (
+      {codex && controls.held ? <p className={styles.muted} data-held="">{controls.held}</p> : (codex || kimi || row?.wrapped) && !stats.isPending ? (
         <>
           <Switchers session={session} stats={stats.data ?? null} options={options.data ?? null} controls={controls} say={say} />
           {why && (

@@ -1037,7 +1037,7 @@ export function isKimi(id: string, row: Pick<SessionRow, 'client'> | null | unde
 /// Whether a session takes a typed message and a Stop from here: a Kimi Code one when the router
 /// hosts it, a Claude Code one when it runs under the wrapper (SE-C28, SE-C235).
 export function drives(r: Pick<SessionRow, 'session_id' | 'client' | 'hosted' | 'wrapped'>): boolean {
-  if (isCodex(String(r.session_id ?? ''), r)) return false;
+  if (isCodex(String(r.session_id ?? ''), r)) return r.hosted === true && r.wrapped === true;
   return isKimi(String(r.session_id ?? ''), r) ? r.hosted === true : !!r.wrapped;
 }
 
@@ -1083,8 +1083,11 @@ const EVERY_CONTROL: Controls = { held: null, effort: null, aside: null, questio
 /// Code one's effort, side question and question form never are, and nothing at all is while the
 /// router only watches it. Before the list has said whether the router hosts it, nothing is held
 /// back, and a refusal says the router's words (SE-C236, SE-C237).
-export function controlsOf(id: string, row: Pick<SessionRow, 'client' | 'hosted'> | null | undefined): Controls {
-  if (isCodex(id, row)) return { held: CODEX_WATCHED, effort: CODEX_WATCHED, aside: CODEX_WATCHED, question: CODEX_WATCHED, modes: null, bypass: BYPASS };
+export function controlsOf(id: string, row: (Pick<SessionRow, 'client' | 'hosted'> & Partial<Pick<SessionRow, 'wrapped'>>) | null | undefined): Controls {
+  if (isCodex(id, row)) {
+    const held = row?.hosted === true ? row.wrapped === true ? null : 'Managed Codex is disconnected. Reconnect or resume it before sending controls.' : CODEX_WATCHED;
+    return { held, effort: held, aside: held ?? 'Side questions are not available for Codex yet.', question: held, modes: null, bypass: BYPASS };
+  }
   if (!isKimi(id, row)) return EVERY_CONTROL;
   const held = row && row.hosted !== true ? KIMI_WATCHED : null;
   return { held, effort: KIMI_NO_EFFORT, aside: KIMI_NO_ASIDE, question: held ?? KIMI_QUESTION, modes: KIMI_MODES, bypass: KIMI_YOLO };
@@ -1100,9 +1103,9 @@ export interface StartMachine {
 
 /// The machines a Kimi Code session can be started on: online, with Kimi Code among the clients
 /// their agent reported, by label in the order the list heads its machines (SE-C220, SE-C239).
-export function startMachines(rows: readonly MachineRow[]): StartMachine[] {
+export function startMachines(rows: readonly MachineRow[], client: 'kimi-code' | 'codex' = 'kimi-code'): StartMachine[] {
   return rows
-    .filter((m) => m.online === true && (m.clients ?? []).some((c) => c?.client === KIMI_CODE))
+    .filter((m) => m.online === true && (m.clients ?? []).some((c) => c?.client === client))
     .map((m) => {
       const id = String(m.id ?? '');
       return { id, label: (typeof m.label === 'string' && m.label.trim()) || id.slice(0, 8) };
@@ -1112,14 +1115,15 @@ export function startMachines(rows: readonly MachineRow[]): StartMachine[] {
 
 /// The models a Kimi Code session can be started with: the catalogue's Kimi Code models, in its
 /// order, each by its display name (SE-C240).
-export function startModels(rows: readonly { readonly id: string; readonly provider?: string | null; readonly display_name?: string | null }[]): { readonly id: string; readonly label: string }[] {
-  return rows.filter((m) => m.provider === 'kimi' && !!m.id).map((m) => ({ id: m.id, label: m.display_name || m.id }));
+export function startModels(rows: readonly { readonly id: string; readonly provider?: string | null; readonly display_name?: string | null }[], client: 'kimi-code' | 'codex' = 'kimi-code'): { readonly id: string; readonly label: string }[] {
+  return rows.filter((m) => (client === 'codex' || m.provider === 'kimi') && !!m.id).map((m) => ({ id: m.id, label: m.display_name || m.id }));
 }
 
 /// What a start sends: the machine on a hosted router, which relays it there, and none on a local
 /// one, which starts the session on itself (SE-C239, SE-C241).
-export function startBody(hosted: boolean, machine: string, cwd: string, model: string): { machine?: string; cwd: string; model: string } {
-  return hosted ? { machine, cwd: cwd.trim(), model } : { cwd: cwd.trim(), model };
+export function startBody(hosted: boolean, machine: string, cwd: string, model: string, client: 'kimi-code' | 'codex' = 'kimi-code'): { machine?: string; cwd: string; model: string; client?: string } {
+  const body = hosted ? { machine, cwd: cwd.trim(), model } : { cwd: cwd.trim(), model };
+  return client === 'codex' ? { ...body, client } : body;
 }
 
 // ---------- permission prompts ----------

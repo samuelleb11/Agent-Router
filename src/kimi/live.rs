@@ -21,7 +21,6 @@ use serde_json::json;
 use super::session;
 use super::web::Host;
 use crate::live::{AnswerBody, StreamStatus};
-use crate::refusal::JsonBody;
 
 /// Why a session the router did not start takes no control.
 pub const WATCHED: &str = "This Kimi Code session runs in its own terminal or in VS Code, which takes no outside control. \
@@ -252,11 +251,6 @@ pub async fn start(host: Option<&Host>, body: &StartBody) -> Response {
         Ok(id) => Json(json!({ "ok": true, "session": id })).into_response(),
         Err(e) => failed(e),
     }
-}
-
-/// The route: this machine's host.
-pub async fn start_route(JsonBody(body): crate::refusal::LiveBody<StartBody>) -> Response {
-    start(host(), &body).await
 }
 
 /// Stop the hosted sessions' server when it has sat unused for `web::IDLE`, checked every

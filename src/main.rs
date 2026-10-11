@@ -137,6 +137,9 @@ fn loopback_addr_on(port: u16) -> std::net::SocketAddr {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if std::env::current_exe()?.file_stem().is_some_and(|s|s=="agent-router-codex") {
+        return codex::runtime::adapter(&args).await;
+    }
     match args.first().map(String::as_str) {
         Some("serve") => {
             return match config::ServeArgs::parse(&args[1..]) {
@@ -154,7 +157,7 @@ async fn main() -> anyhow::Result<()> {
         Some("status") => return cmd_status(),
         Some("hook") => return kimi::hook(&args[1..]),
         Some("kimi") => return kimi::launch::main(&args[1..]).await,
-        Some("codex") => return codex::catalogue::cli(&args[1..]).await,
+        Some("codex") => return codex::runtime::cli(&args[1..]).await,
         Some("-h") | Some("--help") | Some("help") => {
             print!("{USAGE}");
             return Ok(());
@@ -574,6 +577,7 @@ async fn serve_here(args: config::ServeArgs) -> anyhow::Result<()> {
     // which repository each session works in.
     tokio::spawn(places::keep_here(db_path.clone()));
     tokio::spawn(kimi::live::keep_host());
+    tokio::spawn(codex::runtime::keep_host());
     tokio::spawn(keep_local_kimi_config(format!("http://127.0.0.1:{}", loopback_addr().port())));
 
     // The wider listener, when there is to be one, serves this same app from a second
@@ -695,7 +699,9 @@ fn machine_routes(router: Router<Arc<proxy::AppState>>) -> Router<Arc<proxy::App
         .route("/api/live/effort", post(live::set_effort))
         .route("/api/live/mode", post(live::set_mode))
         .route("/api/live/aside", post(live::aside))
-        .route("/api/live/start", post(kimi::live::start_route))
+        .route("/api/live/start", post(codex::live::start_route))
+        .route("/api/live/resume", post(codex::live::resume_route))
+        .route("/api/live/compact", post(codex::live::compact_route))
         // A router on a developer's machine keeps no Library, and says so at its addresses
         // rather than passing them to the proxy.
         .route("/api/library", any(library::api::not_offered))

@@ -20,13 +20,22 @@ describe('Codex clients and accounts', () => {
   });
 
   it('holds every watched session control, including before the list arrives', () => {
-    const row = { session_id: 'codex:1234', client: 'codex', wrapped: true, hosted: true };
+    const row = { session_id: 'codex:1234', client: 'codex', wrapped: false, hosted: false };
     expect(drives(row)).toBe(false);
     expect(rowClient(row)).toBe('Codex');
     expect(rowProvider(row)).toBeNull();
     for (const r of [row, null]) {
       expect(controlsOf(row.session_id, r)).toMatchObject({ held: CODEX_WATCHED, aside: CODEX_WATCHED, question: CODEX_WATCHED, effort: CODEX_WATCHED });
     }
+  });
+
+  it('enables controls only for a managed reachable Codex thread', () => {
+    const row = { session_id: 'codex:managed', client: 'codex', wrapped: true, hosted: true };
+    expect(drives(row)).toBe(true);
+    expect(drives({ ...row, wrapped: false })).toBe(false);
+    expect(controlsOf(row.session_id, row)).toMatchObject({ held: null, effort: null, question: null });
+    expect(controlsOf(row.session_id, null).held).toBe(CODEX_WATCHED);
+    expect(controlsOf(row.session_id, row).aside).toContain('not available');
   });
 
   it('keeps the discovered login local and validates OpenAI API keys', () => {

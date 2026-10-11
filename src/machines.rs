@@ -832,6 +832,12 @@ pub mod api {
     /// `POST /api/live/archive`: the router's own shelf, for a session some machine lists. A
     /// body it cannot read is refused as a router on a machine refuses it (`refusal::LiveBody`).
     pub async fn archive(State(state): State<Arc<AppState>>, JsonBody(body): LiveBody<crate::live::ArchiveBody>) -> Response {
+        if crate::codex::live::is_codex(&body.session) {
+            let machine=match state.machines.holder(&body.session).await {Ok(m)=>m,Err(why)=>return why.into_response()};
+            let payload=serde_json::to_vec(&json!({"session":body.session,"archived":body.archived})).unwrap();
+            let response=match machine.request(&axum::http::Method::POST,"/api/live/archive",vec![("content-type".into(),"application/json".into())],&payload,HEAD_WAIT).await {Ok(r)=>r,Err(why)=>return why.into_response()};
+            if !response.status().is_success() {return response;}
+        }
         if let Err(why) = state.machines.holder(&body.session).await {
             if matches!(why, Relay::Unknown) {
                 return why.into_response();

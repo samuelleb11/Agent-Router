@@ -3,63 +3,65 @@
 
 fn codex_mock_stream(body: &Value, responses: bool) -> String {
     let model = body["model"].as_str().unwrap();
-    let answered = if responses {
-        body["input"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|item| item["type"] == "function_call_output")
-    } else {
-        body["messages"].as_array().unwrap().iter().any(|message| {
-            message["content"]
-                .as_array()
-                .is_some_and(|blocks| blocks.iter().any(|block| block["type"] == "tool_result"))
-        })
-    };
+    let input=body[if responses { "input" } else { "messages" }].as_array().unwrap();
+    let last_user=input.iter().rposition(|item|item["role"]=="user" && item["content"].as_array().is_some_and(|blocks|blocks.iter().any(|b|matches!(b["type"].as_str(),Some("input_text"|"text"))))).unwrap_or(0);
+    let prompt=input[last_user].to_string();
+    let mut answered=input.iter().skip(last_user).any(|item| {
+        item["type"]=="function_call_output" || item["content"].as_array().is_some_and(|blocks|blocks.iter().any(|block|block["type"]=="tool_result"))
+    });
     let tools = body["tools"].as_array().unwrap();
-    let tool = tools
-        .iter()
-        .find(|tool| {
-            tool["name"]
-                .as_str()
-                .is_some_and(|name| name.ends_with("exec_command"))
-        })
-        .expect("Codex CLI must advertise its command tool");
-    let name = tool["name"].as_str().unwrap();
-    let args =
-        json!({"cmd":"cat fixture.txt","yield_time_ms":1000,"max_output_tokens":100}).to_string();
+    let title=tools.is_empty() && prompt.contains("User prompt");
+    answered |= title;
+    let expected_tool=if prompt.contains("CONTROL_QUESTION") {"request_user_input"} else {"exec_command"};
+    let tool = tools.iter().find(|tool|tool["name"].as_str().is_some_and(|name|name.ends_with(expected_tool)));
+    assert!(title || tool.is_some(), "{model}: Codex must advertise {expected_tool}; tools={tools:?}; user_tail={}",prompt.chars().rev().take(300).collect::<String>().chars().rev().collect::<String>());
+    let name = tool.and_then(|tool|tool["name"].as_str()).unwrap_or("unused_title_tool");
+    let args=if expected_tool=="request_user_input" {
+        json!({"questions":[{"id":"color","header":"Color","question":"Which color should we use?","options":[{"label":"Blue","description":"Use blue"},{"label":"Red","description":"Use red"}]}]})
+    } else if prompt.contains("CONTROL_APPROVAL") {
+        json!({"cmd":"printf CONTROL_APPROVED > approval-proof.txt","yield_time_ms":1000,"max_output_tokens":100})
+    } else if prompt.contains("CONTROL_SLEEP") {
+        json!({"cmd":"sleep 25","yield_time_ms":30000,"max_output_tokens":100})
+    } else {
+        json!({"cmd":"cat fixture.txt","yield_time_ms":1000,"max_output_tokens":100})
+    }.to_string();
+    static CALL:std::sync::atomic::AtomicU64=std::sync::atomic::AtomicU64::new(1);
+    let call_id=format!("call_codex_smoke_{}",CALL.fetch_add(1,std::sync::atomic::Ordering::Relaxed));
+    let response_id=format!("resp_{call_id}");
+    let message_id=format!("msg_{call_id}");
+    let function_id=format!("fc_{call_id}");
     let answer = format!("SMOKE_OK {model}");
     let frames = if responses {
         let item = if answered {
-            json!({"type":"message","id":"msg_codex_smoke","role":"assistant","status":"completed",
+            json!({"type":"message","id":message_id,"role":"assistant","status":"completed",
                 "content":[{"type":"output_text","text":answer,"annotations":[]}]})
         } else {
-            json!({"type":"function_call","id":"fc_codex_smoke","call_id":"call_codex_smoke","name":name,"arguments":args,"status":"completed"})
+            json!({"type":"function_call","id":function_id,"call_id":call_id,"name":name,"arguments":args,"status":"completed"})
         };
-        let response = json!({"id":"resp_codex_smoke","object":"response","status":"completed","model":model,
+        let response = json!({"id":response_id,"object":"response","status":"completed","model":model,
             "output":[item],"usage":{"input_tokens":42,"output_tokens":13,"total_tokens":55}});
         let mut frames = vec![
-            json!({"type":"response.created","response":{"id":"resp_codex_smoke","model":model,"status":"in_progress","output":[]}}),
+            json!({"type":"response.created","response":{"id":response_id,"model":model,"status":"in_progress","output":[]}}),
             json!({"type":"response.output_item.added","output_index":0,"item":if answered {
-                json!({"type":"message","id":"msg_codex_smoke","role":"assistant","status":"in_progress","content":[]})
-            } else { json!({"type":"function_call","id":"fc_codex_smoke","call_id":"call_codex_smoke","name":name,"arguments":"","status":"in_progress"}) }}),
+                json!({"type":"message","id":message_id,"role":"assistant","status":"in_progress","content":[]})
+            } else { json!({"type":"function_call","id":function_id,"call_id":call_id,"name":name,"arguments":"","status":"in_progress"}) }}),
         ];
         if answered {
-            frames.push(json!({"type":"response.content_part.added","output_index":0,"item_id":"msg_codex_smoke","content_index":0,"part":{"type":"output_text","text":"","annotations":[]}}));
-            frames.push(json!({"type":"response.output_text.delta","output_index":0,"item_id":"msg_codex_smoke","content_index":0,"delta":answer}));
-            frames.push(json!({"type":"response.output_text.done","output_index":0,"item_id":"msg_codex_smoke","content_index":0,"text":answer}));
-            frames.push(json!({"type":"response.content_part.done","output_index":0,"item_id":"msg_codex_smoke","content_index":0,"part":item["content"][0]}));
+            frames.push(json!({"type":"response.content_part.added","output_index":0,"item_id":message_id,"content_index":0,"part":{"type":"output_text","text":"","annotations":[]}}));
+            frames.push(json!({"type":"response.output_text.delta","output_index":0,"item_id":message_id,"content_index":0,"delta":answer}));
+            frames.push(json!({"type":"response.output_text.done","output_index":0,"item_id":message_id,"content_index":0,"text":answer}));
+            frames.push(json!({"type":"response.content_part.done","output_index":0,"item_id":message_id,"content_index":0,"part":item["content"][0]}));
         } else {
-            frames.push(json!({"type":"response.function_call_arguments.delta","output_index":0,"item_id":"fc_codex_smoke","delta":args}));
-            frames.push(json!({"type":"response.function_call_arguments.done","output_index":0,"item_id":"fc_codex_smoke","arguments":args}));
+            frames.push(json!({"type":"response.function_call_arguments.delta","output_index":0,"item_id":function_id,"delta":args}));
+            frames.push(json!({"type":"response.function_call_arguments.done","output_index":0,"item_id":function_id,"arguments":args}));
         }
         frames.push(json!({"type":"response.output_item.done","output_index":0,"item":item}));
         frames.push(json!({"type":"response.completed","response":response}));
         frames
     } else {
         vec![
-            json!({"type":"message_start","message":{"id":"msg_codex_smoke","type":"message","role":"assistant","model":model,"content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":42,"output_tokens":0}}}),
-            json!({"type":"content_block_start","index":0,"content_block":if answered {json!({"type":"text","text":""})} else {json!({"type":"tool_use","id":"call_codex_smoke","name":name,"input":{}})}}),
+            json!({"type":"message_start","message":{"id":message_id,"type":"message","role":"assistant","model":model,"content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":42,"output_tokens":0}}}),
+            json!({"type":"content_block_start","index":0,"content_block":if answered {json!({"type":"text","text":""})} else {json!({"type":"tool_use","id":call_id,"name":name,"input":{}})}}),
             json!({"type":"content_block_delta","index":0,"delta":if answered {json!({"type":"text_delta","text":answer})} else {json!({"type":"input_json_delta","partial_json":args})}}),
             json!({"type":"content_block_stop","index":0}),
             json!({"type":"message_delta","delta":{"stop_reason":if answered {"end_turn"} else {"tool_use"},"stop_sequence":null},"usage":{"output_tokens":13}}),

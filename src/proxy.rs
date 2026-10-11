@@ -1329,6 +1329,7 @@ mod tests {
 
     include!("../scripts/opencode-routing.rs");
     include!("../scripts/codex-routing.rs");
+    include!("../scripts/codex-runtime-routing.rs");
     include!("../scripts/claude-routing.rs");
     include!("../scripts/live-client-routing.rs");
     include!("../scripts/openai-sdk-routing.rs");

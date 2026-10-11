@@ -4,6 +4,7 @@
 pub mod live;
 pub mod session;
 pub mod catalogue;
+pub mod runtime;
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};

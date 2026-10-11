@@ -1264,7 +1264,7 @@ pub async fn send(JsonBody(body): LiveBody<SendBody>) -> Response {
         return bad(axum::http::StatusCode::BAD_REQUEST, "Nothing to send.");
     }
     if crate::codex::live::is_codex(&body.session) {
-        return crate::codex::live::unsupported();
+        return crate::codex::live::send(&body.session, &text).await;
     }
     if crate::kimi::live::is_kimi(&body.session) {
         return crate::kimi::live::send(crate::kimi::live::host(), &body.session, &text).await;
@@ -1582,6 +1582,11 @@ pub struct ArchiveBody {
 /// Stored as a plain list of ids rather than in the database, because it is the
 /// reader's shelf and should survive the database being deleted or rebuilt.
 pub async fn archive(JsonBody(body): LiveBody<ArchiveBody>) -> Response {
+    if crate::codex::live::is_codex(&body.session) && crate::codex::runtime::host().is_some_and(|h|h.hosts(&body.session)) {
+        let method=if body.archived {"thread/archive"} else {"thread/unarchive"};
+        let response=crate::codex::live::action(&body.session,method).await;
+        if !response.status().is_success() {return response;}
+    }
     let exists = if crate::codex::live::is_codex(&body.session) {
         crate::codex::session::find(&body.session).is_some()
     } else if crate::kimi::live::is_kimi(&body.session) {
@@ -1640,7 +1645,7 @@ pub struct AnswerBody {
 /// (the one the session's status names), and how many there are in all.
 pub async fn prompt(Query(q): Query<StreamQuery>) -> Response {
     if crate::codex::live::is_codex(&q.session) {
-        return crate::codex::live::prompt();
+        return crate::codex::live::prompt(&q.session).await;
     }
     if crate::kimi::live::is_kimi(&q.session) {
         return crate::kimi::live::prompt(&q.session).await;
@@ -1846,7 +1851,7 @@ fn pick_prompt<'a>(
 /// Answer the pending question — the editor's Submit, from anywhere.
 pub async fn answer(JsonBody(body): LiveBody<AnswerBody>) -> Response {
     if crate::codex::live::is_codex(&body.session) {
-        return crate::codex::live::unsupported();
+        return crate::codex::live::answer(&body).await;
     }
     if crate::kimi::live::is_kimi(&body.session) {
         return crate::kimi::live::answer(crate::kimi::live::host(), &body).await;
@@ -2069,7 +2074,7 @@ pub async fn set_model(JsonBody(body): LiveBody<ModelBody>) -> Response {
         return bad(axum::http::StatusCode::BAD_REQUEST, "That is not a model name.");
     }
     if crate::codex::live::is_codex(&body.session) {
-        return crate::codex::live::unsupported();
+        return crate::codex::live::settings(&body.session, serde_json::json!({"model":model})).await;
     }
     if crate::kimi::live::is_kimi(&body.session) {
         return crate::kimi::live::set_model(crate::kimi::live::host(), &body.session, &model).await;
@@ -2114,7 +2119,7 @@ pub struct EffortBody {
 /// Set the effort level, as `/effort <level>` typed into the session.
 pub async fn set_effort(JsonBody(body): LiveBody<EffortBody>) -> Response {
     if crate::codex::live::is_codex(&body.session) {
-        return crate::codex::live::unsupported();
+        return crate::codex::live::settings(&body.session, serde_json::json!({"effort":body.effort})).await;
     }
     if crate::kimi::live::is_kimi(&body.session) {
         return crate::kimi::live::unsupported("effort to set");
@@ -2152,7 +2157,7 @@ pub struct ModeBody {
 /// session did not agree to.
 pub async fn set_mode(JsonBody(body): LiveBody<ModeBody>) -> Response {
     if crate::codex::live::is_codex(&body.session) {
-        return crate::codex::live::unsupported();
+        return crate::codex::live::mode(&body.session, &body.mode).await;
     }
     if crate::kimi::live::is_kimi(&body.session) {
         return crate::kimi::live::set_mode(crate::kimi::live::host(), &body.session, &body.mode).await;
@@ -2260,7 +2265,7 @@ fn stop_refusal(kind: Kind) -> Option<&'static str> {
 /// the peer socket carries user messages, not control.
 pub async fn interrupt(JsonBody(body): LiveBody<InterruptBody>) -> Response {
     if crate::codex::live::is_codex(&body.session) {
-        return crate::codex::live::unsupported();
+        return crate::codex::live::interrupt(&body.session).await;
     }
     if crate::kimi::live::is_kimi(&body.session) {
         return crate::kimi::live::interrupt(crate::kimi::live::host(), &body.session).await;

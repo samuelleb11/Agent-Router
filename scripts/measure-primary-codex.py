@@ -15,7 +15,7 @@ import time
 repo = Path(__file__).resolve().parent.parent
 artifacts = repo / ".ci/codex-measurements"
 artifacts.mkdir(parents=True, exist_ok=True)
-baseline = subprocess.check_output(["git", "rev-parse", "105b456^{commit}"], cwd=repo, text=True).strip()
+baseline = subprocess.check_output(["git", "rev-parse", os.environ.get("AR_CODEX_BASELINE", "105b456") + "^{commit}"], cwd=repo, text=True).strip()
 host = subprocess.check_output(["hostname", "-s"], text=True).strip()
 environment = os.environ.copy()
 environment["CARGO_TARGET_DIR"] = str(repo / "target")
@@ -56,10 +56,13 @@ with tempfile.TemporaryDirectory(prefix="ar-codex-baseline-") as scratch:
         # the router even when dependencies are shared. Each gate still gets
         # its own measured failing baseline before its current result.
         for mode in modes:
-            assert mode in ("gateway", "catalogue")
+            assert mode in ("gateway", "catalogue", "runtime", "frontends")
             code, output = measure(worktree, mode, "red")
             assert code not in (0, 124, 126, 127), f"{mode}: no meaningful failing baseline"
-            assert "models::tests::" in output and "--- FAILED" in output, "Baseline must fail on behavior, not setup"
+            if mode in ("gateway", "catalogue"):
+                assert "models::tests::" in output and "--- FAILED" in output, "Baseline must fail on behavior, not setup"
+            else:
+                assert "Usage:" in output and "runtime|frontends" not in output, "Baseline must reject the absent managed-runtime gate"
         for mode in modes:
             code, _ = measure(repo, mode, "green")
             if code:

@@ -38,6 +38,7 @@ pub fn files_in(home: &Path) -> Vec<PathBuf> {
     }
     let mut out = Vec::new();
     walk(&home.join("sessions"), 0, &mut out);
+    walk(&home.join("archived_sessions"), 0, &mut out);
     out
 }
 
@@ -46,7 +47,15 @@ fn mtime(meta: &std::fs::Metadata) -> i64 {
 }
 
 pub fn discover(archived: &HashMap<String, i64>, now: i64) -> Vec<LiveSession> {
-    crate::accounts::codex_home().ok().map(|home| discover_in(&home, archived, now)).unwrap_or_default()
+    let mut rows=crate::accounts::codex_home().ok().map(|home| discover_in(&home, archived, now)).unwrap_or_default();
+    if let Some(host)=super::runtime::host() {
+        for id in host.known() {
+            if !rows.iter().any(|r|r.session_id==id) {
+                if let Some(session)=find(&id) {rows.push(session.row(archived,now));}
+            }
+        }
+    }
+    rows
 }
 
 pub fn discover_in(home: &Path, archived: &HashMap<String, i64>, now: i64) -> Vec<LiveSession> {
@@ -65,7 +74,10 @@ pub fn find(id: &str) -> Option<Arc<Session>> {
     let home = crate::accounts::codex_home().ok()?;
     files_in(&home).into_iter().filter(|path| {
         path.file_stem().and_then(|s| s.to_str()).is_some_and(|name| name.ends_with(native))
-    }).find_map(|path| cached(&path).filter(|session| session.id == id))
+    }).find_map(|path| cached(&path).filter(|session| session.id == id)).or_else(|| {
+        let (thread,_)=super::runtime::host()?.snapshot(id)?;
+        Some(Arc::new(Session {id:id.into(),cwd:thread["cwd"].as_str().map(str::to_owned),title:thread["preview"].as_str().filter(|s|!s.is_empty()).map(str::to_owned),created_ms:thread["createdAt"].as_i64().map(|n|n*1000),last_ms:thread["updatedAt"].as_i64().map(|n|n*1000),..Default::default()}))
+    })
 }
 
 #[derive(Clone, Default)]
@@ -269,7 +281,14 @@ impl Session {
     }
 
     pub fn feed(&self) -> &[Item] { &self.items }
-    pub fn stats(&self) -> Stats { self.stats.clone() }
+    pub fn stats(&self) -> Stats {
+        let mut stats=self.stats.clone();
+        if let Some((thread,_))=super::runtime::host().and_then(|h|h.snapshot(&self.id)) {
+            stats.model=thread["model"].as_str().map(str::to_owned).or(stats.model);
+            stats.effort=thread["reasoningEffort"].as_str().map(str::to_owned).or(stats.effort);
+        }
+        stats
+    }
 
     /// A rollout records turn progress, never whether its client process is alive.
     /// Keep open unknown, and mark a silent unfinished turn stalled rather than claiming
@@ -291,7 +310,7 @@ impl Session {
                 a.kind = Kind::Generating; a.phase = Some("thinking"); a.since_ms = self.turn_started.or(self.last_ms); a.detail = "Thinking".into();
             }
         }
-        a
+        super::runtime::host().map_or(a.clone(),|host|host.activity(&self.id,a))
     }
 
     pub fn row(&self, archived: &HashMap<String, i64>, now: i64) -> LiveSession {
@@ -305,10 +324,10 @@ impl Session {
             git_branch: self.git_branch.clone(), repository, title: self.title.clone(), created_ms: self.created_ms,
             last_activity_ms: last, active, state: a.legacy_list_state().into(),
             archived: crate::live::is_shelved(archived, &self.id, last) && !active,
-            wrapped: false, bytes: self.bytes, activity: a.kind.as_str(), open: a.open,
+            wrapped: super::runtime::host().is_some_and(|h|h.hosts(&self.id)) && a.open==Some(true), bytes: self.bytes, activity: a.kind.as_str(), open: a.open,
             detail: a.detail.clone(), since_ms: a.since_ms, ended_ms: None, ended_how: None,
             mid_turn: a.mid_turn, waiting_on: None, background: None, tone: a.tone(), source: a.source,
-            client: Some(CLIENT), hosted: Some(false), as_of_ms: now,
+            client: Some(CLIENT), hosted: Some(super::runtime::host().is_some_and(|h|h.hosts(&self.id))), as_of_ms: now,
         }
     }
 }

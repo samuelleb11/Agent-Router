@@ -283,7 +283,7 @@ export const id8 = (id: string | null | undefined): string => String(id ?? '').r
 /// The clients the router names a session's requests by, read off their User-Agent
 /// (src/analyze.rs, `client_of`): Claude Code's terminal and VS Code, and Kimi Code's terminal,
 /// VS Code and web.
-export type ClientId = 'claude-code-cli' | 'claude-code-vscode' | 'kimi-code-cli' | 'kimi-code-vscode' | 'kimi-code-web' | 'codex-cli' | 'codex-vscode' | 'opencode';
+export type ClientId = 'claude-code-cli' | 'claude-code-vscode' | 'kimi-code-cli' | 'kimi-code-vscode' | 'kimi-code-web' | 'codex-cli' | 'codex-vscode' | 'codex-managed' | 'opencode';
 
 /// Each client's label, one spelling wherever the console names a session's client (SE-C234).
 /// Claude Code's keep the words its entrypoint was always named by (OV-C187); Kimi Code's say whose
@@ -296,6 +296,7 @@ const CLIENT_LABELS: Readonly<Record<ClientId, string>> = {
   'kimi-code-web': 'Kimi Code web',
   'codex-cli': 'Codex CLI',
   'codex-vscode': 'Codex VS Code',
+  'codex-managed': 'Codex managed',
   opencode: 'OpenCode',
 };
 
@@ -323,6 +324,7 @@ export function client(entrypoint: string | null | undefined, id?: string | null
   if (named) return named;
   if (!entrypoint) return null;
   if (entrypoint.startsWith('opencode/')) return CLIENT_LABELS.opencode;
+  if (entrypoint.startsWith('agent_router_codex/')) return CLIENT_LABELS['codex-managed'];
   if (/codex[_-](?:vscode|vsc)|vscode.*codex/.test(entrypoint)) return CLIENT_LABELS['codex-vscode'];
   if (/codex[_-]cli/.test(entrypoint)) return CLIENT_LABELS['codex-cli'];
   return /claude-vscode/.test(entrypoint) ? CLIENT_LABELS['claude-code-vscode'] : /claude-cli/.test(entrypoint) ? CLIENT_LABELS['claude-code-cli'] : null;

@@ -73,12 +73,22 @@
       },
       {
         "command": "agentRouter.connect",
-        "title": "Connect to a Server…",
+        "title": "Connect to a Server\u2026",
         "category": "Agent Router"
       },
       {
         "command": "agentRouter.disconnect",
         "title": "Disconnect from the Server",
+        "category": "Agent Router"
+      },
+      {
+        "command": "agentRouter.connectCodex",
+        "title": "Connect Managed Codex",
+        "category": "Agent Router"
+      },
+      {
+        "command": "agentRouter.restoreCodex",
+        "title": "Restore Codex Launch Configuration",
         "category": "Agent Router"
       }
     ],
@@ -102,7 +112,7 @@
           "default": "",
           "scope": "machine",
           "order": 0,
-          "markdownDescription": "A hosted Agent Router's address, such as `https://router.example.com`. **Empty is local mode**: the router runs on your machine, and what it records stays on your machine. **Set, it is remote mode**: no router runs here, Claude Code goes through the server, and what it records stays on your server: the requests Claude Code makes with their responses (your prompts and code), and your accounts and their tokens. This machine then runs only the agent, which lets the phone follow and steer its sessions. Set it with **Agent Router: Connect to a Server…**, which asks for a Machine access token or router password and keeps it in VS Code's secret storage, never in settings. On Windows, only remote mode is available."
+          "markdownDescription": "A hosted Agent Router's address, such as `https://router.example.com`. **Empty is local mode**: the router runs on your machine, and what it records stays on your machine. **Set, it is remote mode**: no router runs here, Claude Code goes through the server, and what it records stays on your server: the requests Claude Code makes with their responses (your prompts and code), and your accounts and their tokens. This machine then runs only the agent, which lets the phone follow and steer its sessions. Set it with **Agent Router: Connect to a Server\u2026**, which asks for a Machine access token or router password and keeps it in VS Code's secret storage, never in settings. On Windows, only remote mode is available."
         },
         "agentRouter.port": {
           "type": "number",
