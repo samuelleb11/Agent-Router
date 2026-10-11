@@ -6,11 +6,11 @@
 
 Agent Router must support multiple providers independently of the selected client.
 Claude Code and Codex were the original primary clients. On 2026-10-11 the owner
-directed the next phase toward one fully integrated client: it must use a
-server-provided model catalogue, support plugins or skills and MCP servers, and expose
-complete session control through Agent Router from the CLI and VS Code extension.
-The selected client must ship its own VS Code extension; Agent Router's extension
-alone does not satisfy the client requirement.
+directed the next phase toward one fully integrated client: it must have a CLI and
+its own native VS Code chat/sidebar extension, use a server-provided model catalogue,
+support plugins or skills and MCP servers, and expose complete session control through
+Agent Router for sessions started from either client interface. The owner explicitly
+confirmed that Claude Code and Codex are eligible; choosing a generic client is optional.
 The client owns its agent loop and tools; Agent Router owns provider accounts, routing,
 protocol adaptation, usage capture and the managed runtime's integration.
 
@@ -29,58 +29,76 @@ entitlement and refresh limits.
 
 ## Primary client direction
 
-**OpenCode is the proposed primary integration target.** Stable 1.19.0 has already passed the
-router's native three-provider routing checks. Its headless server exposes session,
-prompt, cancellation, permission and event APIs; its CLI can attach to an existing
-server. It supports plugins, `SKILL.md` skills and local/remote MCP servers.
-[Server API](https://opencode.ai/docs/server/),
-[CLI attachment](https://opencode.ai/docs/cli/#attach),
-[skills](https://opencode.ai/docs/skills/) and
-[MCP](https://opencode.ai/docs/mcp-servers/) document those extension points.
+**Claude Code is the primary integration target.** It has a native CLI and graphical
+VS Code chat/sidebar extension, plugins, skills and MCP. Agent Router already has its
+inference routing, model-picker settings sync, Library sync, wrapper control channel
+and machine tunnel. This is the closest existing foundation for the owner's clarified
+requirements. [The official VS Code documentation](https://code.claude.com/docs/en/vs-code)
+describes the graphical panel and `claudeProcessWrapper` launch setting.
 
-OpenCode has an official VS Code extension. It opens the client in a split integrated
-terminal and shares file/selection context. It does not provide a native chat sidebar
-in the pinned release. Whether this editor experience meets the owner's requirement
-is pending clarification; requiring a native chat/sidebar would reopen client selection.
-[IDE documentation](https://opencode.ai/docs/ide/) and the
-[pinned extension source](https://github.com/anomalyco/opencode/blob/v1.19.0/sdks/vscode/src/extension.ts)
-describe the current behavior.
+Selecting the Claude Code client does not select the upstream provider. Its Messages
+requests go to Agent Router, which routes Anthropic and Kimi directly and translates
+OpenAI Responses. Native Claude Code 2.1.267 passed the three-provider fixture tool
+matrix. The router keeps provider credentials server-side and the client uses a scoped
+router credential. That inference result does not establish complete editor and session
+control acceptance.
 
-The intended integration is:
+**Agent Router owns cross-provider Claude Code compatibility.** Anthropic explicitly
+does not support routing Claude Code to non-Claude models through gateways. We must pin
+tested CLI/extension versions, verify upgrades and describe capability limits accurately.
+[Anthropic's gateway documentation](https://code.claude.com/docs/en/llm-gateway)
+states that support boundary. Fully proxying supported workflows does not imply that
+every provider-hosted feature translates across protocols.
 
-- The machine agent supervises an authenticated loopback OpenCode backend with an
-  explicit workspace. Remote controls use the existing outbound machine tunnel.
-- The CLI and the selected client's VS Code extension attach to that managed backend,
-  coordinated through Agent Router. They share
-  session identity, prompts, approvals, model selection and events with the web and
-  phone controls. The upstream IDE extension currently launches its own OpenCode
-  process; an explicit managed attachment path must work in the actual client extension.
-- An Agent Router-owned provider plugin/configuration adapter obtains model aliases,
-  labels, capabilities and known token limits from the router. The native picker
-  updates at startup and catalogue refresh, including additions and removals. A
-  hand-maintained model map does not meet the requirement.
-- Library sync supplies managed skills, plugins and MCP configuration while preserving
-  user edits and keeping provider credentials on Agent Router.
-- One pinned release passes native acceptance for catalogue refresh, tools, MCP and
-  skills, permissions/questions, cancellation, model/agent selection, compaction,
-  resume and the shared CLI/editor/remote session. Major-version upgrades require the
-  same checks before adoption.
+| Candidate | CLI and native VS Code chat/sidebar | Current Agent Router integration |
+| --- | --- | --- |
+| Claude Code | Yes | Routing, catalogue settings sync, Library and wrapped session controls; selected primary |
+| Codex | Yes | Routing, setup and watched sessions; remote controls and cross-provider compaction remain gaps |
+| OpenCode 1.19.0 | CLI and terminal-based editor extension | Tested routing reference; does not meet the native sidebar requirement |
+| Cline | CLI and native editor UI | Not accepted against the router's provider and remote-control contract |
 
-The server-provided catalogue requires integration work. OpenCode V1's custom provider
-configuration defines a model map; its asynchronous plugin `config` hook runs before
-those providers are loaded and can populate it from the router. Remote organizational
-configuration is also supported, but has lower precedence than local/project settings
-and is not evidence of automatic in-session refresh.
-[V1 plugin hooks](https://github.com/anomalyco/opencode/blob/v1.19.0/packages/plugin/src/index.ts),
-[V1 provider loading](https://github.com/anomalyco/opencode/blob/v1.19.0/packages/opencode/src/provider/provider.ts)
-and [configuration precedence](https://opencode.ai/docs/config/) support this design.
+Codex remains a viable secondary client. Official OpenAI documentation covers its
+[shared CLI/IDE settings](https://learn.chatgpt.com/docs/ide/settings),
+[gateway provider and catalogue configuration](https://learn.chatgpt.com/docs/enterprise/connect-to-a-gateway)
+and [app-server control API](https://learn.chatgpt.com/docs/app-server). Those are useful
+integration points, but the router currently returns unsupported for Codex session
+controls. Its existing inference compatibility remains available.
+OpenCode's [official IDE extension](https://opencode.ai/docs/ide/) is terminal-based;
+Cline documents its [IDE](https://docs.cline.bot/usage/ide) and
+[CLI](https://docs.cline.bot/cli/cli-reference) interfaces.
 
-**This managed integration is planned, not implemented.** Today's OpenCode support is
-configuration, inference routing, tools and capture. New work is tracked in Northstar
-as **AGEN-0157**, with catalogue, runtime, Library, CLI/VS Code and acceptance children
-**AGEN-0158–AGEN-0162**. The earlier three-client routing work remains completed under
-AGEN-0148. Claude Code and Codex retain their existing protocol compatibility; new deep
-client integration work focuses on OpenCode.
+The remaining primary-client work is:
+
+- Verify server catalogue additions/removals, arbitrary aliases, labels, capabilities
+  and known context/output limits in the actual CLI and native sidebar. Current
+  `modelPicker.options` sync supplies non-Anthropic rows; complete native refresh and
+  custom Anthropic alias coverage still need acceptance. No hand-maintained model list.
+- Complete remote controls for sessions started through either interface. Most current
+  controls require the wrapped stream-json transport; ordinary terminal sessions do not
+  establish parity. Cover managed start/resume, prompts, interruption, permissions,
+  questions, model/reasoning/mode changes, compaction, archive and disconnected states.
+- Exercise Library skills and configured MCP tools in both entrypoints, with the existing
+  ownership ledger and separate tool credentials.
+- Verify editor file/selection context and remotely initiated actions in the real native
+  sidebar. When changing between CLI and editor, resume persisted session identity with
+  one active writer; simultaneous independent writers are not required.
+- Accept one pinned CLI/extension release across Anthropic, OpenAI and Kimi, including
+  tools, history, compaction and subsequent turns, usage attribution and recovery. Run
+  the full UI suite, production build and extension-host automation in CI.
+
+The server catalogue stays authoritative. The existing installer/machine agent populates
+Claude Code's picker settings from it, preserving owner rows. Claude Code's native
+gateway discovery filters model IDs; managed `modelPicker` entries are needed for
+non-Claude routes. [Model configuration](https://code.claude.com/docs/en/model-config)
+and [gateway compatibility](https://code.claude.com/docs/en/llm-gateway-protocol)
+describe custom IDs, model assumptions and the supported settings.
+
+New acceptance work remains open under Northstar **AGEN-0157**, with catalogue, runtime,
+Library, native frontend and acceptance tasks **AGEN-0163–AGEN-0167**. The planned
+OpenCode-specific tasks **AGEN-0158–AGEN-0162** were withdrawn as superseded by the
+native-sidebar requirement; their integration was never implemented. The earlier
+three-client routing work remains completed under **AGEN-0148**. This decision changes
+the focus of deep client integration; Anthropic, OpenAI and Kimi remain required.
 
 ## Current implementation
 
