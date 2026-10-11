@@ -91,7 +91,14 @@ async fn managed_codex_controls_cross_the_machine_tunnel() {
         (status,serde_json::from_slice(&bytes).unwrap_or_else(|_|panic!("{path}: {status}: {}",String::from_utf8_lossy(&bytes))))
     }
     async fn ok(app:&axum::Router,path:&str,body:Value)->Value {let (status,value)=api(app,path,body).await;assert!(status.is_success(),"{path}: {status}: {value}");value}
-    for _ in 0..100 {if !state.machines.connected().is_empty() {break;}tokio::time::sleep(Duration::from_millis(100)).await;}
+    let ready_by=tokio::time::Instant::now()+Duration::from_secs(60);
+    while tokio::time::Instant::now()<ready_by {
+        if !state.machines.connected().is_empty() {break;}
+        if let Some(status)=agent.try_wait().unwrap() {
+            panic!("fixture agent exited {status}: {}",std::fs::read_to_string(scratch.join("agent.log")).unwrap());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
     assert!(!state.machines.connected().is_empty(),"machine tunnel: {}",std::fs::read_to_string(scratch.join("agent.log")).unwrap());
     let mut sessions=Vec::new();
     for (model,provider) in cases {
