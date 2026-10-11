@@ -125,6 +125,9 @@ This qualifies the portable gateway contract rather than every OpenAI API featur
 `catalogue-core` checks native `model/list` additions/removals and private reversible
 files; `catalogue` additionally drives the published native sidebar in Linux CI. The
 editor job records failing baseline and current results as importable Northstar artifacts.
+History retention compares complete records and session identity while accounting for
+the pinned app-server's legacy-to-paginated display-event migration. User/assistant
+content, tool calls/results, timestamps, record order and existing metadata stay intact.
 
 OpenCode project configuration uses a `{file:/absolute/path/to/credential.token}`
 reference for a supplied router credential. Only Apply creates the private `0600` file

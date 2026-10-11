@@ -6,6 +6,7 @@ set -euo pipefail
 repo=$(cd "$(dirname "$0")/.." && pwd)
 cd "$repo"
 [[ -f "${AR_SIDEBAR_SETUP:-}" ]] || { echo "Prepare the pinned native extension and VS Code first." >&2; exit 127; }
+node --test scripts/codex-sidebar/history.spec.mjs
 cargo build --locked -p agent-router --quiet
 export AR_ROUTER_BIN="$repo/target/debug/agent-router"
 export AR_CODEX_SIDEBAR_DRIVER="$repo/scripts/codex-sidebar/smoke.mjs"

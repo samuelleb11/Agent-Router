@@ -5,6 +5,7 @@ import { _electron as electron } from 'playwright';
 import { execFileSync } from 'node:child_process';
 import { cp, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { assertRolloutPreserved } from './history.mjs';
 
 assert.equal(process.env.CI, 'true', 'Editor hosts run only in CI');
 const setup = JSON.parse(await readFile(process.env.AR_SIDEBAR_SETUP, 'utf8'));
@@ -168,7 +169,7 @@ try {
         beforeBytes: history.length, afterBytes: current?.length, firstDifference: at,
         before: history.slice(Math.max(0, at - 100), at + 500), after: current?.slice(Math.max(0, at - 100), at + 500) }));
     }
-    assert.ok(current?.startsWith(history), `Refresh lost or rewrote conversation ${path.basename(file)}`);
+    assertRolloutPreserved(history, current);
   }
   console.log('NATIVE_SIDEBAR_OK models=3 added=1 removed=1');
 } catch (error) {
