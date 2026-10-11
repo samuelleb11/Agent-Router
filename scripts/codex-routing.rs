@@ -452,6 +452,18 @@ async fn the_real_codex_cli_routes_three_providers() {
         let auxiliary=["gpt-6-luna","gpt-5.6-luna"];
         let mut routed=Vec::new();
         while let Ok(row)=requests.try_recv() {routed.push(row);}
+        let diagnostics=serde_json::json!(routed.iter().map(|(path,headers,body)|serde_json::json!({
+            "path":path,"session":header_session_of(headers),"body":body,
+            "turn_metadata":headers.get("x-codex-turn-metadata").and_then(|v|v.to_str().ok()),
+        })).collect::<Vec<_>>());
+        if let Some(dir)=std::env::var_os("AR_SIDEBAR_ARTIFACTS") {
+            std::fs::write(std::path::Path::new(&dir).join("routed-requests.json"),serde_json::to_vec_pretty(&diagnostics).unwrap()).unwrap();
+        }
+        println!("Native sidebar packet summary: {}",serde_json::json!(routed.iter().map(|(path,headers,body)|serde_json::json!({
+            "path":path,"model":body["model"],"session":header_session_of(headers),
+            "messages":body.get("messages").and_then(|v|v.as_array()).map(|v|v.len()),
+            "input":body.get("input").and_then(|v|v.as_array()).map(|v|v.len()),
+        })).collect::<Vec<_>>()));
         for (path,headers,body) in &routed {
             assert!(headers.values().all(|h|h.to_str().is_ok_and(|h|!h.contains(&token))));
             assert!(!body.to_string().contains(&token));
