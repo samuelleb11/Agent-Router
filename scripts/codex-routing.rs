@@ -78,6 +78,93 @@ fn codex_mock_stream(body: &Value, responses: bool) -> String {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires version-matched Codex; run scripts/check-primary-codex.sh catalogue-core"]
+async fn native_codex_catalogue_additions_and_removals() {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use std::time::Duration;
+    let cli=std::env::var_os("AR_CODEX_BIN").expect("use the catalogue qualification script");
+    let version=tokio::process::Command::new(&cli).arg("--version").output().await.unwrap();
+    assert!(version.status.success());
+    assert_eq!(String::from_utf8_lossy(&version.stdout).trim(),format!("codex-cli {}",crate::codex::catalogue::QUALIFIED_VERSION));
+    let lab=Lab::local("native-codex-catalogue");
+    lab.state.auth.pin(&lab.state.config.db_path,NATIVE_SMOKE_ADMIN_PASSWORD).await.unwrap();
+    let home=lab.state.config.db_path.parent().unwrap().join("native-home");
+    let codex=home.join(".codex");std::fs::create_dir_all(&codex).unwrap();
+    let config=codex.join("config.toml");
+    let conn=rusqlite::Connection::open(&lab.state.config.db_path).unwrap();
+    for provider in [Provider::Anthropic,Provider::OpenAI,Provider::Kimi] {
+        conn.execute("INSERT INTO accounts(id,label,source,provider,active,created_at) VALUES(?1,?1,'token',?1,1,1760000000000)",[provider.as_str()]).unwrap();
+        let route=crate::provider_registry::ModelRoute {
+            alias:format!("team-{}",provider.as_str()),service:provider.as_str().into(),upstream_model:"fixture".into(),
+            account_id:provider.as_str().into(),display_name:Some(format!("Team {}",provider.name())),
+            capabilities:Some(crate::provider_registry::Capabilities {images:false,reasoning:false,context_tokens:Some(64000),output_tokens:Some(2000),..Default::default()}),
+        };
+        conn.execute("INSERT INTO provider_model_routes(alias,definition) VALUES(?1,?2)",rusqlite::params![route.alias,serde_json::to_string(&route).unwrap()]).unwrap();
+    }
+    let (_,token)=native_client_token(&lab.app,&lab.state.config.db_path,"Model catalogue").await;
+    async fn metadata(app:&axum::Router,token:&str)->crate::models::ClientCatalogue {
+        let response=native_client_request(app,"GET","/_router/models",Some(token),Value::Null).await;
+        assert_eq!(response.status(),StatusCode::OK,"Client token must read model metadata");
+        serde_json::from_slice(&axum::body::to_bytes(response.into_body(),1<<20).await.unwrap()).unwrap()
+    }
+    crate::codex::apply(&config,&home.join("provider-kept.json"),"http://127.0.0.1:1",&token,true).unwrap();
+    let first=metadata(&lab.app,&token).await;
+    crate::codex::catalogue::sync(&config,&first,true).unwrap();
+    async fn picker(cli:&std::ffi::OsStr,home:&std::path::Path,codex:&std::path::Path)->Value {
+        let mut child=tokio::process::Command::new(cli).args(["app-server","--listen","stdio://"])
+            .env_clear().env("PATH",std::env::var_os("PATH").unwrap_or_default()).env("HOME",home).env("CODEX_HOME",codex)
+            .env("TMPDIR",home).env("XDG_CONFIG_HOME",home.join("config")).env("XDG_CACHE_HOME",home.join("cache"))
+            .env("RUST_LOG","off").stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null())
+            .kill_on_drop(true).spawn().unwrap();
+        let mut input=child.stdin.take().unwrap();
+        let mut lines=BufReader::new(child.stdout.take().unwrap()).lines();
+        let initialize=json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"agent-router-catalogue","version":"1"},"capabilities":{"experimentalApi":true}}});
+        input.write_all(format!("{initialize}\n").as_bytes()).await.unwrap();
+        async fn answer(lines:&mut tokio::io::Lines<BufReader<tokio::process::ChildStdout>>,id:u32)->Value {
+            tokio::time::timeout(Duration::from_secs(20),async {
+                while let Some(line)=lines.next_line().await.unwrap() {
+                    let value:Value=serde_json::from_str(&line).unwrap();
+                    if value["id"]==id {assert!(value.get("error").is_none(),"{value}");return value["result"].clone();}
+                }
+                panic!("native app-server closed before replying");
+            }).await.expect("native app-server model/list timed out")
+        }
+        answer(&mut lines,1).await;
+        input.write_all(b"{\"method\":\"initialized\"}\n").await.unwrap();
+        let query=json!({"id":2,"method":"model/list","params":{"limit":100,"includeHidden":true}});
+        input.write_all(format!("{query}\n").as_bytes()).await.unwrap();
+        let result=answer(&mut lines,2).await;
+        child.kill().await.unwrap();child.wait().await.unwrap();
+        result
+    }
+    let listed=picker(&cli,&home,&codex).await;
+    let rows=listed["data"].as_array().expect("native model/list data");
+    assert_eq!(rows.len(),first.models.len(),"router catalogue must replace bundled models: {listed}");
+    for provider in [Provider::Anthropic,Provider::OpenAI,Provider::Kimi] {
+        let row=rows.iter().find(|m|m["model"]==format!("team-{}",provider.as_str())).unwrap();
+        assert_eq!(row["displayName"],format!("Team {}",provider.name()));
+        assert_eq!(row["supportedReasoningEfforts"],json!([]));
+        assert_eq!(row["inputModalities"],json!(["text"]));
+    }
+    conn.execute("DELETE FROM provider_model_routes WHERE alias='team-anthropic'",[]).unwrap();
+    let mut next=crate::provider_registry::model_route(&conn,"team-openai").unwrap().unwrap();
+    next.alias="team-new".into();next.display_name=Some("New server model".into());
+    conn.execute("INSERT INTO provider_model_routes(alias,definition) VALUES(?1,?2)",rusqlite::params![next.alias,serde_json::to_string(&next).unwrap()]).unwrap();
+    let updated=metadata(&lab.app,&token).await;
+    assert_eq!(crate::codex::catalogue::sync(&config,&updated,false).unwrap(),Some(true));
+    let listed=picker(&cli,&home,&codex).await;
+    let rows=listed["data"].as_array().unwrap();
+    assert_eq!(rows.len(),updated.models.len());
+    assert!(!rows.iter().any(|m|m["model"]=="team-anthropic"));
+    assert!(rows.iter().any(|m|m["model"]=="team-new" && m["displayName"]=="New server model"));
+    assert_eq!(crate::codex::catalogue::sync(&config,&updated,false).unwrap(),Some(false));
+    assert!(!std::fs::read_to_string(codex.join(crate::codex::catalogue::FILE)).unwrap().contains(&token));
+    crate::codex::catalogue::restore(&config).unwrap();
+    crate::codex::remove(&config,&home.join("provider-kept.json")).unwrap();
+    println!("NATIVE_CATALOGUE_OK: three provider aliases, metadata, additions/removals after explicit restart, private reversible config");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires Codex; run scripts/check-codex-routing.sh"]
 async fn the_real_codex_cli_routes_three_providers() {
     use axum::routing::post;
@@ -155,9 +242,11 @@ async fn the_real_codex_cli_routes_three_providers() {
         ("gpt-5.4", Provider::OpenAI),
         ("kimi-for-coding", Provider::Kimi),
     ];
-    for (_, provider) in cases {
+    crate::pricing::ensure_table(&conn).unwrap();
+    for (model, provider) in cases {
         let id = provider.as_str();
         conn.execute("INSERT INTO accounts(id,label,source,provider,active,created_at) VALUES(?1,?1,'token',?1,1,1)", [id]).unwrap();
+        conn.execute("INSERT INTO model_rate(model,key) VALUES(?1,NULL)",[model]).unwrap();
         state.credentials.write().await.insert(
             id.into(),
             Active {
@@ -195,6 +284,7 @@ async fn the_real_codex_cli_routes_three_providers() {
         true,
     )
     .unwrap();
+    crate::codex::catalogue::sync(&scratch.join("codex/config.toml"),&crate::models::client_catalogue(&conn).unwrap(),true).unwrap();
     let command = || {
         let mut cmd = tokio::process::Command::new(&cli);
         cmd.env_clear()
@@ -344,6 +434,31 @@ async fn the_real_codex_cli_routes_three_providers() {
             assert_eq!(ev.usage.output_tokens, 13);
         }
         println!("{model}: {} routed, streamed, command tool completed and replayed; session/cwd/client captured", provider.as_str());
+    }
+    if let Some(driver)=std::env::var_os("AR_CODEX_SIDEBAR_DRIVER") {
+        let output=tokio::time::timeout(Duration::from_secs(240),tokio::process::Command::new("node")
+            .arg(driver).env("AR_SIDEBAR_SCRATCH",&scratch).env("AR_SIDEBAR_ROUTER",&router)
+            .env("AR_SIDEBAR_TOKEN",&token).env("AR_SIDEBAR_ADMIN",NATIVE_SMOKE_ADMIN_PASSWORD)
+            .env("AR_SIDEBAR_MODELS",serde_json::to_string(&cases.iter().map(|(m,p)|json!({"model":m,"provider":p.as_str()})).collect::<Vec<_>>()).unwrap())
+            .kill_on_drop(true).output()).await.expect("native sidebar acceptance timed out").unwrap();
+        let stdout=String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(),"native sidebar failed:\n{stdout}\n{}",String::from_utf8_lossy(&output.stderr));
+        assert!(stdout.contains("NATIVE_SIDEBAR_OK models=3 added=1 removed=1"),"sidebar cases must execute: {stdout}");
+        println!("{stdout}");
+        // Actual native sidebar prompts must complete a local command and replay
+        // its result through each provider, in addition to model-picker proof.
+        for (model,provider) in cases {
+            for turn in 0..2 {
+                let (path,headers,body)=tokio::time::timeout(Duration::from_secs(5),requests.recv()).await.unwrap().unwrap();
+                assert_eq!(body["model"],model);
+                assert_eq!(path,if provider==Provider::OpenAI {"/v1/responses"} else {"/v1/messages"});
+                assert!(headers.values().all(|h|h.to_str().is_ok_and(|h|!h.contains(&token))));
+                if turn==1 {assert!(body.to_string().contains("LOCAL_TOOL_FIXTURE_OK"));}
+                let event=tokio::time::timeout(Duration::from_secs(5),captured.recv()).await.unwrap().unwrap();
+                assert_eq!(event.status,200);assert_eq!(event.provider,provider);
+                assert_eq!(crate::analyze::client_of(event.entrypoint.as_deref().unwrap()),Some("codex-vscode"));
+            }
+        }
     }
     native_client_revoke(&app, &token_id, &token, "claude-sonnet-4-6", "responses").await;
     assert!(matches!(

@@ -3,6 +3,7 @@
 
 pub mod live;
 pub mod session;
+pub mod catalogue;
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -196,7 +197,7 @@ fn parse_config(text: &str) -> Result<DocumentMut> {
 
 /// The provider config contains the router password. Create the replacement
 /// privately before writing it, including when the original config was public.
-fn write_private(path: &Path, body: impl AsRef<[u8]>) -> Result<()> {
+pub(crate) fn write_private(path: &Path, body: impl AsRef<[u8]>) -> Result<()> {
     use std::io::Write;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -310,6 +311,7 @@ pub fn remove(path: &Path, kept: &Path) -> Result<bool> {
     {
         bail!("saved Codex settings belong to another config file");
     }
+    catalogue::restore(path)?;
     let before = read(path)?;
     let mut doc = parse_config(&before)?;
     if doc.get("model_provider").and_then(Item::as_str) == Some(PROVIDER) {

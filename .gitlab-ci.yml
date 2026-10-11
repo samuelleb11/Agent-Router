@@ -156,6 +156,41 @@ check rust:
     # change of its own.
     - cargo clippy -p agent-router -p claude-wrapper --all-targets --locked -- -D warnings -A clippy::style -A clippy::complexity
 
+# Native sidebar and full console qualification stay off the developer's Mac.
+# The published extension uses its own bundled binary, matching the CLI pin.
+check primary codex:
+  stage: check
+  extends: .rules-rust-check
+  image: mcr.microsoft.com/playwright:v1.64.0-noble
+  timeout: 30m
+  variables:
+    GIT_DEPTH: "0"
+  cache:
+    key:
+      files: [Cargo.lock, scripts/codex-sidebar/package-lock.json]
+    paths:
+      - .cargo/registry/index/
+      - .cargo/registry/cache/
+      - .cargo/git/db/
+  before_script:
+    - apt-get -qq update
+    - apt-get -qq install -y curl git build-essential pkg-config python3 python3-venv xvfb xauth
+    - curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.98.0
+    - export PATH="$HOME/.cargo/bin:$PATH"
+    - npm ci --ignore-scripts --no-audit --no-fund --prefix scripts/codex-sidebar
+    - node scripts/codex-sidebar/prepare.mjs
+    - export AR_SIDEBAR_SETUP="$CI_PROJECT_DIR/.ci/codex-editor/setup.json"
+    - export AR_SIDEBAR_ARTIFACTS="$CI_PROJECT_DIR/.ci/codex-artifacts"
+    - export CODEX_BIN=$(python3 -c 'import json,os; print(json.load(open(os.environ["AR_SIDEBAR_SETUP"]))["codexBin"])')
+  script:
+    - xvfb-run -a python3 scripts/measure-primary-codex.py gateway catalogue
+  artifacts:
+    when: always
+    expire_in: 14 days
+    paths:
+      - .ci/codex-measurements/
+      - .ci/codex-artifacts/
+
 check chart:
   stage: check
   extends: .rules-agent-router

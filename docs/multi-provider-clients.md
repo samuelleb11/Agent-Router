@@ -49,7 +49,7 @@ There are two contracts to complete:
 
 | Contract | Responsibility | Current state |
 | --- | --- | --- |
-| OpenAI-compatible model gateway | Model discovery, authenticated inference, streaming, tool history, usage and errors for any compatible client | Responses and Chat Completions ingress are implemented; standard discovery and broader contract acceptance remain open |
+| OpenAI-compatible model gateway | Model discovery, authenticated inference, streaming, tool history, usage and errors for any compatible client | Standard discovery and the official SDK portable contract across three providers are implemented |
 | Codex runtime integration | Native session lifecycle, editor/CLI context, approvals, cancellation, model selection and remote controls | Setup and watched session feeds are implemented; managed controls remain open |
 
 Codex uses **Responses**. Strengthening that endpoint benefits other Responses clients;
@@ -62,11 +62,13 @@ full OpenAI API or complete native editor/control support.
 cover the Responses conversation and tool contract.
 
 **Model discovery has two forms.** Other OpenAI-compatible clients need the standard
-OpenAI list shape; today's `GET /v1/models` is Anthropic-shaped. Codex also needs richer,
-version-matched model metadata. Generate and sync `model_catalog_json` from the router's
+OpenAI list shape; `GET /v1/models` now provides it, preserving Anthropic discovery when
+the request carries `anthropic-version`. Codex also needs richer, version-matched model
+metadata. Agent Router generates and syncs `model_catalog_json` from the router's
 routes, including aliases, labels, context limits, reasoning/tool/image capabilities and
 valid instructions. The local catalog replaces the bundled catalog and loads at startup;
-provide an explicit refresh flow that preserves sessions. A `/v1/models` list alone does
+`agent-router codex models refresh` updates it without stopping running clients; finish
+active turns and resume the same session after restarting. A `/v1/models` list alone does
 not populate every Codex picker field or prove automatic refresh.
 [Gateway rollout documentation](https://learn.chatgpt.com/docs/enterprise/roll-out-a-gateway)
 explains custom aliases, version matching and startup loading.

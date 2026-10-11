@@ -135,9 +135,11 @@ function ConfigureClient({ client, setup }: { client: SetupClient; setup: Client
         {preview.path ? <Explain>Settings to add to <code className={styles.path}>{preview.path}</code>. Applying merges them into your existing configuration.</Explain> : <Explain>Merge these settings into {client.name}’s configuration on the machine running the client.</Explain>}
         <CodeSnippet type="multi" wrapText hideCopyButton className={styles.snippet} aria-label={`${client.name} configuration preview`}>{preview.content}</CodeSnippet>
         <Explain>{token ? 'This configuration contains your router access token. Save it as a private client configuration.' : 'If this client runs on another machine, replace the token placeholder with a Client access token.'} Copied or downloaded settings should be merged with any existing configuration.</Explain>
+        {preview.catalogue_content ? <Explain>Apply installs the server’s models for the Codex CLI and editor. For an exported configuration, run <code>agent-router codex models refresh</code> on the client machine. Finish active turns before restarting Codex, then resume the same conversation. Running clients keep their current model list.</Explain> : null}
         <div className={styles.actions}>
           <CopyButton text={preview.content} label="Copy configuration" what="the configuration" />
           <Button kind="tertiary" size="md" onClick={() => downloadConfiguration(clientFilename(client.id, preview.format), preview.content)}>Download configuration</Button>
+          {preview.catalogue_content ? <Button kind="tertiary" size="md" onClick={() => downloadConfiguration('agent-router-models.json', preview.catalogue_content!)}>Download Codex model catalogue</Button> : null}
           {local && client.can_apply && preview.can_apply ? <Button kind="secondary" size="md" disabled={busy} onClick={() => { setError(null); setConfirm('apply'); }}>Apply configuration</Button> : null}
           <Button kind="ghost" size="md" disabled={busy} onClick={() => { setPreview(null); setToken(''); }}>Clear preview and token</Button>
         </div>

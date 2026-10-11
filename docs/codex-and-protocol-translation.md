@@ -68,8 +68,9 @@ because that backend removes output budgets; use an API-key account for such a r
 Codex is now the primary deep-integration target. The
 [primary-client design](multi-provider-clients.md#primary-client-direction) separates the
 reusable OpenAI-compatible gateway from managed native session controls. This document
-describes the implemented transport scope; the new catalogue, runtime and lifecycle
-acceptance work remains open under Northstar AGEN-0157.
+describes the implemented transport scope. Standard discovery, generated Codex metadata
+and explicit refresh are implemented; native sidebar qualification, managed runtime and
+lifecycle acceptance are tracked under Northstar AGEN-0157.
 
 ## Configure Codex
 
@@ -83,6 +84,47 @@ quota. Preview exports only router-managed settings, keeping unrelated saved sec
 out of the browser. Apply merges the reviewed settings and refuses a stale file;
 restore preserves subsequently edited managed values, which may retain routing URLs
 or tokens and should be reviewed manually.
+
+Codex Apply also writes a private, atomic `agent-router-models.json` and selects it with
+`model_catalog_json`. A separate ownership ledger restores the previous catalogue path
+and preserves edited files. It contains only serving model aliases, labels, effective
+capabilities and portable coding instructions; provider accounts, endpoints, credentials
+and cached private instructions are excluded. The native metadata is qualified against
+Codex **0.162.0-alpha.17.2**, bundled with extension **26.1007.21434**. It replaces bundled
+models. Routes without tools are hidden from the coding picker. Unknown token limits use
+128,000 context and 4,096 output headroom; configured output caps are enforced by the
+gateway, since Codex has no per-model max-output catalogue field.
+
+For hosted exports, merge the generated config on the client machine, then run:
+
+```sh
+agent-router codex models refresh
+```
+
+The command reads the router URL and Client token from the existing provider config;
+`AGENT_ROUTER_CLIENT_TOKEN` can supply a replacement credential for this request. It
+installs or refreshes the catalogue without stopping a running client. The machine
+agent maintains owned catalogues every fifteen minutes. Local installer maintenance
+does the same using the local store. **Codex loads metadata at startup.** Finish active
+turns before restarting; use `codex resume <SESSION_ID>` to retain the CLI conversation,
+or reopen the same conversation after reloading the editor window. The command does
+not claim to refresh an already running picker. `agent-router codex models restore`
+restores only the catalogue; Clients → Restore also restores managed routing settings.
+
+`GET /v1/models` returns standard OpenAI `object: list` entries with `id`, `object`,
+Unix-second `created` and `owned_by`. Requests carrying `anthropic-version` retain the
+Anthropic shape used by Claude Code. `GET /_router/models` exposes versioned capability
+metadata to Client and Machine tokens; both endpoints are answered locally.
+
+`bash scripts/check-primary-codex.sh gateway` runs the official Python OpenAI SDK
+**3.28.0** against three local providers: both APIs, JSON and SSE, terminal events,
+function-call/result replay, stateless Responses history, JSON schemas, usage, useful
+provider errors and Client-token replacement/revocation. It also checks refusals for
+unsupported cross-provider stored history, encrypted reasoning and hosted tools.
+This qualifies the portable gateway contract rather than every OpenAI API feature.
+`catalogue-core` checks native `model/list` additions/removals and private reversible
+files; `catalogue` additionally drives the published native sidebar in Linux CI. The
+editor job records failing baseline and current results as importable Northstar artifacts.
 
 OpenCode project configuration uses a `{file:/absolute/path/to/credential.token}`
 reference for a supplied router credential. Only Apply creates the private `0600` file

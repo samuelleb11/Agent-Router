@@ -15,7 +15,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use rusqlite::{Connection, OptionalExtension};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::accounts::{Conflict, Provider};
@@ -363,8 +363,8 @@ pub async fn assign_route(State(state): State<Arc<AppState>>, JsonBody(req): Jso
     }
 }
 
-/// `GET /v1/models`, answered by the router itself rather than forwarded: the catalogue in
-/// the Anthropic Models API's shape, for any client that lists the models it can pick.
+/// `GET /v1/models`, answered locally. OpenAI discovery is the default; the
+/// Anthropic version header selects the shape used by Claude Code and its SDK.
 /// Claude Code's gateway discovery keeps only the ids containing `claude` of it, which is
 /// Claude Code's choice; the router names every model as it is.
 pub async fn v1_models(State(state): State<Arc<AppState>>, headers: axum::http::HeaderMap) -> Response {
@@ -375,17 +375,57 @@ pub async fn v1_models(State(state): State<Arc<AppState>>, headers: axum::http::
         Ok(models) => models,
         Err(e) => return failed(e),
     };
-    let data: Vec<Value> = models
-        .iter()
-        .map(|m| json!({ "type": "model", "id": m.id, "display_name": m.display_name, "created_at": m.created_at }))
-        .collect();
-    Json(json!({
-        "data": data,
-        "has_more": false,
-        "first_id": models.first().map(|m| m.id.clone()),
-        "last_id": models.last().map(|m| m.id.clone()),
-    }))
-    .into_response()
+    if headers.contains_key("anthropic-version") {
+        let data: Vec<Value> = models.iter().map(|m| json!({
+            "type":"model", "id":m.id, "display_name":m.display_name, "created_at":m.created_at
+        })).collect();
+        Json(json!({"data":data,"has_more":false,
+            "first_id":models.first().map(|m|&m.id),"last_id":models.last().map(|m|&m.id)})).into_response()
+    } else {
+        let data: Vec<Value> = models.iter().map(|m| json!({
+            "object":"model", "id":m.id,
+            "created":crate::fold::parse_rfc3339_ms(&m.created_at).unwrap_or(0)/1000,
+            "owned_by":m.provider.as_str()
+        })).collect();
+        Json(json!({"object":"list","data":data})).into_response()
+    }
+}
+
+/// Public client metadata deliberately excludes accounts, upstream endpoints,
+/// credentials and private instructions. Operator capability limits are combined
+/// with route overrides in the same way as inference admission.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClientModel {
+    pub id: String,
+    pub display_name: String,
+    pub provider: Provider,
+    pub capabilities: crate::provider_registry::Capabilities,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClientCatalogue {
+    pub schema_version: u32,
+    pub models: Vec<ClientModel>,
+}
+
+pub fn client_catalogue(conn: &Connection) -> anyhow::Result<ClientCatalogue> {
+    let mut models = Vec::new();
+    for model in catalogue(conn)?.into_iter().filter(|m| m.serving.is_some()) {
+        let (_, capabilities) = crate::provider_registry::metadata(conn, &model.id, model.provider)?;
+        models.push(ClientModel {id:model.id,display_name:model.display_name,provider:model.provider,capabilities});
+    }
+    models.sort_by(|a,b|a.id.cmp(&b.id));
+    Ok(ClientCatalogue {schema_version:1,models})
+}
+
+/// `GET /_router/models`: richer metadata available to Client and Machine tokens.
+pub async fn client_metadata(State(state): State<Arc<AppState>>) -> Response {
+    match state.reads.get().and_then(|conn|client_catalogue(&conn)) {
+        Ok(catalogue) => Json(catalogue).into_response(),
+        Err(error) => failed(error),
+    }
 }
 
 #[cfg(test)]

@@ -566,6 +566,7 @@ struct Plan {
     after: String,
     owned: Vec<Vec<String>>,
     credential: Option<(PathBuf, String)>,
+    catalogue: Option<crate::models::ClientCatalogue>,
 }
 
 async fn plan(
@@ -722,14 +723,29 @@ async fn plan(
         warnings.push("Apply creates the private credential file outside the project. Copying or downloading this configuration alone does not create that file; create it privately on the client machine before using the file reference.".into());
     }
     let supplied = reference.as_deref().unwrap_or(supplied);
-    let (after, owned) = render(client, &before, &model.id, &url, supplied, &capabilities)?;
+    let (mut after, owned) = render(client, &before, &model.id, &url, supplied, &capabilities)?;
     // Export only our fragment. An existing config may contain other providers' keys.
-    let content = render(client, "", &model.id, &url, supplied, &capabilities)?.0;
+    let mut content = render(client, "", &model.id, &url, supplied, &capabilities)?.0;
+    let catalogue = if client == "codex" {
+        if !capabilities.tools {bail!("Codex requires a model route with tools enabled");}
+        let metadata = {let conn=state.reads.get()?;crate::models::client_catalogue(&conn)?};
+        if let Some(path) = &path {
+            after = crate::codex::catalogue::prepare(path,&before,&after,&metadata)?.after;
+            let mut fragment = toml_config(&content)?;
+            fragment["model_catalog_json"] = value(path.parent().unwrap().join(crate::codex::catalogue::FILE).to_string_lossy().as_ref());
+            content = fragment.to_string();
+        }
+        warnings.push("Model changes apply when Codex starts. Refresh with `agent-router codex models refresh`; finish active turns, then resume the same CLI session or reload the Codex editor window. Refresh does not stop running clients.".into());
+        Some(metadata)
+    } else {None};
     let body = json!({"ok":true,"client":client,"model":model.id,"provider":model.provider.as_str(),"account_id":account,
         "protocol":protocol,"translated":translated,"can_apply":!state.config.server,
         "path":path.as_ref().map(|p|p.display().to_string()),"format":if client=="codex"{"toml"}else{"json"},
         "content":content,"revision":digest(&before),"warnings":warnings,"checks":checks,"connection_tested":false,"service_id":service.id,"native_protocol":service.protocol,"capabilities":capabilities,
-        "credential_path":private_credential.as_ref().map(|(p,_)|p.display().to_string())});
+        "credential_path":private_credential.as_ref().map(|(p,_)|p.display().to_string()),
+        "catalogue_content":catalogue.as_ref().map(crate::codex::catalogue::native).transpose()?.map(|v|serde_json::to_string_pretty(&v)).transpose()?,
+        "catalogue_path":if client=="codex" {path.as_ref().map(|p|p.parent().unwrap().join(crate::codex::catalogue::FILE).display().to_string())} else {None},
+        "catalogue_qualified_version":if client=="codex" {Some(crate::codex::catalogue::QUALIFIED_VERSION)} else {None}});
     Ok(Plan {
         body,
         path,
@@ -737,6 +753,7 @@ async fn plan(
         after,
         owned,
         credential: private_credential,
+        catalogue,
     })
 }
 
@@ -762,6 +779,7 @@ pub async fn check(
     match plan(&state, roots.map(|r| r.0), &client, &req, false).await {
         Ok(mut plan) => {
             plan.body.as_object_mut().unwrap().remove("content");
+            plan.body.as_object_mut().unwrap().remove("catalogue_content");
             success(plan.body)
         }
         Err(e) => refuse(StatusCode::BAD_REQUEST, e.to_string()),
@@ -813,6 +831,7 @@ fn apply_plan(state: &AppState, client: &str, req: &Setup, plan: Plan) -> Result
     let path = plan
         .path
         .context("hosted configuration can only be exported")?;
+    let _catalogue_lock = if client=="codex" {Some(crate::codex::catalogue::WRITES.lock().map_err(|_|anyhow!("Codex catalogue lock unavailable"))?)} else {None};
     if req.revision.as_deref() != Some(digest(&plan.before).as_str()) || read(&path)? != plan.before
     {
         bail!("client settings changed or have not been previewed; preview again before applying");
@@ -831,6 +850,7 @@ fn apply_plan(state: &AppState, client: &str, req: &Setup, plan: Plan) -> Result
     }
     let url = selected_url(state, req.url.as_deref())?;
     ensure_provider_owned(client, &path, &plan.before, &url, previous.as_ref())?;
+    let catalogue = plan.catalogue.as_ref().map(|metadata|crate::codex::catalogue::prepare(&path,&plan.before,&plan.after,metadata)).transpose()?;
     let mut owned = previous
         .as_ref()
         .map(|saved| saved.owned.clone())
@@ -878,14 +898,17 @@ fn apply_plan(state: &AppState, client: &str, req: &Setup, plan: Plan) -> Result
         None
     };
     write_private(&kept, serde_json::to_vec_pretty(&saved)?)?;
-    let changed = plan.before != plan.after;
+    let changed = plan.before != plan.after || catalogue.as_ref().is_some_and(|p|p.changed());
+    let mut catalogue_applied = false;
     let write_result = (|| -> Result<()> {
+        if let Some(catalogue)=&catalogue {catalogue.apply()?;catalogue_applied=true;}
         if let Some((credential_path, token)) = &plan.credential {
             write_private(credential_path, token)?;
         }
         write_private(&path, &plan.after)
     })();
     if let Err(error) = write_result {
+        if catalogue_applied {catalogue.as_ref().unwrap().rollback()?;}
         if let Some((credential_path, _)) = &plan.credential {
             match previous_credential {
                 Some(bytes) => write_private(credential_path, bytes)?,
@@ -957,8 +980,9 @@ fn restore_saved(
     if saved.client != client || saved.path != path {
         bail!("saved client settings belong to another configuration");
     }
+    let original = read(&path)?;
+    let mut preserved_edits = if client=="codex" {crate::codex::catalogue::restore(&path)?} else {false};
     let before = read(&path)?;
-    let mut preserved_edits = false;
     let after = if client == "codex" {
         let mut current = toml_config(&before)?;
         let installed = toml_config(&saved.installed)?;
@@ -1004,7 +1028,7 @@ fn restore_saved(
         }
         format!("{}\n", serde_json::to_string_pretty(&current)?)
     };
-    let changed = before != after;
+    let changed = original != after;
     if !saved.existed && !preserved_edits && (after.trim().is_empty() || after.trim() == "{}") {
         if path.exists() {
             std::fs::remove_file(&path)?;

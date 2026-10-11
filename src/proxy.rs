@@ -587,7 +587,7 @@ async fn forward(state: Arc<AppState>, req: Request<Body>) -> anyhow::Result<Res
     );
     tee.set_upstream_protocol(upstream_protocol);
 
-    let needs_json = client_protocol.is_some() && !client_streaming && is_sse;
+    let needs_json = client_protocol.is_some() && !client_streaming && is_sse && resp_parts.status.is_success();
     if needs_json || (translating && !is_sse) {
         let raw = match axum::body::to_bytes(Body::new(resp_body), MAX_REQUEST_BODY).await {
             Ok(raw) => raw,
@@ -600,6 +600,13 @@ async fn forward(state: Arc<AppState>, req: Request<Body>) -> anyhow::Result<Res
         let mut decoder = crate::capture::Decoder::for_encoding(encoding.as_deref());
         let mut plain = decoder.feed(&raw);
         plain.extend(decoder.finish());
+        // Error envelopes already carry a portable error.message. Keep the
+        // provider's HTTP status and detail; parsing an error as a successful
+        // message would turn quota/auth failures into router translation errors.
+        if !resp_parts.status.is_success() {
+            drop(tee);
+            return Ok(resp.body(Body::from(plain))?);
+        }
         let translated = (|| -> anyhow::Result<Vec<u8>> {
             if is_sse {
                 plain = crate::translate::collect_sse(&plain, upstream_protocol)?;
@@ -627,7 +634,7 @@ async fn forward(state: Arc<AppState>, req: Request<Body>) -> anyhow::Result<Res
         resp.headers_mut().expect("builder has headers").insert("content-type", HeaderValue::from_static("application/json"));
         return Ok(resp.body(Body::from(translated))?);
     }
-    let translator = if translating && is_sse {
+    let translator = if translating && is_sse && resp_parts.status.is_success() {
         let mut translator = crate::translate::StreamTranslator::with_request(upstream_protocol, client_protocol.unwrap(), &request_bytes)?;
         translator.set_input_includes_cache(signer.provider == Provider::Kimi && upstream_protocol == Protocol::Messages);
         Some(translator)

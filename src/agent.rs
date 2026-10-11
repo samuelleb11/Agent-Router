@@ -407,6 +407,10 @@ struct ClientsKept {
 /// time on `install` and put back at every sync after, since Kimi Code updates itself.
 async fn keep_clients(router: &crate::library::sync::Router, server: &str, password: &str, install: bool) -> Result<ClientsKept> {
     let Some(catalogue) = catalogue_of(router, server).await? else { return Ok(ClientsKept { kimi: None, codex: None }) };
+    let (status,_,body)=router.send(axum::http::Method::GET,"/_router/models",Vec::new(),Bytes::new()).await?;
+    let native:Option<crate::models::ClientCatalogue>=if status==axum::http::StatusCode::NOT_FOUND {None}
+        else if status.is_success() {Some(serde_json::from_slice(&body).context("invalid router client model metadata")?)}
+        else {bail!("{server} answered {status} for its client model metadata")};
     let settings = crate::setup::settings_path(None)?;
     let (server, password) = (server.to_string(), password.to_string());
     tokio::task::spawn_blocking(move || -> Result<ClientsKept> {
@@ -414,8 +418,17 @@ async fn keep_clients(router: &crate::library::sync::Router, server: &str, passw
         let consented = crate::setup::base_url_in(&settings)?
             .is_some_and(|url| url.trim_end_matches('/') == server.trim_end_matches('/'));
         let kimi = crate::kimi::config::here(&server, &password, &catalogue, install, consented);
-        let codex = crate::codex::here(&server, &password, install, consented);
-        Ok(ClientsKept { kimi: kimi?, codex: codex? })
+        let mut codex = crate::codex::here(&server, &password, install, consented)?;
+        if let Some(native)=native {
+            let path=crate::accounts::codex_home()?.join("config.toml");
+            if path.exists() {
+                let path=path.canonicalize()?;
+                if let Some(changed)=crate::codex::catalogue::sync(&path,&native,install)? {
+                    codex=Some(codex.unwrap_or(false)||changed);
+                }
+            }
+        }
+        Ok(ClientsKept { kimi: kimi?, codex })
     })
     .await?
 }

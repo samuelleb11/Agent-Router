@@ -76,6 +76,8 @@ USAGE:
   agent-router status                show what is installed and what is managed
   agent-router agent [OPTIONS]       connect this machine's sessions to a hosted router
   agent-router library status|sync   the hosted router's Library on this machine
+  agent-router codex models refresh|restore
+                                     refresh Codex's server model list or restore it
   agent-router kimi [--model <id>] [prompt]
                                      a hosted Kimi Code session in this directory,
                                      worked with here and from the console
@@ -152,6 +154,7 @@ async fn main() -> anyhow::Result<()> {
         Some("status") => return cmd_status(),
         Some("hook") => return kimi::hook(&args[1..]),
         Some("kimi") => return kimi::launch::main(&args[1..]).await,
+        Some("codex") => return codex::catalogue::cli(&args[1..]).await,
         Some("-h") | Some("--help") | Some("help") => {
             print!("{USAGE}");
             return Ok(());
@@ -280,7 +283,10 @@ fn cmd_install(args: &[String]) -> anyhow::Result<()> {
         Err(e) => println!("kimi      Kimi Code's config.toml left alone ({e:#})"),
     }
     match codex::here(&url, "agent-router", true, true) {
-        Ok(Some(_)) => println!("codex     Codex's config.toml: Responses through Agent Router; uninstall restores its provider"),
+        Ok(Some(_)) => {
+            println!("codex     Codex's config.toml: Responses through Agent Router; uninstall restores its provider");
+            if let Err(error)=local_codex_catalogue(true) {println!("codex     model catalogue left alone ({error:#})");}
+        },
         Ok(None) => {},
         Err(e) => println!("codex     Codex's config.toml left alone ({e:#})"),
     }
@@ -298,6 +304,16 @@ fn local_catalogue() -> anyhow::Result<Vec<serde_json::Value>> {
     Ok(models::catalogue(&conn)?.iter().map(models::row).collect())
 }
 
+fn local_codex_catalogue(install: bool) -> anyhow::Result<()> {
+    let db=config::db_path()?;
+    let path=accounts::codex_home()?.join("config.toml");
+    if !db.exists() || !path.exists() {return Ok(());}
+    let metadata=models::client_catalogue(&rusqlite::Connection::open(db)?)?;
+    if install && metadata.models.is_empty() {return Ok(());}
+    codex::catalogue::sync(&path.canonicalize()?,&metadata,install)?;
+    Ok(())
+}
+
 /// This machine's Kimi Code pointed at the local router at `url` (`kimi::config::here`). A
 /// local router takes requests from loopback without a password, so the key is a name.
 fn local_kimi_config(url: &str, install: bool) -> anyhow::Result<Option<bool>> {
@@ -309,6 +325,7 @@ fn local_kimi_config(url: &str, install: bool) -> anyhow::Result<Option<bool>> {
     }
     if !install {
         if let Err(e) = codex::here(url, "agent-router", false, consented) { tracing::warn!("Codex config could not be kept in step: {e:#}"); }
+        if let Err(e) = local_codex_catalogue(false) {tracing::warn!("Codex model catalogue could not be kept in step: {e:#}");}
     }
     kimi::config::here(url, "agent-router", &local_catalogue()?, install, consented)
 }
@@ -636,6 +653,7 @@ fn app_with(state: Arc<proxy::AppState>, console: console::Files) -> Router {
         .route("/api/models/assign", post(models::assign_route))
         // Answered from the catalogue, never forwarded (`models::v1_models`).
         .route("/v1/models", get(models::v1_models))
+        .route("/_router/models", get(models::client_metadata))
         .route("/v1/chat/completions", post(chat_completions::handle))
         .route("/_router/health", get(api::health));
     let routes = if state.config.server { hosted::routes(common) } else { machine_routes(common) };

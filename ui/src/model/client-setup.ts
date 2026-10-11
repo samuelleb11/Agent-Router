@@ -67,6 +67,9 @@ export interface ClientPreview {
   readonly service_id?: string;
   readonly native_protocol?: 'messages' | 'responses';
   readonly capabilities?: RegistryCapabilities;
+  readonly catalogue_content?: string | null;
+  readonly catalogue_path?: string | null;
+  readonly catalogue_qualified_version?: string | null;
 }
 
 export type ClientChecked = Omit<ClientPreview, 'content'>;

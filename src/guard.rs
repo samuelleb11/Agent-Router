@@ -169,7 +169,7 @@ fn permits(scope: tokens::Scope, method: &Method, uri: &Uri) -> bool {
     if scope == tokens::Scope::Admin {
         return true;
     }
-    let inference = (*method == Method::GET && path == "/v1/models")
+    let inference = (*method == Method::GET && matches!(path, "/v1/models" | "/_router/models"))
         || (*method == Method::POST && matches!(path,
             "/v1/messages" | "/v1/messages/count_tokens" | "/v1/chat/completions" | "/v1/responses" | "/codex/responses"
             | "/v1/responses/compact" | "/codex/responses/compact"));
@@ -416,6 +416,7 @@ mod tests {
             assert_eq!(status, StatusCode::CREATED);
             let token = made["token"].as_str().unwrap();
             assert_eq!(token_request(&lab, Method::GET, "/v1/models", token).await.status(), StatusCode::OK);
+            assert_eq!(token_request(&lab, Method::GET, "/_router/models", token).await.status(), StatusCode::OK);
             let administrative = if scope == "admin" {StatusCode::OK} else {StatusCode::FORBIDDEN};
             assert_eq!(token_request(&lab, Method::GET, "/api/auth/tokens", token).await.status(), administrative);
             // A valid routing token cannot borrow another upstream API or become a
@@ -437,6 +438,7 @@ mod tests {
             let id = made["id"].as_str().unwrap();
             assert_eq!(token_request(&lab, Method::DELETE, &format!("/api/auth/tokens/{id}"), "legacy-pass").await.status(), StatusCode::OK);
             assert_eq!(token_request(&lab, Method::GET, "/v1/models", token).await.status(), StatusCode::UNAUTHORIZED);
+            assert_eq!(token_request(&lab, Method::GET, "/_router/models", token).await.status(), StatusCode::UNAUTHORIZED);
         }
         // Malformed named tokens are not native provider credentials, even on loopback.
         assert_eq!(token_request(&lab, Method::GET, "/api/auth/tokens", "arr_bad").await.status(), StatusCode::UNAUTHORIZED);

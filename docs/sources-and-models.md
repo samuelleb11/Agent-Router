@@ -92,8 +92,10 @@ provider first.
     that serves it now, and the provider's display name for it.
   - `POST /api/models/assign {model, account}` — `account: null` clears the assignment. An
     account of another provider is refused.
-  - `GET /v1/models` — the catalogue in the Anthropic Models API shape (`data[]` of `{type:
-    "model", id, display_name, created_at}`), for any client that lists models.
+  - `GET /v1/models` — standard OpenAI model discovery by default. Requests carrying
+    `anthropic-version` receive the Anthropic Models API shape (`data[]` of `{type:
+    "model", id, display_name, created_at}`). `GET /_router/models` supplies client-scoped
+    capability metadata for generated native client catalogues.
 
 ## Kimi Code
 
