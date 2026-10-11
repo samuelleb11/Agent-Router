@@ -71,19 +71,17 @@ async function sidebar() {
   throw new Error('Native Codex sidebar composer did not appear');
 }
 async function picker(frame) {
-  // Prefer the visible selected-model control; its label comes from model/list.
-  // The published UI also exposes Ctrl+Shift+M and a "Select model" action.
-  const labels = (await models()).flatMap(row => [row.display_name, row.display_name.replace(/^gpt[- ]?/i, '')])
-    .filter(Boolean).map(label => label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-  const trigger = frame.getByRole('button', { name: new RegExp(labels.join('|')) }).first();
-  if (labels.length && await trigger.isVisible()) await trigger.click();
-  else {
-    await frame.locator('[contenteditable="true"]').first().click();
-    await page.keyboard.press('Control+Shift+M');
-  }
-  const select = frame.getByRole('button', { name: 'Select model', exact: true });
-  await select.waitFor({ state: 'visible', timeout: 15_000 });
-  await select.click();
+  // The toolbar button opens the power panel. Its menu action opens the model
+  // list; inactive panels remain mounted, so use accessible roles throughout.
+  await frame.getByRole('button', { name: 'Select model', exact: true }).click();
+  await frame.getByRole('menuitem', { name: 'Select model', exact: true }).click();
+  await frame.getByRole('menuitemradio').first().waitFor({ state: 'visible', timeout: 15_000 });
+}
+function modelRow(frame, label) {
+  // The native UI strips GPT prefixes from labels in its model picker.
+  const short = label.replace(/^gpt[- ]?/i, '');
+  const text = frame.getByText(label, { exact: true }).or(frame.getByText(short, { exact: true }));
+  return frame.getByRole('menuitemradio').filter({ has: text });
 }
 async function models() {
   const response = await fetch(`${server}/_router/models`, { headers: { Authorization: `Bearer ${token}` } });
@@ -117,7 +115,7 @@ try {
     await picker(frame);
     const name = catalogue.find(row => row.id === model)?.display_name;
     assert.ok(name, `Missing server model ${model}`);
-    await frame.getByText(name, { exact: true }).last().click({ timeout: 15_000 });
+    await modelRow(frame, name).click({ timeout: 15_000 });
     console.log(`NATIVE_SIDEBAR_PHASE selected ${model}`);
     // A native sidebar turn: execute and replay a command through the router.
     const composer = frame.locator('[contenteditable="true"]').first();
@@ -139,14 +137,14 @@ try {
   execFileSync(process.env.AR_ROUTER_BIN, ['codex', 'models', 'refresh'], { env: environment, stdio: 'inherit', timeout: 30_000 });
   frame = await launch();
   await picker(frame);
-  await frame.getByText('TEAM SERVER NEW', { exact: true }).waitFor({ timeout: 15_000 });
-  await frame.getByText('TEAM SERVER NEW', { exact: true }).click();
+  await modelRow(frame, 'TEAM SERVER NEW').waitFor({ timeout: 15_000 });
+  await modelRow(frame, 'TEAM SERVER NEW').click();
   await app.close(); app = undefined;
   await registry('DELETE', '/team-sidebar-new');
   execFileSync(process.env.AR_ROUTER_BIN, ['codex', 'models', 'refresh'], { env: environment, stdio: 'inherit', timeout: 30_000 });
   frame = await launch();
   await picker(frame);
-  assert.equal(await frame.getByText('TEAM SERVER NEW', { exact: true }).count(), 0, 'Removed server model persisted in native picker');
+  assert.equal(await modelRow(frame, 'TEAM SERVER NEW').count(), 0, 'Removed server model persisted in native picker');
   catalogue = await models();
   assert.equal(catalogue.some(row => row.id === 'team-sidebar-new'), false);
   const resumedConversations = await rollouts();
@@ -163,6 +161,10 @@ try {
         label: element.getAttribute('aria-label'), title: element.getAttribute('title'), text: element.innerText,
       }))).catch(() => []);
       await writeFile(path.join(artifacts, `frame-${index}-buttons.json`), JSON.stringify(buttons, null, 2));
+      const items = await frame.getByRole('menuitem').or(frame.getByRole('menuitemradio')).evaluateAll(elements => elements.map(element => ({
+        role: element.getAttribute('role'), label: element.getAttribute('aria-label'), text: element.innerText,
+      }))).catch(() => []);
+      await writeFile(path.join(artifacts, `frame-${index}-menu.json`), JSON.stringify(items, null, 2));
     }
   }
   await cp(path.join(userData, 'logs'), path.join(artifacts, 'vscode-logs'), { recursive: true }).catch(() => {});
