@@ -76,6 +76,17 @@ function modelRow(frame, label) {
   const text = frame.getByText(label, { exact: true }).or(frame.getByText(label.replace(/^gpt[- ]?/i, ''), { exact: true }));
   return frame.getByRole('menuitemradio').filter({ has: text });
 }
+async function submit(frame, text) {
+  const composer = frame.locator('[contenteditable="true"]').first();
+  await frame.getByRole('button', { name: 'Send', exact: true }).waitFor({ state: 'visible', timeout: 15_000 });
+  await composer.click();
+  await composer.press('Control+a');
+  // Drive the native rich-text editor's input model, rather than replacing its
+  // DOM while a preceding turn is still clearing the composer.
+  await composer.pressSequentially(text);
+  await frame.getByRole('button', { name: 'Send', exact: true }).click();
+  await frame.getByRole('region', { name: 'Conversation' }).getByText(text, { exact: true }).waitFor({ timeout: 15_000 });
+}
 async function launch() {
   editorStderr = '';
   app = await electron.launch({ executablePath: setup.vscodeExecutable,
@@ -132,8 +143,7 @@ try {
     await picker(frame, models);
     await modelRow(frame, models.find(row => row.id === model).display_name).press('Enter');
     const marker = `MANAGED_SIDEBAR_CONTEXT:${model}`;
-    await frame.locator('[contenteditable="true"]').first().fill(`${marker}: Read fixture.txt using a command tool.`);
-    await frame.getByRole('button', { name: 'Send', exact: true }).click();
+    await submit(frame, `${marker}: Read fixture.txt using a command tool.`);
     await frame.getByText(`SMOKE_OK ${model}`, { exact: true }).waitFor({ timeout: 45_000 });
     await frame.getByRole('button', { name: /^Stop/ }).waitFor({ state: 'hidden', timeout: 15_000 });
     const session = await threadFor(marker); await idle(session);
@@ -155,8 +165,7 @@ try {
       await page.keyboard.press('Escape');
       await api('/api/live/mode', { session, mode: 'default' });
       await rm(path.join(project, 'approval-proof.txt'), { force: true });
-      await frame.locator('[contenteditable="true"]').first().fill('CONTROL_APPROVAL: Write the approval proof using a command tool.');
-      await frame.getByRole('button', { name: 'Send', exact: true }).click();
+      await submit(frame, 'CONTROL_APPROVAL: Write the approval proof using a command tool.');
       let approval;
       for (let i = 0; i < 100; i++) {
         const value = await api(`/api/live/prompt?session=${encodeURIComponent(session)}`);
@@ -167,9 +176,12 @@ try {
       const answer = await api('/api/live/answer', { session, request_id: approval.request_id, allow: true });
       assert.equal(answer.acknowledged, true); await idle(session);
       assert.equal(await readFile(path.join(project, 'approval-proof.txt'), 'utf8'), 'CONTROL_APPROVED');
+      // Backend idle can precede the native UI's turn-completion update, which
+      // clears its composer. Wait for that update before entering another turn.
+      await frame.getByText('SMOKE_OK kimi-for-coding', { exact: true }).waitFor({ timeout: 15_000 });
+      await frame.getByRole('button', { name: /^Stop/ }).waitFor({ state: 'hidden', timeout: 15_000 });
       await api('/api/live/mode', { session, mode: 'acceptEdits' });
-      await frame.locator('[contenteditable="true"]').first().fill('CONTROL_SLEEP: Wait using a command tool.');
-      await frame.getByRole('button', { name: 'Send', exact: true }).click();
+      await submit(frame, 'CONTROL_SLEEP: Wait using a command tool.');
       await frame.getByRole('button', { name: /^Stop/ }).waitFor({ state: 'visible', timeout: 15_000 });
       const cancelled = await api('/api/live/interrupt', { session }); assert.equal(cancelled.acknowledged, true);
       await frame.getByRole('button', { name: /^Stop/ }).waitFor({ state: 'hidden', timeout: 15_000 });
