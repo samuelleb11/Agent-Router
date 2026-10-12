@@ -62,7 +62,9 @@ async function sidebar() {
 async function picker(frame, rows) {
   const labels = rows.flatMap(row => [row.display_name, row.display_name.replace(/^gpt[- ]?/i, '')]);
   labels.push('Custom');
-  const regex = new RegExp(labels.filter(Boolean).map(label => label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'));
+  // A conversation title can contain a model ID. Match the toolbar label's
+  // prefix so a saved chat row cannot win the union locator after New chat.
+  const regex = new RegExp(`^(?:${labels.filter(Boolean).map(label => label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})(?:\\s|$)`);
   await frame.getByRole('button', { name: 'Select model', exact: true }).or(frame.getByRole('button', { name: regex })).first().click();
   const action = frame.getByRole('menuitem', { name: 'Select model', exact: true });
   const choices = frame.getByRole('menuitemradio');
@@ -193,6 +195,7 @@ try {
     await page.screenshot({ path: path.join(artifacts, 'managed-sidebar-failure.png') }).catch(() => {});
     for (const [index,frame] of page.frames().entries()) {
       await writeFile(path.join(artifacts, `managed-frame-${index}.txt`), await frame.locator('body').innerText().catch(() => 'Frame inaccessible'));
+      await writeFile(path.join(artifacts, `managed-frame-${index}-aria.yml`), await frame.locator('body').ariaSnapshot().catch(() => 'Frame inaccessible'));
     }
   }
   await cp(path.join(userData, 'logs'), path.join(artifacts, 'managed-vscode-logs'), { recursive: true }).catch(() => {});

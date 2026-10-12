@@ -72,7 +72,7 @@ async function picker(frame) {
   // One locator lets Playwright re-query either representation after detachment.
   const labels = (await models()).flatMap(row => [row.display_name, row.display_name.replace(/^gpt[- ]?/i, '')]);
   labels.push('Custom');
-  const pattern = new RegExp(labels.filter(Boolean).map(label => label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'));
+  const pattern = new RegExp(`^(?:${labels.filter(Boolean).map(label => label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})(?:\\s|$)`);
   const toolbar = frame.getByRole('button', { name: 'Select model', exact: true })
     .or(frame.getByRole('button', { name: pattern })).first();
   await toolbar.click();
