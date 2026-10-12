@@ -77,10 +77,14 @@ function modelRow(frame, label) {
   return frame.getByRole('menuitemradio').filter({ has: text });
 }
 async function submit(frame, text) {
+  // Selecting a model returns to its power panel. Close that native menu before
+  // entering text, so its slider neither covers the textbox nor owns the keys.
+  await page.keyboard.press('Escape');
+  await frame.getByRole('menu', { name: 'Select model', exact: true }).waitFor({ state: 'hidden', timeout: 15_000 });
   const composer = frame.locator('[contenteditable="true"]').first();
   await frame.getByRole('button', { name: 'Send', exact: true }).waitFor({ state: 'visible', timeout: 15_000 });
-  // The native scroll area's horizontal track can cover the empty textbox's
-  // centre. Focus it for keyboard input without clicking through that track.
+  // Focus the native textbox for keyboard input without depending on its centre
+  // as a pointer hit target.
   await composer.focus();
   await composer.press('Control+a');
   // Drive the native rich-text editor's input model, rather than replacing its
