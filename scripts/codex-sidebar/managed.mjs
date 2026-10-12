@@ -79,7 +79,9 @@ function modelRow(frame, label) {
 async function submit(frame, text) {
   const composer = frame.locator('[contenteditable="true"]').first();
   await frame.getByRole('button', { name: 'Send', exact: true }).waitFor({ state: 'visible', timeout: 15_000 });
-  await composer.click();
+  // The native scroll area's horizontal track can cover the empty textbox's
+  // centre. Focus it for keyboard input without clicking through that track.
+  await composer.focus();
   await composer.press('Control+a');
   // Drive the native rich-text editor's input model, rather than replacing its
   // DOM while a preceding turn is still clearing the composer.
