@@ -73,6 +73,11 @@ async fn managed_codex_controls_cross_the_machine_tunnel() {
     let home=scratch.join("codex").canonicalize().unwrap();
     crate::codex::apply(&home.join("config.toml"),&scratch.join("kept.json"),&router,&client_token,true).unwrap();
     crate::codex::catalogue::sync(&home.join("config.toml"),&crate::models::client_catalogue(&conn).unwrap(),true).unwrap();
+    // Trust only this disposable workspace in its isolated CODEX_HOME. Driving
+    // the folder-trust screen through a PTY races native startup under CI load;
+    // command approvals and questions are exercised explicitly below.
+    let trust=format!("\n[projects.{}]\ntrust_level = \"trusted\"\n",serde_json::to_string(project.to_str().unwrap()).unwrap());
+    std::fs::OpenOptions::new().append(true).open(home.join("config.toml")).unwrap().write_all(trust.as_bytes()).unwrap();
     std::fs::write(home.join("auth.json"),r#"{"OPENAI_API_KEY":"fixture-never-send-upstream"}"#).unwrap();
     let options=Options {root:home.join("agent-router-runtime"),backend:std::path::PathBuf::from(cli),codex_home:home.clone(),router_binary:router_binary.clone()};
     options.prepare().await.unwrap();
@@ -190,12 +195,9 @@ async fn managed_codex_controls_cross_the_machine_tunnel() {
             let mut log=output.lock().unwrap();if log.len()<1<<20 {log.push_str(&text);}
         }
     })};
-    let mut cli_rows=Vec::new();let mut other_requests=Vec::new();let mut trusted=false;
-    for _ in 0..250 {
-        if !trusted && tty_output.lock().unwrap().contains("Trust and continue") {
-            // This is the disposable fixture workspace, never the user's project.
-            tty_writer.lock().unwrap().write_all(b"\r").unwrap();trusted=true;
-        }
+    let mut cli_rows=Vec::new();let mut other_requests=Vec::new();
+    let cli_ready_by=tokio::time::Instant::now()+Duration::from_secs(60);
+    while tokio::time::Instant::now()<cli_ready_by {
         while let Ok(row)=requests.try_recv() {
             let meta:Value=row.1.get("x-codex-turn-metadata").and_then(|v|v.to_str().ok()).and_then(|s|serde_json::from_str(s).ok()).unwrap_or(Value::Null);
             if row.2.to_string().contains("MANAGED_CLI_PROMPT") && meta["thread_source"]!="thread_title" {cli_rows.push(row);} else {other_requests.push(row);}
