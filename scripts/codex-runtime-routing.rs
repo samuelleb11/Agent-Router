@@ -131,7 +131,7 @@ async fn managed_codex_controls_cross_the_machine_tunnel() {
     ok(&app,"/api/live/mode",json!({"session":id,"mode":"default"})).await;
     ok(&app,"/api/live/send",json!({"session":id,"text":"CONTROL_APPROVAL: write the approval proof using a command."})).await;
     let mut approval=Value::Null;
-    for _ in 0..100 {let value=ok(&app,&format!("/api/live/prompt?session={id}"),Value::Null).await;if value["pending"]==true {approval=value;break;}tokio::time::sleep(Duration::from_millis(100)).await;}
+    for _ in 0..100 {let value=ok(&app,&format!("/api/live/prompt?session={}",crate::machines::encode(id)),Value::Null).await;if value["pending"]==true {approval=value;break;}tokio::time::sleep(Duration::from_millis(100)).await;}
     assert_eq!(approval["question"],false,"native approval must arrive: {approval}");
     let wrong=api(&app,"/api/live/answer",json!({"session":sessions[0],"request_id":approval["request_id"],"allow":true})).await;assert_eq!(wrong.0,StatusCode::CONFLICT);
     ok(&app,"/api/live/answer",json!({"session":id,"request_id":approval["request_id"],"allow":true})).await;
@@ -147,7 +147,7 @@ async fn managed_codex_controls_cross_the_machine_tunnel() {
     ok(&app,"/api/live/mode",json!({"session":id,"mode":"plan"})).await;
     ok(&app,"/api/live/send",json!({"session":id,"text":"CONTROL_QUESTION: ask which color to use."})).await;
     let mut question=Value::Null;
-    for _ in 0..100 {let value=ok(&app,&format!("/api/live/prompt?session={id}"),Value::Null).await;if value["pending"]==true {question=value;break;}tokio::time::sleep(Duration::from_millis(100)).await;}
+    for _ in 0..100 {let value=ok(&app,&format!("/api/live/prompt?session={}",crate::machines::encode(id)),Value::Null).await;if value["pending"]==true {question=value;break;}tokio::time::sleep(Duration::from_millis(100)).await;}
     assert_eq!(question["question"],true,"native question: {question}");
     ok(&app,"/api/live/answer",json!({"session":id,"request_id":question["request_id"],"answers":{"Which color should we use?":"Blue"}})).await;
     for _ in 0..100 {let rows=ok(&app,"/api/live/sessions",Value::Null).await;if rows.as_array().unwrap().iter().any(|r|r["session_id"]==id.as_str() && r["active"]==false) {break;}tokio::time::sleep(Duration::from_millis(100)).await;}

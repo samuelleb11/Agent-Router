@@ -713,17 +713,13 @@ pub mod api {
         req.uri().path_and_query().map(|pq| pq.as_str().to_string()).unwrap_or_else(|| req.uri().path().to_string())
     }
 
-    fn session_in_query(req: &Request) -> Option<String> {
-        req.uri().query()?.split('&').find_map(|pair| {
-            let (k, v) = pair.split_once('=')?;
-            (k == "session").then(|| v.to_string())
-        })
-    }
-
     /// A request that names its session in the query: follow, stats, prompt.
     pub async fn by_query(State(state): State<Arc<AppState>>, req: Request) -> Response {
-        let Some(session) = session_in_query(&req) else {
-            return Relay::Unknown.into_response();
+        // Use the machine handler's form-query rules for lookup. In particular,
+        // codex%3A... names codex:..., while the original encoded URL is relayed.
+        let session = match axum::extract::Query::<Named>::try_from_uri(req.uri()) {
+            Ok(axum::extract::Query(named)) => named.session,
+            Err(refused) => return refused.into_response(),
         };
         let machine = match state.machines.holder(&session).await {
             Ok(m) => m,
@@ -736,7 +732,7 @@ pub mod api {
         }
     }
 
-    /// What a relayed body must name, read the way the machine reads its whole body.
+    /// What a relayed query or body must name, read the way the machine reads it.
     #[derive(Deserialize)]
     struct Named {
         session: String,
@@ -962,6 +958,38 @@ mod tests {
     fn query_values_are_encoded() {
         assert_eq!(encode("req:abc-1_2.3~"), "req%3Aabc-1_2.3~");
         assert_eq!(encode("a b&c"), "a%20b%26c");
+    }
+
+    #[tokio::test]
+    async fn hosted_session_queries_decode_the_session_without_rewriting_the_relay_path() {
+        let lab = crate::api_refusals::Lab::hosted("relay-encoded-session").await;
+        let (m, mut sent) = machine();
+        locked(&lab.state.machines.online).insert("m-1".into(), m.clone());
+        for (session, query) in [
+            ("codex:thread-1", "session=codex%3Athread-1"),
+            ("codex:%3Athread", "session=codex%3A%253Athread"),
+            ("codex:unusual + café", "ses%73ion=codex%3Aunusual+%2B+caf%C3%A9"),
+        ] {
+            locked(&lab.state.machines.sessions).insert(session.into(), "m-1".into());
+            for endpoint in ["prompt", "stats", "stream"] {
+                let path = format!("/api/live/{endpoint}?{query}");
+                let agent = async {
+                    let frame = sent.recv().await.unwrap();
+                    let (kind, id, payload) = tunnel::decode(&frame).unwrap();
+                    assert_eq!(kind, tunnel::REQUEST);
+                    let req: tunnel::Request = serde_json::from_slice(payload).unwrap();
+                    assert_eq!(req.method, "GET");
+                    assert_eq!(req.path, path, "lookup must decode once while the relayed URL stays intact");
+                    let head = serde_json::to_vec(&Head {status:200, headers:vec![("content-type".into(),"application/json".into())]}).unwrap();
+                    m.dispatch(&tunnel::encode(tunnel::HEAD, id, &head));
+                    m.dispatch(&tunnel::encode(tunnel::BODY, id, br#"{"pending":false}"#));
+                    m.dispatch(&tunnel::encode(tunnel::END, id, b""));
+                };
+                let ((status, body), ()) = tokio::join!(lab.get(&path), agent);
+                assert_eq!(status, StatusCode::OK, "{path}: {body}");
+                assert_eq!(body["pending"], false);
+            }
+        }
     }
 
     /// A hosted router relays a start to the machine its body names, as that machine's
