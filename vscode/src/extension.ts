@@ -1,3 +1,4 @@
+import * as codex from './codex';
 // Agent Router for VS Code. The router is a machine-wide daemon; this extension makes
 // sure one is running and current, points Claude Code at it, and shows the quota. Every
 // window activates its own copy of this code, which is why none of it owns anything:
@@ -32,6 +33,14 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('agentRouter.openDashboard', () => dashboard.open('/', 'Agent Router')),
     vscode.commands.registerCommand('agentRouter.openLive', () => dashboard.open('/live', 'Live sessions')),
     vscode.commands.registerCommand('agentRouter.showLog', () => log.show()),
+    vscode.commands.registerCommand('agentRouter.connectCodex', async () => {
+      try { await codex.configure(context, log); }
+      catch (e) { void vscode.window.showErrorMessage(`Codex connection failed: ${(e as Error).message}`); }
+    }),
+    vscode.commands.registerCommand('agentRouter.restoreCodex', async () => {
+      try { await codex.restore(context, log); }
+      catch (e) { void vscode.window.showErrorMessage(`Codex restoration failed: ${(e as Error).message}`); }
+    }),
     vscode.commands.registerCommand('agentRouter.connect', () => connect.connect(context, log)),
     vscode.commands.registerCommand('agentRouter.disconnect', () => connect.disconnect(context, log)),
     // The status bar's "try again" when the server could not be reached.

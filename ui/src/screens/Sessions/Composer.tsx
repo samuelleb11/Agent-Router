@@ -7,7 +7,7 @@ import { Button, TextArea, Toggletip, ToggletipButton, ToggletipContent } from '
 import { Information } from '@carbon/icons-react';
 import { FormModal } from '~/components/FormModal';
 import { ASIDE_TIMEOUT_MS, postLive } from '~/data/live';
-import { asideNotice, notice, SIDE_QUESTION, stopNotice } from '~/model/session';
+import { asideNotice, notice, SIDE_QUESTION, stopNotice, type Controls } from '~/model/session';
 import { COMPOSING, failed, walk, type Browse } from './logic';
 import { useKept } from './keep';
 import { NoticeLine } from './Notice';
@@ -32,6 +32,7 @@ export function Composer({
   echo,
   aside,
   follow,
+  controls,
 }: {
   session: string;
   /// What the person has already said in this session, newest last: ArrowUp's history (SE-C155).
@@ -42,7 +43,14 @@ export function Composer({
   echo: (text: string, label?: string) => void;
   aside: (answer: string | null | undefined) => void;
   follow: () => void;
+  /// What the session takes from here: nothing typed, stopped or asked on a Kimi Code session the
+  /// router only watches, and no side question on any Kimi Code session (SE-C236, SE-C237).
+  controls: Controls;
 }) {
+  const held = controls.held;
+  // One sentence beside the controls says why, in the router's words: the watched session's covers
+  // them all (SE-C236).
+  const why = held ?? controls.aside;
   const id = useId();
   const box = useRef<HTMLTextAreaElement>(null);
   const [draft, setDraft] = useKept(`draft:${session}`, '');
@@ -75,7 +83,7 @@ export function Composer({
   /// SE-C150, SE-C153).
   const send = async () => {
     const text = draft.trim();
-    if (!text || flying.current) return;
+    if (!text || flying.current || held) return;
     flying.current = true;
     setSending(true);
     const r = await deliver(text);
@@ -100,7 +108,7 @@ export function Composer({
   /// once, answered into the feed (SE-C159, SE-C160).
   const askAside = async (question: string, fromBox: boolean) => {
     const q = question.trim();
-    if (!q) return;
+    if (!q || controls.aside) return;
     setAsking(true);
     echo(q, SIDE_QUESTION);
     follow();
@@ -154,6 +162,7 @@ export function Composer({
           rows={1}
           placeholder="Message this session…"
           value={draft}
+          disabled={held !== null}
           onChange={(e) => {
             setDraft(e.target.value);
             fit(e.target);
@@ -161,20 +170,20 @@ export function Composer({
           onKeyDown={onKey}
         />
         {/* Send stays while a turn runs: the session queues what is typed then (SE-C149). */}
-        <Button size="md" className={styles.send} onClick={() => void send()} disabled={sending}>
+        <Button size="md" className={styles.send} onClick={() => void send()} disabled={sending || held !== null}>
           Send
         </Button>
       </div>
       <div className={styles.composeActions}>
         {stoppable && (
-          <Button size="md" kind="secondary" className={styles.stop} onClick={() => void stop()} disabled={stopping}>
+          <Button size="md" kind="secondary" className={styles.stop} onClick={() => void stop()} disabled={stopping || held !== null}>
             Stop the turn
           </Button>
         )}
         <Button
           size="md"
           kind="tertiary"
-          disabled={asking}
+          disabled={asking || controls.aside !== null}
           onClick={() => {
             // The box's text is the question; with nothing typed it is asked for (SE-C159).
             if (draft.trim()) void askAside(draft, true);
@@ -186,6 +195,11 @@ export function Composer({
         >
           Side question
         </Button>
+        {why && (
+          <p className={styles.muted} data-held="">
+            {why}
+          </p>
+        )}
         <Toggletip align="top-end" className={styles.help}>
           <ToggletipButton label="What these do">
             <Information />

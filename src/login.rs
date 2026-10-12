@@ -477,7 +477,7 @@ fn finish(db: &std::path::Path, id: &str, label: &str, token: &str, email: Optio
         email: email.map(str::to_owned),
         ..Default::default()
     };
-    store.add(id, label, crate::accounts::Source::Token, None, &status, || {
+    store.add(id, label, crate::accounts::Source::Token, crate::accounts::Provider::Anthropic, None, None, &status, || {
         crate::accounts::store_token(id, token)
     })
 }
@@ -782,7 +782,7 @@ mod tests {
         let theirs = fake("sk-ant-oat01-");
         let ours = format!("sk-ant-oat01-ours-{}", FILLER.repeat(12));
         store
-            .add("late-clash-work", "Late clash work", Source::Token, None, &AuthStatus::default(), || {
+            .add("late-clash-work", "Late clash work", Source::Token, crate::accounts::Provider::Anthropic, None, None, &AuthStatus::default(), || {
                 crate::accounts::store_token("late-clash-work", &theirs)
             })
             .unwrap();

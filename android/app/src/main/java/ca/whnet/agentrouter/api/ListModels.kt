@@ -61,6 +61,7 @@ data class ProxySessionRow(
     val machine: SessionMachine? = null,
     @SerialName("git_branch") val gitBranch: String? = null,
     val entrypoint: String? = null,
+    @SerialName("client") val clientId: String? = null,
     @SerialName("started_at") val startedAt: Long = 0,
     @SerialName("last_seen_at") val lastSeenAt: Long = 0,
     val requests: Double = 0.0,
@@ -72,13 +73,24 @@ data class ProxySessionRow(
     val subagents: Double = 0.0,
     val models: String? = null,
 ) {
-    val shortId: String get() = id.take(8)
+    val shortId: String get() = id.removePrefix("opencode:ses_").removePrefix("codex:").take(8)
     val projectName: String get() = ProjectPath.name(project)
 
     /** `claude-cli/2.1.269 (external, claude-vscode, …)` → `VS Code`; the CLI otherwise. */
     val client: String
         get() = when {
+            clientId == "codex-cli" -> "Codex CLI"
+            clientId == "codex-vscode" -> "Codex VS Code"
+            clientId == "opencode" -> "OpenCode"
+            clientId == "kimi-code-cli" -> "Kimi Code CLI"
+            clientId == "kimi-code-vscode" -> "Kimi Code VS Code"
+            clientId == "kimi-code-web" -> "Kimi Code web"
+            clientId == "claude-code-cli" -> "CLI"
+            clientId == "claude-code-vscode" -> "VS Code"
             entrypoint == null -> ""
+            entrypoint.startsWith("opencode/") -> "OpenCode"
+            entrypoint.contains("codex_vscode") || entrypoint.contains("codex-vscode") -> "Codex VS Code"
+            entrypoint.contains("codex_cli") || entrypoint.contains("codex-cli") -> "Codex CLI"
             entrypoint.contains("vscode") -> "VS Code"
             entrypoint.contains("claude-cli") -> "CLI"
             else -> entrypoint.take(20)
@@ -199,7 +211,7 @@ data class LoginStatus(
 )
 
 @Serializable data class LoginStartBody(val label: String)
-@Serializable data class AddAccountBody(val label: String, val source: String, val token: String? = null)
+@Serializable data class AddAccountBody(val label: String, val source: String, val token: String? = null, val provider: String? = null)
 @Serializable data class UsageTokenBody(
     @SerialName("account_id") val accountId: String,
     val token: String? = null,

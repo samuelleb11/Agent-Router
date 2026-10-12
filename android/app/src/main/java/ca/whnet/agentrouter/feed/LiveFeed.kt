@@ -316,6 +316,7 @@ class LiveFeed(
     }
 
     suspend fun send(text: String): Boolean {
+        session.watchedReason?.let { notice = Notice(it, false); return false }
         val c = client ?: return false
         val body = text.trim()
         if (body.isEmpty()) return false
@@ -360,6 +361,7 @@ class LiveFeed(
         fallback: List<String>,
         rowId: String,
     ): Boolean {
+        session.watchedReason?.let { notice = Notice(it, false); return false }
         val c = client ?: return false
         // Asked afresh rather than taken from the last poll, which can be two seconds old.
         val fresh = runCatching { c.get<LivePrompt>(path(PROMPT, session.sessionId)) }
@@ -405,6 +407,7 @@ class LiveFeed(
     }
 
     suspend fun interrupt() {
+        session.watchedReason?.let { notice = Notice(it, false); return  }
         val c = client ?: return
         stopping = true
         try {
@@ -422,6 +425,7 @@ class LiveFeed(
     }
 
     suspend fun setModel(model: String) {
+        session.watchedReason?.let { notice = Notice(it, false); return  }
         val c = client ?: return
         runCatching { c.post<ModelBody, SwitchReply>("/api/live/model", ModelBody(session.sessionId, model)) }
             .onSuccess { r ->
@@ -441,6 +445,7 @@ class LiveFeed(
      * `auto` can be gated — so its own sentence is what gets shown.
      */
     suspend fun setMode(mode: String) {
+        session.watchedReason?.let { notice = Notice(it, false); return  }
         val c = client ?: return
         runCatching { c.post<ModeBody, SwitchReply>("/api/live/mode", ModeBody(session.sessionId, mode)) }
             .onSuccess { r ->
@@ -492,6 +497,7 @@ class LiveFeed(
      * than one waiting, "whatever is waiting" is not something the router will guess at.
      */
     suspend fun answerPermission(prompt: LivePrompt, allow: Boolean, suggestion: Int? = null, said: String) {
+        session.watchedReason?.let { notice = Notice(it, false); return  }
         val c = client ?: return
         val body = AnswerBody(
             session = session.sessionId,
@@ -518,6 +524,7 @@ class LiveFeed(
     }
 
     suspend fun setEffort(effort: String) {
+        session.watchedReason?.let { notice = Notice(it, false); return  }
         val c = client ?: return
         runCatching { c.post<EffortBody, SwitchReply>("/api/live/effort", EffortBody(session.sessionId, effort)) }
             .onSuccess { r ->
@@ -535,6 +542,7 @@ class LiveFeed(
      * does.
      */
     suspend fun aside(text: String, refused: (String) -> Unit = { notice = Notice(it, false) }): AsideReply? {
+        session.watchedReason?.let { refused(it); return null }
         val c = client ?: return null
         return runCatching { c.post<AsideBody, AsideReply>("/api/live/aside", AsideBody(session.sessionId, text)) }
             // Read as a stop is: `ok: false` is a refusal whatever the status, never an answer.

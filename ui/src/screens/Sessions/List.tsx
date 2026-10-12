@@ -9,6 +9,7 @@ import { Button, Callout, ContainedList, ContainedListItem, Tab, TabList, TabPan
 import { ChevronDown, ChevronRight } from '@carbon/icons-react';
 import { CONCEPTS } from '~/lib/concepts';
 import { EmptyState } from '~/components/EmptyState';
+import { ProviderMark } from '~/components/ProviderMark';
 import { StatusDot } from '~/components/StatusDot';
 import { plural } from '~/model/format';
 import { routes, settingsPath } from '~/lib/routes';
@@ -40,7 +41,8 @@ export interface RowActions {
 const Said = ({ children }: { children: string }) => <span className={styles.said}>{children}</span>;
 
 /// One session's row: its dot with the halo when live, its name, whether it can be typed into, its
-/// age, its title in at most two lines, what it is doing, and its id with its branch (SE-C26, SE-C28).
+/// client when it is Kimi Code's, marked with its provider's mark, its age, its title in at most two
+/// lines, what it is doing, and its id with its branch (SE-C26, SE-C28, SE-C235, SE-C242).
 function Row({ r, actions, shelved }: { r: RowView; actions: RowActions; shelved: boolean }) {
   const coarse = useCoarse();
   const notice = actions.notices.get(r.id) ?? null;
@@ -74,6 +76,18 @@ function Row({ r, actions, shelved }: { r: RowView; actions: RowActions; shelved
           <span className={styles.reach} data-reach={r.reach}>
             {r.reach}
           </span>
+          {/* A Kimi Code session names its client, its provider's mark beside it; a Claude Code one names
+              neither, its row not saying where its requests went (SE-C235, SE-C242). The client's words
+              name the provider, so the mark is not heard again. */}
+          {r.client && (
+            <>
+              <Said>, </Said>
+              <span className={styles.rowClient} data-client="">
+                {r.provider && <ProviderMark provider={r.provider} decorative className={styles.rowProvider} />}
+                {r.client}
+              </span>
+            </>
+          )}
           <Said>, moved </Said>
           <span className={styles.rowAge}>{r.age}</span>
           <Said> ago</Said>

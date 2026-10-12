@@ -259,6 +259,6 @@ class RefusalTest {
             client.change("/api/auth", PasswordBody(password = "long enough")),
         )
         router.answer("/api/auth", 401, "agent-router: password required")
-        assertEquals("Wrong password for this router", client.change("/api/auth", PasswordBody(password = "long enough")))
+        assertEquals("Router credential is invalid, expired or revoked", client.change("/api/auth", PasswordBody(password = "long enough")))
     }
 }

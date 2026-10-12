@@ -16,6 +16,22 @@ import org.junit.Test
  * what it meant.
  */
 class RouterTest {
+    @Test
+    fun `token-only router auth retains the active token count`() {
+        val auth = routerJson.decodeFromString<AuthStatus>(
+            """{"configured":false,"access_tokens":3,"remote_bind":true,"from_loopback":false,"mode":"server"}""",
+        )
+        val encoded = routerJson.encodeToString(auth)
+        assertTrue("A token-only router must not be reported as unguarded: $encoded", encoded.contains("\"access_tokens\":3"))
+        assertTrue(auth.hasCredentials)
+        assertEquals("access tokens", auth.credentialStatus)
+        for (tokens in listOf("", ",\"access_tokens\":null", ",\"access_tokens\":0")) {
+            val empty = routerJson.decodeFromString<AuthStatus>("{\"configured\":false$tokens}")
+            assertFalse(empty.hasCredentials)
+        }
+        assertTrue(routerJson.decodeFromString<AuthStatus>("{\"configured\":true}").hasCredentials)
+    }
+
 
     private fun hosted(port: Int) =
         Router(id = "h", name = "Hosted", host = "agent-router.example.com", port = port, scheme = Router.Scheme.Https)

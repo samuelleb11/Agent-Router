@@ -21,6 +21,7 @@ const NO_REPLY: Readonly<Record<Action, string>> = {
   model: 'Could not set the model',
   effort: 'Could not set the effort',
   mode: 'Could not set the mode',
+  start: 'Could not start the session',
 };
 
 /// The words for a write that did not land, by the screen's rule (SE-C183): the router's own words

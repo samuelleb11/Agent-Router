@@ -11,7 +11,10 @@
 //   page, not in a tooltip (OV-C124);
 // - with no older router to meet (decision J), paid in full is the router's own uncached input and a
 //   part's average is over the requests that carried it, with nothing worked out in their place
-//   (OV-C119, OV-C123).
+//   (OV-C119, OV-C123);
+// - a cost that leaves out requests the router could not price, or rests on estimated tokens, says
+//   so beside its figure, where the page summed both as if priced (OV-C229, OV-C232);
+// - where a client is meant it is named, Claude Code and Kimi Code alike (OV-C230).
 
 import type { BarRow } from '~/components/BarList';
 import type { Part } from '~/components/ShareBar';
@@ -19,8 +22,9 @@ import type { Concept } from '~/lib/concepts';
 import { FAMILY_COLOUR } from '~/lib/concepts';
 import type { ProjectDirectory, ProjectRow } from '~/data/router';
 import type { AccountSplitRow, ContextRow, ModelRow, SessionRow, ThreadRow, ToolCallRow, ToolOutputRow, Totals } from '~/data/overview';
-import { DASH, ago, client, compact, count, duration, family, id8, pct, plural, projectName, shortModel, tod, usd, UNRESOLVED, type Family } from '~/model/format';
-import { SESSION_CAP, type Scope } from '~/model/scope';
+import { DASH, ago, client, compact, costSum, costWhy, count, duration, family, id8, pct, plural, projectName, shortModel, tod, usd, UNRESOLVED, type CostFigure, type Family } from '~/model/format';
+import { SESSION_CAP, isScoped, type Scope } from '~/model/scope';
+import { providerName, providerOf, type Provider } from '~/model/settings';
 
 const n = (v: number | null | undefined): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
 const has = (v: number | null | undefined): v is number => typeof v === 'number' && Number.isFinite(v);
@@ -32,12 +36,13 @@ export type Empty = 'projects' | 'sessions' | 'toolOutput' | 'toolCalls' | 'read
 /// Which empty a panel is (OV-C145): nothing recorded at all, with how to start; nothing in the
 /// range; or nothing in this scope.
 export function emptyWords(what: Empty, scope: Scope): string {
-  const narrowed = !!(scope.account || scope.project || scope.session);
+  const narrowed = isScoped(scope);
   const range = scope.range;
   if (!narrowed && range === 'all') {
     return {
-      projects: 'No projects yet — point Claude Code at this router and run it.',
-      sessions: 'No sessions yet — point Claude Code at this router and run it.',
+      // Each client by its name (OV-C230).
+      projects: 'No projects yet — point Claude Code, Kimi Code or Codex at this router and run it.',
+      sessions: 'No sessions yet — point Claude Code, Kimi Code or Codex at this router and run it.',
       toolOutput: 'No tool results captured yet.',
       toolCalls: 'No tool calls captured yet.',
       read: 'Nothing read yet.',
@@ -66,7 +71,7 @@ export function emptyWords(what: Empty, scope: Scope): string {
 }
 
 /// Whether nothing at all is recorded: the empty that says how to start (OV-C145).
-export const nothingRecorded = (scope: Scope): boolean => !scope.account && !scope.project && !scope.session && scope.range === 'all';
+export const nothingRecorded = (scope: Scope): boolean => !isScoped(scope) && scope.range === 'all';
 
 // ---------------------------------------------------------------- what the model read
 
@@ -109,9 +114,10 @@ export const CONTEXT: readonly { readonly key: string; readonly label: string; r
   { key: 'tool_results', label: 'tool results', concept: 'toolResults', colour: '--ar-ctx-results' },
 ];
 
-/// The estimate's own words, beside the figures (OV-C122).
+/// The estimate's own words, beside the figures (OV-C122), naming both providers' models, which the
+/// split apportions alike (OV-C230).
 export const CONTEXT_NOTE =
-  "Totals are exact. The split apportions the API's exact prompt-token count by character share — there is no local tokenizer for current Claude models, so treat component ratios as reliable and absolutes as approximate.";
+  "Totals are exact. The split apportions the API's exact prompt-token count by character share — there is no local tokenizer for current Claude or Kimi models, so treat component ratios as reliable and absolutes as approximate.";
 
 /// Each part of the window: its estimated tokens and share, "≈ per request" over the requests that
 /// carried it (OV-C123), and its cost as the floor it is, with its characters, on the page (OV-C124).
@@ -140,18 +146,32 @@ export function contextParts(rows: readonly ContextRow[]): Part[] {
 /// A family's swatch colour.
 export const familyColour = (f: Family) => FAMILY_COLOUR[f];
 
-/// A model with tokens and no cost is one the router could not price: its requests add nothing to a
-/// total rather than counting as free (src/pricing.rs).
-export const unpricedModel = (m: Pick<ModelRow, 'cost' | 'prompt_tokens' | 'output_tokens'>): boolean => !n(m.cost) && (n(m.prompt_tokens) > 0 || n(m.output_tokens) > 0);
+/// A list row's cost: the sum as `costSum` writes it, and its marks' reasons as the row's tooltip
+/// (OV-C229, OV-C232). The rows are buttons, so the reasons are also said once under the list
+/// (`costNote`).
+export interface Costed {
+  readonly cost: CostFigure;
+  readonly metaTip?: string;
+}
+
+const costed = (r: Parameters<typeof costSum>[0]): Costed => {
+  const cost = costSum(r);
+  const tip = costWhy(cost);
+  return tip ? { cost, metaTip: tip } : { cost };
+};
 
 /// By model: one row per model in the router's order, prompt tokens read, the family's colour, and
 /// "N req · out · % cached · cost", with subagent requests and errors when there are any (OV-C126).
-/// The full id is the row's second line.
-export function modelRows(models: readonly ModelRow[]): BarRow[] {
+/// The full id is the row's second line, and its provider is tagged beside it (OV-C231). A model the
+/// router could not price reads "not priced", never "$0" (OV-C177, OV-C229).
+export function modelRows(models: readonly ModelRow[]): (BarRow & Costed & { readonly provider: Provider })[] {
   return models.map((m) => {
     const f = family(m.model);
+    const c = costed(m);
     return {
+      ...c,
       key: m.model,
+      provider: providerOf(m),
       name: shortModel(m.model),
       path: m.model,
       value: m.prompt_tokens,
@@ -161,8 +181,7 @@ export function modelRows(models: readonly ModelRow[]): BarRow[] {
         `${count(m.requests)} req`,
         `${compact(m.output_tokens)} out`,
         `${pct(m.cache_read_tokens, m.prompt_tokens)} cached`,
-        // A model the router could not price is not free (OV-C177).
-        unpricedModel(m) ? 'not priced' : usd(m.cost),
+        c.cost.text,
         n(m.subagent_requests) ? `${count(m.subagent_requests)} by subagents` : null,
       ]
         .filter(Boolean)
@@ -174,14 +193,17 @@ export function modelRows(models: readonly ModelRow[]): BarRow[] {
 
 /// Main thread vs subagents: exactly two parts, a request from before agent ids were recorded
 /// counting as main (OV-C127), each with its tokens and share, then "N req · out · cost · % cached",
-/// and for subagents how many agents, or "none in scope" (OV-C128).
+/// and for subagents how many agents, or "none in scope" (OV-C128). A cost is its priced part,
+/// marked, each mark's reason in the part's tip (OV-C229, OV-C232).
 export function threadParts(threads: readonly ThreadRow[]): Part[] {
   const main = threads.find((t) => t.thread === 'main');
   const sub = threads.find((t) => t.thread === 'subagent');
+  const cost = (t: ThreadRow | undefined) => costSum({ cost: t ? t.cost : 0, unpriced: t?.unpriced, estimated: t?.estimated });
   const line = (t: ThreadRow | undefined) =>
-    `${count(n(t?.requests))} req · ${compact(n(t?.output_tokens))} out · ${usd(n(t?.cost))} · ${pct(t?.cache_read_tokens ?? null, t?.prompt_tokens ?? null)} cached`;
+    `${count(n(t?.requests))} req · ${compact(n(t?.output_tokens))} out · ${cost(t).text} · ${pct(t?.cache_read_tokens ?? null, t?.prompt_tokens ?? null)} cached`;
+  const tip = (t: ThreadRow | undefined) => cost(t).marks.map((m) => ({ value: m.value, label: m.label }));
   return [
-    { key: 'main', label: 'main thread', value: n(main?.prompt_tokens), colour: '--ar-tok', concept: 'mainThread', figure: compact(n(main?.prompt_tokens)), detail: line(main) },
+    { key: 'main', label: 'main thread', value: n(main?.prompt_tokens), colour: '--ar-tok', concept: 'mainThread', figure: compact(n(main?.prompt_tokens)), detail: line(main), tip: tip(main) },
     {
       key: 'sub',
       label: 'subagents',
@@ -190,6 +212,7 @@ export function threadParts(threads: readonly ThreadRow[]): Part[] {
       concept: 'subagents',
       figure: compact(n(sub?.prompt_tokens)),
       detail: n(sub?.requests) ? `${line(sub)} · ${plural(n(sub?.agents), 'agent', 'agents')}` : 'none in scope',
+      tip: n(sub?.requests) ? tip(sub) : [],
     },
   ];
 }
@@ -207,15 +230,32 @@ export function accountSplit(list: readonly AccountSplitRow[]): AccountSplitRow[
   return served.length > 1 ? served : null;
 }
 
+/// Whether an account signs its provider's new requests: one account per provider can (OV-C231).
+export const isActive = (a: Pick<AccountSplitRow, 'active'>): boolean => a.active === true || n(a.active as number | null) > 0;
+
+/// What an account's provider tag says beside its mark: the provider's name, and while the account
+/// signs that provider's new requests, "active for" it, since an Anthropic account and a Kimi Code
+/// account can both be active at once (OV-C231).
+export const providerWords = (provider: Provider, active: boolean): string => (active ? `active for ${providerName(provider)}` : providerName(provider));
+
+/// The providers a session's requests went to, Anthropic's first as the router lists them; Anthropic's
+/// alone for a row that lists none, recorded before providers were (SE-C242).
+export function providersOf(s: Pick<SessionRow, 'providers'>): Provider[] {
+  const listed = [...new Set((s.providers ?? []).map((p) => providerOf({ provider: p })))];
+  return listed.length ? listed : ['anthropic'];
+}
+
 /// An account row: its icon, its label and router id, "active" while it serves, a bar of prompt
-/// tokens and "N sessions · N req · out · <last seen>" (OV-C134, OV-C17).
-export function accountRows(list: readonly AccountSplitRow[], now: number = Date.now()): (BarRow & { readonly active: boolean })[] {
+/// tokens and "N sessions · N req · out · <last seen>" (OV-C134, OV-C17), and its provider, whose
+/// tag says "active for" it while it serves (OV-C231).
+export function accountRows(list: readonly AccountSplitRow[], now: number = Date.now()): (BarRow & { readonly active: boolean; readonly provider: Provider })[] {
   return list.map((a) => ({
     key: a.id,
     name: a.label || a.id,
     path: a.id,
     concept: 'account',
-    active: a.active === true || n(a.active as number | null) > 0,
+    active: isActive(a),
+    provider: providerOf(a),
     value: a.prompt_tokens,
     figure: compact(a.prompt_tokens),
     meta: [plural(n(a.sessions), 'session', 'sessions'), `${count(a.requests)} req`, `${compact(a.output_tokens)} out`, ago(a.last_seen, now)].join(' · '),
@@ -266,12 +306,15 @@ export function projectPlaces(key: string | null, ...lists: readonly (readonly P
 
 /// A project row: the project's icon, its folder's name and path, a bar of prompt tokens with the
 /// subagent share over its end, and "N sessions · req · out · % cached · cost · <last seen>"
-/// (OV-C135); errors beside them in the error mark (OV-C5).
-export function projectRows(list: readonly ProjectRow[], now: number = Date.now()): BarRow[] {
+/// (OV-C135); errors beside them in the error mark (OV-C5); its cost marked, with its reasons as the
+/// row's tooltip (OV-C229, OV-C232).
+export function projectRows(list: readonly ProjectRow[], now: number = Date.now()): (BarRow & Costed)[] {
   return list.map((p) => {
     const prompt = p.prompt_tokens;
     const sub = p.subagent_tokens;
+    const c = costed(p);
     return {
+      ...c,
       key: projectKeyOf(p),
       name: projectName(p.project),
       path: p.project ?? undefined,
@@ -285,7 +328,7 @@ export function projectRows(list: readonly ProjectRow[], now: number = Date.now(
         `${count(p.requests)} req`,
         `${compact(p.output_tokens)} out`,
         `${pct(p.cache_read_tokens, prompt)} cached`,
-        usd(p.cost),
+        c.cost.text,
         ago(p.last_seen, now),
       ].join(' · '),
       errors: n(p.errors) ? plural(p.errors, 'error', 'errors') : undefined,
@@ -297,21 +340,26 @@ export interface SessionChips {
   readonly branch: string | null;
   /// The project, only when no project is scoped.
   readonly project: { readonly name: string; readonly path: string } | null;
-  /// "VS Code" or "CLI", with the whole entrypoint.
+  /// "VS Code", "CLI", "Kimi Code CLI"…, with the whole entrypoint (OV-C187, SE-C234).
   readonly client: { readonly name: string; readonly entrypoint: string } | null;
   readonly families: readonly { readonly family: Family; readonly model: string }[];
 }
 
 /// A session row: its icon, its first eight characters, chips for its branch, its project when none
 /// is scoped, its client and its families, a bar with the subagent share over it, and "N req · cost ·
-/// out · N subagents · started <time> · <duration>" (OV-C137).
-export function sessionRows(list: readonly SessionRow[], scope: Scope, now: number = Date.now()): (BarRow & { readonly chipsOf: SessionChips })[] {
+/// out · N subagents · started <time> · <duration>" (OV-C137); the providers of its requests are
+/// marked beside its client (SE-C242); its cost marked, with its reasons as the row's tooltip
+/// (OV-C229, OV-C232).
+export function sessionRows(list: readonly SessionRow[], scope: Scope, now: number = Date.now()): (BarRow & Costed & { readonly chipsOf: SessionChips; readonly providers: readonly Provider[] })[] {
   return list.map((s) => {
     const prompt = s.prompt_tokens;
     const sub = s.subagent_tokens;
-    const ran = client(s.entrypoint);
+    const ran = client(s.entrypoint, s.client);
+    const c = costed(s);
     return {
+      ...c,
       key: s.id,
+      providers: providersOf(s),
       name: id8(s.id),
       mono: true,
       concept: 'session',
@@ -327,7 +375,7 @@ export function sessionRows(list: readonly SessionRow[], scope: Scope, now: numb
       subFigure: n(sub) ? `${pct(sub, prompt)} subagents` : undefined,
       meta: [
         `${count(s.requests)} req`,
-        usd(s.cost),
+        c.cost.text,
         `${compact(s.output_tokens)} out`,
         n(s.subagents) ? plural(s.subagents, 'subagent', 'subagents') : null,
         `started ${tod(s.started_at, now)}`,
@@ -367,7 +415,8 @@ export function unattributed(count_: number | null | undefined, list: 'project' 
   return {
     label: 'not yet attributed',
     meta: `${plural(count_, 'request', 'requests')} · no ${list} recorded yet`,
-    why: 'Claude Code labels a request with its session id; the project comes from the transcript file, which can appear a moment later. These requests are counted in the totals above.',
+    // Each client by its name (OV-C230).
+    why: "Claude Code and Kimi Code each label a request with its session's id; the project comes from the session's own files, which can appear a moment later. These requests are counted in the totals above.",
   };
 }
 

@@ -1,0 +1,2 @@
+# The official SDK version exercised by the gateway acceptance matrix.
+openai==3.28.0

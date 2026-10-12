@@ -320,6 +320,10 @@ fn routes(library: Option<Library>) -> Router {
         .route("/api/live/effort", post(live::set_effort))
         .route("/api/live/mode", post(live::set_mode))
         .route("/api/live/aside", post(live::aside))
+        .route("/api/live/start", post(crate::codex::live::start_route))
+        .route("/api/live/resume", post(crate::codex::live::resume_route))
+        .route("/api/live/compact", post(crate::codex::live::compact_route))
+        .route("/api/live/archive", post(live::archive))
         .route("/agent/waiting", get(waiting))
         .route("/agent/still-waiting", get(still_waiting))
         .route(crate::library::push::PATH, post(move || library_sync(library.clone())))
@@ -367,6 +371,69 @@ async fn library_sync(library: Option<Library>) -> axum::response::Response {
         Ok(report) => Json(report).into_response(),
         Err(e) => crate::refusal::failed(format!("the Library could not be synced: {e:#}")),
     }
+}
+
+/// The rows of Claude Code's `/model` picker the router keeps in the user's `settings`: one
+/// for each non-Claude model of `catalogue` (`GET /api/models`) while that Claude Code talks
+/// to `server`, which its settings say as `ANTHROPIC_BASE_URL`; none once it does not. The
+/// owner's own rows are never touched (`setup::sync_picker_rows`). Says whether the file
+/// changed.
+fn picker_rows_for(settings: &Path, server: &str, catalogue: &[Value]) -> Result<bool> {
+    let ours = crate::setup::base_url_in(settings)?
+        .is_some_and(|url| url.trim_end_matches('/') == server.trim_end_matches('/'));
+    let rows = if ours { crate::setup::picker_models(catalogue) } else { Vec::new() };
+    crate::setup::sync_picker_rows(settings, &rows)
+}
+
+/// The router's catalogue, `GET /api/models`. None from a router from before it, which
+/// answers 404.
+async fn catalogue_of(router: &crate::library::sync::Router, server: &str) -> Result<Option<Vec<Value>>> {
+    let (status, _, body) = router.send(axum::http::Method::GET, "/api/models", Vec::new(), Bytes::new()).await?;
+    if status == axum::http::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    if !status.is_success() {
+        bail!("{server} answered {status} for its models");
+    }
+    Ok(Some(serde_json::from_slice(&body).context("the router's models were not a list")?))
+}
+
+/// What keeping this machine's clients in step changed.
+struct ClientsKept {
+    /// Kimi Code's `config.toml`: None when there was nothing to set up.
+    kimi: Option<bool>,
+    codex: Option<bool>,
+}
+
+/// Keep this machine's clients in step with the router's catalogue: Claude Code's `/model`
+/// rows (`picker_rows_for`), and Kimi Code's `config.toml` (`kimi::config`), set up the first
+/// time on `install` and put back at every sync after, since Kimi Code updates itself.
+async fn keep_clients(router: &crate::library::sync::Router, server: &str, password: &str, install: bool) -> Result<ClientsKept> {
+    let Some(catalogue) = catalogue_of(router, server).await? else { return Ok(ClientsKept { kimi: None, codex: None }) };
+    let (status,_,body)=router.send(axum::http::Method::GET,"/_router/models",Vec::new(),Bytes::new()).await?;
+    let native:Option<crate::models::ClientCatalogue>=if status==axum::http::StatusCode::NOT_FOUND {None}
+        else if status.is_success() {Some(serde_json::from_slice(&body).context("invalid router client model metadata")?)}
+        else {bail!("{server} answered {status} for its client model metadata")};
+    let settings = crate::setup::settings_path(None)?;
+    let (server, password) = (server.to_string(), password.to_string());
+    tokio::task::spawn_blocking(move || -> Result<ClientsKept> {
+        picker_rows_for(&settings, &server, &catalogue)?;
+        let consented = crate::setup::base_url_in(&settings)?
+            .is_some_and(|url| url.trim_end_matches('/') == server.trim_end_matches('/'));
+        let kimi = crate::kimi::config::here(&server, &password, &catalogue, install, consented);
+        let mut codex = crate::codex::here(&server, &password, install, consented)?;
+        if let Some(native)=native {
+            let path=crate::accounts::codex_home()?.join("config.toml");
+            if path.exists() {
+                let path=path.canonicalize()?;
+                if let Some(changed)=crate::codex::catalogue::sync(&path,&native,install)? {
+                    codex=Some(codex.unwrap_or(false)||changed);
+                }
+            }
+        }
+        Ok(ClientsKept { kimi: kimi?, codex })
+    })
+    .await?
 }
 
 /// What is waiting on a person here, named the way a banner names it.
@@ -977,13 +1044,10 @@ fn install_if_different(installed: &Path, bytes: &[u8], try_run: fn(&Path) -> Re
 /// Run a binary with `--build`: it must answer within ten seconds, exit 0, and say a build.
 /// This catches a binary for another architecture, or one macOS will not start.
 fn try_run(path: &Path) -> Result<String> {
-    let mut child = std::process::Command::new(path)
-        .arg("--build")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .with_context(|| format!("starting {}", path.display()))?;
+    let mut run = std::process::Command::new(path);
+    run.arg("--build").stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
+    // Just written: busy for as long as a fork elsewhere still holds it open.
+    let mut child = crate::setup::spawn_when_free(&mut run).with_context(|| format!("starting {}", path.display()))?;
     let deadline = Instant::now() + Duration::from_secs(10);
     let status = loop {
         if let Some(status) = child.try_wait()? {
@@ -1099,6 +1163,31 @@ async fn work(args: RunArgs, dir: PathBuf, stopping: crate::lifecycle::Stopping)
             async move {
                 if let Err(e) = crate::places::send(&router, &machine, &label).await {
                     tracing::warn!("this machine's places could not be reported: {e:#}");
+                }
+            }
+        }));
+    }
+
+    // Kimi Code's server for the sessions this machine hosts, stopped once unused.
+    tokio::spawn(crate::kimi::live::keep_host());
+    tokio::spawn(crate::codex::runtime::keep_host());
+
+    // The clients, at every connection and every fifteen minutes between (`keep_clients`):
+    // Claude Code's /model picker gets a row for each of the router's non-Claude models, so a
+    // model the router gains or loses is offered or taken away without a reinstall, and Kimi
+    // Code's config.toml gets the router's entries back after Kimi Code updates itself.
+    {
+        let router = Arc::new(crate::library::sync::Router::new(&server, &password)?);
+        let (server, password) = (server.clone(), password.clone());
+        tokio::spawn(crate::library::sync::keep_in_step(connected.subscribe(), crate::library::sync::EVERY, move || {
+            let (router, server, password) = (router.clone(), server.clone(), password.clone());
+            async move {
+                match keep_clients(&router, &server, &password, false).await {
+                    Ok(ClientsKept { kimi, codex }) => {
+                        if kimi == Some(true) { tracing::info!("Kimi Code's config.toml: the router's entries put back"); }
+                        if codex == Some(true) { tracing::info!("Codex's config.toml: the router's entries put back"); }
+                    },
+                    Err(e) => tracing::warn!("the clients could not be kept in step: {e:#}"),
                 }
             }
         }));
@@ -1347,6 +1436,22 @@ async fn install(args: &[String]) -> Result<()> {
         crate::setup::apply_key(&path, crate::setup::TOKEN_KEY, &password, scope)?;
         println!("config    ANTHROPIC_BASE_URL={server} and ANTHROPIC_AUTH_TOKEN");
         println!("          {} ({scope}); uninstall puts back what was there", path.display());
+        let offered = match crate::library::sync::Router::new(&server, &password) {
+            Ok(router) => keep_clients(&router, &server, &password, true).await,
+            Err(e) => Err(e),
+        };
+        match offered {
+            Ok(ClientsKept { kimi, codex }) => {
+                if kimi.is_some() {
+                    println!("kimi      Kimi Code's config.toml: the router's provider, its Kimi models and hooks");
+                    println!("          uninstall takes them out and puts back the default model");
+                }
+                if codex.is_some() { println!("codex     Codex's config.toml: Responses through Agent Router; uninstall restores its provider"); }
+            },
+            Err(e) => {
+                println!("clients   some client settings could not be updated ({e:#}); the agent tries again when it connects")
+            }
+        }
     }
 
     if args.no_service {
@@ -1407,6 +1512,16 @@ fn uninstall(args: &[String]) -> Result<()> {
             crate::setup::Reverted::NotManaged => {}
         }
         println!("          {file}");
+    }
+    match crate::kimi::config::take_out() {
+        Ok(Some(true)) => println!("kimi      the router's entries taken out of Kimi Code's config.toml"),
+        Ok(_) => {}
+        Err(e) => println!("kimi      Kimi Code's config.toml left alone ({e:#})"),
+    }
+    match crate::codex::take_out() {
+        Ok(Some(true)) => println!("codex     the previous Codex provider restored"),
+        Ok(_) => {},
+        Err(e) => println!("codex     Codex's config.toml left alone ({e:#})"),
     }
     crate::setup::agent_service::uninstall()?;
     // launchd stops what it started; anything else still running (the editor's, or one
@@ -1728,6 +1843,43 @@ mod tests {
     }
 
     #[cfg(unix)]
+    fn wait_for_legacy_probe(file: &std::fs::File, budget: Duration) -> std::result::Result<(), std::fs::TryLockError> {
+        let deadline = Instant::now() + budget;
+        loop {
+            match file.try_lock() {
+                Err(std::fs::TryLockError::WouldBlock) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                result => return result,
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn legacy_lock_waits_for_an_inherited_probe_descriptor() {
+        let dir = scratch("inherited-probe");
+        std::fs::write(dir.join("agent.lock"), "4242 tree:old\n").unwrap();
+        let probe = open_lock(&dir).unwrap();
+        probe.try_lock().unwrap();
+        let legacy = open_lock(&dir).unwrap();
+        assert!(matches!(legacy.try_lock(), Err(std::fs::TryLockError::WouldBlock)));
+        // The descriptor outlives the parent probe, as it can between fork/exec.
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(250));
+            drop(probe);
+        });
+        let acquired = wait_for_legacy_probe(&legacy, Duration::from_secs(5));
+        release.join().unwrap();
+        if acquired.is_ok() {
+            assert_eq!(peek(&dir).unwrap().unwrap(), Holder { pid: 4242, build: "tree:old".into(), keeper: false });
+        }
+        drop(legacy);
+        let _ = std::fs::remove_dir_all(&dir);
+        acquired.expect("legacy acquisition must wait for the inherited probe descriptor");
+    }
+
+    #[cfg(unix)]
     #[test]
     fn a_keeper_is_left_alone_and_a_legacy_agent_is_named() {
         let dir = scratch("lock");
@@ -1753,7 +1905,9 @@ mod tests {
         // beside it does not name it a keeper.
         std::fs::write(dir.join("agent.lock"), "4242 tree:old\n").unwrap();
         let legacy = open_lock(&dir).unwrap();
-        legacy.try_lock().unwrap();
+        // The last peek can itself be inherited by a concurrent fork. Wait on
+        // the acquisition we need, instead of relying on a separate free probe.
+        wait_for_legacy_probe(&legacy, Duration::from_secs(5)).unwrap();
         let h = peek(&dir).unwrap().unwrap();
         assert_eq!(h, Holder { pid: 4242, build: "tree:old".into(), keeper: false });
         assert_eq!(on_busy(&h), Busy::Replace(4242));
@@ -1986,7 +2140,7 @@ mod tests {
 
         let root = std::env::temp_dir().join(format!("ar-opted-out-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        let places = crate::library::sync::Places { claude: root.join("claude"), data: root.join("data") };
+        let places = crate::library::sync::Places { claude: root.join("claude"), data: root.join("data"), form: Default::default(), kimi: None };
         // No router answers there: a machine that asked anything would fail.
         let router = Arc::new(crate::library::sync::Router::new("http://127.0.0.1:9", "unused").unwrap());
         let report = crate::library::sync::run_once(places.clone(), router.clone(), Some(false)).await.unwrap();
@@ -2016,7 +2170,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("ar-agent-library-route-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let library = Library {
-            places: crate::library::sync::Places { claude: root.join("claude"), data: root.join("data") },
+            places: crate::library::sync::Places { claude: root.join("claude"), data: root.join("data"), form: Default::default(), kimi: None },
             router: Arc::new(crate::library::sync::Router::new(&format!("http://{addr}"), lab.password.unwrap()).unwrap()),
             machine: "m".into(),
             label: "the test's machine".into(),
@@ -2059,5 +2213,40 @@ mod tests {
         assert_eq!(routes(None).oneshot(options).await.unwrap().status(), 404);
         let setup = axum::http::Request::builder().method("POST").uri("/api/setup/shim").body(Body::empty()).unwrap();
         assert_eq!(routes(None).oneshot(setup).await.unwrap().status(), 404);
+    }
+
+    #[test]
+    fn the_agent_keeps_picker_rows_in_step_with_the_catalogue() {
+        let dir = std::env::temp_dir().join(format!("ar-agent-picker-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let settings = dir.join("settings.json");
+        let server = "https://router.example.invalid";
+        std::fs::write(
+            &settings,
+            format!(r#"{{"env":{{"ANTHROPIC_BASE_URL":"{server}"}},"modelPicker":{{"options":[{{"model":"opus","label":"Mine"}}]}}}}"#),
+        )
+        .unwrap();
+        let catalogue = |ids: &[&str]| -> Vec<Value> {
+            ids.iter().map(|id| json!({ "id": id, "provider": if id.starts_with("claude") { "anthropic" } else { "kimi" }, "display_name": id })).collect()
+        };
+        let rows = |path: &Path| -> Vec<String> {
+            let got: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+            got["modelPicker"]["options"].as_array().unwrap().iter().map(|r| r["model"].as_str().unwrap().to_string()).collect()
+        };
+
+        assert!(picker_rows_for(&settings, server, &catalogue(&["claude-opus-5-5", "k3", "k3-256k"])).unwrap());
+        assert_eq!(rows(&settings), ["opus", "k3", "k3-256k"]);
+        // A model that joined the catalogue gets a row, and one that left loses its own.
+        assert!(picker_rows_for(&settings, server, &catalogue(&["k3", "kimi-for-coding"])).unwrap());
+        assert_eq!(rows(&settings), ["opus", "k3", "kimi-for-coding"]);
+        assert!(!picker_rows_for(&settings, &format!("{server}/"), &catalogue(&["k3", "kimi-for-coding"])).unwrap(), "in step");
+
+        // A Claude Code pointed at another router is offered none of this one's models.
+        let elsewhere = dir.join("elsewhere.json");
+        std::fs::write(&elsewhere, std::fs::read_to_string(&settings).unwrap().replace(server, "http://127.0.0.1:8787")).unwrap();
+        assert!(picker_rows_for(&elsewhere, server, &catalogue(&["k3"])).unwrap());
+        assert_eq!(rows(&elsewhere), ["opus"], "its rows go; the owner's stays");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

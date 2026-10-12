@@ -7,7 +7,7 @@
 //! their true size is recorded alongside the truncated copy.
 
 use anyhow::{Context, Result};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
 
 use crate::analyze::RequestShape;
@@ -40,6 +40,48 @@ CREATE TABLE IF NOT EXISTS accounts (
   subscription_type TEXT,
   active            INTEGER NOT NULL DEFAULT 0,
   created_at        INTEGER NOT NULL
+);
+
+-- A client-visible alias selects a service and account explicitly. Builtin services
+-- remain metadata in code; user-registered services and routes survive restarts.
+CREATE TABLE IF NOT EXISTS provider_services (
+  id TEXT PRIMARY KEY,
+  definition TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS provider_model_routes (
+  alias TEXT PRIMARY KEY,
+  definition TEXT NOT NULL
+);
+
+-- A provider's own reading of an account's windows, from its usage API rather than from
+-- response headers (Kimi Code's `/v1/usages`; `quota`). Utilisation is 0..1 and a reset is
+-- epoch seconds, as the `rl_*` columns of `requests` hold them.
+CREATE TABLE IF NOT EXISTS quota_readings (
+  account_id      TEXT NOT NULL,
+  at              INTEGER NOT NULL,
+  five_hour_used  REAL,
+  five_hour_reset INTEGER,
+  second_window   TEXT,
+  second_used     REAL,
+  second_reset    INTEGER
+);
+CREATE INDEX IF NOT EXISTS quota_readings_account ON quota_readings(account_id, at);
+
+-- A window a provider said is spent, and until when (`quota::kimi_spent_window`): Kimi Code
+-- answers a spent window with a 403 naming it, and sends no header that says so.
+CREATE TABLE IF NOT EXISTS spent_windows (
+  account_id TEXT NOT NULL,
+  window     TEXT NOT NULL,
+  at         INTEGER NOT NULL,
+  until      INTEGER NOT NULL,
+  message    TEXT,
+  PRIMARY KEY (account_id, window)
+);
+
+-- Which account a model's requests go to, when not its provider's active one (`models`).
+CREATE TABLE IF NOT EXISTS model_assignments (
+  model      TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS projects (
@@ -169,6 +211,20 @@ CREATE TABLE IF NOT EXISTS settings (
   updated_at INTEGER NOT NULL
 );
 
+-- Router access credentials, separate from upstream provider credentials and Library
+-- publish tokens. Their values are returned once; only SHA-256 digests are persisted.
+CREATE TABLE IF NOT EXISTS auth_tokens (
+  id           TEXT PRIMARY KEY,
+  name         TEXT NOT NULL,
+  prefix       TEXT NOT NULL,
+  hash         TEXT NOT NULL UNIQUE,
+  scope        TEXT NOT NULL CHECK(scope IN ('client', 'machine', 'admin')),
+  created_at   INTEGER NOT NULL,
+  last_used_at INTEGER,
+  expires_at   INTEGER,
+  revoked_at   INTEGER
+);
+
 -- Phones that asked to be told when a session is waiting on a person. `platform` says
 -- whose push service the token belongs to, and so which of the two the router speaks to
 -- for this row; `router_ref` is what the phone calls this router, echoed back so a tap
@@ -203,6 +259,89 @@ pub fn bodies_path(main: &Path) -> PathBuf {
 /// The row loses its `REFERENCES requests(id) ON DELETE CASCADE`: a foreign key cannot
 /// span two database files. Nothing deletes a request today, so there is no cascade to
 /// lose — but anything that starts deleting them has to clear both files.
+/// When the cached-token fix (AGEN-0098, 4e403ec) was committed, 2026-10-10T05:40:00Z: no
+/// build from before it counted Kimi Code's cache reads once.
+const KIMI_CACHE_FIX_MS: i64 = 1_791_610_800_000;
+
+/// The settings key that says `recompute_kimi_usage` has run on this store.
+const KIMI_USAGE_KEY: &str = "kimi_usage_recomputed";
+
+/// Kimi Code requests recorded before the cached-token fix counted its cache reads twice: its
+/// `input_tokens` holds them, where Anthropic's leaves them out (AGEN-0140). Each Kimi Code
+/// request whose response was kept is recomputed from it, as capture reads one now: its input
+/// is what Kimi Code reported less its cache reads, and its prompt total follows. Its output is
+/// left as capture counted it from the whole stream, since a kept response can be cut short.
+/// One with no response kept, recorded before the fix, has its cache reads taken out of its
+/// input and is marked `estimated`. Recomputing one from its response gives the same figures
+/// again, and an estimated one is never taken from twice. Once per store, at open, as the
+/// store's other migrations run.
+pub(crate) fn recompute_kimi_usage(conn: &Connection) -> Result<(usize, usize)> {
+    let done = conn
+        .query_row("SELECT 1 FROM settings WHERE key = ?1", [KIMI_USAGE_KEY], |_| Ok(()))
+        .optional()?
+        .is_some();
+    if done {
+        return Ok((0, 0));
+    }
+    type Row = (i64, i64, i64, Option<Vec<u8>>);
+    let found: Vec<Row> = {
+        let mut stmt = conn.prepare(
+            "SELECT r.id, r.started_at, u.estimated, b.content
+             FROM requests r
+             JOIN usage u ON u.request_id = r.id
+             LEFT JOIN bodies_db.bodies b ON b.request_id = r.id AND b.direction = 'response'
+             WHERE r.provider = 'kimi'",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    let tx = conn.unchecked_transaction()?;
+    let (mut recomputed, mut estimated) = (0, 0);
+    for (id, started_at, already, body) in found {
+        let read = body.filter(|b| !b.is_empty()).map(|body| {
+            let mut scan = crate::analyze::SseScanner::default();
+            let text = body.trim_ascii_start();
+            if text.starts_with(b"event:") || text.starts_with(b"data:") {
+                scan.feed(&body);
+                scan.feed(b"\n");
+            } else {
+                scan.absorb_json_body(&body);
+            }
+            scan.usage
+        });
+        if let Some(u) = read.filter(|u| u.input_tokens > 0 || u.cache_read_tokens > 0) {
+            let input = (u.input_tokens - u.cache_read_tokens).max(0);
+            tx.execute(
+                "UPDATE usage SET input_tokens = ?2, cache_read_tokens = ?3,
+                    prompt_tokens = ?2 + ?3 + cache_creation_5m_tokens + cache_creation_1h_tokens, estimated = 0
+                 WHERE request_id = ?1",
+                params![id, input, u.cache_read_tokens],
+            )?;
+            recomputed += 1;
+        } else if started_at < KIMI_CACHE_FIX_MS && already == 0 {
+            tx.execute(
+                "UPDATE usage SET input_tokens = max(input_tokens - cache_read_tokens, 0),
+                    prompt_tokens = max(input_tokens - cache_read_tokens, 0) + cache_read_tokens
+                                    + cache_creation_5m_tokens + cache_creation_1h_tokens,
+                    estimated = 1
+                 WHERE request_id = ?1",
+                [id],
+            )?;
+            estimated += 1;
+        }
+    }
+    tx.execute(
+        "INSERT INTO settings (key, value, updated_at) VALUES (?1, ?2, ?3)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+        params![KIMI_USAGE_KEY, format!("{recomputed} recomputed, {estimated} estimated"), now_ms()],
+    )?;
+    tx.commit()?;
+    if recomputed + estimated > 0 {
+        tracing::info!(recomputed, estimated, "Kimi Code requests from before the cached-token fix corrected");
+    }
+    Ok((recomputed, estimated))
+}
+
 pub(crate) fn attach_bodies(conn: &Connection, main: &Path) -> Result<()> {
     let side = bodies_path(main);
     conn.execute(
@@ -391,6 +530,17 @@ impl Db {
         // Every phone registered before there was a second push service was an iPhone,
         // which is exactly what the default backfills.
         ensure_column(&conn, "push_devices", "platform", "TEXT NOT NULL DEFAULT 'apns'")?;
+        // The provider of the account that served a request, kept on the request so it
+        // outlives the account. Every request recorded before there was a second provider
+        // was Anthropic's; the API reads a missing one as that.
+        ensure_column(&conn, "requests", "provider", "TEXT")?;
+        ensure_column(&conn, "requests", "service_id", "TEXT")?;
+        ensure_column(&conn, "requests", "upstream_model", "TEXT")?;
+        // The coding clients a machine said it has (`clients`), as JSON.
+        ensure_column(&conn, "machines", "clients", "TEXT")?;
+        // A request whose tokens were corrected without its response to read them from
+        // (`recompute_kimi_usage`): its figures are an estimate, and the Overview says so.
+        ensure_column(&conn, "usage", "estimated", "INTEGER NOT NULL DEFAULT 0")?;
         attach_bodies(&conn, path)?;
         for (col, ty) in [
             ("source", "TEXT NOT NULL DEFAULT 'keychain'"),
@@ -401,9 +551,16 @@ impl Db {
             // itself stays in the Keychain; this is only so the UI can say whether
             // one is set without a Keychain read per account per poll.
             ("usage_key", "INTEGER NOT NULL DEFAULT 0"),
+            // Which service the account belongs to (`accounts::Provider`). Every account
+            // stored before there was a second one was Anthropic's, which is exactly what
+            // the default backfills.
+            ("provider", "TEXT NOT NULL DEFAULT 'anthropic'"),
+            // Where its requests go, when not its provider's default.
+            ("base_url", "TEXT"),
         ] {
             ensure_column(&conn, "accounts", col, ty)?;
         }
+        recompute_kimi_usage(&conn)?;
         Ok(Self { conn, seen_blocks: Default::default() })
     }
 
@@ -425,8 +582,10 @@ impl Db {
         status: &crate::accounts::AuthStatus,
     ) -> Result<()> {
         let restored = self.conn.execute(
-            "UPDATE accounts SET source = 'keychain', profile_dir = NULL
-              WHERE id = ?1 AND (source != 'keychain' OR profile_dir IS NOT NULL)",
+            "UPDATE accounts SET source = 'keychain', provider = 'anthropic', base_url = NULL,
+                                 profile_dir = NULL
+              WHERE id = ?1 AND (source != 'keychain' OR provider != 'anthropic'
+                                 OR base_url IS NOT NULL OR profile_dir IS NOT NULL)",
             [id],
         )?;
         if restored > 0 {
@@ -443,7 +602,8 @@ impl Db {
             "INSERT INTO accounts (id, label, source, email, org_name, subscription_type,
                                    active, created_at)
              VALUES (?1, ?2, 'keychain', ?3, ?4, ?5,
-                     CASE WHEN (SELECT count(*) FROM accounts WHERE active = 1) = 0 THEN 1 ELSE 0 END,
+                     CASE WHEN (SELECT count(*) FROM accounts
+                                 WHERE active = 1 AND provider = 'anthropic') = 0 THEN 1 ELSE 0 END,
                      ?6)
              ON CONFLICT(id) DO UPDATE SET
                label = ?2, email = ?3, org_name = ?4, subscription_type = ?5",
@@ -497,8 +657,8 @@ impl Db {
                started_at, ttfb_ms, duration_ms, status, streaming, stop_reason,
                service_tier, error, rl_status, rl_5h_utilization, rl_7d_utilization,
                rl_5h_reset, rl_7d_reset, request_bytes, response_bytes,
-               agent_id, is_sidechain, account_email)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25)
+               agent_id, is_sidechain, account_email, provider, service_id, upstream_model)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28)
              ON CONFLICT(request_id) DO NOTHING",
             params![
                 ev.request_id,
@@ -526,8 +686,45 @@ impl Db {
                 ev.agent_id,
                 ev.agent_id.is_some() as i64,
                 ev.account_email,
+                ev.provider.as_str(),
+                ev.shape.as_ref().and_then(|shape| shape.service_id.as_deref()),
+                ev.shape.as_ref().and_then(|shape| shape.upstream_model.as_deref()),
             ],
         )?;
+        // A window Kimi Code said is spent: the account is spent until that window resets,
+        // as the quota reader last gave it, else the window's length from now.
+        if ev.provider == crate::accounts::Provider::Kimi && ev.status == 403 {
+            if let Some(window) = ev.error.as_deref().and_then(crate::quota::kimi_spent_window) {
+                let at = ev.started_at_ms;
+                let (reset_col, name_check) = match window {
+                    "five_hour" => ("five_hour_reset", None),
+                    other => ("second_reset", Some(other)),
+                };
+                let kept: Option<i64> = tx
+                    .query_row(
+                        &format!(
+                            "SELECT {reset_col} FROM quota_readings
+                             WHERE account_id = ?1 AND (?2 IS NULL OR second_window = ?2) AND {reset_col} > ?3
+                             ORDER BY at DESC LIMIT 1"
+                        ),
+                        params![ev.account_id, name_check, at / 1000],
+                        |r| r.get(0),
+                    )
+                    .optional()?
+                    .flatten();
+                let span = match window {
+                    "five_hour" => crate::forecast::FIVE_HOUR.span_ms,
+                    "seven_day" => crate::forecast::SEVEN_DAY.span_ms,
+                    _ => crate::forecast::MONTH.span_ms,
+                };
+                let until = kept.unwrap_or((at + span) / 1000);
+                tx.execute(
+                    "INSERT INTO spent_windows (account_id, window, at, until, message) VALUES (?1, ?2, ?3, ?4, ?5)
+                     ON CONFLICT(account_id, window) DO UPDATE SET at = excluded.at, until = excluded.until, message = excluded.message",
+                    params![ev.account_id, window, at, until, ev.error],
+                )?;
+            }
+        }
         let row_id = tx.last_insert_rowid();
         if row_id == 0 {
             tx.commit()?;
@@ -937,6 +1134,7 @@ mod tests {
             account_email: None,
             agent_id: None,
             account_id: "acct-1".into(),
+            provider: crate::accounts::Provider::Anthropic,
             entrypoint: None,
             model: Some(model.into()),
             method: "POST".into(),
@@ -961,6 +1159,172 @@ mod tests {
             request_bytes: 11,
             response_bytes: 0,
         }
+    }
+
+    /// The account that served a request, and its provider, are kept on the request, so
+    /// the request list says where each one went; a request kept from before there was a
+    /// second provider reads as Anthropic's, which it was.
+    /// A store with Kimi Code requests as builds before the cached-token fix recorded them, and
+    /// one as builds after it do: its cache reads counted in its input, and not.
+    fn kimi_rows(tag: &str) -> (std::path::PathBuf, Connection) {
+        let dir = std::env::temp_dir().join(format!("ar-kimi-usage-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("store.db");
+        drop(Db::open(&path).unwrap());
+        let conn = Connection::open(&path).unwrap();
+        attach_bodies(&conn, &path).unwrap();
+        // Ran when the store opened, with nothing to do: these rows are written after.
+        conn.execute("DELETE FROM settings WHERE key = ?1", [KIMI_USAGE_KEY]).unwrap();
+        let before = KIMI_CACHE_FIX_MS - 3_600_000;
+        let after = KIMI_CACHE_FIX_MS + 3_600_000;
+        conn.execute_batch(&format!(
+            "INSERT INTO requests (id, request_id, account_id, method, path, started_at, model, provider) VALUES
+               (1, 'kept', 'kimi', 'POST', '/v1/messages', {before}, 'k3', 'kimi'),
+               (2, 'lost', 'kimi', 'POST', '/v1/messages', {before}, 'k3', 'kimi'),
+               (3, 'new',  'kimi', 'POST', '/v1/messages', {after},  'k3', 'kimi'),
+               (4, 'lost-after', 'kimi', 'POST', '/v1/messages', {after}, 'k3', 'kimi'),
+               (5, 'claude', 'work', 'POST', '/v1/messages', {before}, 'claude-opus-5-5', 'anthropic');
+             INSERT INTO usage (request_id, input_tokens, output_tokens, cache_read_tokens, prompt_tokens) VALUES
+               (1, 37312, 200, 18000, 55312),
+               (2, 37312, 200, 18000, 55312),
+               (3, 19312, 200, 18000, 37312),
+               (4, 19312, 200, 18000, 37312),
+               (5, 1000, 50, 18000, 19000);"
+        ))
+        .unwrap();
+        // Kimi Code's own stream: its input holds what it read from cache. The kept copy is cut
+        // short before its last event, as a capped one can be.
+        let stream = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"model\":\"k3\",\"usage\":{\"input_tokens\":37312,\"cache_read_input_tokens\":18000,\"output_tokens\":1}}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\"";
+        for id in [1, 3] {
+            conn.execute(
+                "INSERT INTO bodies_db.bodies (request_id, direction, content, truncated_at, true_bytes) VALUES (?1, 'response', ?2, ?3, 9999)",
+                params![id, stream.as_bytes(), stream.len() as i64],
+            )
+            .unwrap();
+        }
+        (dir, conn)
+    }
+
+    fn figures(conn: &Connection, id: i64) -> (i64, i64, i64, i64, i64) {
+        conn.query_row(
+            "SELECT input_tokens, cache_read_tokens, prompt_tokens, output_tokens, estimated FROM usage WHERE request_id = ?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .unwrap()
+    }
+
+    /// A Kimi Code request recorded before the fix is recomputed from its kept response, and
+    /// one recorded after it reads the same; doing it again changes nothing (AGEN-0140).
+    #[test]
+    fn kimi_rows_from_before_the_cache_fix_are_recomputed_from_their_bodies() {
+        let (dir, conn) = kimi_rows("bodies");
+        assert_eq!(recompute_kimi_usage(&conn).unwrap(), (2, 1));
+        assert_eq!(figures(&conn, 1), (19312, 18000, 37312, 200, 0), "its cache reads counted once, its output as captured");
+        assert_eq!(figures(&conn, 3), (19312, 18000, 37312, 200, 0), "already right, and still");
+        assert_eq!(figures(&conn, 5), (1000, 18000, 19000, 50, 0), "Anthropic's untouched");
+
+        assert_eq!(recompute_kimi_usage(&conn).unwrap(), (0, 0), "once per store");
+        conn.execute("DELETE FROM settings WHERE key = ?1", [KIMI_USAGE_KEY]).unwrap();
+        recompute_kimi_usage(&conn).unwrap();
+        assert_eq!(figures(&conn, 1), (19312, 18000, 37312, 200, 0), "again, the same");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A Kimi Code request recorded before the fix whose response was not kept has its cache
+    /// reads taken out of its input, once, and is marked estimated; one recorded after the fix
+    /// is left as it was (AGEN-0140).
+    #[test]
+    fn a_kimi_row_without_its_body_is_estimated() {
+        let (dir, conn) = kimi_rows("estimated");
+        recompute_kimi_usage(&conn).unwrap();
+        assert_eq!(figures(&conn, 2), (19312, 18000, 37312, 200, 1));
+        assert_eq!(figures(&conn, 4), (19312, 18000, 37312, 200, 0), "recorded after the fix: right as it was");
+        conn.execute("DELETE FROM settings WHERE key = ?1", [KIMI_USAGE_KEY]).unwrap();
+        recompute_kimi_usage(&conn).unwrap();
+        assert_eq!(figures(&conn, 2), (19312, 18000, 37312, 200, 1), "never taken from twice");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_request_row_names_the_account_and_provider_that_served_it() {
+        let dir = std::env::temp_dir().join(format!("ar-provider-row-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut db = Db::open(&dir.join("store.db")).unwrap();
+        crate::pricing::ensure_table(&db.conn).unwrap();
+
+        let claude = an_event("claude-opus-5-5");
+        let mut kimi = an_event("k3");
+        kimi.request_id = Some("req-kimi".into());
+        kimi.account_id = "kimi".into();
+        kimi.provider = crate::accounts::Provider::Kimi;
+        kimi.started_at_ms += 1_000;
+        let mut before = an_event("claude-opus-4-1");
+        before.request_id = Some("req-before".into());
+        before.started_at_ms -= 1_000;
+        for ev in [&claude, &kimi, &before] {
+            db.record(ev).unwrap();
+        }
+        db.conn.execute("UPDATE requests SET provider = NULL WHERE request_id = 'req-before'", []).unwrap();
+
+        let everything = crate::api::Filter { project: None, session: None, account: None, since: None, until: None, tz: None, provider: None };
+        let list = crate::api::requests_of(&db.conn, &everything).unwrap();
+        let served: Vec<(&str, &str, &str)> = list
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| (r["request_id"].as_str().unwrap(), r["account_id"].as_str().unwrap(), r["provider"].as_str().unwrap()))
+            .collect();
+        assert_eq!(
+            served,
+            [("req-kimi", "kimi", "kimi"), ("req-1", "acct-1", "anthropic"), ("req-before", "acct-1", "anthropic")]
+        );
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn registered_route_attribution_survives_registry_changes() {
+        let dir = std::env::temp_dir().join(format!("ar-registry-attribution-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("store.db");
+        // A store predating explicit routes must gain nullable attribution columns.
+        let old = Connection::open(&path).unwrap();
+        old.execute_batch(SCHEMA).unwrap();
+        drop(old);
+        let mut db = Db::open(&path).unwrap();
+        crate::pricing::ensure_table(&db.conn).unwrap();
+        for (index, service, alias) in [(0, "service-east", "project-fast"), (1, "service-west", "project-private")] {
+            let mut event = an_event(alias);
+            event.request_id = Some(format!("registered-{index}"));
+            event.account_id = format!("account-{index}");
+            event.started_at_ms += index;
+            event.shape = Some(crate::analyze::RequestShape {
+                model: Some(alias.into()), service_id: Some(service.into()),
+                upstream_model: Some("same-physical-model".into()), ..Default::default()
+            });
+            db.record(&event).unwrap();
+        }
+        // Accounts can disappear after the call; the durable attribution belongs
+        // to the request and must be returned without consulting current routes.
+        db.conn.execute("DELETE FROM accounts", []).unwrap();
+        drop(db);
+        let db = Db::open(&path).unwrap();
+        let filter = crate::api::Filter { project: None, session: None, account: None, since: None, until: None, tz: None, provider: None };
+        let list = crate::api::requests_of(&db.conn, &filter).unwrap();
+        let rows = list.as_array().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["model"], "project-private");
+        assert_eq!(rows[0]["service_id"], "service-west");
+        assert_eq!(rows[0]["account_id"], "account-1");
+        assert_eq!(rows[1]["model"], "project-fast");
+        assert_eq!(rows[1]["service_id"], "service-east");
+        assert!(rows.iter().all(|row| row["upstream_model"] == "same-physical-model"));
+        drop(db);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// The replay problem in miniature. Two requests one turn apart: the second resends
@@ -1271,7 +1635,7 @@ mod tests {
     /// under "default" for another test to find.
     #[test]
     fn built_in_account_restored_at_startup_and_no_other_account_changes() {
-        use crate::accounts::{self, Account, AuthStatus, Source, Store};
+        use crate::accounts::{self, Account, AuthStatus, Provider, Source, Store};
         use rusqlite::types::Value;
 
         // None of these is a credential.
@@ -1306,7 +1670,15 @@ mod tests {
         // The token the router would sign with for a token account with this id, and the
         // account's usage key.
         let secrets = |of: &str| {
-            let as_token = Account { id: of.into(), label: String::new(), source: Source::Token, profile_dir: None, email: None };
+            let as_token = Account {
+                id: of.into(),
+                label: String::new(),
+                source: Source::Token,
+                provider: Provider::Anthropic,
+                base_url: None,
+                profile_dir: None,
+                email: None,
+            };
             (accounts::resolve(&as_token).ok().map(|r| r.token), accounts::usage_token(of))
         };
 
@@ -1314,13 +1686,13 @@ mod tests {
         // is no longer the active one. Its usage key, as `quota::set_usage_token` records it.
         db.upsert_default_account(id, "me@example.com", &me).unwrap();
         store
-            .add("built-in-restored-work", "Work", Source::Token, None, &AuthStatus::default(), || {
+            .add("built-in-restored-work", "Work", Source::Token, Provider::Anthropic, None, None, &AuthStatus::default(), || {
                 accounts::store_token("built-in-restored-work", WORK)
             })
             .unwrap();
         accounts::store_usage_token("built-in-restored-work", WORK_USAGE).unwrap();
         let home = "/nowhere/accounts/built-in-restored-home";
-        store.add("built-in-restored-home", "Home", Source::Profile, Some(home), &AuthStatus::default(), || Ok(())).unwrap();
+        store.add("built-in-restored-home", "Home", Source::Profile, Provider::Anthropic, None, Some(home), &AuthStatus::default(), || Ok(())).unwrap();
         store.activate("built-in-restored-work").unwrap();
         accounts::store_usage_token(id, BUILT_IN_USAGE).unwrap();
         db.conn.execute("UPDATE accounts SET usage_key = 1 WHERE id = ?1", [id]).unwrap();

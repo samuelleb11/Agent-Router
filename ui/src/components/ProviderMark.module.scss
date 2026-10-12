@@ -1,0 +1,38 @@
+// New for agent-router: a provider's mark beside its name or alone (SH-C56), on Carbon tokens. The
+// marks are the files in src/assets/providers, as their owners publish them: sized to the text,
+// never recoloured or reshaped.
+@use '@carbon/react/scss/spacing' as *;
+
+/// The mark and its words on one line, a little space between them. As short as a provider's name,
+/// so it never widens a phone's row; whatever holds it wraps around it.
+.provider {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: $spacing-02;
+  max-inline-size: 100%;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.name {
+  min-inline-size: 0;
+}
+
+/// The mark, as tall as the text beside it, the file fitted whole into its box.
+.glyph {
+  display: block;
+  flex: none;
+  inline-size: 1em;
+  block-size: 1em;
+  object-fit: contain;
+}
+
+/// Anthropic's mark has no colour of its own, so it is drawn in the text colour — black on the light
+/// theme, white on the dark — through the file itself as a mask, whatever colour the words around it
+/// wear: a green "active" tag does not make it green.
+.glyph[data-glyph='anthropic'] {
+  background-color: var(--cds-text-primary);
+  -webkit-mask: url('../assets/providers/anthropic.svg') center / contain no-repeat;
+  mask: url('../assets/providers/anthropic.svg') center / contain no-repeat;
+}

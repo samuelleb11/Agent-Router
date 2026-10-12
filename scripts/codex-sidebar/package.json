@@ -1,0 +1,9 @@
+{
+  "name": "agent-router-native-codex-acceptance",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@vscode/test-electron": "3.1.0",
+    "playwright": "1.64.0"
+  }
+}

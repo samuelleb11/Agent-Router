@@ -7,19 +7,28 @@ import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useNavigate } from 'react-router';
 import { keys } from '~/app/query';
+import type { AccountSplitRow } from '~/data/overview';
+import { UNPRICED_WHY } from '~/model/format';
 import { identityNote, notes, noteText } from '~/model/settings';
 import { renderScreen } from '~/test-utils';
 import Overview from './index';
 import {
   ACCOUNTS,
+  ANTHROPIC_ROOM,
+  anthropicBlock,
   dropped,
   forecast,
   forecastAccount,
   held,
   HOSTED,
+  KIMI_ROOM,
+  kimiAccount,
+  kimiBlock,
   LOCAL,
+  MIN,
   NOW,
   ok,
+  partsOf,
   project,
   PROJECTS,
   refused,
@@ -31,6 +40,7 @@ import {
   session,
   summary,
   totals,
+  TWO_PROVIDERS,
 } from './fixtures';
 
 /// The whole page is drawn in jsdom, beside every other spec in the run: generous limits, so a loaded
@@ -136,7 +146,7 @@ describe('the Overview’s layout', () => {
       [
         null,
         {
-          'Quota headroom': /^the account that is serving right now/,
+          'Quota headroom': "each provider's account that is serving right now",
           'All accounts': '2 accounts · spend and tokens add up, quota does not',
           'Totals in scope': /^412 requests · /,
           'Activity over time': '12.40M prompt tokens · 412 requests',
@@ -286,7 +296,7 @@ describe('the address', () => {
     const tabReads = ['/api/projects', '/api/sessions', '/api/tools', '/api/requests'];
     const read = () => tabReads.filter((path) => r.calls(path).length > 0);
     expect(read()).toEqual([]);
-    expect(r.calls('/api/summary')[0]!.query.get('parts')).toBe('totals,quota,account,models,latency,timeline,quota_history');
+    expect(r.calls('/api/summary')[0]!.query.get('parts')).toBe('totals,models,latency,timeline,providers');
     // Opened, a tab is read at once, by the time the press has been handled.
     await act(async () => {
       fireEvent.click(screen.getByRole('tab', { name: 'Tools' }));
@@ -294,7 +304,7 @@ describe('the address', () => {
     expect(read()).toEqual(['/api/tools']);
     await screen.findByRole('heading', { level: 2, name: 'Tool calls made' });
     await tabTo('Context', 'By model');
-    expect(r.calls('/api/summary').at(-1)!.query.get('parts')).toBe('totals,quota,account,context,models,threads,latency,timeline,quota_history');
+    expect(r.calls('/api/summary').at(-1)!.query.get('parts')).toBe('totals,context,models,threads,latency,timeline,providers');
     // Closed, it is read no more: the next cycles read the top and the open tab.
     const tools = r.calls('/api/tools').length;
     await act(() => client.refetchQueries({ queryKey: ['overview'] }));
@@ -452,7 +462,7 @@ describe('searching the transcripts', () => {
     type('kestrel');
     await waitFor(() => expect(r.calls('/api/search')).toHaveLength(1));
     const reads = r.calls('/api/summary').length;
-    await act(() => client.refetchQueries({ queryKey: keys.overview({ account: null, project: null, session: null, range: 'all' }, 'search') }));
+    await act(() => client.refetchQueries({ queryKey: keys.overview({ provider: null, account: null, project: null, session: null, range: 'all' }, 'search') }));
     expect(r.calls('/api/summary').length).toBe(reads + 1);
     expect(r.calls('/api/search')).toHaveLength(1);
     const kinds = within(screen.getByRole('tablist', { name: 'What to search' }));
@@ -491,13 +501,14 @@ describe('searching the transcripts', () => {
 });
 
 describe('the quota', () => {
-  it('OV-C54: describes the account serving now whatever the page is scoped to, and its caption names it', async () => {
+  it('OV-C54: a provider’s block describes its account serving now whatever the page is scoped to, and names it', async () => {
     const r = router();
     show('/?account=primary&project=%2Fcode%2Fnorthstar');
     await loaded();
     const quota = panel('Quota headroom');
-    expect(within(quota).getByRole('link', { name: 'secondary@example.test · max' })).toHaveAttribute('href', '/settings/accounts');
-    expect(within(quota).getByText('41% used · resets in 2h 00m')).toBeInTheDocument();
+    const anthropic = within(quota).getByRole('region', { name: 'Anthropic' });
+    expect(within(anthropic).getByRole('link', { name: 'secondary@example.test · max' })).toHaveAttribute('href', '/settings/accounts');
+    expect(within(anthropic).getByText('41% used · resets in 2h 00m')).toBeInTheDocument();
     expect(r.calls('/api/quota').every((c) => [...c.query.keys()].length === 0)).toBe(true);
   });
 
@@ -516,6 +527,107 @@ describe('the quota', () => {
   });
 });
 
+describe('a quota block per provider', () => {
+  /// A router with an Anthropic account and a Kimi Code account, each provider's headroom its own.
+  const both = () =>
+    router((path, query) =>
+      path === '/api/summary'
+        ? ok(partsOf(summary({ providers: [anthropicBlock(), kimiBlock()] }), query.get('parts')))
+        : path === '/api/forecast'
+          ? ok(forecast([forecastAccount('secondary'), forecastAccount('primary', { five_hour: null, seven_day: null, seen_at: null }), kimiAccount()], { anthropic: ANTHROPIC_ROOM, kimi: KIMI_ROOM }))
+          : undefined,
+    );
+  const block = (name: string) => within(panel('Quota headroom')).getByRole('region', { name });
+  const meter = (b: HTMLElement, name: string) => within(b).getByRole('meter', { name }).getAttribute('aria-valuetext');
+
+  it('OV-C224: Quota headroom holds a block per provider with an account — its mark and name, its serving account, its own windows’ meters, history and burn-downs', async () => {
+    both();
+    show();
+    await loaded();
+    const quota = panel('Quota headroom');
+    expect([...quota.querySelectorAll('[data-quota-provider]')].map((b) => b.getAttribute('data-quota-provider'))).toEqual(['anthropic', 'kimi']);
+    expect(quota.querySelector('[data-quota-blocks]')).toHaveAttribute('data-quota-blocks', '2');
+    const anthropic = block('Anthropic');
+    const kimi = block('Kimi Code');
+    // Each headed by its provider's mark and name (SH-C56).
+    expect(within(anthropic).getByRole('heading', { level: 3, name: 'Anthropic' }).querySelector('[data-glyph="anthropic"]')).not.toBeNull();
+    expect(within(kimi).getByRole('heading', { level: 3, name: 'Kimi Code' }).querySelector('[data-glyph="kimi"]')).not.toBeNull();
+    // Each its own serving account, leading to Settings → Accounts (SH-C17).
+    expect(within(anthropic).getByRole('link', { name: 'secondary@example.test · max' })).toHaveAttribute('href', '/settings/accounts');
+    expect(within(kimi).getByRole('link', { name: 'Kimi' })).toHaveAttribute('href', '/settings/accounts');
+    // Each its own windows: Anthropic's live reading, Kimi Code's usage reading, never the other's.
+    expect([meter(anthropic, '5-hour window'), meter(anthropic, '7-day window')]).toEqual(['41% used · resets in 2h 00m', '58% used · resets in 3d 0h']);
+    expect([meter(kimi, '5-hour window'), meter(kimi, 'Month window')]).toEqual(['18% used · resets in 3h 00m', '27% used · resets in 20d 0h']);
+    expect(within(kimi).getByText('checked 2 min ago')).toBeInTheDocument();
+    // Each its own history, its second line by its window's name, and its own burn-downs.
+    expect(within(anthropic).getByText('7-day used')).toBeInTheDocument();
+    expect(within(kimi).getByText('month used')).toBeInTheDocument();
+    expect(kimi.querySelector('path[data-series="month"]')).not.toBeNull();
+    expect(within(anthropic).getByText('7-day window · burn-down')).toBeInTheDocument();
+    expect(within(kimi).getByText('Month window · burn-down')).toBeInTheDocument();
+    expect(within(kimi).queryByText(/7-day/)).toBeNull();
+    // Side by side on a desk, stacked on a phone, never wider than the screen.
+    expect(scss).toMatch(/\.blocks \{[^}]*repeat\(auto-fit, minmax\(min\(100%, 24rem\), 1fr\)\)[^}]*breakpoint-down\('md'\) \{\s*grid-template-columns: minmax\(0, 1fr\);/);
+  });
+
+  it('OV-C224: a router with Kimi Code’s accounts alone shows Kimi Code’s block alone, and nothing reads “no account” for Anthropic', async () => {
+    router((path, query) =>
+      path === '/api/summary'
+        ? ok(partsOf(summary({ providers: [kimiBlock()] }), query.get('parts')))
+        : path === '/api/quota'
+          ? refused('no Anthropic account')
+          : path === '/api/forecast'
+            ? ok(forecast([kimiAccount()], { kimi: KIMI_ROOM }))
+            : undefined,
+    );
+    show();
+    await loaded();
+    const quota = panel('Quota headroom');
+    expect([...quota.querySelectorAll('[data-quota-provider]')].map((b) => b.getAttribute('data-quota-provider'))).toEqual(['kimi']);
+    expect(within(quota).queryByRole('region', { name: 'Anthropic' })).toBeNull();
+    expect(quota).not.toHaveTextContent(/Anthropic|no account|No account|No quota reading/);
+    expect(meter(block('Kimi Code'), 'Month window')).toBe('27% used · resets in 20d 0h');
+    expect(within(block('Kimi Code')).getByText('Headroom left')).toBeInTheDocument();
+  });
+
+  it('OV-C224, OV-C225: Kimi Code’s month is named by its own key and counted in its own block’s headroom', async () => {
+    both();
+    show();
+    await loaded();
+    const kimi = block('Kimi Code');
+    const tile = within(kimi).getByText('Headroom left').closest('.cds--tile') as HTMLElement;
+    expect(within(tile).getByText('3.5 h')).toBeInTheDocument();
+    expect(within(tile).getByText("first to go: Kimi's month window, in 5d 0h")).toBeInTheDocument();
+    expect(tile).toHaveAttribute('data-tone', 'bad');
+    expect(kimi.querySelector('[data-first-to-go]')).toHaveTextContent(/^First to run out: Kimi's month window, .+\.$/);
+  });
+
+  it('OV-C225: headroom left and first to run out are each block’s own, and no figure compares one provider’s windows with another’s', async () => {
+    both();
+    show();
+    await loaded();
+    const anthropic = block('Anthropic');
+    const kimi = block('Kimi Code');
+    // Anthropic's: its own hours, and its own first to go, a 7-day window too close to call.
+    const own = within(anthropic).getByText('Headroom left').closest('.cds--tile') as HTMLElement;
+    expect(within(own).getByText('4.9 h')).toBeInTheDocument();
+    expect(within(own).getByText("too close to call: secondary@example.test's 7-day window could run out in 2d 20h")).toBeInTheDocument();
+    expect(anthropic.querySelector('[data-first-to-go]')).toHaveTextContent(/^First to run out: secondary@example\.test's 7-day window, .+ — too close to call\.$/);
+    // Kimi Code's: its own hours, and its month, by name.
+    const theirs = within(kimi).getByText('Headroom left').closest('.cds--tile') as HTMLElement;
+    expect(within(theirs).getByText('3.5 h')).toBeInTheDocument();
+    expect(kimi.querySelector('[data-first-to-go]')).toHaveTextContent(/^First to run out: Kimi's month window, /);
+    // Neither block names the other provider's account or windows: no figure sets Anthropic's 7-day
+    // against Kimi Code's month.
+    expect(anthropic).not.toHaveTextContent(/Kimi|month/);
+    expect(kimi).not.toHaveTextContent(/secondary@example\.test|7-day/);
+    // One headroom per block, and none totalled across providers in All accounts.
+    expect(within(panel('Quota headroom')).getAllByText('Headroom left')).toHaveLength(2);
+    expect(within(panel('All accounts')).queryByText('Headroom left')).toBeNull();
+    expect(panel('All accounts').querySelector('[data-first-to-go]')).toBeNull();
+  });
+});
+
 describe('all accounts', () => {
   it('OV-C96: an account removed from the router keeps its card while it has history to report', async () => {
     router((path) =>
@@ -524,6 +636,35 @@ describe('all accounts', () => {
     show();
     await loaded();
     expect([...document.querySelectorAll('[data-account-card]')].map((c) => c.getAttribute('data-account-card'))).toEqual(['secondary', 'retired']);
+  });
+
+  it('OV-C218, OV-C219, OV-C221: a Kimi Code account’s card names Kimi Code, draws its second window as Month, a spent window as spent until its reset, and its cost as not priced', async () => {
+    const at = (ms: number) => Math.floor(ms / 1000);
+    const kimi = forecastAccount('kimi', {
+      label: 'Kimi',
+      email: null,
+      provider: 'kimi',
+      plan: null,
+      pool: null,
+      status: 'rejected',
+      usage: { requests: 12, prompt_tokens: 40_000, output_tokens: 900, cost: 0, unpriced: 12, last_seen: NOW - 5 * 60_000 },
+      five_hour: { used: 1, reset_at: at(NOW + 2 * 3_600_000), expired: false, spent: true, basis: 'none', series: [] },
+      seven_day: null,
+      month: { used: 0.12, reset_at: at(NOW + 20 * 86_400_000), expired: false, spent: false, basis: 'none', series: [] },
+    });
+    router((path) => (path === '/api/forecast' ? ok(forecast([forecastAccount('secondary'), kimi])) : undefined));
+    show();
+    await loaded();
+    const card = within(document.querySelector<HTMLElement>('[data-account-card="kimi"]')!);
+    // Named by its provider's tag beside the account's name (OV-C231), and not again on its line.
+    expect(card.getByText('Kimi Code').closest('[data-provider]')).toHaveAttribute('data-provider', 'kimi');
+    expect(card.getByText(/^last request 5 min ago/)).toBeInTheDocument();
+    expect(card.getByText('5-hour')).toBeInTheDocument();
+    expect(card.getByText('Month')).toBeInTheDocument();
+    expect(card.queryByText('7-day')).toBeNull();
+    expect(card.getByText(/^spent until it resets in 2h 00m/)).toBeInTheDocument();
+    expect(card.getByText('not priced')).toBeInTheDocument();
+    expect(card.queryByText('$0')).toBeNull();
   });
 });
 
@@ -652,6 +793,277 @@ describe('the requests', () => {
     expect(within(panel('Requests')).getAllByRole('listitem')).toHaveLength(30);
     fireEvent.click(within(screen.getByRole('group', { name: 'Stop reasons' })).getByRole('button', { name: /^tool_use/ }));
     await waitFor(() => expect(within(panel('Requests')).getAllByRole('listitem')).toHaveLength(20));
+  });
+});
+
+describe('each provider', () => {
+  it('OV-C231: the Accounts list and every All accounts card tag an account with its provider, and "active" says for which provider', async () => {
+    const kimi = { id: 'kimi-acc', label: 'Kimi', provider: 'kimi', active: 1, requests: 12, prompt_tokens: 40_000, cost: 0, output_tokens: 900, sessions: 1, last_seen: NOW - 5 * MIN };
+    const byAccount = [...(summary().by_account ?? []), kimi];
+    router((path, query) => (path === '/api/summary' ? ok(partsOf(summary({ by_account: byAccount }), query.get('parts'))) : undefined));
+    show('/?range=all&tab=projects');
+    await loaded();
+    const list = await screen.findByRole('list', { name: 'Accounts' }, { timeout: 10_000 });
+    const row = (name: string) => within(list).getByRole('button', { name });
+    // An Anthropic account and a Kimi Code account can both be active: each says for which provider.
+    expect(row('secondary@example.test')).toHaveTextContent('active for Anthropic');
+    expect(row('Kimi')).toHaveTextContent('active for Kimi Code');
+    expect(row('Kimi').querySelector('[data-provider="kimi"] [data-glyph="kimi"]')).not.toBeNull();
+    expect(row('primary@example.test').querySelector('[data-provider="anthropic"] [data-glyph="anthropic"]')).not.toBeNull();
+    expect(row('primary@example.test')).toHaveTextContent('Anthropic');
+    expect(row('primary@example.test')).not.toHaveTextContent(/active/);
+    // All accounts: every card tagged, the serving one's tag saying for which provider.
+    const card = (id: string) => within(document.querySelector<HTMLElement>(`[data-account-card="${id}"]`)!);
+    expect(card('secondary').getByText('active for Anthropic').closest('[data-provider]')).toHaveAttribute('data-provider', 'anthropic');
+    expect(card('primary').getByText('Anthropic').closest('[data-provider]')).toHaveAttribute('data-provider', 'anthropic');
+    expect(card('primary').queryByText(/^active/)).toBeNull();
+  });
+
+  it('OV-C231: a request’s card wears its provider’s mark, and its detail names the provider and the account that served it', async () => {
+    router((path) =>
+      path === '/api/requests'
+        ? ok([request(1, { provider: 'kimi', account_id: 'kimi-acc', model: 'k3' }), request(2, { account_id: 'retired' })])
+        : path === '/api/accounts'
+          ? ok([...ACCOUNTS, { id: 'kimi-acc', label: 'Kimi', email: null, source: 'token', provider: 'kimi', active: 1 }])
+          : undefined,
+    );
+    show('/?range=all&tab=requests');
+    await loaded();
+    const list = await screen.findByRole('list', { name: 'Requests, newest first' }, { timeout: 10_000 });
+    const [kimi, older] = within(list).getAllByRole('listitem') as [HTMLElement, HTMLElement];
+    // On the card, the mark alone, named by its provider; a request recorded with none is Anthropic's.
+    expect(within(kimi).getByRole('img', { name: 'Kimi Code' })).toBeInTheDocument();
+    expect(within(older).getByRole('img', { name: 'Anthropic' })).toBeInTheDocument();
+    const fact = (item: HTMLElement, label: string) => within(item).getByText(label, { selector: 'dt' }).nextElementSibling?.textContent;
+    fireEvent.click(within(kimi).getByRole('button'));
+    await waitFor(() => expect(fact(kimi, 'account')).toBe('Kimi · kimi-acc'), { timeout: 10_000 });
+    expect(fact(kimi, 'provider')).toBe('Kimi Code');
+    // An account the router no longer holds is its id.
+    fireEvent.click(within(older).getByRole('button'));
+    await waitFor(() => expect(fact(older, 'account')).toBe('retired'), { timeout: 10_000 });
+    expect(fact(older, 'provider')).toBe('Anthropic');
+  });
+
+  it('OV-C231: By model tags each model with the provider that served it, by its mark and name', async () => {
+    const models = [
+      ...summary().models,
+      { model: 'k3', provider: 'kimi', requests: 2, prompt_tokens: 400, cost: 0, output_tokens: 10, thinking_tokens: 0, cache_read_tokens: 0, errors: 0, subagent_requests: 0 },
+    ];
+    router((path, query) => (path === '/api/summary' ? ok(partsOf(summary({ models }), query.get('parts'))) : undefined));
+    show('/?range=all&tab=context');
+    await loaded();
+    const rows = within(await screen.findByRole('list', { name: 'By model' }, { timeout: 10_000 })).getAllByRole('listitem');
+    expect(rows.map((r) => r.querySelector('[data-provider]')?.getAttribute('data-provider'))).toEqual(['anthropic', 'anthropic', 'kimi']);
+    expect(rows[0]).toHaveTextContent('Anthropic');
+    expect(rows[2]).toHaveTextContent('Kimi Code');
+  });
+
+  it('SE-C242: the Overview’s session rows mark the providers of their requests beside their client, each its mark alone', async () => {
+    router((path) =>
+      path === '/api/sessions'
+        ? ok([session(S1, { providers: ['anthropic', 'kimi'] }), session(S2, { providers: ['kimi'], entrypoint: 'kimi-code-cli/2.1.1', client: 'kimi-code-cli' })])
+        : undefined,
+    );
+    show('/?range=all&tab=projects');
+    await loaded();
+    const list = await screen.findByRole('list', { name: 'Sessions' }, { timeout: 10_000 });
+    const marks = (name: string) => [...within(list).getByRole('button', { name }).querySelectorAll('[role="img"]')].map((m) => [m.getAttribute('aria-label'), m.getAttribute('title')]);
+    expect(marks('aaaaaaaa')).toEqual([
+      ['Anthropic', 'Anthropic'],
+      ['Kimi Code', 'Kimi Code'],
+    ]);
+    expect(marks('bbbbbbbb')).toEqual([['Kimi Code', 'Kimi Code']]);
+    // Beside its client, in the client's chip.
+    expect(within(list).getByRole('button', { name: 'bbbbbbbb' }).querySelector('[data-providers]')).toHaveTextContent(/^Kimi Code CLI$/);
+  });
+});
+
+describe('the provider in the scope, and each total by provider', () => {
+  const KIMI_ROW: AccountSplitRow = { id: 'kimi-acc', label: 'Kimi', provider: 'kimi', active: 1, requests: 12, prompt_tokens: 200_000, cost: 0, output_tokens: 10_000, sessions: 1, last_seen: NOW - 5 * MIN };
+  /// A router with an Anthropic account and a Kimi Code account, its totals split between them, and
+  /// By account narrowed by the provider asked for, as the router narrows it.
+  const both = () =>
+    router((path, query) => {
+      if (path === '/api/summary') {
+        const all: AccountSplitRow[] = [...(summary().by_account ?? []), KIMI_ROW];
+        const provider = query.get('provider');
+        const byAccount = provider ? all.filter((a) => (a.provider || 'anthropic') === provider) : all;
+        return ok(partsOf(summary({ totals: totals({ by_provider: TWO_PROVIDERS }), by_account: byAccount, providers: [anthropicBlock(), kimiBlock()] }), query.get('parts')));
+      }
+      if (path === '/api/accounts') return ok([...ACCOUNTS, { id: 'kimi-acc', label: 'Kimi', email: null, source: 'token', provider: 'kimi', active: 1 }]);
+      return undefined;
+    });
+  const switcher = () => screen.getByRole('tablist', { name: 'Provider' });
+  /// A total's lines by provider: each provider's mark, by its name, and its figure and share.
+  const lines = (label: string) =>
+    within(within(tile(label)).getByRole('list', { name: `${label}, by provider` }))
+      .getAllByRole('listitem')
+      .map((li) => [within(li).getByRole('img').getAttribute('aria-label'), li.textContent?.trim()]);
+
+  it('OV-C227: the scope offers every provider, then each provider with an account by its mark and name, beside the account picker; a router with one provider offers no choice', async () => {
+    both();
+    const first = show();
+    await loaded();
+    const tabs = within(switcher()).getAllByRole('tab');
+    expect(tabs.map((t) => t.textContent)).toEqual(['All providers', 'Anthropic', 'Kimi Code']);
+    expect(tabs[0]).toHaveAttribute('aria-selected', 'true');
+    expect(tabs[1]!.querySelector('[data-glyph="anthropic"]')).not.toBeNull();
+    expect(tabs[2]!.querySelector('[data-glyph="kimi"]')).not.toBeNull();
+    // In the scope bar, visible at rest, just before the account picker it narrows.
+    expect(within(screen.getByRole('region', { name: 'Scope' })).getByRole('tablist', { name: 'Provider' })).toBe(switcher());
+    expect(switcher().compareDocumentPosition(screen.getByRole('button', { name: 'Account: All accounts' })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    first.unmount();
+
+    // Anthropic's accounts alone: nothing to choose between.
+    router();
+    show();
+    await loaded();
+    expect(screen.queryByRole('tablist', { name: 'Provider' })).toBeNull();
+  });
+
+  it('OV-C227: choosing a provider puts it in the address and every read follows it; an account picked from another provider is let go, the project kept; Quota headroom and All accounts still cover every provider', async () => {
+    const r = both();
+    show('/?account=secondary&project=%2Fcode%2Fagent-router&range=all');
+    await loaded();
+    fireEvent.click(within(switcher()).getByRole('tab', { name: 'Kimi Code' }));
+    await waitFor(() => expect(where()).toBe('/?provider=kimi&project=%2Fcode%2Fagent-router&range=all'));
+    await waitFor(() => expect(r.calls('/api/summary').some((c) => c.query.get('provider') === 'kimi')).toBe(true));
+    const asked = r.calls('/api/summary').find((c) => c.query.get('provider') === 'kimi')!.query;
+    expect([asked.get('account'), asked.get('project')]).toEqual([null, '/code/agent-router']);
+    await waitFor(() => expect(within(switcher()).getByRole('tab', { selected: true })).toHaveTextContent('Kimi Code'));
+    // The quota and the forecast keep their own horizon: every provider's blocks, every account.
+    expect(r.calls('/api/forecast').every((c) => !c.query.has('provider'))).toBe(true);
+    expect([...panel('Quota headroom').querySelectorAll('[data-quota-provider]')].map((b) => b.getAttribute('data-quota-provider'))).toEqual(['anthropic', 'kimi']);
+    // Clear scope clears the provider too, keeping the range; Back returns to it (OV-C25, OV-C30).
+    fireEvent.click(screen.getByRole('button', { name: 'Clear scope' }));
+    await waitFor(() => expect(where()).toBe('/?range=all'));
+    fireEvent.click(screen.getByRole('button', { name: 'test: back' }));
+    await waitFor(() => expect(where()).toBe('/?provider=kimi&project=%2Fcode%2Fagent-router&range=all'));
+    // Every provider again: the provider leaves the address, the rest of the scope stays.
+    fireEvent.click(within(switcher()).getByRole('tab', { name: 'All providers' }));
+    await waitFor(() => expect(where()).toBe('/?project=%2Fcode%2Fagent-router&range=all'));
+  });
+
+  it('OV-C227: an account of the provider chosen is kept, and with a provider chosen the account picker reads and offers only that provider’s accounts', async () => {
+    const r = both();
+    show('/?account=kimi-acc&range=all');
+    await loaded();
+    fireEvent.click(within(switcher()).getByRole('tab', { name: 'Kimi Code' }));
+    await waitFor(() => expect(where()).toBe('/?provider=kimi&account=kimi-acc&range=all'));
+    fireEvent.click(within(switcher()).getByRole('tab', { name: 'All providers' }));
+    await waitFor(() => expect(where()).toBe('/?account=kimi-acc&range=all'));
+    fireEvent.click(within(switcher()).getByRole('tab', { name: 'Kimi Code' }));
+    await waitFor(() => expect(where()).toBe('/?provider=kimi&account=kimi-acc&range=all'));
+    fireEvent.click(screen.getByRole('button', { name: 'Clear scope' }));
+    await waitFor(() => expect(where()).toBe('/?range=all'));
+    fireEvent.click(within(switcher()).getByRole('tab', { name: 'Kimi Code' }));
+    await waitFor(() => expect(where()).toBe('/?provider=kimi&range=all'));
+
+    // Reached through the crumb that controls it, as in OV-C217's spec.
+    const crumb = screen.getByRole('button', { name: 'Account: All accounts' });
+    fireEvent.click(crumb);
+    await waitFor(() => expect(crumb).toHaveAttribute('aria-controls'));
+    const listbox = document.getElementById(crumb.getAttribute('aria-controls')!)!;
+    await waitFor(() => expect(listbox.textContent).toContain('kimi-acc'));
+    expect(r.calls('/api/summary').filter((c) => c.query.get('parts') === 'by_account').map((c) => c.query.get('provider'))).toEqual(['kimi']);
+    expect(within(listbox).getAllByRole('option', { hidden: true }).map((o) => o.getAttribute('data-key'))).toEqual(['*', 'kimi-acc']);
+    // The project picker reads under the provider too.
+    fireEvent.keyDown(within(listbox).getAllByRole('option', { hidden: true })[0]!, { key: 'Escape' });
+    await waitFor(() => expect(crumb).not.toHaveAttribute('aria-controls'));
+    fireEvent.click(screen.getByRole('button', { name: 'Project: All projects' }));
+    await waitFor(() => expect(r.calls('/api/projects')).toHaveLength(1));
+    expect(Object.fromEntries(r.calls('/api/projects')[0]!.query)).toEqual({ provider: 'kimi' });
+  });
+
+  it('OV-C227: Search follows the whole scope, its provider and its account with the rest, and says the scope narrows it', async () => {
+    const r = both();
+    show('/?provider=kimi&account=kimi-acc&range=all&tab=search');
+    await loaded();
+    expect(within(panel('Search the transcripts')).getByText('every message, tool call and result captured in the current scope')).toBeVisible();
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search the transcripts' }), { target: { value: 'kestrel' } });
+    await waitFor(() => expect(r.calls('/api/search')).toHaveLength(1));
+    expect(Object.fromEntries(r.calls('/api/search')[0]!.query)).toEqual({ q: 'kestrel', provider: 'kimi', account: 'kimi-acc' });
+  });
+
+  it('OV-C226: each total keeps its figure and shows its split by provider under it — each provider’s mark, figure and share over a thin bar of their shares — and a router with one provider shows none', async () => {
+    both();
+    const first = show();
+    await loaded();
+    // One figure per total, as with one provider.
+    expect(tile('Prompt tokens read')).toHaveTextContent(/^Prompt tokens read12\.40M/);
+    expect(lines('Prompt tokens read')).toEqual([
+      ['Anthropic', '12.20M 98%'],
+      ['Kimi Code', '200k 1.6%'],
+    ]);
+    expect(lines('Spend')).toEqual([
+      ['Anthropic', '$41.20 100%'],
+      ['Kimi Code', 'not priced'],
+    ]);
+    expect(lines('Requests')).toEqual([
+      ['Anthropic', '400 97%'],
+      ['Kimi Code', '12 2.9%'],
+    ]);
+    expect(lines('Output tokens')).toEqual([
+      ['Anthropic', '300k 97%'],
+      ['Kimi Code', '10k 3.2%'],
+    ]);
+    expect(lines('Served from cache')).toEqual([
+      ['Anthropic', '10.30M 99%'],
+      ['Kimi Code', '100k 1.0%'],
+    ]);
+    expect(lines('Cache writes')).toEqual([
+      ['Anthropic', '1.38M 99%'],
+      ['Kimi Code', '20k 1.4%'],
+    ]);
+    // The thin bar: a part per provider, sized by its figure, in its provider's colour; hidden from a
+    // screen reader, which hears the lines, and no tab stop.
+    const bar = tile('Prompt tokens read').querySelector('[data-provider-split] > [aria-hidden="true"]') as HTMLElement;
+    const parts = [...bar.querySelectorAll<HTMLElement>('[data-provider]')];
+    expect(parts.map((p) => [p.dataset['provider'], p.style.flexGrow, p.style.background])).toEqual([
+      ['anthropic', '12200000', 'var(--ar-tok)'],
+      ['kimi', '200000', 'var(--ar-model-kimi)'],
+    ]);
+    expect(tile('Prompt tokens read').querySelector('[data-provider-split] [tabindex]')).toBeNull();
+    // A provider with nothing priced adds nothing to Spend's bar.
+    expect(tile('Spend').querySelectorAll('[data-provider-split] > [aria-hidden="true"] > [data-provider]')).toHaveLength(1);
+    // No figure per provider for latency or errors.
+    expect([tile('Time to first token'), tile('Errors')].map((t) => t.querySelector('[data-provider-split]'))).toEqual([null, null]);
+    first.unmount();
+
+    // Anthropic's alone: one figure per total and no split anywhere.
+    router();
+    show();
+    await loaded();
+    expect(document.querySelector('[data-provider-split]')).toBeNull();
+  });
+
+  it('OV-C229: a provider’s spend the router could not price reads "not priced", and focusing it gives the reason in its tip', async () => {
+    both();
+    show();
+    await loaded();
+    const kimi = within(tile('Spend')).getByRole('group', { name: 'Spend, Kimi Code: not priced' });
+    expect(kimi).toHaveTextContent(/^not priced$/);
+    fireEvent.focus(kimi);
+    const tip = await screen.findByRole('tooltip');
+    expect(tip).toHaveTextContent('12 unpriced');
+    expect(tip).toHaveTextContent(UNPRICED_WHY);
+    fireEvent.blur(kimi);
+    await waitFor(() => expect(screen.queryByRole('tooltip')).toBeNull());
+    // A figure with no mark has no tip of its own, and so no tab stop.
+    expect(within(tile('Spend')).queryByRole('group', { name: /^Spend, Anthropic/ })).toBeNull();
+  });
+
+  it('OV-C228: Cache writes says what happened, and each provider’s own rates are in its tip, a focus away', async () => {
+    both();
+    show();
+    await loaded();
+    expect(tile('Cache writes')).not.toHaveTextContent(/1\.25×|2× for an hour/);
+    const rates = within(tile('Cache writes')).getByRole('group', { name: /^Cache rates: / });
+    fireEvent.focus(rates);
+    const tip = await screen.findByRole('tooltip');
+    expect(tip).toHaveTextContent('Anthropic · written to cache, 5 minutes');
+    expect(tip).toHaveTextContent('Kimi Code · written to cache');
+    expect(tip).toHaveTextContent('Kimi Code · read from cache, by model');
   });
 });
 
@@ -836,6 +1248,19 @@ describe('a hosted router', () => {
     await screen.findByRole('heading', { level: 2, name: 'Projects' });
     await new Promise((done) => setTimeout(done, 50));
     expect(within(panel('Projects')).queryByRole('link')).toBeNull();
+  });
+
+  it('OV-C230: with nothing recorded, how to start names each client and gives each its own setup, side by side', async () => {
+    router((path) => empty(path) ?? (path === '/api/auth' ? ok(LOCAL) : undefined));
+    show('/?range=all&tab=projects');
+    await loaded();
+    await screen.findByRole('heading', { level: 2, name: 'Projects' });
+    expect(await within(panel('Projects')).findByText('No projects yet — point Claude Code, Kimi Code or Codex at this router and run it.')).toBeInTheDocument();
+    const how = await within(panel('Projects')).findByRole('list', { name: 'How to start' });
+    const [claude, kimi, codex] = within(how).getAllByRole('listitem') as [HTMLElement, HTMLElement, HTMLElement];
+    expect(claude).toHaveTextContent(/^Claude Code Settings → Claude Code routes every project through it\.$/);
+    expect(kimi).toHaveTextContent(/^Kimi Code agent-router install writes the router into Kimi Code’s config\.toml, and agent-router kimi starts a hosted session from a terminal\.$/);
+    expect(codex).toHaveTextContent(/^Codex agent-router install connects Codex through the router\. Start it in its terminal or VS Code, then follow its sessions here\.$/);
   });
 
   it('OV-C208: a hosted router speaks of its deployment, and a local one in its own words', async () => {

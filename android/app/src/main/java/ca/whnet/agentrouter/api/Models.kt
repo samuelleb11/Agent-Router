@@ -22,6 +22,7 @@ data class Health(val ok: Boolean, val pid: Int = 0, val version: String = "")
 @Serializable
 data class AuthStatus(
     val configured: Boolean = false,
+    @SerialName("access_tokens") val accessTokens: Int? = null,
     @SerialName("remote_bind") val remoteBind: Boolean = false,
     @SerialName("from_loopback") val fromLoopback: Boolean = false,
     @SerialName("updated_at") val updatedAt: Long? = null,
@@ -29,6 +30,12 @@ data class AuthStatus(
     val mode: String? = null,
 ) {
     val isHosted: Boolean get() = mode == "server"
+    val hasCredentials: Boolean get() = configured || (accessTokens ?: 0) > 0
+    val credentialStatus: String get() = when {
+        (accessTokens ?: 0) > 0 -> if (configured) "password and access tokens" else "access tokens"
+        configured -> "password"
+        else -> "not configured"
+    }
 
     /**
      * Whether a device other than the router's own machine can reach it. A hosted router
@@ -91,6 +98,8 @@ data class LiveSession(
     val archived: Boolean = false,
     /** Under the wrapper and answering on its socket: a message or a stop would arrive. */
     val wrapped: Boolean = false,
+    val client: String? = null,
+    val hosted: Boolean? = null,
     val bytes: Long = 0,
     /** One of [Activity]'s values — or a newer one, which reads as neutral rather than failing. */
     val activity: String? = null,
@@ -126,7 +135,13 @@ data class LiveSession(
      */
     val repository: String? = null,
 ) {
-    val shortId: String get() = sessionId.take(8)
+    val shortId: String get() = sessionId.removePrefix("codex:").take(8)
+    val isCodex: Boolean get() = client == "codex" || sessionId.startsWith("codex:")
+    val canControl: Boolean get() = !isCodex && wrapped
+    val canSend: Boolean get() = !isCodex
+    val canAskAside: Boolean get() = !isCodex
+    val clientName: String? get() = when { isCodex -> "Codex"; client == "kimi-code" -> "Kimi Code"; else -> null }
+    val watchedReason: String? get() = if (isCodex) "This Codex session is watched from its local transcript. Send messages and answer approvals in the terminal or IDE that owns it." else null
 
     /**
      * The repository's last segment, so a repository's clones and worktrees on one machine are

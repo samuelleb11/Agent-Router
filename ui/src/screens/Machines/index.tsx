@@ -20,7 +20,7 @@ import { readHealth } from '~/data/router';
 import { useAuth } from '~/data/settings';
 import { refusalText } from '~/lib/errors';
 import { POLL_MS, since } from '~/lib/freshness';
-import { AGENTLESS, CONNECT, ON_THIS_MACHINE, SEEN, machineItems, tally, type MachineItem } from '~/model/machine';
+import { AGENTLESS, CONNECT, NO_CLIENTS, ON_THIS_MACHINE, SEEN, machineItems, tally, type MachineItem } from '~/model/machine';
 import { toldWords } from '~/model/library';
 import { isHosted } from '~/model/settings';
 import styles from './Machines.module.scss';
@@ -102,8 +102,9 @@ function Hosted() {
 }
 
 /// One machine at a glance: its dot and its label, its platform, online or offline and for how
-/// long, and whether it runs the router's own build, quietly when it does (MA-C3, MA-C4); where its
-/// Library stands, and, online, a sync of its Library now (LB-C11, LB-C12).
+/// long, and whether it runs the router's own build, quietly when it does (MA-C3, MA-C4); its
+/// clients, a line each, with their versions and where each one's Library stands (MA-C8 to MA-C10);
+/// where its Library stands, and, online, a sync of its Library now (LB-C11, LB-C12).
 function Machine({ m }: { m: MachineItem }) {
   const [busy, setBusy] = useState(false);
   const [told, setTold] = useState<string | null>(null);
@@ -142,13 +143,35 @@ function Machine({ m }: { m: MachineItem }) {
             {m.build.text}
           </span>
         )}
+        {m.clients.length ? (
+          <ul className={styles.clients} aria-label={`Clients on ${m.label}`}>
+            {m.clients.map((c, i) => (
+              <li key={`${i}:${c.client}`} className={styles.client} data-client={c.client}>
+                <span className={styles.clientName}>{c.name}</span>
+                <Said>: </Said>
+                <span>{c.parts.join(' · ')}</span>
+                {c.library && (
+                  <span className={styles.library} data-client-library={c.library.needs ? 'needs' : 'well'}>
+                    <Said>, </Said>
+                    {c.library.text}
+                  </span>
+                )}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <span className={styles.noClients}>
+            <Said>, </Said>
+            {NO_CLIENTS}
+          </span>
+        )}
         {m.library && (
           <span className={styles.library} data-library={m.library.needs ? 'needs' : 'well'}>
             <Said>, </Said>
             {m.library.text}
           </span>
         )}
-        {m.online && m.library && (
+        {m.syncs && (
           <span className={styles.sync}>
             <Button kind="ghost" size="sm" disabled={busy} onClick={sync}>
               {busy ? 'Telling it…' : 'Sync its Library now'}

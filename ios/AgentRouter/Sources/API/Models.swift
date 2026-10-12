@@ -34,6 +34,8 @@ extension Health {
 /// `GET /api/auth`. `remoteBind` is whether the router listens beyond loopback at all.
 struct AuthStatus: Decodable, Sendable {
     let configured: Bool
+    /// Active router tokens are independent of the legacy dashboard password.
+    let accessTokens: Int
     let remoteBind: Bool
     let fromLoopback: Bool
     let updatedAt: Int?
@@ -51,10 +53,16 @@ struct AuthStatus: Decodable, Sendable {
     /// Hosted: run by a deployment, with no Mac of its own; its sessions come from the
     /// machines that run the Agent Router agent.
     var isHosted: Bool { mode == "server" }
+    var hasCredentials: Bool { configured || accessTokens > 0 }
+    var credentialStatus: String {
+        if accessTokens > 0 { return configured ? "password and access tokens" : "access tokens" }
+        return configured ? "password" : "not configured"
+    }
 
     enum CodingKeys: String, CodingKey {
         case configured, updatedAt = "updated_at", remoteBind = "remote_bind", fromLoopback = "from_loopback"
         case mode, passwordPinned = "password_pinned", publicURL = "public_url"
+        case accessTokens = "access_tokens"
     }
 }
 
@@ -65,6 +73,7 @@ extension AuthStatus {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         configured = try c.decode(Bool.self, forKey: .configured)
+        accessTokens = max(0, c.lenient(Int.self, .accessTokens) ?? 0)
         remoteBind = try c.decode(Bool.self, forKey: .remoteBind)
         fromLoopback = try c.decode(Bool.self, forKey: .fromLoopback)
         updatedAt = try c.decodeIfPresent(Int.self, forKey: .updatedAt)
@@ -84,6 +93,7 @@ struct Account: Decodable, Sendable, Identifiable, Hashable {
     let subscriptionType: String?
     let active: Int
     let source: String?
+    let provider: String?
     let ready: Bool?
     let detail: String?
     let expiresAt: Int?
@@ -94,10 +104,13 @@ struct Account: Decodable, Sendable, Identifiable, Hashable {
     var isActive: Bool { active == 1 }
     var title: String { email ?? label }
     var hasUsageKey: Bool { (usageKey ?? 0) == 1 }
+    var providerName: String { provider == "openai" ? "OpenAI" : provider == "kimi" ? "Kimi Code" : "Anthropic" }
+    var isCodexLogin: Bool { source == "codex" }
+    var takesUsageKey: Bool { provider == nil || provider == "anthropic" }
     var expiry: Date? { expiresAt.flatMap { $0 > 0 ? Date(timeIntervalSince1970: TimeInterval($0) / 1000) : nil } }
 
     enum CodingKeys: String, CodingKey {
-        case id, label, email, active, source, ready, detail
+        case id, label, email, active, source, provider, ready, detail
         case orgName = "org_name", subscriptionType = "subscription_type"
         case expiresAt = "expires_at", hasToken = "has_token", usageKey = "usage_key", createdAt = "created_at"
     }
@@ -343,6 +356,9 @@ struct LiveSession: Decodable, Sendable, Identifiable, Hashable {
     let archived: Bool
     /// Under the wrapper and answering on its socket: a message or a stop would arrive.
     let wrapped: Bool
+    /// The native client, absent for Claude Code and from older routers.
+    let client: String?
+    let hosted: Bool?
     let bytes: Int
 
     // What the router's one derivation says the session is doing — the same answer the
@@ -378,7 +394,19 @@ struct LiveSession: Decodable, Sendable, Identifiable, Hashable {
     let repository: String?
 
     var id: String { sessionId }
-    var shortId: String { String(sessionId.prefix(8)) }
+    var shortId: String { String((sessionId.hasPrefix("codex:") ? String(sessionId.dropFirst(6)) : sessionId).prefix(8)) }
+    var isCodex: Bool { client == "codex" || sessionId.hasPrefix("codex:") }
+    var canControl: Bool { !isCodex && wrapped }
+    var canSend: Bool { !isCodex }
+    var canAskAside: Bool { !isCodex }
+    var clientName: String? {
+        if isCodex { return "Codex" }
+        if client == "kimi-code" { return "Kimi Code" }
+        return nil
+    }
+    var watchedReason: String? {
+        isCodex ? "This Codex session is watched from its local transcript. Send messages and answer approvals in the terminal or IDE that owns it." : nil
+    }
     /// The repository's last segment when the row names one, so a repository's clones and
     /// worktrees on one machine are one project; else the last segment of the working
     /// directory, a Windows path's included; else the router's own name for the project
@@ -437,7 +465,7 @@ struct LiveSession: Decodable, Sendable, Identifiable, Hashable {
         case activity, detail, background, tone, source
         case isOpen = "open", sinceMs = "since_ms", endedMs = "ended_ms", endedHow = "ended_how"
         case midTurn = "mid_turn", waitingOn = "waiting_on", asOfMs = "as_of_ms"
-        case machine, repository
+        case machine, repository, client, hosted
     }
 }
 
@@ -467,6 +495,8 @@ extension LiveSession {
         state = try c.decode(String.self, forKey: .state)
         archived = try c.decode(Bool.self, forKey: .archived)
         wrapped = try c.decode(Bool.self, forKey: .wrapped)
+        client = c.lenient(String.self, .client)
+        hosted = c.lenient(Bool.self, .hosted)
         bytes = try c.decode(Int.self, forKey: .bytes)
 
         activity = c.lenient(String.self, .activity).map(SessionActivity.init)
@@ -1076,6 +1106,7 @@ struct ProxySessionRow: Decodable, Sendable, Identifiable, Hashable {
     let project: String?
     let gitBranch: String?
     let entrypoint: String?
+    let clientId: String?
     let startedAt: Int
     let lastSeenAt: Int
     let requests: Double
@@ -1092,16 +1123,34 @@ struct ProxySessionRow: Decodable, Sendable, Identifiable, Hashable {
     let cwd: String?
     let repository: String?
     let machine: MachineRef?
-    var shortId: String { String(id.prefix(8)) }
+    var shortId: String {
+        let prefix = id.hasPrefix("opencode:ses_") ? 13 : id.hasPrefix("codex:") ? 6 : 0
+        return String(id.dropFirst(prefix).prefix(8))
+    }
     var projectName: String { ProjectPath.name(project) }
     /// `claude-cli/2.1.269 (external, claude-vscode, …)` → `vscode`; the CLI otherwise.
     var client: String {
+        switch clientId {
+        case "codex-cli": return "Codex CLI"
+        case "codex-vscode": return "Codex VS Code"
+        case "opencode": return "OpenCode"
+        case "kimi-code-cli": return "Kimi Code CLI"
+        case "kimi-code-vscode": return "Kimi Code VS Code"
+        case "kimi-code-web": return "Kimi Code web"
+        case "claude-code-cli": return "CLI"
+        case "claude-code-vscode": return "VS Code"
+        default: break
+        }
         guard let e = entrypoint else { return "" }
+        if e.hasPrefix("opencode/") { return "OpenCode" }
+        if e.contains("codex_vscode") || e.contains("codex-vscode") { return "Codex VS Code" }
+        if e.contains("codex_cli") || e.contains("codex-cli") { return "Codex CLI" }
         return e.contains("vscode") ? "VS Code" : e.contains("claude-cli") ? "CLI" : String(e.prefix(20))
     }
     enum CodingKeys: String, CodingKey {
         case id, project, entrypoint, requests, cost, errors, subagents, models
         case cwd, repository, machine
+        case clientId = "client"
         case gitBranch = "git_branch", startedAt = "started_at", lastSeenAt = "last_seen_at"
         case promptTokens = "prompt_tokens", outputTokens = "output_tokens"
         case cacheReadTokens = "cache_read_tokens", subagentTokens = "subagent_tokens"
@@ -1116,6 +1165,7 @@ extension ProxySessionRow {
         project = try c.decodeIfPresent(String.self, forKey: .project)
         gitBranch = try c.decodeIfPresent(String.self, forKey: .gitBranch)
         entrypoint = try c.decodeIfPresent(String.self, forKey: .entrypoint)
+        clientId = c.lenient(String.self, .clientId)
         startedAt = try c.decode(Int.self, forKey: .startedAt)
         lastSeenAt = try c.decode(Int.self, forKey: .lastSeenAt)
         requests = try c.decode(Double.self, forKey: .requests)
@@ -1260,7 +1310,7 @@ struct OkReply: Decodable, Sendable {
     var problem: String? { error ?? reason ?? (ok == false ? "refused" : nil) }
 }
 
-struct AddAccountBody: Encodable, Sendable { let label: String; let source: String; let token: String? }
+struct AddAccountBody: Encodable, Sendable { let label: String; let source: String; let token: String?; let provider: String? }
 struct AccountEditBody: Encodable, Sendable { let id: String; let label: String?; let email: String?; let token: String? }
 struct AccountRefBody: Encodable, Sendable { let id: String }
 struct UsageTokenBody: Encodable, Sendable {

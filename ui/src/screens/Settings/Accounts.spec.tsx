@@ -1,5 +1,7 @@
 // New for agent-router: Settings → Accounts, against the router's answers (docs/web-console-contracts.md,
-// "Accounts: the list", "Accounts: editing", "Accounts: adding").
+// "Accounts: the list", "Accounts: editing", "Accounts: adding"), a Kimi Code account among them: a
+// section per provider with the account its requests go to (ST-C125), and the provider asked first
+// when one is added (ST-C124).
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -30,12 +32,47 @@ function show({ auth = LOCAL, accounts = ACCOUNTS, more = {} }: { auth?: typeof 
   return { ...router, ...view, setRows: (next: AccountRow[]) => (rows = next) };
 }
 
+/// A Kimi Code account as `probe=1` answers it: a key the router holds, at Kimi Code's own address.
+const KIMI: AccountRow = {
+  id: 'kimi',
+  label: 'Kimi',
+  source: 'token',
+  provider: 'kimi',
+  base_url: 'https://api.kimi.ai/coding',
+  email: null,
+  org_name: null,
+  subscription_type: null,
+  active: 1,
+  created_at: 40,
+  usage_key: 0,
+  ready: true,
+  detail: 'a Kimi Code key',
+  expires_at: 0,
+  has_token: true,
+};
+
 const card = (name: string) => screen.getByLabelText(`Account ${name}`);
 const cardOf = async (name: string) => screen.findByLabelText(`Account ${name}`);
 const listReads = (r: ReturnType<typeof stubRouter>) => r.gets('/api/accounts').length;
+/// A provider's section, by the name its heading gives it beside its mark (ST-C125).
+const section = (provider: string) => screen.getByRole('region', { name: provider });
+/// A provider's "Requests go to" list box.
+const box = (provider: string) => within(section(provider)).getByRole('combobox', { name: 'Requests go to' });
+/// What a provider's list box offers, opened, by name.
+async function offered(provider: string, user: ReturnType<typeof userEvent.setup>) {
+  await user.click(box(provider));
+  return within(section(provider))
+    .getAllByRole('option')
+    .map((o) => o.textContent);
+}
+/// Pick an account in a provider's list box with plain events, for a spec on fake timers.
+function pick(provider: string, name: string) {
+  fireEvent.click(box(provider));
+  fireEvent.click(within(section(provider)).getByRole('option', { name }));
+}
 
 describe('Accounts: the list', () => {
-  it('ST-C19, ST-C3: each account is a card with every fact a desk row had, and Use, Edit and Remove as buttons at rest', async () => {
+  it('ST-C19, ST-C3, ST-C125: each account is a card with every fact a desk row had, and Edit and Remove as buttons at rest; which one signs is a visible list box above the cards, and no card has Use', async () => {
     show();
     const work = await cardOf('work');
     const facts = within(work);
@@ -44,7 +81,7 @@ describe('Accounts: the list', () => {
     expect(facts.getByText('Source').nextElementSibling).toHaveTextContent('token');
     expect(facts.getByText('Credential').nextElementSibling).toHaveTextContent('sk-ant-oat01 (subscription OAuth)');
     expect(facts.getByText('Expires').nextElementSibling).toHaveTextContent('no expiry');
-    for (const name of ['Use', 'Edit', 'Remove']) {
+    for (const name of ['Edit', 'Remove']) {
       const button = facts.getByRole('button', { name });
       expect(button).toBeVisible();
       expect(button.closest('[hidden], .cds--overflow-menu-options, [role="menu"]')).toBeNull();
@@ -54,10 +91,69 @@ describe('Accounts: the list', () => {
     expect(within(active).getByText('Org').nextElementSibling).toHaveTextContent('Example Org');
     expect(within(active).getByText('Plan').nextElementSibling).toHaveTextContent('max');
     expect(within(active).getByText('usage key')).toBeInTheDocument();
-    // The one signing now has no Use: it is the one in use.
-    expect(within(active).queryByRole('button', { name: 'Use' })).toBeNull();
+    // The account that signs is chosen in the provider's list box, visible at rest; no card has Use.
+    expect(screen.queryByRole('button', { name: 'Use' })).toBeNull();
+    expect(box('Anthropic')).toBeVisible();
+    expect(box('Anthropic').closest('[hidden], .cds--overflow-menu-options, [role="menu"]')).toBeNull();
     // No overflow menu anywhere on the page.
     expect(document.querySelector('.cds--overflow-menu')).toBeNull();
+  });
+
+  it('ST-C125: one section per provider that has accounts, Anthropic’s first, each headed by its mark and name, with its own cards and a "Requests go to" list box showing its active account', async () => {
+    const user = userEvent.setup();
+    // The router lists the Kimi Code account first; Anthropic's section still leads.
+    show({ accounts: [KIMI, ...ACCOUNTS, { ...KIMI, id: 'kimi-two', label: 'Kimi two', active: 0, created_at: 50 }] });
+    await cardOf('Kimi');
+    const page = screen.getByRole('region', { name: 'Accounts' });
+    expect(within(page).getAllByRole('heading', { level: 3 }).map((h) => h.textContent)).toEqual(['Anthropic', 'Kimi Code']);
+    for (const [name, provider] of [
+      ['Anthropic', 'anthropic'],
+      ['Kimi Code', 'kimi'],
+    ] as const) {
+      const heading = within(section(name)).getByRole('heading', { level: 3, name });
+      // Its mark beside its name (SH-C56).
+      expect(heading.querySelector(`[data-provider="${provider}"] [data-glyph="${provider}"]`)).not.toBeNull();
+    }
+    // Each section holds its own provider's cards, and only those.
+    const cardsIn = (name: string) => [...section(name).querySelectorAll('[aria-label^="Account "]')].map((c) => c.getAttribute('aria-label'));
+    expect(cardsIn('Anthropic')).toEqual(['Account me@example.com', 'Account work', 'Account side']);
+    expect(cardsIn('Kimi Code')).toEqual(['Account Kimi', 'Account Kimi two']);
+    // Each box shows its provider's active account, and offers its provider's accounts only.
+    expect(box('Anthropic')).toHaveTextContent('me@example.com');
+    expect(box('Kimi Code')).toHaveTextContent('Kimi');
+    expect(await offered('Kimi Code', user)).toEqual(['Kimi', 'Kimi two']);
+    await user.keyboard('{Escape}');
+    expect(await offered('Anthropic', user)).toEqual(['me@example.com', 'work', 'side']);
+    await user.keyboard('{Escape}');
+    // Its helper text says where the provider's models go, and links to the Models page.
+    expect(section('Kimi Code')).toHaveTextContent('Kimi Code’s models go to this account unless the Models page assigns a model elsewhere.');
+    expect(within(section('Kimi Code')).getByRole('link', { name: 'Models' })).toHaveAttribute('href', '/settings/models');
+    expect(box('Anthropic')).toHaveAccessibleDescription(/^Anthropic’s models go to this account unless the\s+Models\s+page assigns a model elsewhere\.$/);
+  });
+
+  it('ST-C125: a provider with no account has no section', async () => {
+    show();
+    await cardOf('work');
+    expect(section('Anthropic')).toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Kimi Code' })).toBeNull();
+    expect(screen.getAllByRole('combobox', { name: 'Requests go to' })).toHaveLength(1);
+  });
+
+  it('ST-C119, ST-C121: each card names its provider; Org and Plan are an Anthropic account’s, a Kimi Code card shows its base URL, and each provider’s active account says whose requests it signs', async () => {
+    show({ accounts: [...ACCOUNTS, KIMI] });
+    const kimi = within(await cardOf('Kimi'));
+    expect(kimi.getByText('Provider').nextElementSibling).toHaveTextContent('Kimi Code');
+    expect(kimi.getByText('Base URL').nextElementSibling).toHaveTextContent('https://api.kimi.ai/coding');
+    expect(kimi.queryByText('Org')).toBeNull();
+    expect(kimi.queryByText('Plan')).toBeNull();
+    expect(kimi.getByText('active')).toBeInTheDocument();
+    expect(kimi.getByText('Signs every Kimi Code request now, but for a model assigned another account.')).toBeInTheDocument();
+    const claude = within(card('me@example.com'));
+    expect(claude.getByText('Provider').nextElementSibling).toHaveTextContent('Anthropic');
+    expect(claude.getByText('Org').nextElementSibling).toHaveTextContent('Example Org');
+    expect(claude.queryByText('Base URL')).toBeNull();
+    expect(claude.getByText('Signs every Claude request now, but for a model assigned another account.')).toBeInTheDocument();
+    expect(screen.getByText('4 accounts · me@example.com active · Kimi active for Kimi Code')).toBeInTheDocument();
   });
 
   it('ST-C20: a failed credential shows the router’s whole reason in the error tone; a row read without a check says "not checked"', async () => {
@@ -109,7 +205,8 @@ describe('Accounts: the list', () => {
     expect(screen.queryByText('built in')).toBeNull();
   });
 
-  it('ST-C27: on a hosted router a Claude Code login or a profile offers no Use, and its card says it cannot sign there in the router’s sentence', async () => {
+  it('ST-C27, ST-C125: on a hosted router the list box offers no Claude Code login nor profile, and each one’s card says it cannot sign there in the router’s sentence', async () => {
+    const user = userEvent.setup();
     const NOT_HERE = "this account is a Claude Code login on a developer's machine, which a hosted router cannot read — add an account with a `claude setup-token` value in the dashboard";
     const hosted: AccountRow[] = [
       { ...ACCOUNTS[0]!, active: 0, ready: false, detail: NOT_HERE, expires_at: 0 },
@@ -120,26 +217,55 @@ describe('Accounts: the list', () => {
     show({ auth: HOSTED, accounts: hosted });
     for (const name of ['me@example.com', 'side']) {
       const c = await cardOf(name);
-      expect(within(c).queryByRole('button', { name: 'Use' }), name).toBeNull();
       expect(within(c).getByText(/^It cannot sign on this router:/)).toHaveTextContent(NOT_HERE);
     }
-    expect(within(card('spare')).getByRole('button', { name: 'Use' })).toBeInTheDocument();
+    expect(box('Anthropic')).toHaveTextContent('work');
+    expect(await offered('Anthropic', user)).toEqual(['work', 'spare']);
   });
 
-  it('ST-C24, ST-C25: Use switches in one click with no confirmation and the list re-reads; a refusal shows on that card, and the list re-reads', async () => {
-    const r = show({ more: { 'POST /api/accounts/activate': ok({ ok: true, active: 'work' }) } });
+  it('ST-C125, ST-C24, ST-C25, ST-C13: picking an account in its provider’s list box activates it in one choice with no confirmation, the list re-reads and the box shows what it reads back; a refusal shows beside the box in the router’s words, and the list re-reads', async () => {
+    const user = userEvent.setup();
+    const r = show({ accounts: [...ACCOUNTS, KIMI], more: { 'POST /api/accounts/activate': ok({ ok: true, active: 'work' }) } });
     await cardOf('work');
+    expect(box('Anthropic')).toHaveTextContent('me@example.com');
     const before = listReads(r);
-    fireEvent.click(within(card('work')).getByRole('button', { name: 'Use' }));
+    r.setRows([...ACCOUNTS.map((a) => ({ ...a, active: a.id === 'work' ? 1 : 0 })), KIMI]);
+    await offered('Anthropic', user);
+    await user.click(within(section('Anthropic')).getByRole('option', { name: 'work' }));
     expect(screen.queryByRole('dialog')).toBeNull();
     await waitFor(() => expect(r.posts('/api/accounts/activate')).toEqual([{ id: 'work' }]));
     await waitFor(() => expect(listReads(r)).toBeGreaterThan(before));
+    await waitFor(() => expect(box('Anthropic')).toHaveTextContent('work'));
+    expect(within(card('work')).getByText('active')).toBeInTheDocument();
+    // The other provider's active account is where it was.
+    expect(box('Kimi Code')).toHaveTextContent('Kimi');
 
-    r.answers['POST /api/accounts/activate'] = () => refusal('no account with id "work"', 500);
+    r.answers['POST /api/accounts/activate'] = () => refusal('no account with id "side"', 500);
+    await waitFor(() => expect(box('Anthropic')).toBeEnabled());
     const again = listReads(r);
-    fireEvent.click(within(card('work')).getByRole('button', { name: 'Use' }));
-    expect(await within(card('work')).findByText('no account with id "work"')).toBeInTheDocument();
+    await offered('Anthropic', user);
+    await user.click(within(section('Anthropic')).getByRole('option', { name: 'side' }));
+    const refused = await within(section('Anthropic')).findByText('no account with id "side"');
+    // Beside the box, not on a card.
+    expect(refused.closest('[aria-label^="Account "]')).toBeNull();
+    expect(r.posts('/api/accounts/activate')).toEqual([{ id: 'work' }, { id: 'side' }]);
     await waitFor(() => expect(listReads(r)).toBeGreaterThan(again));
+    // The box keeps what the router reports.
+    expect(box('Anthropic')).toHaveTextContent('work');
+  });
+
+  it('ST-C125, ST-C121: picking a Kimi Code account activates it in Kimi Code’s own section, and Anthropic’s active account is left where it was', async () => {
+    const user = userEvent.setup();
+    const TWO: AccountRow = { ...KIMI, id: 'kimi-two', label: 'Kimi two', active: 0, created_at: 50 };
+    const r = show({ accounts: [...ACCOUNTS, KIMI, TWO], more: { 'POST /api/accounts/activate': ok({ ok: true, active: 'kimi-two' }) } });
+    await cardOf('Kimi two');
+    r.setRows([...ACCOUNTS, { ...KIMI, active: 0 }, { ...TWO, active: 1 }]);
+    await offered('Kimi Code', user);
+    await user.click(within(section('Kimi Code')).getByRole('option', { name: 'Kimi two' }));
+    await waitFor(() => expect(r.posts('/api/accounts/activate')).toEqual([{ id: 'kimi-two' }]));
+    await waitFor(() => expect(box('Kimi Code')).toHaveTextContent('Kimi two'));
+    expect(box('Anthropic')).toHaveTextContent('me@example.com');
+    expect(screen.getByText('5 accounts · me@example.com active · Kimi two active for Kimi Code')).toBeInTheDocument();
   });
 
   it('ST-C28, ST-C18: Remove asks first in a danger modal that names the account, what goes, and the oldest one left that signs next; nothing is sent before', async () => {
@@ -172,7 +298,7 @@ describe('Accounts: the list', () => {
     await cardOf('work');
     expect(r.gets('/api/accounts').every((g) => g.query.get('probe') === '1')).toBe(true);
     const opened = listReads(r);
-    fireEvent.click(within(card('work')).getByRole('button', { name: 'Use' }));
+    pick('Anthropic', 'work');
     await waitFor(() => expect(listReads(r)).toBeGreaterThan(opened));
     const written = listReads(r);
     await act(async () => {
@@ -352,6 +478,24 @@ describe('Accounts: editing', () => {
     }
   });
 
+  it('ST-C120: a Kimi Code key rotates by Kimi Code’s rule, with the Kimi Code console’s words, and offers no claude.ai session key', async () => {
+    const r = show({ accounts: [...ACCOUNTS, { ...KIMI, has_token: false }], more: { 'POST /api/accounts/edit': ok({ ok: true, id: 'kimi' }) } });
+    const form = await edit('Kimi');
+    const key = within(form).getByLabelText('Credential');
+    expect(key).toHaveAttribute('placeholder', 'the key from the Kimi Code console');
+    expect(form).toHaveTextContent('A fresh key from the Kimi Code console');
+    expect(form).not.toHaveTextContent('claude setup-token');
+    expect(within(form).queryByLabelText('claude.ai session key')).toBeNull();
+    fireEvent.change(key, { target: { value: 'sk-ant-oat01-wrong-provider' } });
+    fireEvent.submit(form);
+    expect(await within(form).findByText('that is an Anthropic token — a Kimi Code account takes a key from the Kimi Code console')).toBeInTheDocument();
+    expect(r.posts('/api/accounts/edit')).toEqual([]);
+    // A Kimi Code key is not held to sk-ant-.
+    fireEvent.change(key, { target: { value: 'sk-kimi-rotated' } });
+    fireEvent.submit(form);
+    await waitFor(() => expect(r.posts('/api/accounts/edit')).toEqual([{ id: 'kimi', token: 'sk-kimi-rotated' }]));
+  });
+
   it('ST-C38: the session-key field says what the key is for, and locally that it lives in a Keychain entry apart from the credential', async () => {
     show();
     const local = await edit('work');
@@ -392,6 +536,35 @@ describe('Accounts: adding', () => {
   };
   const choose = (form: HTMLElement, way: RegExp) => fireEvent.click(within(form).getByRole('radio', { name: way }));
 
+  it('adds an OpenAI API key under its provider and checks its prefix', async () => {
+    const r = show({ auth: HOSTED, more: { 'POST /api/accounts': ok({ id: 'openai-work', ready: true }) } });
+    const form = await open();
+    choose(form, /^OpenAI/);
+    expect(within(form).queryByRole('group', { name: 'How to add it' })).toBeNull();
+    fireEvent.change(within(form).getByLabelText('Name'), { target: { value: 'openai-work' } });
+    const key = within(form).getByLabelText('OpenAI API key');
+    fireEvent.change(key, { target: { value: 'sk-ant-oat01-wrong' } });
+    fireEvent.submit(form);
+    expect(await within(form).findByText('that is an Anthropic token — an OpenAI account takes an OpenAI API key')).toBeInTheDocument();
+    expect(r.posts('/api/accounts')).toEqual([]);
+    fireEvent.change(key, { target: { value: 'sk-proj-example' } });
+    fireEvent.submit(form);
+    await waitFor(() => expect(r.posts('/api/accounts')).toEqual([{ label: 'openai-work', source: 'token', provider: 'openai', token: 'sk-proj-example' }]));
+  });
+
+  it('keeps a local Codex login built in and edits no credential or Claude session key', async () => {
+    const a: AccountRow = { id: 'codex-default', label: 'Codex login', source: 'codex', provider: 'openai', active: 1, ready: true };
+    show({ accounts: [a] });
+    const c = await cardOf('Codex login');
+    expect(within(c).queryByRole('button', { name: 'Remove' })).toBeNull();
+    expect(within(c).getByText('built in')).toBeInTheDocument();
+    fireEvent.click(within(c).getByRole('button', { name: 'Edit' }));
+    const edit = within(c).getByRole('form', { name: 'Edit Codex login' });
+    expect(within(edit).getByLabelText('Identity')).toHaveAttribute('readonly');
+    expect(within(edit).queryByLabelText('Credential')).toBeNull();
+    expect(within(edit).queryByLabelText('claude.ai session key')).toBeNull();
+  });
+
   it('ST-C39, ST-C3: a visible Add account button opens the form in place, not in a dialog', async () => {
     show();
     const add = await screen.findByRole('button', { name: 'Add account' });
@@ -401,15 +574,15 @@ describe('Accounts: adding', () => {
     expect(screen.getByRole('region', { name: 'Accounts' })).toContainElement(form);
   });
 
-  it('ST-C40, ST-C43: each way in is a choice carrying its explanation; locally sign-in comes first and is chosen, and its button reads Start sign-in', async () => {
+  it('ST-C40, ST-C43, ST-C124: each of Anthropic’s ways is a choice carrying its explanation; locally sign-in comes first and is chosen, and its button reads Start sign-in', async () => {
     show();
     const form = await open();
-    const radios = within(form).getAllByRole('radio') as HTMLInputElement[];
+    const radios = within(within(form).getByRole('group', { name: 'How to add it' })).getAllByRole('radio') as HTMLInputElement[];
     const titles = ['Sign in from here (recommended)', 'Paste a token I already have', 'Separate Claude Code profile'];
     expect(radios).toHaveLength(3);
     radios.forEach((r, i) => expect(r.labels?.[0]?.textContent?.startsWith(titles[i]!), titles[i]).toBe(true));
     // Each carries its own explanation, in its own choice.
-    expect(radios[1]!.labels?.[0]).toHaveTextContent('The value claude setup-token prints');
+    expect(radios[1]!.labels?.[0]).toHaveTextContent('An Anthropic API key, or the subscription value claude setup-token prints');
     expect(radios[2]!.labels?.[0]).toHaveTextContent('The router creates an isolated profile directory');
     expect(radios[0]).toBeChecked();
     expect(form).toHaveTextContent('The router runs claude setup-token for you and issues a long-lived (one-year) credential, so it never needs refreshing.');
@@ -483,19 +656,112 @@ describe('Accounts: adding', () => {
     ]);
   });
 
-  it('ST-C52, ST-C101: a hosted router, and one that has not said what it is, add by pasted token only, drawn for a token from the start', async () => {
+  it('ST-C124: Add account asks the provider first — Anthropic and Kimi Code, each a tile with its mark, its name and its explanation — and Anthropic is chosen as the form opens', async () => {
+    show();
+    const form = await open();
+    const providers = within(form).getByRole('group', { name: 'Provider' });
+    const radios = within(providers).getAllByRole('radio') as HTMLInputElement[];
+    expect(radios).toHaveLength(3);
+    const [anthropic, kimi] = radios as [HTMLInputElement, HTMLInputElement];
+    expect(anthropic.labels?.[0]?.textContent?.startsWith('Anthropic')).toBe(true);
+    expect(kimi.labels?.[0]?.textContent?.startsWith('Kimi Code')).toBe(true);
+    // Each by the shared mark beside its name (SH-C56).
+    expect(anthropic.labels?.[0]?.querySelector('[data-provider="anthropic"] [data-glyph="anthropic"]')).not.toBeNull();
+    expect(kimi.labels?.[0]?.querySelector('[data-provider="kimi"] [data-glyph="kimi"]')).not.toBeNull();
+    expect(anthropic.labels?.[0]).toHaveTextContent('Claude’s models, signed by an Anthropic API key or a Claude subscription.');
+    expect(kimi.labels?.[0]).toHaveTextContent('Kimi’s models (k3, kimi-for-coding), signed by a key from the Kimi Code console.');
+    expect(anthropic).toBeChecked();
+    expect(kimi).not.toBeChecked();
+    // The provider is asked before the way.
+    const ways = within(form).getByRole('group', { name: 'How to add it' });
+    expect(providers.compareDocumentPosition(ways) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // Kimi Code is a provider, not one of Anthropic's ways.
+    expect(within(ways).queryByRole('radio', { name: /^Kimi Code/ })).toBeNull();
+  });
+
+  it('ST-C124, ST-C52, ST-C101: on a hosted router, and on one that has not said what it is, Anthropic’s one way is no choice — the setup token’s field, with its explanation as helper text', async () => {
     show({ auth: HOSTED });
     const form = await open();
-    expect(within(form).queryAllByRole('radio')).toEqual([]);
-    expect(within(form).getByLabelText('Token')).toBeInTheDocument();
+    expect(within(form).getByRole('radio', { name: /^Anthropic/ })).toBeChecked();
+    expect(within(form).queryByRole('group', { name: 'How to add it' })).toBeNull();
+    // The providers are the only choice left.
+    expect(within(form).getAllByRole('radio')).toHaveLength(3);
+    expect(within(form).getByLabelText('Token')).toHaveAccessibleDescription(/claude setup-token.*on any machine.*will not authenticate/);
     expect(within(form).getByRole('button', { name: 'Add account' })).toBeInTheDocument();
     expect(form).not.toHaveTextContent('Sign in from here');
+    expect(form).not.toHaveTextContent('Separate Claude Code profile');
     vi.unstubAllGlobals();
     document.body.innerHTML = '';
     show({ more: { '/api/auth': () => new Promise<Response>(() => {}) } });
     const unknown = await open();
-    expect(within(unknown).queryAllByRole('radio')).toEqual([]);
-    expect(within(unknown).getByLabelText('Token')).toBeInTheDocument();
+    expect(within(unknown).getByRole('radio', { name: /^Anthropic/ })).toBeChecked();
+    expect(within(unknown).queryByRole('group', { name: 'How to add it' })).toBeNull();
+    expect(within(unknown).getByLabelText('Token')).toHaveAccessibleDescription(/claude setup-token/);
+    expect(unknown).not.toHaveTextContent('Sign in from here');
+  });
+
+  it('ST-C124, ST-C117: Kimi Code goes straight to its name, key and base URL, with no way to choose, on a local router as on a hosted one', async () => {
+    show();
+    const form = await open();
+    choose(form, /^Kimi Code/);
+    expect(within(form).queryByRole('group', { name: 'How to add it' })).toBeNull();
+    expect(within(form).getByLabelText('Name')).toBeInTheDocument();
+    expect(within(form).getByLabelText('Key')).toBeInTheDocument();
+    expect(within(form).getByLabelText('Base URL (optional)')).toBeInTheDocument();
+    expect(within(form).queryByLabelText('Token')).toBeNull();
+    expect(within(form).queryByRole('button', { name: 'Start sign-in' })).toBeNull();
+    expect(within(form).getByRole('button', { name: 'Add account' })).toBeInTheDocument();
+    // Back to Anthropic: its ways again, sign-in still the one chosen.
+    choose(form, /^Anthropic/);
+    expect(within(form).getByRole('radio', { name: /^Sign in from here/ })).toBeChecked();
+    expect(within(form).queryByLabelText('Key')).toBeNull();
+    vi.unstubAllGlobals();
+    document.body.innerHTML = '';
+    show({ auth: HOSTED });
+    const hosted = await open();
+    choose(hosted, /^Kimi Code/);
+    expect(within(hosted).queryByLabelText('Token')).toBeNull();
+    expect(within(hosted).getByLabelText('Key')).toBeInTheDocument();
+  });
+
+  it('ST-C117, ST-C118: Kimi Code takes a key and an optional base URL, Kimi Code’s own when blank, checked by its own rules before it is sent as a Kimi Code token account', async () => {
+    const r = show({ more: { 'POST /api/accounts': ok({ id: 'kimi', ready: true }) } });
+    const form = await open();
+    expect((within(form).getByRole('radio', { name: /^Kimi Code/ }) as HTMLInputElement).labels?.[0]).toHaveTextContent('signed by a key from the Kimi Code console');
+    choose(form, /^Kimi Code/);
+    expect(within(form).queryByLabelText('Token')).toBeNull();
+    const url = within(form).getByLabelText('Base URL (optional)');
+    expect(url).toHaveAttribute('placeholder', 'https://api.kimi.ai/coding');
+    expect(form).toHaveTextContent('Left blank, Kimi Code’s own: https://api.kimi.ai/coding.');
+    fireEvent.change(within(form).getByLabelText('Name'), { target: { value: 'kimi' } });
+    // Nothing given, an Anthropic token, a plain-http address: each said beside its field, nothing sent.
+    fireEvent.submit(form);
+    expect(await within(form).findByText('a token is required for this account type')).toBeInTheDocument();
+    fireEvent.change(within(form).getByLabelText('Key'), { target: { value: 'sk-ant-oat01-claude' } });
+    fireEvent.change(url, { target: { value: 'http://api.kimi.ai/coding' } });
+    fireEvent.submit(form);
+    expect(await within(form).findByText('that is an Anthropic token — a Kimi Code account takes a key from the Kimi Code console')).toBeInTheDocument();
+    expect(within(form).getByText('"http://api.kimi.ai/coding" is not an https:// address')).toBeInTheDocument();
+    expect(r.posts('/api/accounts')).toEqual([]);
+    // A key that is not sk-ant- is Kimi Code's to judge, and a blank address is its own.
+    fireEvent.change(within(form).getByLabelText('Key'), { target: { value: 'sk-kimi-0123' } });
+    fireEvent.change(url, { target: { value: '' } });
+    fireEvent.submit(form);
+    expect(await screen.findByText('Added kimi.')).toBeInTheDocument();
+    expect(r.posts('/api/accounts')).toEqual([{ label: 'kimi', source: 'token', provider: 'kimi', token: 'sk-kimi-0123' }]);
+  });
+
+  it('ST-C117: a base URL typed for Kimi Code is sent with it', async () => {
+    const r = show({ more: { 'POST /api/accounts': ok({ id: 'kimi-china', ready: true }) } });
+    const form = await open();
+    choose(form, /^Kimi Code/);
+    fireEvent.change(within(form).getByLabelText('Name'), { target: { value: 'kimi china' } });
+    fireEvent.change(within(form).getByLabelText('Key'), { target: { value: 'sk-kimi-0123' } });
+    fireEvent.change(within(form).getByLabelText('Base URL (optional)'), { target: { value: 'https://api.kimi.com/coding/' } });
+    fireEvent.submit(form);
+    await waitFor(() =>
+      expect(r.posts('/api/accounts')).toEqual([{ label: 'kimi china', source: 'token', provider: 'kimi', token: 'sk-kimi-0123', base_url: 'https://api.kimi.com/coding/' }]),
+    );
   });
 
   it('ST-C44: the sign-in page never opens by itself; the whole link is shown, opened in a new tab with no opener or referrer, and copying says when it failed', async () => {

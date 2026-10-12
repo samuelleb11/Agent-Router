@@ -1,8 +1,10 @@
 # Agent Router
 
-A local proxy that sits between Claude Code and Anthropic, so you can
+A local router for Claude Code, Codex, Kimi Code and OpenCode, so you can
 
-* **keep several Claude accounts separate on one machine** and pick which one is
+* **use Anthropic, OpenAI or Kimi from your chosen client**, with translation between
+  Anthropic Messages and OpenAI Responses;
+* **keep several accounts separate on one machine** and pick which one is
   serving, without `/login` and without restarting your agent;
 * **see where your tokens actually go** — per project, per session, per model, per
   tool, and what filled the context window; and
@@ -171,6 +173,94 @@ router or of Claude Code.
 An isolated profile cannot disturb your main login: a fresh `CLAUDE_CONFIG_DIR` reports
 "not logged in" even with the default profile's `.claude.json` copied into it.
 
+### Other providers' models
+
+An account can also be at **OpenAI** or another Anthropic-compatible provider. **Kimi
+Code**: add its console key in Settings → Accounts (`"provider": "kimi"` in the API), and its models (`k3`,
+`k3-256k`, `kimi-for-coding`, `kimi-for-coding-highspeed`, as your plan allows) join the
+router's catalogue. Each request goes to the account its model is assigned to, so switching
+provider is switching model: `/model k3` in Claude Code, and `/model opus` to come back.
+`GET /api/models` lists the catalogue and `POST /api/models/assign` gives a model to
+another account of its provider. The plan is [docs/sources-and-models.md](docs/sources-and-models.md).
+Settings → Models also registers services and model aliases with an exact upstream
+model and account. Registered aliases take precedence over built-in model-name routing.
+
+* **The picker.** Claude Code's `/model` picker lists only Claude's models by itself, so
+  the installer and the machine agent add a row for each of the router's other models to
+  `modelPicker` in `~/.claude/settings.json`. Your own rows are left as they are.
+* **Background work follows the main model.** Titles and summaries run on the model the
+  session uses, so a session on `k3` spends Kimi Code's quota on them too. To keep them on
+  Claude, set `ANTHROPIC_DEFAULT_HAIKU_MODEL` to a Claude model id in your settings' `env`.
+* Anthropic does not support Claude Code against non-Claude models through a gateway; Kimi
+  Code's own guide points Claude Code at it directly, and it works in practice.
+* **Kimi Code's own client.** On a machine with Kimi Code, the installer and the machine
+  agent also add the router to its `config.toml` (under `KIMI_CODE_HOME`, `~/.kimi-code` by
+  default): an `agent-router` provider, a model for each of the router's Kimi Code models
+  (`agent-router/k3`, shown as "K3 via Agent Router" in its `/model`), K3 as the default
+  model, and hooks that tell the agent which sessions are live. Your own providers, models,
+  services and hooks are left as they are. The agent puts these entries back after Kimi
+  Code updates itself, and uninstalling takes them out and puts your default model back.
+
+#### Codex and protocol translation
+
+For a generic client, [OpenCode setup](docs/multi-provider-clients.md#configure-opencode-v1)
+uses one router connection to select models from all three providers. OpenCode 1.19.0
+has passed local mocked tool-cycle tests; its remote session controls remain future work.
+
+Claude Code speaks Anthropic Messages; Codex speaks OpenAI Responses. The router chooses
+the account by model, then translates requests, JSON replies and streaming events when
+the client and provider use different protocols. Text, images, tool calls and results,
+conversation history, visible reasoning and token usage are supported in both directions.
+Generic OpenAI-compatible clients can use `POST /v1/chat/completions`.
+
+**Settings → Clients** configures Claude Code, Codex and OpenCode. Select a model and
+Client access token, check the credential, review the settings and apply them locally.
+Restore preserves later user edits. Hosted routers offer copy and download for the
+machine running the client. The credential check validates configuration and account
+readiness; the separate live acceptance command performs inference.
+
+Add an **OpenAI API key** in Settings → Accounts, or use a local Codex login, which the
+router discovers automatically. OpenAI models come from the account's model listing or
+Codex's model cache. Select one in Claude Code's `/model` picker to use it through the
+router. In Codex, select a model from the router's catalogue with `codex --model MODEL_ID`.
+
+`agent-router install` adds an `agent-router` Responses provider to Codex's
+`$CODEX_HOME/config.toml` (`~/.codex/config.toml` by default), selects it and keeps your
+chosen model. It disables Codex's provider-hosted web search for cross-provider
+compatibility. Uninstall restores the previous provider and web-search setting. The
+machine agent does the same for a hosted router. Codex sessions appear in the web console
+and phone apps as watched sessions; their terminal or IDE owns messages and approvals.
+
+Cross-provider translation has feature limits, including provider-hosted tools, encrypted
+reasoning history and Responses compaction. See
+[Codex setup and protocol translation](docs/codex-and-protocol-translation.md) for manual
+configuration, the compatibility table and validation details.
+
+#### Kimi Code sessions, watched and hosted
+
+Every Kimi Code session on a machine shows in Sessions and on the phones beside Claude
+Code's, marked with its client: what was asked, each tool call and its result, an approval
+it waits on, its tokens and cost. Those are **watched**: Kimi Code's terminal UI and its VS
+Code extension keep each session inside their own process, with no way in from outside, and
+a second process opening the same session writes into its history beside the first. So the
+router never drives a session it did not start.
+
+A **hosted** session is one the router starts, through Kimi Code's own server (`kimi web`),
+which the machine agent runs on loopback and stops when it sits unused. It is driven from
+everywhere: prompts, approvals, Stop, the model and the permission mode. Start one from a
+terminal, in the directory to work in:
+
+```sh
+agent-router kimi                        # on K3
+agent-router kimi --model k3-256k "Explain the build"
+```
+
+It prints the session's link in the console, then takes a prompt per line, prints each reply
+and tool call as it lands, asks `y`/`n` before a tool runs, and stops the turn on Ctrl-C (a
+second Ctrl-C, or Ctrl-D, leaves; the session stays). A hosted router starts it on this
+machine through its agent (`POST /api/live/start {machine, cwd, model}`); a local router
+starts it itself.
+
 ## Upgrading without dropping sessions
 
 Build the new binary and just start it — no need to stop the old one:
@@ -212,8 +302,8 @@ once: nothing restarts, and no session in flight is cut. The answer is stored, s
 survives a reboot whatever starts the router next — a login item is handed almost no
 environment, which is why a variable alone was never enough.
 
-A password must be set first; without one, callers from other machines are refused
-anyway. `AGENT_ROUTER_BIND` still works and still wins, for a hand-launch or a dev box,
+A router credential must be configured first: create an access token or set a dashboard
+password. `AGENT_ROUTER_BIND` still works and still wins, for a hand-launch or a dev box,
 but it only lasts as long as that process.
 
 `agent-router install` registers the login item. `--bind <addr>` writes the same stored
@@ -235,8 +325,10 @@ agent-router serve --server --bind 0.0.0.0 --data-dir /data \
   network switch.
 - **Names.** It answers to the names it is given (`--public-url`, `--allow-host`) and to
   IP addresses, and refuses every other name.
-- **The password.** Every caller presents the password, loopback included. It comes from
-  `AGENT_ROUTER_SERVER_PASSWORD` at every start, and the dashboard cannot change it.
+- **Authentication.** Every caller presents a router credential, loopback included.
+  Use individual access tokens for clients and machines. The administrator's bootstrap
+  password comes from `AGENT_ROUTER_SERVER_PASSWORD` at every start and cannot be
+  changed in the dashboard.
 - **Accounts.** Accounts are `claude setup-token` values pasted into the dashboard. The
   server never runs `claude`.
 - **Nothing of a developer's machine.** No `~/.claude`, no Keychain, no wrapper sockets.
@@ -257,8 +349,9 @@ the router's address filled in. The script downloads the agent from the router a
 into the VS Code Server a Remote - SSH window runs on that machine; the extension takes
 the set-up over and wires the wrapper so sessions can be typed into. See [docs/hosting-machine-agent.md](docs/hosting-machine-agent.md#connecting-a-machine).
 
-`agent-router agent install --server <url>` asks for the password
-and checks it against the server, points Claude Code at the server
+`agent-router agent install --server <url>` asks for a credential; use a Machine access
+token in its existing password field. It checks the credential against the server,
+points Claude Code at the server
 (`ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN` under `env` in `~/.claude/settings.json`,
 or in one project's `.claude/settings.local.json` with `--project <dir>`), and starts the
 agent now and at every login. `agent-router agent uninstall` puts all of it back. The VS
@@ -283,28 +376,62 @@ so reaching it is kept as hard as it can be:
    widened. This is what defeats DNS rebinding — a web page that resolves its own domain
    to `127.0.0.1` so your browser will send credentialed requests here. Layers 1 and 2
    both *pass* in that attack, and rebinding needs a *name*, so bare IPs stay safe.
-4. Only `/v1/` paths are proxied, and only for callers that already presented a
+4. Only supported model API paths are proxied, and only for callers that already presented a
    credential of their own, so nothing can borrow the token by simply finding the port.
-5. Anything that is not on this machine must present the **router password**.
-6. A write whose `Origin` names another site is refused. That is a page elsewhere driving
-   your browser, which would otherwise pass every check above with your saved password.
+5. Anything that is not on this machine must present an **access token or router password**.
+   Access tokens are checked for their permissions, expiration and revocation on every
+   request, including when explicitly presented on loopback.
+6. A write or WebSocket upgrade whose `Origin` names another site is refused. That is a
+   page elsewhere driving your browser, which would otherwise pass every check above
+   with your saved password.
 
 A hosted router changes layers 1, 3 and 5. It listens only where it was told. It answers
-to the names it was given as well as to IP addresses. It asks everyone for the password,
+to the names it was given as well as to IP addresses. It asks everyone for a credential,
 loopback included, because in a container loopback is a port-forward, not you. Besides
 health, only the agent's installer is open (`/agent/install.sh`, `/agent/install.ps1` and
 the files they fetch): nothing in it is secret, and a machine being connected has nothing
 to present yet.
 
-Inbound `authorization` and `x-api-key` headers are discarded, never stored. Captured
+Inbound router credentials are removed before forwarding to providers or machines.
+Provider requests receive only the selected account's credential. Captured
 bodies may contain your source code — the database is local and gitignored.
+
+### Access tokens
+
+Create named credentials in **Settings → Access tokens**. Each token has one permission
+profile and an optional expiry; the UI defaults to 90 days:
+
+| Permissions | Intended use |
+| --- | --- |
+| Client | Claude Code, Codex or OpenCode: inference and the model catalogue |
+| Machine | An agent: inference, its connection, model/library sync and provider status |
+| Administrator | Dashboard, phone apps and administrative APIs |
+
+The secret is shown once. Save it in the client's credential store or private configuration.
+The router stores only its SHA-256 digest and public metadata, including last use. Tokens
+contain 256 bits of random secret material; they are independent of provider API keys.
+
+Send it as `Authorization: Bearer <token>` or `x-api-key: <token>`. A client keeping its own
+provider Authorization can use `x-agent-router-token: <token>`. Existing Basic-auth clients
+can put an Administrator token in their password field. Use HTTPS when connecting over
+an untrusted network.
+
+Revoke one token without changing others. New requests fail immediately; an existing
+machine connection closes within five seconds. Inference requests already running can
+finish. Client/Machine tokens cannot manage accounts or tokens, and Machine tokens cannot
+publish Library components; publishing retains its separate Library tokens.
+
+Local loopback access without an access token retains the existing single-user owner
+behavior. An explicitly supplied token always keeps its limits. The dashboard password
+remains available for recovery and compatibility.
 
 ### The password
 
-Only devices other than this one are ever asked; Claude Code, the menubar app and your
-own browser talk to the router over loopback and never see a prompt. The first time the
-dashboard opens on a network bind it asks you to set one; afterwards it lives under
-Settings → Password. Until one is set, other devices are refused outright.
+In local mode, Claude Code, the menubar app and your own browser can talk to the router
+over loopback without a password prompt. If no password or access token is configured,
+the dashboard asks you to set a password before using a network bind; afterwards it
+lives under Settings → Password. Other devices need this password or their own access
+token. Hosted server mode requires a credential even on loopback.
 
 - A browser gets the usual prompt. The username is ignored.
 - A Claude Code on another machine sets `ANTHROPIC_AUTH_TOKEN` to the password (and
@@ -314,29 +441,22 @@ Settings → Password. Until one is set, other devices are refused outright.
 It is stored hashed (PBKDF2-HMAC-SHA256, 600k rounds), never in the clear. It *travels*
 in the clear: this is HTTP, and the network bind already assumes a network you trust.
 
-### Where tokens live
+### Where provider credentials live
 
-Tokens are never written to the database or to config. On macOS they are held in the
-Keychain, read and written through `/usr/bin/security`, and the items the router creates
-trust it (`-T /usr/bin/security`). That is a deliberate trade. A locally built binary is
-ad-hoc signed, so every `cargo build` produces a new code identity, "Always Allow"
-whitelists only the build that asked, and the prompt returns on the next rebuild — with
-no button that makes it stop. The cost is that any process running as you can read those
-items through `security` without a prompt, which is the same footing as Claude Code's own
-credential entry. If you would rather have a per-binary ACL, sign the binary with a
-stable identity (`codesign -s <your-cert> target/release/agent-router`) and the Security
-framework path becomes practical again.
-
-On Linux there is no Keychain; the router reads Claude Code's own
-`~/.claude/.credentials.json`, which is that platform's existing store, and only ever
-reads it.
+Upstream provider credentials managed by the router are stored in its data directory's
+`credentials.json`, with owner-only permissions, and are never written to the database
+or client configuration. Client configuration contains a separate router credential.
+The file avoids repeated macOS Keychain prompts caused by changing signatures on local
+builds. Claude Code's native login remains in its own Keychain entry on macOS, or
+`~/.claude/.credentials.json` on Linux; the router reads it. Native Codex credentials
+remain owned by Codex, which also owns login refresh.
 
 ## The phone apps
 
 Two apps, the same job: watch any number of routers, and steer the sessions running
 through them. `ios/AgentRouter/` is SwiftUI for iOS 26; `android/` is Jetpack Compose
 for Android 10 and up. They talk to the router over the network bind and authenticate
-with the router password — kept in the iOS Keychain, and on Android encrypted with an
+with an Administrator access token or router password — kept in the iOS Keychain, and on Android encrypted with an
 AES-GCM key held in the AndroidKeyStore (hardware-backed where the phone has a TEE,
 never extractable either way) into ordinary `SharedPreferences`.
 

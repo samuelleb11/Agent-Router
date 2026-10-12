@@ -1,7 +1,7 @@
 // New for agent-router: the dashboard's scope (assets/index.html: `state`, `RANGES`, `sinceMs`,
 // `writeHash`, `setScope`, `renderCrumbs`, `menuRows` and the lists' click handlers) as
-// values. Three nested levels — account › project › session — and a time range (OV-C12), kept in
-// the address so a scoped view is a link (OV-C29, SH-C53).
+// values. Three nested levels — account › project › session — under a provider, and a time range
+// (OV-C12, OV-C227), kept in the address so a scoped view is a link (OV-C29, SH-C53).
 //
 // Where the page broke its own rule, the rule is kept:
 // - leaving a level does the same from its picker as from its list: "All accounts" clears the
@@ -15,6 +15,7 @@
 // read: the clean cut keeps no compatibility code (decision J), so an old bookmark opens unscoped.
 
 import { DASH, count, id8, projectName } from './format';
+import type { Provider } from './settings';
 
 export const RANGES = { all: null, '1h': 3_600_000, '24h': 86_400_000, '7d': 7 * 86_400_000, '30d': 30 * 86_400_000 } as const;
 
@@ -24,6 +25,8 @@ export type Range = keyof typeof RANGES;
 export const RANGE_ORDER: readonly Range[] = ['all', '1h', '24h', '7d', '30d'];
 
 export interface Scope {
+  /// The provider whose requests every figure counts; null for every provider (OV-C227).
+  readonly provider: Provider | null;
   readonly account: string | null;
   readonly project: string | null;
   readonly session: string | null;
@@ -31,7 +34,26 @@ export interface Scope {
 }
 
 /// Nothing narrowed, every range.
-export const UNSCOPED: Scope = { account: null, project: null, session: null, range: 'all' };
+export const UNSCOPED: Scope = { provider: null, account: null, project: null, session: null, range: 'all' };
+
+/// The providers the router knows (src/accounts.rs, `Provider`), the ones a scope can name, Anthropic's
+/// first. The router refuses any other name, so the page never sends one.
+export const PROVIDERS: readonly Provider[] = ['anthropic', 'kimi'];
+
+/// A provider named in a link reads as itself when the router knows it, and as every provider
+/// otherwise — never as a property every object has, `constructor` or `__proto__` (OV-C227, as
+/// OV-C28 has it for the range).
+export function parseProvider(v: unknown): Provider | null {
+  return PROVIDERS.find((p) => p === v) ?? null;
+}
+
+/// Choosing a provider keeps the project and the session, which it narrows, and lets go of an account
+/// known to be another provider's, as "All accounts" does: the project and the session stay
+/// (OV-C227, OV-C23). `null` is every provider, and keeps the account.
+export function chooseProvider(scope: Scope, provider: Provider | null, accountProvider?: Provider | null): Scope {
+  const other = !!provider && !!scope.account && !!accountProvider && accountProvider !== provider;
+  return { ...scope, provider, account: other ? null : scope.account };
+}
 
 /// The range an address that names none reads as, so where the Overview starts. The last hour,
 /// not all: a hosted router on network storage takes longer than a read's deadline to sum its
@@ -73,11 +95,12 @@ export function toggle(scope: Scope, level: Level, value: string, sessionProject
   return scope[level] === value ? choose(scope, level, null) : choose(scope, level, value, sessionProject);
 }
 
-/// Whether anything is narrowed, which is exactly when "Clear scope" shows (OV-C25).
-export const isScoped = (scope: Scope): boolean => !!(scope.account || scope.project || scope.session);
+/// Whether anything is narrowed — the provider or a level — which is exactly when "Clear scope" shows
+/// (OV-C25, OV-C227).
+export const isScoped = (scope: Scope): boolean => !!(scope.provider || scope.account || scope.project || scope.session);
 
-/// "Clear scope": all three levels, keeping the time range (OV-C25).
-export const clearScope = (scope: Scope): Scope => ({ ...scope, account: null, project: null, session: null });
+/// "Clear scope": the provider and all three levels, keeping the time range (OV-C25, OV-C227).
+export const clearScope = (scope: Scope): Scope => ({ ...scope, provider: null, account: null, project: null, session: null });
 
 export const setRange = (scope: Scope, range: unknown): Scope => ({ ...scope, range: parseRange(range) });
 
@@ -114,15 +137,21 @@ const NO_FILTERS: RequestFilters = { kind: 'all', model: null, stop: null };
 
 const ids = (v: string | null): string[] => (v ?? '').split('.').filter(Boolean);
 
-/// The Overview's state from its query string: `?account=&project=&session=&range=&tab=&open=
-/// &kind=&model=&stop=`, every key optional. A tab it does not know opens the first, as a range it
-/// does not know reads as all (OV-C28).
+/// The Overview's state from its query string: `?provider=&account=&project=&session=&range=&tab=
+/// &open=&kind=&model=&stop=`, every key optional. A tab it does not know opens the first, as a range
+/// it does not know reads as all (OV-C28) and a provider it does not know as every provider (OV-C227).
 export function readQuery(search: string): OverviewAddress {
   const p = new URLSearchParams(search);
   const kind = p.get('kind');
   const tab = p.get('tab');
   return {
-    scope: { account: p.get('account') || null, project: p.get('project') || null, session: p.get('session') || null, range: p.get('range') ? parseRange(p.get('range')) : DEFAULT_RANGE },
+    scope: {
+      provider: parseProvider(p.get('provider')),
+      account: p.get('account') || null,
+      project: p.get('project') || null,
+      session: p.get('session') || null,
+      range: p.get('range') ? parseRange(p.get('range')) : DEFAULT_RANGE,
+    },
     tab: TABS.find((t) => t === tab) ?? DEFAULT_TAB,
     open: ids(p.get('open')),
     requests: { kind: KINDS.find((k) => k === kind) ?? 'all', model: p.get('model') || null, stop: p.get('stop') || null },
@@ -134,6 +163,7 @@ export function readQuery(search: string): OverviewAddress {
 export function writeQuery(address: Partial<OverviewAddress> & { readonly scope: Scope }): string {
   const p = new URLSearchParams();
   const { scope, tab = DEFAULT_TAB, open = [], requests = NO_FILTERS } = address;
+  if (scope.provider) p.set('provider', scope.provider);
   if (scope.account) p.set('account', scope.account);
   if (scope.project) p.set('project', scope.project);
   if (scope.session) p.set('session', scope.session);

@@ -3,8 +3,8 @@
 // expects where. Read only by specs.
 import { vi } from 'vitest';
 import type { ProjectRow } from '~/data/router';
-import type { LiveQuota, RequestRecord, SessionRow, Summary, Tools, Totals } from '~/data/overview';
-import type { Forecast, ForecastAccount } from '~/model/forecast';
+import type { LiveQuota, ProviderQuota, ProviderTotals, RequestRecord, SessionRow, Summary, Tools, Totals } from '~/data/overview';
+import type { Forecast, ForecastAccount, Headroom } from '~/model/forecast';
 import type { Account, Auth } from '~/model/settings';
 
 export const MIN = 60_000;
@@ -17,10 +17,59 @@ export const DAY = 24 * HOUR;
 /// NOW that far behind the run, as a slow run would, to prove that none of them forgot.
 export const NOW = Date.now() - Number(process.env['AR_FIXTURE_SKEW_MS'] ?? 0);
 
-export const SERVING = { id: 'secondary', label: 'secondary', email: 'secondary@example.test', org_name: null, subscription_type: 'max' } as const;
+const secs = (ms: number) => Math.floor(ms / 1000);
+
+/// The first of the summary's timeline buckets, three hours back on the hour.
+const T0 = Math.floor((NOW - 3 * HOUR) / HOUR) * HOUR;
+
+/// Anthropic's block of the summary's `providers` (src/api.rs `providers_quota`): its serving account,
+/// the last response's headers, and their history over the timeline's buckets.
+export function anthropicBlock(over: Partial<ProviderQuota> = {}): ProviderQuota {
+  return {
+    provider: 'anthropic',
+    account: { id: 'secondary', label: 'secondary', email: 'secondary@example.test', org_name: null, plan: 'max' },
+    windows: { five_hour: { utilization: 0.41, resets_at: secs(NOW + 2 * HOUR) }, seven_day: { utilization: 0.58, resets_at: secs(NOW + 3 * DAY) } },
+    status: 'allowed',
+    at: NOW - 4 * MIN,
+    history: [
+      { t: T0, five_hour: 0.12, seven_day: 0.5 },
+      { t: T0 + 2 * HOUR, five_hour: 0.41, seven_day: 0.58 },
+    ],
+    ...over,
+  };
+}
+
+/// Kimi Code's block: its serving account, its usage API's reading — a 5-hour window and a month —
+/// and their history, the month by its own name.
+export function kimiBlock(over: Partial<ProviderQuota> = {}): ProviderQuota {
+  return {
+    provider: 'kimi',
+    account: { id: 'kimi', label: 'Kimi', email: null, org_name: null, plan: null },
+    windows: { five_hour: { utilization: 0.18, resets_at: secs(NOW + 3 * HOUR) }, month: { utilization: 0.27, resets_at: secs(NOW + 20 * DAY) } },
+    status: 'allowed',
+    at: NOW - 2 * MIN,
+    history: [
+      { t: T0 + HOUR, five_hour: 0.1, month: 0.25 },
+      { t: T0 + 2 * HOUR, five_hour: 0.18, month: 0.27 },
+    ],
+    ...over,
+  };
+}
 
 export const S1 = 'aaaaaaaa-1111-4111-8111-111111111111';
 export const S2 = 'bbbbbbbb-2222-4222-8222-222222222222';
+
+/// One provider's part of the totals (src/api.rs `summary_of`, `by_provider`).
+export function providerTotals(provider: string, over: Partial<ProviderTotals> = {}): ProviderTotals {
+  return { provider, requests: 0, prompt_tokens: 0, cost: 0, unpriced: 0, estimated: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, ...over };
+}
+
+/// The totals below split between Anthropic and Kimi Code, Anthropic's first, each figure adding up
+/// to the total's own; Kimi Code's twelve requests all ones the router could not price (OV-C226).
+export const TWO_PROVIDERS: ProviderTotals[] = [
+  providerTotals('anthropic', { requests: 400, prompt_tokens: 12_200_000, cost: 41.2, output_tokens: 300_000, cache_read_tokens: 10_300_000, cache_write_tokens: 1_380_000 }),
+  providerTotals('kimi', { requests: 12, prompt_tokens: 200_000, cost: 0, unpriced: 12, output_tokens: 10_000, cache_read_tokens: 100_000, cache_write_tokens: 20_000 }),
+];
 
 export function totals(over: Partial<Totals> = {}): Totals {
   return {
@@ -40,17 +89,17 @@ export function totals(over: Partial<Totals> = {}): Totals {
     projects: 2,
     first_seen: NOW - 3 * HOUR,
     last_seen: NOW - 2 * MIN,
+    // Anthropic's alone, as most routers have: one provider, so no split (OV-C226).
+    by_provider: [providerTotals('anthropic', { requests: 412, prompt_tokens: 12_400_000, cost: 41.2, output_tokens: 310_000, cache_read_tokens: 10_400_000, cache_write_tokens: 1_400_000 })],
     ...over,
   };
 }
 
 export function summary(over: Partial<Summary> = {}): Summary {
-  const t0 = Math.floor((NOW - 3 * HOUR) / HOUR) * HOUR;
+  const t0 = T0;
   return {
     totals: totals(),
     unattributed: 4,
-    quota: { rl_status: 'allowed', rl_5h_utilization: 0.41, rl_7d_utilization: 0.58, rl_5h_reset: Math.floor((NOW + 2 * HOUR) / 1000), rl_7d_reset: Math.floor((NOW + 3 * DAY) / 1000), started_at: NOW - 4 * MIN },
-    account: SERVING,
     context: [
       { component: 'history', est_tokens: 6_000_000, chars: 24_000_000, est_cost_once: 90, requests: 400 },
       { component: 'tool_results', est_tokens: 4_000_000, chars: 16_000_000, est_cost_once: 60, requests: 200 },
@@ -84,10 +133,8 @@ export function summary(over: Partial<Summary> = {}): Summary {
         { t: t0 + 2 * HOUR, model: 'claude-opus-5-20260115', requests: 200, prompt_tokens: 6_000_000, cost: 26, output_tokens: 150_000, cache_read_tokens: 5_100_000, subagent_tokens: 1_100_000, errors: 2 },
       ],
     },
-    quota_history: [
-      { t: t0, rl_5h: 0.12, rl_7d: 0.5 },
-      { t: t0 + 2 * HOUR, rl_5h: 0.41, rl_7d: 0.58 },
-    ],
+    // Anthropic's accounts alone, as most routers have: a block for Anthropic, none for Kimi Code.
+    providers: [anthropicBlock()],
     ...over,
   };
 }
@@ -194,8 +241,6 @@ export const QUOTA: LiveQuota = {
   age_ms: 60_000,
 };
 
-const secs = (ms: number) => Math.floor(ms / 1000);
-
 export function forecastAccount(id: string, over: Partial<ForecastAccount> = {}): ForecastAccount {
   return {
     id,
@@ -225,13 +270,49 @@ export function forecastAccount(id: string, over: Partial<ForecastAccount> = {})
   };
 }
 
-export function forecast(accounts: ForecastAccount[] = [forecastAccount('secondary'), forecastAccount('primary', { five_hour: null, seven_day: null, seen_at: null })]): Forecast {
+/// A Kimi Code account as `/api/forecast` sends it: its usage API's windows, a 5-hour that resets
+/// first and a month that runs out before its reset, and every request one the router could not price.
+export function kimiAccount(over: Partial<ForecastAccount> = {}): ForecastAccount {
+  return forecastAccount('kimi', {
+    label: 'Kimi',
+    email: null,
+    provider: 'kimi',
+    plan: null,
+    active: 1,
+    pool: null,
+    usage: { requests: 12, prompt_tokens: 40_000, output_tokens: 900, cost: 0, unpriced: 12, last_seen: NOW - 5 * MIN },
+    five_hour: {
+      used: 0.18, reset_at: secs(NOW + 3 * HOUR), window_start: secs(NOW - 2 * HOUR),
+      burn_per_active_hour: 0.05, active_hours_left: 16, duty_fraction: 0.9, verdict: 'resets-first',
+      exhausts_at: null, projected_end_util: 0.31, basis: 'this-window', measured_active_hours: 1.8, readings: 30, expired: false, spent: false, seen_at: NOW - 2 * MIN, series: [{ t: NOW - HOUR, u: 0.1 }],
+    },
+    seven_day: null,
+    month: {
+      used: 0.27, reset_at: secs(NOW + 20 * DAY), window_start: secs(NOW - 10 * DAY),
+      burn_per_active_hour: 0.02, active_hours_left: 3.5, duty_fraction: 0.4, verdict: 'crosses',
+      exhausts_at: NOW + 5 * DAY, projected_end_util: 1, basis: 'this-window', measured_active_hours: 13, readings: 400, expired: false, spent: false, seen_at: NOW - 2 * MIN, series: [{ t: NOW - 5 * DAY, u: 0.12 }],
+    },
+    ...over,
+  });
+}
+
+/// Anthropic's headroom in `global.providers`: two pools, its first to go the serving account's tight
+/// 7-day window.
+export const ANTHROPIC_ROOM: Headroom = { active_hours_left: 4.9, pools: 2, first_to_exhaust: { account_id: 'secondary', window: 'seven_day', at: NOW + 2 * DAY + 20 * HOUR, in_ms: 2 * DAY + 20 * HOUR } };
+
+/// Kimi Code's headroom: one pool, bound by its month, which runs out first.
+export const KIMI_ROOM: Headroom = { active_hours_left: 3.5, pools: 1, first_to_exhaust: { account_id: 'kimi', window: 'month', at: NOW + 5 * DAY, in_ms: 5 * DAY } };
+
+export function forecast(
+  accounts: ForecastAccount[] = [forecastAccount('secondary'), forecastAccount('primary', { five_hour: null, seven_day: null, seen_at: null })],
+  providers: Readonly<Record<string, Headroom>> = { anthropic: ANTHROPIC_ROOM },
+): Forecast {
   return {
     generated_at: NOW,
     accounts,
     global: {
       requests: 412, prompt_tokens: 12_400_000, output_tokens: 310_000, cost: 41.2, accounts: accounts.length,
-      combined_headroom: { active_hours_left: 4.9, pools: 2, first_to_exhaust: { account_id: 'secondary', window: 'seven_day', at: NOW + 2 * DAY + 20 * HOUR, in_ms: 2 * DAY + 20 * HOUR } },
+      providers,
       pace_30d: { cost: 180, prompt_tokens: 50_000_000, basis: 'the last 7 days of recorded spend' },
     },
   };

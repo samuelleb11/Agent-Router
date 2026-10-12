@@ -268,6 +268,7 @@ struct SessionRowView: View {
                 Text(session.label)
                     .lineLimit(2)
                 HStack(spacing: 5) {
+                    if let name = session.clientName { Text(name); Text("·") }
                     Text(session.shortId).monospaced()
                     if let b = session.gitBranch { Text("·"); Text(b) }
                     Text("·")
@@ -286,13 +287,13 @@ struct SessionRowView: View {
             Spacer(minLength: 6)
             // An ended session is not wrapped any more, so it reads "view", as on the web view
             // and the other phone; its line already says that it ended, and when.
-            Text(session.wrapped ? "live" : "view")
+            Text(session.canControl ? "live" : "view")
                 .font(.caption2.weight(.medium))
                 .padding(.horizontal, 7)
                 .padding(.vertical, 2)
-                .background(Capsule().fill(session.wrapped ? Color.green.opacity(0.15) : Color.secondary.opacity(0.12)))
-                .foregroundStyle(session.wrapped ? .green : .secondary)
-                .accessibilityLabel(session.wrapped ? "Can take a message" : "Read only")
+                .background(Capsule().fill(session.canControl ? Color.green.opacity(0.15) : Color.secondary.opacity(0.12)))
+                .foregroundStyle(session.canControl ? .green : .secondary)
+                .accessibilityLabel(session.canControl ? "Can take a message" : "Read only")
         }
         .padding(.vertical, 2)
         .accessibilityElement(children: .combine)

@@ -13,7 +13,7 @@
 //   "Nothing matched" (SE-C167).
 
 import { DASH, ago, count, id8, kindWord, marks, plural, projectName, span, tod, type Run } from './format';
-import { choose, sinceMs, type Scope } from './scope';
+import { choose, isScoped, sinceMs, type Scope } from './scope';
 
 /// One session of a search reply (src/api.rs, `search`): the sessions that mention the query,
 /// with how many places do.
@@ -68,13 +68,16 @@ export const SEARCH_DEBOUNCE_MS = 160;
 export const SEARCH_SESSION_CAP = 200;
 
 /// What a search asks the router, or nothing: a blank query is not a search (OV-C40). The text goes
-/// verbatim, trimmed (OV-C43), with the page's project, session and range but not its account,
-/// which the search API does not take (OV-C44).
+/// verbatim, trimmed (OV-C43), with the page's whole scope: its provider, account, project, session
+/// and range (OV-C44, OV-C227). The range is measured back from now and has no end, so no `until`
+/// goes, as none goes with any other read.
 export function searchParams(text: string, kind: SearchKind, scope: Scope, now: number = Date.now()): Record<string, string> | null {
   const q = text.trim();
   if (!q) return null;
   const out: Record<string, string> = { q };
   if (kind) out['kind'] = kind;
+  if (scope.provider) out['provider'] = scope.provider;
+  if (scope.account) out['account'] = scope.account;
   if (scope.project) out['project'] = scope.project;
   if (scope.session) out['session'] = scope.session;
   const since = sinceMs(scope.range, now);
@@ -82,11 +85,11 @@ export function searchParams(text: string, kind: SearchKind, scope: Scope, now: 
   return out;
 }
 
-/// What the search narrows to, from the page's scope: the account never narrows it.
-const narrowed = (scope: Scope): boolean => !!(scope.project || scope.session || scope.range !== 'all');
+/// Whether the page's scope narrows the search: any of its levels, its provider or its range.
+const narrowed = (scope: Scope): boolean => isScoped(scope) || scope.range !== 'all';
 
 /// The caption while the box is empty: every message, tool call and result ever captured — or, when
-/// the page's project, session or range narrows the search, that it does (OV-C36, OV-C44).
+/// the page's scope narrows the search, that it does (OV-C36, OV-C44, OV-C227).
 export function searchIdle(scope: Scope): string {
   return narrowed(scope) ? 'every message, tool call and result captured in the current scope' : 'every message, tool call and result ever captured';
 }

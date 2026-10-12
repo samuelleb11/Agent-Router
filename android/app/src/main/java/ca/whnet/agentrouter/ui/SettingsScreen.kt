@@ -329,11 +329,12 @@ fun SettingsScreen(app: AppState, router: Router, onBack: () -> Unit, onEdit: ()
 
             SettingsSection(
                 header = "Router password",
-                footer = "At least eight characters. Changing it here logs out every other " +
-                    "device until they are given the new one — including this phone, which " +
-                    "you would then re-enter under Edit.",
+                footer = "At least eight characters. Changing it affects devices using that password. " +
+                    "Access tokens remain valid. If this phone uses the password, enter its replacement " +
+                    "under Edit. Manage tokens in the web dashboard’s Settings → Access tokens.",
             ) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    state.auth?.let { auth -> Text("Authentication: ${auth.credentialStatus}", style = MaterialTheme.typography.bodySmall) }
                     OutlinedTextField(
                         value = newPassword,
                         onValueChange = { newPassword = it },
@@ -349,7 +350,7 @@ fun SettingsScreen(app: AppState, router: Router, onBack: () -> Unit, onEdit: ()
                                 passwordNotice = runCatching {
                                     state.liveClient?.post<PasswordBody, OkReply>(
                                         "/api/auth", PasswordBody(password = newPassword)
-                                    )?.problem ?: "Changed. Update it under Edit on this phone too."
+                                    )?.problem ?: "Changed. Access tokens remain valid. If this phone uses the password, update it under Edit."
                                 }.getOrElse { RouterState.describe(it) }
                                 newPassword = ""
                             }

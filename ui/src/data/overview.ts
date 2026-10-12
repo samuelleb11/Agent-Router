@@ -19,9 +19,9 @@ import { getJson } from '~/data/http';
 import { useRead, type Read } from '~/data/held';
 import type { MachineRef, ProjectRow } from '~/data/router';
 import { POLL_MS } from '~/lib/freshness';
-import type { Forecast } from '~/model/forecast';
+import type { Forecast, WindowKey } from '~/model/forecast';
 import { sinceMs, type Level, type OverviewTab, type Scope } from '~/model/scope';
-import type { Account, Auth } from '~/model/settings';
+import type { Account, Auth, Provider } from '~/model/settings';
 
 // ---------------------------------------------------------------- the router's answers
 
@@ -31,6 +31,10 @@ export interface Totals {
   readonly requests: number | null;
   readonly prompt_tokens: number | null;
   readonly cost: number | null;
+  /// Requests with usage the router could not price, which `cost` leaves out, and those whose tokens
+  /// were estimated rather than read from their stored response (OV-C229, OV-C232).
+  readonly unpriced?: number | null;
+  readonly estimated?: number | null;
   /// Uncached input: what was paid in full.
   readonly input_tokens: number | null;
   readonly output_tokens: number | null;
@@ -46,27 +50,66 @@ export interface Totals {
   /// Epoch milliseconds; null when nothing is recorded in scope.
   readonly first_seen: number | null;
   readonly last_seen: number | null;
+  /// The same figures split by the provider that served them, Anthropic's first, one row per
+  /// provider with requests in scope; a request recorded before providers is Anthropic's (OV-C226).
+  readonly by_provider: readonly ProviderTotals[];
 }
 
-/// The last response's rate-limit headers for the serving account. Utilisation is a fraction, 0–1;
-/// a reset is epoch seconds.
-export interface HeaderQuota {
-  readonly rl_status: string | null;
-  readonly rl_5h_utilization: number | null;
-  readonly rl_7d_utilization: number | null;
-  readonly rl_5h_reset: number | null;
-  readonly rl_7d_reset: number | null;
-  /// Epoch milliseconds of the request that carried them.
-  readonly started_at: number | null;
+/// One provider's part of the totals (src/api.rs, `summary_of`, `by_provider`).
+export interface ProviderTotals {
+  readonly provider: Provider;
+  readonly requests: number | null;
+  readonly prompt_tokens: number | null;
+  readonly cost: number | null;
+  /// Requests with usage the router could not price, which add nothing to `cost`.
+  readonly unpriced: number | null;
+  /// Requests whose usage the router estimated rather than was told.
+  readonly estimated: number | null;
+  readonly output_tokens: number | null;
+  readonly cache_read_tokens: number | null;
+  readonly cache_write_tokens: number | null;
 }
 
-/// The account signing requests right now.
+/// A provider's serving account: its active one, the one signing its new requests.
 export interface ServingAccount {
   readonly id: string;
   readonly label: string | null;
   readonly email: string | null;
   readonly org_name?: string | null;
-  readonly subscription_type: string | null;
+  readonly plan: string | null;
+}
+
+/// One window of a provider's block. Utilisation is a fraction, 0–1, and 1 for a window the provider
+/// said is spent; a reset is epoch seconds.
+export interface BlockWindow {
+  readonly utilization: number | null;
+  readonly resets_at: number | null;
+}
+
+/// One bucket of a provider's quota history: the worst reading in it for each of its windows, by the
+/// window's own name. Fractions, 0–1.
+export interface BlockHistoryRow {
+  /// The bucket's start, epoch milliseconds, on the viewer's clock.
+  readonly t: number;
+  readonly five_hour?: number | null;
+  readonly seven_day?: number | null;
+  readonly month?: number | null;
+}
+
+/// One entry of the summary's `providers` (src/api.rs `providers_quota`): a provider with an account,
+/// Anthropic's first, with its serving account and that account's windows — Anthropic's 5-hour and
+/// 7-day from the rate-limit headers its requests carry, Kimi Code's 5-hour and its second by its own
+/// name, `month` or `seven_day`, from its usage API — their status, when they were read, and their
+/// history over the timeline's buckets. A provider with no account has no entry (OV-C224).
+export interface ProviderQuota {
+  readonly provider: Provider;
+  readonly account: ServingAccount;
+  readonly windows: Readonly<Partial<Record<WindowKey, BlockWindow | null>>>;
+  /// The last reading's status: Anthropic's header's own, Kimi Code's "allowed" or "rejected".
+  readonly status: string | null;
+  /// Epoch milliseconds of the reading: the request that carried the headers, or the usage read.
+  readonly at: number | null;
+  readonly history: readonly BlockHistoryRow[];
 }
 
 /// One part of the context window, summed over the scope. Estimated tokens, by character share.
@@ -83,9 +126,15 @@ export interface ContextRow {
 
 export interface ModelRow {
   readonly model: string;
+  /// The provider that served it: `anthropic`, `kimi` (OV-C231).
+  readonly provider?: Provider | null;
   readonly requests: number | null;
   readonly prompt_tokens: number | null;
   readonly cost: number | null;
+  /// Requests with usage the router could not price, which `cost` leaves out, and those whose tokens
+  /// were estimated rather than read from their stored response (OV-C229, OV-C232).
+  readonly unpriced?: number | null;
+  readonly estimated?: number | null;
   readonly output_tokens: number | null;
   readonly thinking_tokens: number | null;
   readonly cache_read_tokens: number | null;
@@ -98,6 +147,10 @@ export interface ThreadRow {
   readonly requests: number | null;
   readonly prompt_tokens: number | null;
   readonly cost: number | null;
+  /// Requests with usage the router could not price, which `cost` leaves out, and those whose tokens
+  /// were estimated rather than read from their stored response (OV-C229, OV-C232).
+  readonly unpriced?: number | null;
+  readonly estimated?: number | null;
   readonly output_tokens: number | null;
   readonly cache_read_tokens: number | null;
   /// Distinct agent ids.
@@ -119,10 +172,17 @@ export interface AccountSplitRow {
   readonly id: string;
   /// Its email, else its label, else its id (src/api.rs).
   readonly label: string | null;
+  /// Its own provider, else the one its requests were signed for (OV-C231).
+  readonly provider?: Provider | null;
+  /// Signs its provider's new requests: one account per provider can (OV-C231).
   readonly active: number | boolean | null;
   readonly requests: number | null;
   readonly prompt_tokens: number | null;
   readonly cost: number | null;
+  /// Requests with usage the router could not price, which `cost` leaves out, and those whose tokens
+  /// were estimated rather than read from their stored response (OV-C229, OV-C232).
+  readonly unpriced?: number | null;
+  readonly estimated?: number | null;
   readonly output_tokens: number | null;
   readonly sessions: number | null;
   readonly last_seen: number | null;
@@ -136,6 +196,10 @@ export interface TimelineRow {
   readonly requests: number | null;
   readonly prompt_tokens: number | null;
   readonly cost: number | null;
+  /// Requests with usage the router could not price, which `cost` leaves out, and those whose tokens
+  /// were estimated rather than read from their stored response (OV-C229, OV-C232).
+  readonly unpriced?: number | null;
+  readonly estimated?: number | null;
   readonly output_tokens: number | null;
   readonly cache_read_tokens: number | null;
   readonly subagent_tokens: number | null;
@@ -152,25 +216,19 @@ export interface Timeline {
   readonly rows: readonly TimelineRow[];
 }
 
-/// The serving account's worst reading per bucket, over the timeline's buckets. Fractions, 0–1.
-export interface QuotaHistoryRow {
-  readonly t: number;
-  readonly rl_5h: number | null;
-  readonly rl_7d: number | null;
-}
-
 /// `GET /api/summary`, asked for by part (`parts=`, SV-C45): the parts the top of the Overview
-/// shows are always asked for; the others only when a tab or a crumb shows them (OV-C216).
+/// shows are always asked for; the others only when a tab or a crumb shows them (OV-C216). The
+/// router's `quota`, `account` and `quota_history` are Anthropic's alone, and the phones' to read:
+/// the console reads `providers`, a block per provider (OV-C224).
 export interface Summary {
   readonly totals: Totals;
   /// Requests in scope that no session holds, counted by the router (OV-C141). Comes with totals.
   readonly unattributed: number | null;
-  readonly quota: HeaderQuota | null;
-  readonly account: ServingAccount | null;
   readonly models: readonly ModelRow[];
   readonly latency: Latency | null;
   readonly timeline: Timeline;
-  readonly quota_history: readonly QuotaHistoryRow[];
+  /// Each provider with an account, Anthropic's first, for Quota headroom's blocks (OV-C224).
+  readonly providers: readonly ProviderQuota[];
   /// For the Context tab.
   readonly context?: readonly ContextRow[];
   readonly threads?: readonly ThreadRow[];
@@ -181,12 +239,13 @@ export interface Summary {
 }
 
 /// The summary's parts, in the order the router answers them (src/api.rs `SUMMARY_PARTS`).
-export const SUMMARY_PARTS = ['totals', 'quota', 'account', 'context', 'models', 'threads', 'latency', 'stop_reasons', 'by_account', 'timeline', 'quota_history'] as const;
+export const SUMMARY_PARTS = ['totals', 'quota', 'account', 'context', 'models', 'threads', 'latency', 'stop_reasons', 'by_account', 'timeline', 'quota_history', 'providers'] as const;
 export type SummaryPart = (typeof SUMMARY_PARTS)[number];
 
-/// What the top of the Overview shows whatever tab is open: Quota headroom, All accounts and Totals
-/// in scope, with the timeline their sparklines and history are bucketed on.
-const TOP_PARTS: readonly SummaryPart[] = ['totals', 'quota', 'account', 'models', 'latency', 'timeline', 'quota_history'];
+/// What the top of the Overview shows whatever tab is open: Quota headroom, a block per provider
+/// (OV-C224), All accounts and Totals in scope, with the timeline their sparklines and history are
+/// bucketed on.
+const TOP_PARTS: readonly SummaryPart[] = ['totals', 'models', 'latency', 'timeline', 'providers'];
 
 /// One row of `GET /api/sessions`: the 200 most recently seen sessions in scope, and no more.
 export interface SessionRow {
@@ -200,11 +259,19 @@ export interface SessionRow {
   readonly machine: MachineRef | null;
   readonly git_branch: string | null;
   readonly entrypoint: string | null;
+  /// The client its requests came from, as the router reads their User-Agent (src/analyze.rs,
+  /// `client_of`): `claude-code-cli`, `claude-code-vscode`, `kimi-code-cli`, `kimi-code-web`,
+  /// `kimi-code-vscode`; absent for any other caller (SE-C234).
+  readonly client?: string | null;
   readonly started_at: number | null;
   readonly last_seen_at: number | null;
   readonly requests: number | null;
   readonly prompt_tokens: number | null;
   readonly cost: number | null;
+  /// Requests with usage the router could not price, which `cost` leaves out, and those whose tokens
+  /// were estimated rather than read from their stored response (OV-C229, OV-C232).
+  readonly unpriced?: number | null;
+  readonly estimated?: number | null;
   readonly output_tokens: number | null;
   readonly cache_read_tokens: number | null;
   readonly subagent_tokens: number | null;
@@ -212,6 +279,9 @@ export interface SessionRow {
   readonly subagents: number | null;
   /// The models seen, comma-separated.
   readonly models: string | null;
+  /// The providers its requests went to, Anthropic's first: one session can move between them
+  /// through `/model` (SE-C242).
+  readonly providers?: readonly Provider[] | null;
   readonly first_request_at: number | null;
   readonly last_request_at: number | null;
 }
@@ -247,6 +317,10 @@ export interface RequestRecord {
   readonly session_id: string | null;
   readonly project: string | null;
   readonly model: string | null;
+  /// The provider and the account that served it; a request recorded before providers is
+  /// Anthropic's (OV-C231).
+  readonly provider?: Provider | null;
+  readonly account_id?: string | null;
   readonly status: number | null;
   readonly ttfb_ms: number | null;
   readonly duration_ms: number | null;
@@ -277,8 +351,9 @@ export interface LiveWindow {
   readonly resets_at: string | null;
 }
 
-/// `GET /api/quota`: the serving account's usage, polled from Anthropic, or the last headers when
-/// that is unavailable. A 200 carrying `error` is a refusal, which ~/data/http throws.
+/// `GET /api/quota`: Anthropic's serving account's usage, polled from Anthropic, or the last headers
+/// when that is unavailable. A 200 carrying `error` is a refusal, which ~/data/http throws: on a
+/// router with no Anthropic account, the read fails on its own and the page reads on (OV-C224).
 export interface LiveQuota {
   readonly five_hour?: LiveWindow | null;
   readonly seven_day?: LiveWindow | null;
@@ -303,7 +378,8 @@ export interface Reading<T> {
   readonly at: number;
   /// Carried over from an earlier read, because this cycle's failed.
   readonly kept: boolean;
-  /// What it was read for: the serving account for a quota, the range for a forecast (OV-C65).
+  /// What it was read for: Anthropic's serving account for a quota, the range for a forecast
+  /// (OV-C65).
   readonly for: string;
 }
 
@@ -366,18 +442,19 @@ export function summaryParts(scope: Scope, tab: OverviewTab): SummaryPart[] {
   return SUMMARY_PARTS.filter((p) => wanted.has(p));
 }
 
-/// The paths a cycle may read, each with the scope the router narrows it by. The navigators are never
-/// narrowed by the level they pick (OV-C131): projects by the account and the range, sessions by the
-/// account, the project and the range. The quota is the serving account's whatever the scope
-/// (OV-C54), and the forecast covers every account, its usage over the range (OV-C27, OV-C87).
+/// The paths a cycle may read, each with the scope the router narrows it by. The provider narrows
+/// every one the scope does (OV-C227). The navigators are never narrowed by the level they pick
+/// (OV-C131): projects by the account and the range, sessions by the account, the project and the
+/// range. The quota is Anthropic's serving account's whatever the scope (OV-C54), and the forecast
+/// covers every account, its usage over the range (OV-C27, OV-C87).
 export function snapshotPaths(scope: Scope, tab: OverviewTab, since: number | null, tz: number) {
-  const { account, project, session } = scope;
+  const { provider, account, project, session } = scope;
   return {
-    summary: `/api/summary${query({ account, project, session, since, tz, parts: summaryParts(scope, tab).join(',') })}`,
-    projects: `/api/projects${query({ account, since })}`,
-    sessions: `/api/sessions${query({ account, project, since })}`,
-    tools: `/api/tools${query({ account, project, session, since })}`,
-    requests: `/api/requests${query({ account, project, session, since })}`,
+    summary: `/api/summary${query({ provider, account, project, session, since, tz, parts: summaryParts(scope, tab).join(',') })}`,
+    projects: `/api/projects${query({ provider, account, since })}`,
+    sessions: `/api/sessions${query({ provider, account, project, since })}`,
+    tools: `/api/tools${query({ provider, account, project, session, since })}`,
+    requests: `/api/requests${query({ provider, account, project, session, since })}`,
     quota: '/api/quota',
     forecast: `/api/forecast${query({ since })}`,
   } as const;
@@ -441,7 +518,8 @@ export async function readSnapshot(
     tz,
     summary,
     session: (scope.session && sessions?.find((x) => x.id === scope.session)) || null,
-    quota: keepReading(quota, kept.quota, summary.account?.id ?? '', at),
+    // Kept only for the Anthropic account it was read for (OV-C65): `/api/quota` reads Anthropic's.
+    quota: keepReading(quota, kept.quota, (summary.providers ?? []).find((b) => b.provider === 'anthropic')?.account.id ?? '', at),
     forecast: keepReading(forecast, kept.forecast, scope.range, at),
     part,
   };
@@ -570,7 +648,8 @@ export function useOverview(scope: Scope, tab: OverviewTab): OverviewRead {
   };
 }
 
-const sameScope = (a: Scope, b: Scope): boolean => a.account === b.account && a.project === b.project && a.session === b.session && a.range === b.range;
+const sameScope = (a: Scope, b: Scope): boolean =>
+  a.provider === b.provider && a.account === b.account && a.project === b.project && a.session === b.session && a.range === b.range;
 
 // ---------------------------------------------------------------- the scope pickers
 
@@ -590,14 +669,19 @@ function usePickerRead<T>(queryKey: readonly unknown[], path: () => string, open
 
 /// The three pickers' rows, each read only while its picker is open: the accounts that served in the
 /// range, the projects under the account, and the sessions under the account and the project — never
-/// narrowed by the level they pick (OV-C131).
+/// narrowed by the level they pick (OV-C131) — each of the chosen provider alone, so the account
+/// picker offers only that provider's accounts (OV-C227).
 export function usePickers(scope: Scope, open: Level | null) {
-  const { account, project, range } = scope;
+  const { provider, account, project, range } = scope;
   const since = () => sinceMs(range);
   return {
-    account: usePickerRead<Pick<Summary, 'by_account'>>(keys.picker('account', range), () => `/api/summary${query({ since: since(), parts: 'by_account' })}`, open === 'account'),
-    project: usePickerRead<ProjectRow[]>(keys.picker('project', range, account), () => `/api/projects${query({ account, since: since() })}`, open === 'project'),
-    session: usePickerRead<SessionRow[]>(keys.picker('session', range, account, project), () => `/api/sessions${query({ account, project, since: since() })}`, open === 'session'),
+    account: usePickerRead<Pick<Summary, 'by_account'>>(keys.picker('account', range, provider), () => `/api/summary${query({ provider, since: since(), parts: 'by_account' })}`, open === 'account'),
+    project: usePickerRead<ProjectRow[]>(keys.picker('project', range, provider, account), () => `/api/projects${query({ provider, account, since: since() })}`, open === 'project'),
+    session: usePickerRead<SessionRow[]>(
+      keys.picker('session', range, provider, account, project),
+      () => `/api/sessions${query({ provider, account, project, since: since() })}`,
+      open === 'session',
+    ),
   };
 }
 

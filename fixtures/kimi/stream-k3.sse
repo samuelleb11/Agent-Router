@@ -1,0 +1,114 @@
+event:message_start
+data:{"type":"message_start","message":{"id":"msg_RuSeLFCpCzqEzBO7ZZrWC8xW","type":"message","role":"assistant","content":[],"model":"k3","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":108,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0,"service_tier":"standard","inference_geo":"not_available"}}}
+
+event:content_block_start
+data:{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}
+
+event:content_block_delta
+data:{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"The"}}
+
+event:content_block_delta
+data:{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" user is"}}
+
+event:content_block_delta
+data:{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" asking me to reply"}}
+
+event:content_block_delta
+data:{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" with a"}}
+
+event:content_block_delta
+data:{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" single word \""}}
+
+event:content_block_delta
+data:{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"ok\"."}}
+
+event:content_block_delta
+data:{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" This is a benign"}}
+
+event:content_block_delta
+data:{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" request. However"}}
+
+event:content_block_delta
+data:{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":", the system prompt"}}
+
+event:content_block_delta
+data:{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" also"}}
+
+event:content_block_delta
+data:{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" says \"You"}}
+
+event:content_block_delta
+data:{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" are terse.\""}}
+
+event:content_block_delta
+data:{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" which"}}
+
+event:content_block_delta
+data:{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" aligns with"}}
+
+event:content_block_delta
+data:{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" rep"}}
+
+event:content_block_delta
+data:{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"lying briefly"}}
+
+event:content_block_delta
+data:{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":". The"}}
+
+event:content_block_delta
+data:{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" user explicitly"}}
+
+event:content_block_delta
+data:{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" wants the single word"}}
+
+event:content_block_delta
+data:{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":": ok.\n\n"}}
+
+event:content_block_delta
+data:{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"I should just reply"}}
+
+event:content_block_delta
+data:{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" with"}}
+
+event:content_block_delta
+data:{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" \"ok\". No"}}
+
+event:content_block_delta
+data:{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" need to add"}}
+
+event:content_block_delta
+data:{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" anything else. Make"}}
+
+event:content_block_delta
+data:{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" sure final"}}
+
+event:content_block_delta
+data:{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" response"}}
+
+event:content_block_delta
+data:{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" is exactly that"}}
+
+event:content_block_delta
+data:{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" single word."}}
+
+event:content_block_delta
+data:{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"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"}}
+
+event:content_block_stop
+data:{"type":"content_block_stop","index":0}
+
+event:content_block_start
+data:{"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}
+
+event:content_block_delta
+data:{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"ok"}}
+
+event:content_block_stop
+data:{"type":"content_block_stop","index":1}
+
+event:message_delta
+data:{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"input_tokens":108,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":91,"output_tokens_details":{"thinking_tokens":74}}}
+
+event:message_stop
+data:{"type":"message_stop"}
+

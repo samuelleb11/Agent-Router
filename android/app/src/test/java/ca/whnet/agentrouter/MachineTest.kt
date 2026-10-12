@@ -143,16 +143,16 @@ class MachineTest {
     fun `a missing password is the deployment's to set on a hosted router`() {
         assertEquals(
             "a router on a Mac reads exactly as before",
-            "This router has no password yet — set one on its dashboard, on the Mac",
+            "This router has no credential configured — create an Administrator token or set a password in its dashboard",
             RouterState.describe(RouterFailure.NoPasswordSet),
         )
         assertEquals(
-            "This router has no password yet — a hosted router's password is set by its deployment",
+            "This hosted router has no credential configured — create an Administrator token in its dashboard or configure its deployment password",
             RouterState.describe(RouterFailure.NoPasswordSet, hosted = true),
         )
         assertEquals(
             "every other failure reads the same either way",
-            "Wrong password for this router", RouterState.describe(RouterFailure.Unauthorized, hosted = true),
+            "Router credential is invalid, expired or revoked", RouterState.describe(RouterFailure.Unauthorized, hosted = true),
         )
     }
 }

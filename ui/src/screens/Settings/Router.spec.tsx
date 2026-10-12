@@ -52,7 +52,7 @@ describe('Router', () => {
     expect(before).toHaveTextContent(`{ "env": { "ANTHROPIC_BASE_URL": "${location.origin}" } }`);
     expect(before).not.toHaveTextContent('ANTHROPIC_AUTH_TOKEN');
     answer(json({ ...LOCAL, from_loopback: false }));
-    await waitFor(async () => expect(await snippet()).toHaveTextContent('"ANTHROPIC_AUTH_TOKEN": "<the router password>"'));
+    await waitFor(async () => expect(await snippet()).toHaveTextContent('"ANTHROPIC_AUTH_TOKEN": "<Client access token or router password>"'));
     expect(await snippet()).toHaveTextContent(`"ANTHROPIC_BASE_URL": "${location.origin}"`);
   });
 

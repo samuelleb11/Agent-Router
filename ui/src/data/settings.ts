@@ -9,7 +9,7 @@ import { keys } from '~/app/query';
 import { useRead, type Read } from '~/data/held';
 import { getJson, postJson } from '~/data/http';
 import { Refused } from '~/lib/errors';
-import type { Account, Auth } from '~/model/settings';
+import type { Account, Auth, Provider } from '~/model/settings';
 
 /// Auth and the accounts are re-read every 30 s while something shows them, as the dashboard did
 /// (ST-C5, SH-C15).
@@ -19,6 +19,8 @@ export const SLOW_POLL_MS = 30_000;
 /// too; the probed list sits under it, so invalidating the list moves both.
 export const settingsKeys = {
   probed: [...keys.accounts, 'probed'] as const,
+  /// The catalogue, which an assignment, and any change to the accounts, moves.
+  models: ['models'] as const,
   setup: ['setup'] as const,
   /// Not under `setup`: a setup write re-reads the setup, and only a wrapper write the wrapper.
   shim: ['shim'] as const,
@@ -39,6 +41,17 @@ export interface AccountRow extends Account {
   readonly usage_key?: number | boolean | null;
   /// Whether the router holds a token of its own for it; read with the credential check.
   readonly has_token?: boolean | number | null;
+}
+
+/// One model of `GET /api/models` (src/models.rs, `row`): its id, its provider, the provider's name
+/// for it, the account it was assigned (none: its provider's active account) and the account its
+/// next request goes to.
+export interface ModelRow {
+  readonly id: string;
+  readonly provider: Provider;
+  readonly display_name?: string | null;
+  readonly assigned?: string | null;
+  readonly serving?: string | null;
 }
 
 /// One registered phone, as `GET /api/push` lists it (src/notify.rs, `status`).
@@ -140,6 +153,9 @@ export const readAuth = (signal?: AbortSignal) => getJson<Auth>('/api/auth', { s
 /// so only the Accounts page asks for it, and only while it is open (ST-C6).
 export const readAccounts = (probe: boolean, signal?: AbortSignal) => getJson<AccountRow[]>(probe ? '/api/accounts?probe=1' : '/api/accounts', { signal });
 
+/// The catalogue: every model the router can serve now, Anthropic's first (ST-C122).
+export const readModels = (signal?: AbortSignal) => getJson<ModelRow[]>('/api/models', { signal });
+
 export const readSetup = (signal?: AbortSignal) => getJson<Setup>('/api/setup', { signal });
 export const readShim = (signal?: AbortSignal) => getJson<Shim>('/api/setup/shim', { signal });
 export const readPush = (signal?: AbortSignal) => getJson<Push>('/api/push', { signal });
@@ -171,9 +187,28 @@ export interface AccountEdit {
 export const editAccount = (id: string, edit: AccountEdit) => postJson<{ ok: true; id: string }>('/api/accounts/edit', { id, ...edit });
 export const setSessionKey = (accountId: string, token: string) => postJson<{ ok: true }>('/api/usage-token', { account_id: accountId, token });
 export const clearSessionKey = (accountId: string) => postJson<{ ok: true }>('/api/usage-token', { account_id: accountId, clear: true });
-export const addAccount = (label: string, source: 'token' | 'profile', token?: string) =>
-  postJson<Added>('/api/accounts', source === 'token' ? { label, source, token: token ?? '' } : { label, source });
+/// How a new account is added: a pasted token, a Kimi Code key with the base URL its requests go to
+/// when not Kimi Code's default, or a separate profile.
+export type NewAccount =
+  | { readonly source: 'token'; readonly token: string }
+  | { readonly source: 'kimi'; readonly token: string; readonly base_url?: string }
+  | { readonly source: 'openai'; readonly token: string; readonly base_url?: string }
+  | { readonly source: 'profile' };
+
+/// An Anthropic token goes as it always did, naming no provider; a Kimi Code key is a token account
+/// of the provider `kimi`, its base URL sent only when one was typed (ST-C117).
+export function addAccount(label: string, how: NewAccount) {
+  if (how.source === 'profile') return postJson<Added>('/api/accounts', { label, source: 'profile' });
+  if (how.source === 'token') return postJson<Added>('/api/accounts', { label, source: 'token', token: how.token });
+  const baseUrl = how.base_url?.trim();
+  return postJson<Added>('/api/accounts', { label, source: 'token', provider: how.source, token: how.token, ...(baseUrl ? { base_url: baseUrl } : {}) });
+}
 export const probeProfile = (id: string) => postJson<ProfileStatus>('/api/accounts/probe', { id });
+
+/// Assign a model to an account of its own provider, or with null give it back to its provider's
+/// active account. The router refuses an account of another provider (409) and a model nothing
+/// serves (400), in its words (ST-C123).
+export const assignModel = (model: string, account: string | null) => postJson<{ ok: true; model: string; account: string | null }>('/api/models/assign', { model, account });
 export const startSignin = (label: string) => postJson<LoginStatus>('/api/login/start', { label });
 
 export const setService = (enable: boolean) => postJson<Setup & { ok: true }>('/api/setup/service', { enable });
@@ -224,6 +259,12 @@ export function useAccounts({ probe }: { probe: boolean }): Read<AccountRow[]> {
     refetchInterval: SLOW_POLL_MS,
     refetchOnMount: probe ? 'always' : true,
   });
+}
+
+/// The catalogue, read afresh each time the Models page opens and after each of its writes (ST-C5,
+/// ST-C122).
+export function useModels(): Read<ModelRow[]> {
+  return useRead({ queryKey: settingsKeys.models, queryFn: ({ signal }) => readModels(signal), refetchOnMount: 'always' });
 }
 
 /// The Claude Code page's two reads, each made afresh when it opens, and never on a router that

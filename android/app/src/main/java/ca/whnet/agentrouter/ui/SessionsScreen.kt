@@ -464,6 +464,7 @@ private fun SessionRow(
                 )
             }
             Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                session.clientName?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                 Text(
                     session.shortId,
                     style = MaterialTheme.typography.bodySmall,
@@ -489,7 +490,7 @@ private fun SessionRow(
                 )
             }
         }
-        if (trailing != null) trailing() else LiveBadge(session.wrapped)
+        if (trailing != null) trailing() else LiveBadge(session.canControl)
     }
 }
 

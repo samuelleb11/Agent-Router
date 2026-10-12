@@ -114,9 +114,10 @@ describe('concepts', () => {
     expect(new Set(AR_TOKENS)).toEqual(THEMES.g100);
   });
 
-  it('OV-C10: gives each model family its own colour, declared in both themes', () => {
+  it('OV-C10, OV-C222: gives each model family its own colour, declared in both themes, Kimi Code’s among them', () => {
     const colours = Object.values(FAMILY_COLOUR);
-    expect(new Set(colours).size).toBe(4);
+    expect(new Set(colours).size).toBe(5);
+    expect(FAMILY_COLOUR.kimi).toBe('--ar-model-kimi');
     for (const c of colours) {
       expect(THEMES.white.has(c)).toBe(true);
       expect(THEMES.g100.has(c)).toBe(true);

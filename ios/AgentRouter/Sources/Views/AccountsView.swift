@@ -27,7 +27,7 @@ struct AccountsView: View {
                         }
                         .swipeActions(edge: .trailing) {
                             Button("Remove", systemImage: "trash", role: .destructive) { removing = a }
-                                .disabled(a.isActive)
+                                .disabled(a.isActive || (a.isCodexLogin && state.auth?.mode != "server"))
                         }
                 }
             } footer: {
@@ -74,7 +74,7 @@ struct AccountRowView: View {
                 Circle().fill(account.ready == false ? Color.red : Color.green).frame(width: 8, height: 8)
                     .accessibilityLabel(account.ready == false ? "credential unavailable" : "ready")
             }
-            Text([account.subscriptionType, account.orgName, account.source.map { "via \($0)" }].compactMap { $0 }.joined(separator: " · "))
+            Text([account.providerName, account.subscriptionType, account.orgName, account.source.map { $0 == "codex" ? "Codex login" : "via \($0)" }].compactMap { $0 }.joined(separator: " · "))
                 .font(.caption).foregroundStyle(.secondary)
             HStack(spacing: 6) {
                 Text(account.detail ?? "—").lineLimit(1)
@@ -107,18 +107,19 @@ struct AccountEditSheet: View {
                 Section {
                     TextField("Name", text: $label)
                     TextField("Identity", text: $email, prompt: Text("you@example.com"))
+                        .disabled(account.isCodexLogin)
                         .keyboardType(.emailAddress).textInputAutocapitalization(.never).autocorrectionDisabled()
                 } footer: {
                     Text("The id and the stored credential stay the same, so history keyed to this account stays intact.")
                 }
                 if account.source == "token" {
                     Section {
-                        SecureField("New credential", text: $token, prompt: Text("sk-ant-oat01-…"))
+                        SecureField("New credential", text: $token, prompt: Text(account.provider == "openai" ? "sk-proj-…" : account.provider == "kimi" ? "Kimi Code key" : "sk-ant-oat01-…"))
                     } header: { Text("Credential") } footer: {
-                        Text("A fresh `claude setup-token` value, if the current one was revoked or you want to rotate it.")
+                        Text(account.provider == "openai" ? "A fresh OpenAI API key, if the current one was revoked or you want to rotate it." : account.provider == "kimi" ? "A fresh Kimi Code key." : "A fresh `claude setup-token` value, if the current one was revoked or you want to rotate it.")
                     }
                 }
-                Section {
+                if account.takesUsageKey { Section {
                     SecureField(account.hasUsageKey ? "Replace the stored key" : "Session key", text: $usage, prompt: Text("sk-ant-sid…"))
                     if account.hasUsageKey {
                         Button("Remove stored key", role: .destructive) {
@@ -127,7 +128,7 @@ struct AccountEditSheet: View {
                     }
                 } header: { Text("claude.ai session key") } footer: {
                     Text("Copied from your claude.ai browser cookie. Used only to read usage — never sent to api.anthropic.com, and kept in a separate Keychain entry on the Mac from the credential that signs requests.")
-                }
+                } }
                 if let message { Section { Text(message).font(.footnote) } }
             }
             .navigationTitle(account.title)
@@ -147,10 +148,10 @@ struct AccountEditSheet: View {
         let l = label.trimmingCharacters(in: .whitespaces), e = email.trimmingCharacters(in: .whitespaces), t = token.trimmingCharacters(in: .whitespaces)
         if l != account.label || e != (account.email ?? "") || !t.isEmpty {
             if let p = await model.edit(AccountEditBody(id: account.id, label: l != account.label ? l : nil,
-                                                          email: e != (account.email ?? "") ? e : nil, token: t.isEmpty ? nil : t)) { problems.append(p) }
+                                                          email: !account.isCodexLogin && e != (account.email ?? "") ? e : nil, token: t.isEmpty ? nil : t)) { problems.append(p) }
         }
         let u = usage.trimmingCharacters(in: .whitespaces)
-        if !u.isEmpty, let p = await model.usageKey(account.id, token: u, clear: false) { problems.append(p) }
+        if account.takesUsageKey && !u.isEmpty, let p = await model.usageKey(account.id, token: u, clear: false) { problems.append(p) }
         if problems.isEmpty { dismiss() } else { message = problems.joined(separator: " ") }
     }
 }
@@ -163,6 +164,7 @@ struct AddAccountSheet: View {
     @Environment(\.openURL) private var openURL
     @State private var label = ""
     @State private var source = "signin"
+    @State private var provider = "anthropic"
     @State private var token = ""
     @State private var working = false
     @State private var login: LoginStatus?
@@ -170,7 +172,7 @@ struct AddAccountSheet: View {
     @State private var message: String?
 
     private var valid: Bool {
-        !label.trimmingCharacters(in: .whitespaces).isEmpty && (source != "token" || !token.isEmpty)
+        !label.trimmingCharacters(in: .whitespaces).isEmpty && ((provider == "anthropic" && source != "token") || !token.isEmpty)
     }
 
     var body: some View {
@@ -178,13 +180,20 @@ struct AddAccountSheet: View {
             Form {
                 Section {
                     TextField("Name", text: $label, prompt: Text("work"))
-                    Picker("How", selection: $source) {
+                    Picker("Provider", selection: $provider) {
+                        Text("Anthropic").tag("anthropic")
+                        Text("Kimi Code").tag("kimi")
+                        Text("OpenAI").tag("openai")
+                    }
+                    .disabled(working || polling)
+                    .onChange(of: provider) { _, _ in token = "" }
+                    if provider == "anthropic" { Picker("How", selection: $source) {
                         Text("Sign in from here").tag("signin")
                         Text("Paste a token").tag("token")
                         Text("Separate profile").tag("profile")
-                    }
-                    if source == "token" {
-                        SecureField("Token", text: $token, prompt: Text("sk-ant-oat01-…"))
+                    } }
+                    if provider != "anthropic" || source == "token" {
+                        SecureField(provider == "openai" ? "OpenAI API key" : provider == "kimi" ? "Kimi Code key" : "Token", text: $token, prompt: Text(provider == "openai" ? "sk-proj-…" : provider == "kimi" ? "Kimi Code key" : "sk-ant-oat01-…"))
                     }
                 } footer: {
                     Text(help)
@@ -211,7 +220,7 @@ struct AddAccountSheet: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(source == "signin" ? "Start sign-in" : "Add") { Task { await go() } }
+                    Button(provider == "anthropic" && source == "signin" ? "Start sign-in" : "Add") { Task { await go() } }
                         .disabled(!valid || working || polling)
                 }
             }
@@ -235,7 +244,9 @@ struct AddAccountSheet: View {
     }
 
     private var help: String {
-        switch source {
+        if provider == "openai" { return "An API key from your OpenAI project. A local router also discovers the Codex login automatically." }
+        if provider == "kimi" { return "A key from the Kimi Code console." }
+        return switch source {
         case "token": "A `claude setup-token` value from a terminal. The router keeps it in the Mac's Keychain."
         case "profile": "A separate Claude Code profile directory on the Mac. You sign in there once with a terminal; the router reads its credential."
         default: "The router runs `claude setup-token` on the Mac and shows you the link to open. Sign in there, and the account appears here."
@@ -256,16 +267,16 @@ struct AddAccountSheet: View {
         working = true
         defer { working = false }
         let name = label.trimmingCharacters(in: .whitespaces)
-        if source == "signin" {
+        if provider == "anthropic" && source == "signin" {
             login = await model.loginStart(label: name)
             if login?.error == nil { polling = true } else { message = login?.error }
             return
         }
-        if let p = await model.add(label: name, source: source, token: source == "token" ? token.trimmingCharacters(in: .whitespaces) : nil) {
+        if let p = await model.add(label: name, source: provider == "anthropic" ? source : "token", token: provider != "anthropic" || source == "token" ? token.trimmingCharacters(in: .whitespaces) : nil, provider: provider == "anthropic" ? nil : provider) {
             message = p
             return
         }
-        if source == "profile", let acc = model.accounts.first(where: { $0.label == name }), let pr = await model.probe(acc.id), pr.loggedIn == false {
+        if provider == "anthropic" && source == "profile", let acc = model.accounts.first(where: { $0.label == name }), let pr = await model.probe(acc.id), pr.loggedIn == false {
             message = "Added, but not signed in yet: \(pr.detail ?? "sign in on the Mac with `claude` in that profile")."
             return
         }

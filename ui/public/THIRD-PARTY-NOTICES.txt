@@ -31,385 +31,409 @@ A font licence: the fonts are redistributed unmodified and not sold on their own
 dompurify 3.4.14: (MPL-2.0 OR Apache-2.0). In the console as compiled into the dist of @carbon/charts@1.27.20 (the version its licence banner in that dist names).
 It offers a choice, and is used under Apache-2.0, which is permissive; the text of the other is left out.
 
-Packages (67)
+Packages (71)
 ------------
 
-@carbon/charts 1.27.20  [1]
+@babel/runtime 7.29.7  [1]
+  Licence: MIT
+  Source: https://github.com/babel/babel
+  In the console: its JavaScript
+  Copyright: Copyright (c) 2014-present Sebastian McKenzie and other contributors
+
+@carbon/charts 1.27.20  [2]
   Licence: Apache-2.0
   Source: https://github.com/carbon-design-system/carbon-charts
   In the console: compiled into the dist of @carbon/charts-react@1.27.20; its stylesheets, compiled into the console's CSS
   Copyright: Copyright 2018 IBM
 
-@carbon/charts-react 1.27.20  [1]
+@carbon/charts-react 1.27.20  [2]
   Licence: Apache-2.0
   Source: https://github.com/carbon-design-system/carbon-charts
   In the console: its JavaScript
   Copyright: Copyright 2018 IBM
 
-@carbon/colors 11.58.0  [2]
+@carbon/colors 11.58.0  [3]
   Licence: Apache-2.0
   Source: https://github.com/carbon-design-system/carbon
   In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in); its stylesheets, compiled into the console's CSS
   Copyright: Copyright 2015 IBM Corp.
 
-@carbon/feature-flags 1.9.0  [2]
+@carbon/feature-flags 1.9.0  [3]
   Licence: Apache-2.0
   Source: https://github.com/carbon-design-system/carbon
   In the console: its JavaScript; its stylesheets, compiled into the console's CSS
   Copyright: Copyright 2015 IBM Corp.
 
-@carbon/grid 11.62.0  [2]
+@carbon/grid 11.62.0  [3]
   Licence: Apache-2.0
   Source: https://github.com/carbon-design-system/carbon
   In the console: its stylesheets, compiled into the console's CSS
   Copyright: Copyright 2015 IBM Corp.
 
-@carbon/icon-helpers 10.82.0  [2]
+@carbon/icon-helpers 10.82.0  [3]
   Licence: Apache-2.0
   Source: https://github.com/carbon-design-system/carbon
   In the console: its JavaScript
   Copyright: Copyright 2015 IBM Corp.
 
-@carbon/icons-react 11.88.0  [2]
+@carbon/icons-react 11.88.0  [3]
   Licence: Apache-2.0
   Source: https://github.com/carbon-design-system/carbon
   In the console: its JavaScript
   Copyright: Copyright 2015 IBM Corp.
 
-@carbon/layout 11.59.0  [2]
+@carbon/layout 11.59.0  [3]
   Licence: Apache-2.0
   Source: https://github.com/carbon-design-system/carbon
   In the console: its JavaScript; its stylesheets, compiled into the console's CSS
   Copyright: Copyright 2015 IBM Corp.
 
-@carbon/motion 11.52.0  [2]
+@carbon/motion 11.52.0  [3]
   Licence: Apache-2.0
   Source: https://github.com/carbon-design-system/carbon
   In the console: its stylesheets, compiled into the console's CSS
   Copyright: Copyright 2015 IBM Corp.
 
-@carbon/react 1.116.0  [2]
+@carbon/react 1.116.0  [3]
   Licence: Apache-2.0
   Source: https://github.com/carbon-design-system/carbon
   In the console: its JavaScript; its stylesheets, compiled into the console's CSS
   Copyright: Copyright 2015 IBM Corp.
 
-@carbon/styles 1.115.0  [2]
+@carbon/styles 1.115.0  [3]
   Licence: Apache-2.0
   Source: https://github.com/carbon-design-system/carbon
   In the console: its stylesheets, compiled into the console's CSS
   Copyright: Copyright 2015 IBM Corp.
 
-@carbon/themes 11.81.0  [2]
+@carbon/themes 11.81.0  [3]
   Licence: Apache-2.0
   Source: https://github.com/carbon-design-system/carbon
   In the console: its stylesheets, compiled into the console's CSS
   Copyright: Copyright 2015 IBM Corp.
 
-@carbon/type 11.67.0  [2]
+@carbon/type 11.67.0  [3]
   Licence: Apache-2.0
   Source: https://github.com/carbon-design-system/carbon
   In the console: its stylesheets, compiled into the console's CSS
   Copyright: Copyright 2015 IBM Corp.
 
-@carbon/utils-position 1.3.0  [3]
+@carbon/utils-position 1.3.0  [4]
   Licence: MIT
   Source: https://github.com/carbon-design-system/carbon-utils-position
   In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
   Copyright: Copyright 2019 IBM
 
-@floating-ui/core 1.8.0  [4]
+@floating-ui/core 1.8.0  [5]
   Licence: MIT
   Source: https://github.com/floating-ui/floating-ui
   In the console: its JavaScript
   Copyright: Copyright (c) 2021-present Floating UI contributors
 
-@floating-ui/dom 1.8.0  [4]
+@floating-ui/dom 1.8.0  [5]
   Licence: MIT
   Source: https://github.com/floating-ui/floating-ui
   In the console: its JavaScript
   Copyright: Copyright (c) 2021-present Floating UI contributors
 
-@floating-ui/react 0.27.20  [4]
+@floating-ui/react 0.27.20  [5]
   Licence: MIT
   Source: https://github.com/floating-ui/floating-ui
   In the console: its JavaScript
   Copyright: Copyright (c) 2021-present Floating UI contributors
 
-@floating-ui/react-dom 2.1.9  [4]
+@floating-ui/react-dom 2.1.9  [5]
   Licence: MIT
   Source: https://github.com/floating-ui/floating-ui
   In the console: its JavaScript
   Copyright: Copyright (c) 2021-present Floating UI contributors
 
-@floating-ui/utils 0.2.12  [4]
+@floating-ui/utils 0.2.12  [5]
   Licence: MIT
   Source: https://github.com/floating-ui/floating-ui
   In the console: its JavaScript
   Copyright: Copyright (c) 2021-present Floating UI contributors
 
-@ibm/plex-mono 2.5.0  [5]
+@ibm/plex-mono 2.5.0  [6]
   Licence: OFL-1.1
   Source: https://github.com/ibm/plex
   In the console: the IBM Plex Mono font files in fonts/: IBMPlexMono-Regular.woff2
   Copyright: Copyright © 2017 IBM Corp. with Reserved Font Name "Plex"
 
-@ibm/plex-sans 1.1.0  [5]
+@ibm/plex-sans 1.1.0  [6]
   Licence: OFL-1.1
   Source: https://github.com/ibm/plex
   In the console: the IBM Plex Sans font files in fonts/: IBMPlexSans-Light.woff2, IBMPlexSans-Regular.woff2, IBMPlexSans-SemiBold.woff2
   Copyright: Copyright © 2017 IBM Corp. with Reserved Font Name "Plex"
 
-@rollup/plugin-commonjs ^29.0.0, bundled in vite 7.3.6  [6]
+@rollup/plugin-commonjs ^29.0.0, bundled in vite 7.3.6  [7]
   Licence: MIT
   Source: https://github.com/rollup/plugins
   In the console: its CommonJS interop helper, from the copy Vite bundles
   Copyright: Copyright (c) 2019 RollupJS Plugin Contributors (https://github.com/rollup/plugins/graphs/contributors)
 
-@tanstack/query-core 5.103.1  [7]
+@tanstack/query-core 5.103.1  [8]
   Licence: MIT
   Source: https://github.com/TanStack/query
   In the console: its JavaScript
   Copyright: Copyright (c) 2021-present Tanner Linsley
 
-@tanstack/react-query 5.103.1  [7]
+@tanstack/react-query 5.103.1  [8]
   Licence: MIT
   Source: https://github.com/TanStack/query
   In the console: its JavaScript
   Copyright: Copyright (c) 2021-present Tanner Linsley
 
-classnames 2.5.1  [8]
+classnames 2.5.1  [9]
   Licence: MIT
   Source: https://github.com/JedWatson/classnames
   In the console: compiled into the dist of @carbon/charts-react@1.27.20 (the version installed here; that dist does not record which release it compiled in); its JavaScript
   Copyright: Copyright (c) 2018 Jed Watson
 
-copy-to-clipboard 4.0.2  [9]
+compute-scroll-into-view 3.1.1  [10]
+  Licence: MIT
+  Source: https://github.com/scroll-into-view/compute-scroll-into-view
+  In the console: its JavaScript
+  Copyright: Copyright (c) 2025 Cody Olsen
+
+copy-to-clipboard 4.0.2  [11]
   Licence: MIT
   Source: https://github.com/sudodoki/copy-to-clipboard
   In the console: its JavaScript
   Copyright: Copyright (c) 2017 sudodoki <smd.deluzion@gmail.com>
 
-d3-array 2.12.1  [10]
+d3-array 2.12.1  [12]
   Licence: BSD-3-Clause
   Source: https://github.com/d3/d3-array
   In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
   Copyright: Copyright 2010-2020 Mike Bostock
 
-d3-array 3.2.4  [11]
+d3-array 3.2.4  [13]
   Licence: ISC
   Source: https://github.com/d3/d3-array
   In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
   Copyright: Copyright 2010-2023 Mike Bostock
 
-d3-axis 3.0.0  [12]
+d3-axis 3.0.0  [14]
   Licence: ISC
   Source: https://github.com/d3/d3-axis
   In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
   Copyright: Copyright 2010-2021 Mike Bostock
 
-d3-brush 3.0.0  [12]
+d3-brush 3.0.0  [14]
   Licence: ISC
   Source: https://github.com/d3/d3-brush
   In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
   Copyright: Copyright 2010-2021 Mike Bostock
 
-d3-cloud 1.2.9  [13]
+d3-cloud 1.2.9  [15]
   Licence: BSD-3-Clause
   Source: https://github.com/jasondavies/d3-cloud
   In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
   Copyright: Copyright (c) 2013, Jason Davies.
 
-d3-color 3.1.0  [14]
+d3-color 3.1.0  [16]
   Licence: ISC
   Source: https://github.com/d3/d3-color
   In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
   Copyright: Copyright 2010-2022 Mike Bostock
 
-d3-dispatch 1.0.6  [15]
+d3-dispatch 1.0.6  [17]
   Licence: BSD-3-Clause
   Source: https://github.com/d3/d3-dispatch
   In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
   Copyright: Copyright 2010-2016 Mike Bostock
 
-d3-dispatch 3.0.1  [12]
+d3-dispatch 3.0.1  [14]
   Licence: ISC
   Source: https://github.com/d3/d3-dispatch
   In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
   Copyright: Copyright 2010-2021 Mike Bostock
 
-d3-drag 3.0.0  [12]
+d3-drag 3.0.0  [14]
   Licence: ISC
   Source: https://github.com/d3/d3-drag
   In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
   Copyright: Copyright 2010-2021 Mike Bostock
 
-d3-ease 3.0.1  [16]
+d3-ease 3.0.1  [18]
   Licence: BSD-3-Clause
   Source: https://github.com/d3/d3-ease
   In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
   Copyright: Copyright 2010-2021 Mike Bostock
              Copyright 2001 Robert Penner
 
-d3-format 3.1.2  [17]
+d3-format 3.1.2  [19]
   Licence: ISC
   Source: https://github.com/d3/d3-format
   In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
   Copyright: Copyright 2010-2026 Mike Bostock
 
-d3-geo 3.1.1  [18]
+d3-geo 3.1.1  [20]
   Licence: ISC
   Source: https://github.com/d3/d3-geo
   In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
   Copyright: Copyright 2010-2024 Mike Bostock
              Copyright 2008-2012 Charles Karney
 
-d3-hierarchy 3.1.2  [12]
+d3-hierarchy 3.1.2  [14]
   Licence: ISC
   Source: https://github.com/d3/d3-hierarchy
   In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
   Copyright: Copyright 2010-2021 Mike Bostock
 
-d3-interpolate 3.0.1  [12]
+d3-interpolate 3.0.1  [14]
   Licence: ISC
   Source: https://github.com/d3/d3-interpolate
   In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
   Copyright: Copyright 2010-2021 Mike Bostock
 
-d3-path 1.0.9  [19]
+d3-path 1.0.9  [21]
   Licence: BSD-3-Clause
   Source: https://github.com/d3/d3-path
   In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
   Copyright: Copyright 2015-2016 Mike Bostock
 
-d3-path 3.1.0  [20]
+d3-path 3.1.0  [22]
   Licence: ISC
   Source: https://github.com/d3/d3-path
   In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
   Copyright: Copyright 2015-2022 Mike Bostock
 
-d3-sankey 0.12.3  [21]
+d3-sankey 0.12.3  [23]
   Licence: BSD-3-Clause
   Source: https://github.com/d3/d3-sankey
   In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
   Copyright: Copyright 2015, Mike Bostock
 
-d3-scale 4.0.2  [12]
+d3-scale 4.0.2  [14]
   Licence: ISC
   Source: https://github.com/d3/d3-scale
   In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
   Copyright: Copyright 2010-2021 Mike Bostock
 
-d3-selection 3.0.0  [12]
+d3-selection 3.0.0  [14]
   Licence: ISC
   Source: https://github.com/d3/d3-selection
   In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
   Copyright: Copyright 2010-2021 Mike Bostock
 
-d3-shape 1.3.7  [22]
+d3-shape 1.3.7  [24]
   Licence: BSD-3-Clause
   Source: https://github.com/d3/d3-shape
   In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
   Copyright: Copyright 2010-2015 Mike Bostock
 
-d3-shape 3.2.0  [14]
+d3-shape 3.2.0  [16]
   Licence: ISC
   Source: https://github.com/d3/d3-shape
   In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
   Copyright: Copyright 2010-2022 Mike Bostock
 
-d3-time 3.1.0  [14]
+d3-time 3.1.0  [16]
   Licence: ISC
   Source: https://github.com/d3/d3-time
   In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
   Copyright: Copyright 2010-2022 Mike Bostock
 
-d3-time-format 4.1.0  [12]
+d3-time-format 4.1.0  [14]
   Licence: ISC
   Source: https://github.com/d3/d3-time-format
   In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
   Copyright: Copyright 2010-2021 Mike Bostock
 
-d3-timer 3.0.1  [12]
+d3-timer 3.0.1  [14]
   Licence: ISC
   Source: https://github.com/d3/d3-timer
   In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
   Copyright: Copyright 2010-2021 Mike Bostock
 
-d3-transition 3.0.1  [12]
+d3-transition 3.0.1  [14]
   Licence: ISC
   Source: https://github.com/d3/d3-transition
   In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
   Copyright: Copyright 2010-2021 Mike Bostock
 
-d3-zoom 3.0.0  [12]
+d3-zoom 3.0.0  [14]
   Licence: ISC
   Source: https://github.com/d3/d3-zoom
   In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
   Copyright: Copyright 2010-2021 Mike Bostock
 
-date-fns 4.4.0  [23]
+date-fns 4.4.0  [25]
   Licence: MIT
   Source: https://github.com/date-fns/date-fns
   In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
   Copyright: Copyright (c) 2021 Sasha Koss and Lesha Koss https://kossnocorp.mit-license.org
 
-dompurify 3.4.14  [24]
+dompurify 3.4.14  [26]
   Licence: (MPL-2.0 OR Apache-2.0), used under Apache-2.0
   Source: https://github.com/cure53/DOMPurify
   In the console: compiled into the dist of @carbon/charts@1.27.20 (the version its licence banner in that dist names)
   Copyright: no line in its licence; its author: Dr.-Ing. Mario Heiderich, Cure53
 
-es-toolkit 1.52.0  [25]
+downshift 9.4.0  [27]
+  Licence: MIT
+  Source: https://github.com/downshift-js/downshift
+  In the console: its JavaScript
+  Copyright: Copyright (c) 2017 PayPal
+
+es-toolkit 1.52.0  [28]
   Licence: MIT
   Source: https://github.com/toss/es-toolkit
   In the console: its JavaScript
   Copyright: Copyright (c) 2024 Viva Republica, Inc.
              Copyright OpenJS Foundation and other contributors <https://openjsf.org/>
 
-html-to-image 1.11.11  [26]
+html-to-image 1.11.11  [29]
   Licence: MIT
   Source: https://github.com/bubkoo/html-to-image
   In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
   Copyright: Copyright (c) 2017-2023 W.Y.
 
-internmap 1.0.1  [27]
+internmap 1.0.1  [30]
   Licence: ISC
   Source: https://github.com/mbostock/internmap
   In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
   Copyright: Copyright 2021 Mike Bostock
 
-internmap 2.0.3  [27]
+internmap 2.0.3  [30]
   Licence: ISC
   Source: https://github.com/mbostock/internmap
   In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
   Copyright: Copyright 2021 Mike Bostock
 
-lodash-es 4.18.1  [28]
+lodash-es 4.18.1  [31]
   Licence: MIT
   Source: https://github.com/lodash/lodash
   In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
   Copyright: Copyright OpenJS Foundation and other contributors <https://openjsf.org/>
 
-prop-types 15.8.1  [29]
+prop-types 15.8.1  [32]
   Licence: MIT
   Source: https://github.com/facebook/prop-types
   In the console: its JavaScript
   Copyright: Copyright (c) 2013-present, Facebook, Inc.
 
-react 19.3.0  [30]
+react 19.3.0  [33]
   Licence: MIT
   Source: https://github.com/react/react
   In the console: its JavaScript
   Copyright: Copyright (c) Meta Platforms, Inc. and affiliates.
 
-react-dom 19.3.0  [30]
+react-dom 19.3.0  [33]
   Licence: MIT
   Source: https://github.com/react/react
   In the console: its JavaScript
   Copyright: Copyright (c) Meta Platforms, Inc. and affiliates.
 
-react-router 7.18.4  [31]
+react-is 18.3.1  [34]
+  Licence: MIT
+  Source: https://github.com/facebook/react
+  In the console: its JavaScript
+  Copyright: Copyright (c) Facebook, Inc. and its affiliates.
+
+react-router 7.18.4  [35]
   Licence: MIT
   Source: https://github.com/remix-run/react-router
   In the console: its JavaScript
@@ -417,32 +441,63 @@ react-router 7.18.4  [31]
              Copyright (c) Remix Software Inc. 2020-2021
              Copyright (c) Shopify Inc. 2022-2023
 
-scheduler 0.28.0  [30]
+scheduler 0.28.0  [33]
   Licence: MIT
   Source: https://github.com/react/react
   In the console: its JavaScript
   Copyright: Copyright (c) Meta Platforms, Inc. and affiliates.
 
-tabbable 6.5.0  [32]
+tabbable 6.5.0  [36]
   Licence: MIT
   Source: https://github.com/focus-trap/tabbable
   In the console: its JavaScript
   Copyright: Copyright (c) 2015 David Clark
 
-topojson-client 3.1.0  [33]
+topojson-client 3.1.0  [37]
   Licence: ISC
   Source: https://github.com/topojson/topojson-client
   In the console: compiled into the dist of @carbon/charts@1.27.20 (the version installed here; that dist does not record which release it compiled in)
   Copyright: Copyright 2012-2019 Michael Bostock
 
-vite 7.3.6  [34]
+vite 7.3.6  [38]
   Licence: MIT
   Source: https://github.com/vitejs/vite
   In the console: Vite's preload helper and Vite's module-preload polyfill
   Copyright: Copyright (c) 2019-present, VoidZero Inc. and Vite contributors
 
 ====================================================================================================
-[1] Apache-2.0
+[1] MIT
+====================================================================================================
+
+Applies to: @babel/runtime 7.29.7
+
+---- LICENSE
+
+MIT License
+
+Copyright (c) 2014-present Sebastian McKenzie and other contributors
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+====================================================================================================
+[2] Apache-2.0
 ====================================================================================================
 
 Applies to: @carbon/charts 1.27.20, @carbon/charts-react 1.27.20
@@ -652,7 +707,7 @@ Applies to: @carbon/charts 1.27.20, @carbon/charts-react 1.27.20
    limitations under the License.
 
 ====================================================================================================
-[2] Apache-2.0
+[3] Apache-2.0
 ====================================================================================================
 
 Applies to: @carbon/colors 11.58.0, @carbon/feature-flags 1.9.0, @carbon/grid 11.62.0, @carbon/icon-helpers 10.82.0, @carbon/icons-react 11.88.0, @carbon/layout 11.59.0, @carbon/motion 11.52.0, @carbon/react 1.116.0, @carbon/styles 1.115.0, @carbon/themes 11.81.0, @carbon/type 11.67.0
@@ -862,7 +917,7 @@ Applies to: @carbon/colors 11.58.0, @carbon/feature-flags 1.9.0, @carbon/grid 11
    limitations under the License.
 
 ====================================================================================================
-[3] MIT
+[4] MIT
 ====================================================================================================
 
 Applies to: @carbon/utils-position 1.3.0
@@ -878,7 +933,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ====================================================================================================
-[4] MIT
+[5] MIT
 ====================================================================================================
 
 Applies to: @floating-ui/core 1.8.0, @floating-ui/dom 1.8.0, @floating-ui/react 0.27.20, @floating-ui/react-dom 2.1.9, @floating-ui/utils 0.2.12
@@ -907,7 +962,7 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ====================================================================================================
-[5] OFL-1.1
+[6] OFL-1.1
 ====================================================================================================
 
 Applies to: @ibm/plex-mono 2.5.0, @ibm/plex-sans 1.1.0
@@ -1009,7 +1064,7 @@ FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
 OTHER DEALINGS IN THE FONT SOFTWARE.
 
 ====================================================================================================
-[6] MIT
+[7] MIT
 ====================================================================================================
 
 Applies to: @rollup/plugin-commonjs ^29.0.0, bundled in vite 7.3.6
@@ -1055,7 +1110,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
 ====================================================================================================
-[7] MIT
+[8] MIT
 ====================================================================================================
 
 Applies to: @tanstack/query-core 5.103.1, @tanstack/react-query 5.103.1
@@ -1085,7 +1140,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ====================================================================================================
-[8] MIT
+[9] MIT
 ====================================================================================================
 
 Applies to: classnames 2.5.1
@@ -1115,7 +1170,37 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ====================================================================================================
-[9] MIT
+[10] MIT
+====================================================================================================
+
+Applies to: compute-scroll-into-view 3.1.1
+
+---- LICENSE
+
+MIT License
+
+Copyright (c) 2025 Cody Olsen
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+====================================================================================================
+[11] MIT
 ====================================================================================================
 
 Applies to: copy-to-clipboard 4.0.2
@@ -1145,7 +1230,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ====================================================================================================
-[10] BSD-3-Clause
+[12] BSD-3-Clause
 ====================================================================================================
 
 Applies to: d3-array 2.12.1
@@ -1181,7 +1266,7 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ====================================================================================================
-[11] ISC
+[13] ISC
 ====================================================================================================
 
 Applies to: d3-array 3.2.4
@@ -1203,7 +1288,7 @@ TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
 THIS SOFTWARE.
 
 ====================================================================================================
-[12] ISC
+[14] ISC
 ====================================================================================================
 
 Applies to: d3-axis 3.0.0, d3-brush 3.0.0, d3-dispatch 3.0.1, d3-drag 3.0.0, d3-hierarchy 3.1.2, d3-interpolate 3.0.1, d3-scale 4.0.2, d3-selection 3.0.0, d3-time-format 4.1.0, d3-timer 3.0.1, d3-transition 3.0.1, d3-zoom 3.0.0
@@ -1225,7 +1310,7 @@ TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
 THIS SOFTWARE.
 
 ====================================================================================================
-[13] BSD-3-Clause
+[15] BSD-3-Clause
 ====================================================================================================
 
 Applies to: d3-cloud 1.2.9
@@ -1260,7 +1345,7 @@ OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
 ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ====================================================================================================
-[14] ISC
+[16] ISC
 ====================================================================================================
 
 Applies to: d3-color 3.1.0, d3-shape 3.2.0, d3-time 3.1.0
@@ -1282,7 +1367,7 @@ TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
 THIS SOFTWARE.
 
 ====================================================================================================
-[15] BSD-3-Clause
+[17] BSD-3-Clause
 ====================================================================================================
 
 Applies to: d3-dispatch 1.0.6
@@ -1318,7 +1403,7 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ====================================================================================================
-[16] BSD-3-Clause
+[18] BSD-3-Clause
 ====================================================================================================
 
 Applies to: d3-ease 3.0.1
@@ -1355,7 +1440,7 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ====================================================================================================
-[17] ISC
+[19] ISC
 ====================================================================================================
 
 Applies to: d3-format 3.1.2
@@ -1377,7 +1462,7 @@ TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
 THIS SOFTWARE.
 
 ====================================================================================================
-[18] ISC
+[20] ISC
 ====================================================================================================
 
 Applies to: d3-geo 3.1.1
@@ -1420,7 +1505,7 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ====================================================================================================
-[19] BSD-3-Clause
+[21] BSD-3-Clause
 ====================================================================================================
 
 Applies to: d3-path 1.0.9
@@ -1456,7 +1541,7 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ====================================================================================================
-[20] ISC
+[22] ISC
 ====================================================================================================
 
 Applies to: d3-path 3.1.0
@@ -1478,7 +1563,7 @@ TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
 THIS SOFTWARE.
 
 ====================================================================================================
-[21] BSD-3-Clause
+[23] BSD-3-Clause
 ====================================================================================================
 
 Applies to: d3-sankey 0.12.3
@@ -1514,7 +1599,7 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ====================================================================================================
-[22] BSD-3-Clause
+[24] BSD-3-Clause
 ====================================================================================================
 
 Applies to: d3-shape 1.3.7
@@ -1550,7 +1635,7 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ====================================================================================================
-[23] MIT
+[25] MIT
 ====================================================================================================
 
 Applies to: date-fns 4.4.0
@@ -1580,7 +1665,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ====================================================================================================
-[24] Apache-2.0
+[26] Apache-2.0
 ====================================================================================================
 
 Applies to: dompurify 3.4.14
@@ -1790,7 +1875,36 @@ Applies to: dompurify 3.4.14
    limitations under the License.
 
 ====================================================================================================
-[25] MIT
+[27] MIT
+====================================================================================================
+
+Applies to: downshift 9.4.0
+
+---- LICENSE
+
+The MIT License (MIT)
+Copyright (c) 2017 PayPal
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+====================================================================================================
+[28] MIT
 ====================================================================================================
 
 Applies to: es-toolkit 1.52.0
@@ -1862,7 +1976,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ====================================================================================================
-[26] MIT
+[29] MIT
 ====================================================================================================
 
 Applies to: html-to-image 1.11.11
@@ -1892,7 +2006,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ====================================================================================================
-[27] ISC
+[30] ISC
 ====================================================================================================
 
 Applies to: internmap 1.0.1, internmap 2.0.3
@@ -1914,7 +2028,7 @@ TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
 THIS SOFTWARE.
 
 ====================================================================================================
-[28] MIT
+[31] MIT
 ====================================================================================================
 
 Applies to: lodash-es 4.18.1
@@ -1970,7 +2084,7 @@ licenses; we recommend you read them, as their terms may differ from the
 terms above.
 
 ====================================================================================================
-[29] MIT
+[32] MIT
 ====================================================================================================
 
 Applies to: prop-types 15.8.1
@@ -2000,7 +2114,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ====================================================================================================
-[30] MIT
+[33] MIT
 ====================================================================================================
 
 Applies to: react 19.3.0, react-dom 19.3.0, scheduler 0.28.0
@@ -2030,7 +2144,37 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ====================================================================================================
-[31] MIT
+[34] MIT
+====================================================================================================
+
+Applies to: react-is 18.3.1
+
+---- LICENSE
+
+MIT License
+
+Copyright (c) Facebook, Inc. and its affiliates.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+====================================================================================================
+[35] MIT
 ====================================================================================================
 
 Applies to: react-router 7.18.4
@@ -2062,7 +2206,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ====================================================================================================
-[32] MIT
+[36] MIT
 ====================================================================================================
 
 Applies to: tabbable 6.5.0
@@ -2092,7 +2236,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ====================================================================================================
-[33] ISC
+[37] ISC
 ====================================================================================================
 
 Applies to: topojson-client 3.1.0
@@ -2114,7 +2258,7 @@ TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
 THIS SOFTWARE.
 
 ====================================================================================================
-[34] MIT
+[38] MIT
 ====================================================================================================
 
 Applies to: vite 7.3.6

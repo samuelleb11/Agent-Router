@@ -191,6 +191,34 @@
 
 // ------------------------------------------------------------------ accounts
 
+/// One provider's accounts (ST-C125): its mark and name, the list box that says which account its
+/// requests go to, then its cards. A rule above every provider but the first keeps them apart.
+.provider {
+  display: grid;
+  gap: $spacing-05;
+  min-inline-size: 0;
+
+  & + & {
+    padding-block-start: $spacing-06;
+    border-block-start: 1px solid var(--cds-border-subtle-01);
+  }
+}
+
+.providerTitle {
+  margin: 0;
+  @include type-style('heading-02');
+  color: var(--cds-text-primary);
+  min-inline-size: 0;
+}
+
+/// The "Requests go to" list box and its outcome: as wide as a card at most, the whole width in a hand.
+.requestsTo {
+  display: grid;
+  gap: $spacing-03;
+  inline-size: min(100%, 26rem);
+  min-inline-size: 0;
+}
+
 /// One card per account: two across on a desk, one in a hand, every card a block.
 .cards {
   display: grid;

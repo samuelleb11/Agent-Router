@@ -23,8 +23,10 @@
 //   never "no longer listed" (SE-C173);
 // - every dot carries its words, a heading's and a tab's included (SE-C20).
 
-import { DASH, factUsd, id8, rowDuration, span } from './format';
-import { AGENTLESS, machineOrder } from './machine';
+import { DASH, clientLabel, factUsd, id8, productName, rowDuration, span } from './format';
+import { CODEX, CODEX_WATCHED, isCodex } from './clients';
+export { CODEX, CODEX_WATCHED, isCodex } from './clients';
+import { AGENTLESS, machineOrder, type MachineRow } from './machine';
 import { md, type Block } from './markdown';
 import type { FindScope } from './search';
 
@@ -90,6 +92,12 @@ export interface SessionRow extends Said {
   /// The transcript's size, and where the router learned of the session.
   readonly bytes?: number | null;
   readonly source?: string | null;
+  /// The client running it when it is not Claude Code: `kimi-code` (src/kimi/session.rs). Claude
+  /// Code's rows carry none.
+  readonly client?: string | null;
+  /// For a Kimi Code session, whether the router hosts it, and so drives it; one it does not is
+  /// watched only (SE-C235, SE-C236).
+  readonly hosted?: boolean | null;
 }
 
 /// The open view's `status` event.
@@ -255,8 +263,14 @@ export interface RowView {
   /// The git branch or the id's first eight characters when the session has a title, the project
   /// otherwise (SE-C26).
   readonly name: string;
-  /// "live" takes a typed message and a Stop; "view" is read-only (SE-C28).
+  /// "live" takes a typed message and a Stop; "view" is read-only (SE-C28, SE-C235).
   readonly reach: 'live' | 'view';
+  /// The client it runs in when it is not Claude Code's, "Kimi Code web" or "Kimi Code"; null for
+  /// Claude Code's, which name none (SE-C235).
+  readonly client: string | null;
+  /// The provider of its requests where the row says it, marked beside its client: Kimi Code's for a
+  /// Kimi Code session; null for a Claude Code row, which does not say (SE-C242).
+  readonly provider: 'kimi' | null;
   readonly age: string;
   readonly title: string | null;
   readonly line: string | null;
@@ -281,7 +295,9 @@ export function rowView(r: SessionRow, now: number): RowView {
     halo: isLive(r),
     label: spoken(r),
     name: r.title ? r.git_branch || id8(id) : projectOf(r),
-    reach: r.wrapped ? 'live' : 'view',
+    reach: drives(r) ? 'live' : 'view',
+    client: rowClient(r),
+    provider: rowProvider(r),
     age: ageOf(quietFor(r, now)),
     title: r.title || null,
     line: line || null,
@@ -852,7 +868,7 @@ const record = (body: unknown): Record<string, unknown> => (body && typeof body 
 /// Whether an action worked: a 2xx that does not carry `ok: false` (SE-C184).
 export const succeeded = (status: number, body: unknown): boolean => status >= 200 && status < 300 && record(body)['ok'] !== false;
 
-export type Action = 'send' | 'stop' | 'aside' | 'archive' | 'answer' | 'form' | 'model' | 'effort' | 'mode';
+export type Action = 'send' | 'stop' | 'aside' | 'archive' | 'answer' | 'form' | 'model' | 'effort' | 'mode' | 'start';
 
 /// The sentence for a refused action (SE-C183): the router's own words whenever it sent any — its
 /// `reason`, else its `error`, at any status, as the phones say them — else, for a refusal that
@@ -876,6 +892,8 @@ export function refusal(action: Action, status: number, body: unknown): string {
       return 'Could not answer that prompt.';
     case 'form':
       return 'could not answer directly';
+    case 'start':
+      return 'Could not start the session.';
     default:
       return `Could not set the ${action}.`;
   }
@@ -919,8 +937,20 @@ export function asideNotice(status: number, body: unknown): Notice | null {
 
 // ---------- switchers ----------
 
+/// One provider's models, as `/api/live/options` groups them (src/live.rs, `options`): Claude's
+/// aliases under Anthropic, Kimi Code's models under Kimi Code.
+export interface ProviderModels {
+  readonly provider: string;
+  /// The provider's name: "Anthropic", "Kimi Code".
+  readonly name: string;
+  readonly models: readonly { readonly id: string; readonly display_name?: string | null }[];
+}
+
 export interface LiveOptions {
   readonly models?: readonly string[] | null;
+  /// The same models grouped by provider. A router from before there was a second provider sends
+  /// none, and the flat list is offered as it always was (SE-C233).
+  readonly by_provider?: readonly ProviderModels[] | null;
   readonly efforts?: readonly string[] | null;
   readonly modes?: readonly { readonly value: string; readonly label: string }[] | null;
 }
@@ -929,6 +959,9 @@ export interface SwitchOption {
   readonly value: string;
   readonly label: string;
   readonly current: boolean;
+  /// The provider a model is offered under, by name; none for the value in force, a value the router
+  /// does not list, and "other…" (SE-C233).
+  readonly group?: string;
 }
 
 /// The "other…" entry of the model switcher, which asks for a name in a modal (SE-C141).
@@ -937,15 +970,160 @@ export const OTHER_MODEL = '__other__';
 /// A switcher's options: the current value first, marked ("model: opus") and offered even when the
 /// router's list lacks it (SE-C139), or "unknown" when the session has none on record, never its
 /// first option as though it were current (SE-C140); the router's own labels for modes (SE-C138).
+/// Models come grouped by provider when the router groups them, each by its display name, and
+/// "other…" ends them (SE-C141, SE-C233).
 export function switcherOptions(kind: 'model' | 'effort' | 'mode', current: string | null | undefined, options: LiveOptions): SwitchOption[] {
   const modes = options.modes ?? [];
-  const list = kind === 'model' ? (options.models ?? []) : kind === 'effort' ? (options.efforts ?? []) : modes.map((m) => m.value);
-  const labelOf = (v: string) => (kind === 'mode' ? modes.find((m) => m.value === v)?.label || v : v);
+  const groups = kind === 'model' && options.by_provider?.length ? options.by_provider : null;
+  const named = new Map<string, { readonly label: string; readonly group: string }>();
+  for (const g of groups ?? []) for (const m of g.models) if (!named.has(m.id)) named.set(m.id, { label: m.display_name || m.id, group: g.name });
+  const list = groups ? [...named.keys()] : kind === 'model' ? (options.models ?? []) : kind === 'effort' ? (options.efforts ?? []) : modes.map((m) => m.value);
+  const labelOf = (v: string) => (kind === 'mode' ? modes.find((m) => m.value === v)?.label || v : (named.get(v)?.label ?? v));
   const cur = (current ?? '').replace(/^claude-/, '');
-  const out: SwitchOption[] = [...new Set([cur, ...list].filter(Boolean))].map((v) => ({ value: v, label: `${v === cur ? `${kind}: ` : ''}${labelOf(v)}`, current: v === cur }));
+  const out: SwitchOption[] = [...new Set([cur, ...list].filter(Boolean))].map((v) => {
+    const group = v === cur ? undefined : named.get(v)?.group;
+    return { value: v, label: `${v === cur ? `${kind}: ` : ''}${labelOf(v)}`, current: v === cur, ...(group ? { group } : {}) };
+  });
   if (!cur) out.unshift({ value: '', label: `${kind}: unknown`, current: true });
   if (kind === 'model') out.push({ value: OTHER_MODEL, label: 'other…', current: false });
   return out;
+}
+
+/// A switcher's options as its picker draws them: each run of one provider's models under that
+/// provider's name, in the order they came, and everything else on its own (SE-C233).
+export function switcherSections(options: readonly SwitchOption[]): { readonly group: string | null; readonly options: readonly SwitchOption[] }[] {
+  const out: { group: string | null; options: SwitchOption[] }[] = [];
+  for (const o of options) {
+    const group = o.group ?? null;
+    const last = out[out.length - 1];
+    if (last && last.group === group) last.options.push(o);
+    else out.push({ group, options: [o] });
+  }
+  return out;
+}
+
+// ---------- Kimi Code's sessions ----------
+
+/// The client a Kimi Code session's row names (src/kimi/session.rs, `CLIENT`), and a machine's
+/// agent reports (src/clients.rs).
+export const KIMI_CODE = 'kimi-code';
+
+/// The router's own words for what a Kimi Code session takes no control of (src/kimi/live.rs):
+/// every control, on one it only watches (SE-C236); the effort, the side question and a question's
+/// answer, on any (SE-C237).
+export const KIMI_WATCHED = 'This Kimi Code session runs in its own terminal or in VS Code, which takes no outside control. Start a hosted session to drive one.';
+export const KIMI_NO_EFFORT = 'A Kimi Code session has no effort to set from here.';
+export const KIMI_NO_ASIDE = 'A Kimi Code session has no side question to ask from here.';
+export const KIMI_QUESTION = 'A Kimi Code question is answered in its own window for now.';
+
+/// Kimi Code's permission modes, which its mode switcher offers in place of the router's list,
+/// Claude Code's (SE-C238).
+export const KIMI_MODES: readonly { readonly value: string; readonly label: string }[] = [
+  { value: 'manual', label: 'Manual' },
+  { value: 'auto', label: 'Auto' },
+  { value: 'yolo', label: 'YOLO' },
+];
+
+/// The mode that stops a session asking about anything, which is asked first (SE-C142, SE-C238).
+export const BYPASS = 'bypassPermissions';
+export const KIMI_YOLO = 'yolo';
+
+/// Whether a session is Kimi Code's: its row says so, or, before the list has listed it, its id,
+/// `session_<uuid>` where Claude Code's is a bare UUID (src/kimi/live.rs, `is_kimi`).
+export function isKimi(id: string, row: Pick<SessionRow, 'client'> | null | undefined): boolean {
+  return row?.client === KIMI_CODE || id.startsWith('session_');
+}
+
+/// Whether a session takes a typed message and a Stop from here: a Kimi Code one when the router
+/// hosts it, a Claude Code one when it runs under the wrapper (SE-C28, SE-C235).
+export function drives(r: Pick<SessionRow, 'session_id' | 'client' | 'hosted' | 'wrapped'>): boolean {
+  if (isCodex(String(r.session_id ?? ''), r)) return r.hosted === true && r.wrapped === true;
+  return isKimi(String(r.session_id ?? ''), r) ? r.hosted === true : !!r.wrapped;
+}
+
+/// The client a row names: "Kimi Code web" for a Kimi Code session the router hosts, under Kimi
+/// Code's web server, and "Kimi Code" for one it watches; none for Claude Code's (SE-C235).
+export function rowClient(r: Pick<SessionRow, 'client' | 'hosted'>): string | null {
+  if (r.client === CODEX) return productName(CODEX);
+  if (r.client !== KIMI_CODE) return null;
+  return r.hosted === true ? clientLabel('kimi-code-web') : productName(KIMI_CODE);
+}
+
+/// The provider of a live session's requests, where its row says it: Kimi Code's for a Kimi Code
+/// session, known by its client. A Claude Code row says none: its requests go to Anthropic, or
+/// through `/model` to Kimi Code, and the live row does not say which, so nothing is marked rather
+/// than a guess (SE-C242).
+export function rowProvider(r: Pick<SessionRow, 'client'>): 'kimi' | null {
+  return r.client === KIMI_CODE ? 'kimi' : null;
+}
+
+/// What an open session's controls can do from here, and why not, in the router's words, where
+/// they cannot.
+export interface Controls {
+  /// Why the session takes no control at all — a Kimi Code session the router only watches — else
+  /// null: the composer, Stop, the permission card, the question form and the model and mode
+  /// switchers are off, and this is said beside them (SE-C236).
+  readonly held: string | null;
+  /// Why the effort switcher is off, else null (SE-C237).
+  readonly effort: string | null;
+  /// Why the side question is off, else null (SE-C237).
+  readonly aside: string | null;
+  /// Why the question form is off, else null (SE-C236, SE-C237).
+  readonly question: string | null;
+  /// The modes the mode switcher offers in place of the router's: Kimi Code's for its sessions,
+  /// else null (SE-C238).
+  readonly modes: readonly { readonly value: string; readonly label: string }[] | null;
+  /// The mode asked for first, in a modal (SE-C142, SE-C238).
+  readonly bypass: string;
+}
+
+const EVERY_CONTROL: Controls = { held: null, effort: null, aside: null, question: null, modes: null, bypass: BYPASS };
+
+/// The open session's controls. A Claude Code session's are all there, as they always were; a Kimi
+/// Code one's effort, side question and question form never are, and nothing at all is while the
+/// router only watches it. Before the list has said whether the router hosts it, nothing is held
+/// back, and a refusal says the router's words (SE-C236, SE-C237).
+export function controlsOf(id: string, row: (Pick<SessionRow, 'client' | 'hosted'> & Partial<Pick<SessionRow, 'wrapped'>>) | null | undefined): Controls {
+  if (isCodex(id, row)) {
+    const held = row?.hosted === true ? row.wrapped === true ? null : 'Managed Codex is disconnected. Reconnect or resume it before sending controls.' : CODEX_WATCHED;
+    return { held, effort: held, aside: held ?? 'Side questions are not available for Codex yet.', question: held, modes: null, bypass: BYPASS };
+  }
+  if (!isKimi(id, row)) return EVERY_CONTROL;
+  const held = row && row.hosted !== true ? KIMI_WATCHED : null;
+  return { held, effort: KIMI_NO_EFFORT, aside: KIMI_NO_ASIDE, question: held ?? KIMI_QUESTION, modes: KIMI_MODES, bypass: KIMI_YOLO };
+}
+
+// ---------- starting a session ----------
+
+/// A machine a Kimi Code session can be started on (SE-C239).
+export interface StartMachine {
+  readonly id: string;
+  readonly label: string;
+}
+
+/// The machines a Kimi Code session can be started on: online, with Kimi Code among the clients
+/// their agent reported, by label in the order the list heads its machines (SE-C220, SE-C239).
+export function startMachines(rows: readonly MachineRow[], client: 'kimi-code' | 'codex' = 'kimi-code'): StartMachine[] {
+  return rows
+    .filter((m) => m.online === true && (m.clients ?? []).some((c) => c?.client === client))
+    .map((m) => {
+      const id = String(m.id ?? '');
+      return { id, label: (typeof m.label === 'string' && m.label.trim()) || id.slice(0, 8) };
+    })
+    .sort((a, b) => machineOrder(a.label, b.label));
+}
+
+/// The models a Kimi Code session can be started with: the catalogue's Kimi Code models, in its
+/// order, each by its display name (SE-C240).
+export function startModels(rows: readonly { readonly id: string; readonly provider?: string | null; readonly display_name?: string | null }[], client: 'kimi-code' | 'codex' = 'kimi-code'): { readonly id: string; readonly label: string }[] {
+  return rows.filter((m) => (client === 'codex' || m.provider === 'kimi') && !!m.id).map((m) => ({ id: m.id, label: m.display_name || m.id }));
+}
+
+/// What a start sends: the machine on a hosted router, which relays it there, and none on a local
+/// one, which starts the session on itself (SE-C239, SE-C241).
+export function startBody(hosted: boolean, machine: string, cwd: string, model: string, client: 'kimi-code' | 'codex' = 'kimi-code'): { machine?: string; cwd: string; model: string; client?: string } {
+  const body = hosted ? { machine, cwd: cwd.trim(), model } : { cwd: cwd.trim(), model };
+  return client === 'codex' ? { ...body, client } : body;
 }
 
 // ---------- permission prompts ----------

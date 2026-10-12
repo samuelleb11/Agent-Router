@@ -38,6 +38,7 @@ describe('the first-boot password prompt', () => {
     const quiet: [string, Auth, string][] = [
       ['loopback only', { ...FIRST, remote_bind: false }, '/'],
       ['a password set', { ...FIRST, configured: true }, '/'],
+      ['an access token configured', { ...FIRST, access_tokens: 1 }, '/'],
       ['read from another machine', { ...FIRST, from_loopback: false }, '/'],
       ['a hosted router', { ...HOSTED, configured: false, password_pinned: false, from_loopback: true }, '/'],
       ['a pinned password', { ...FIRST, password_pinned: true }, '/'],

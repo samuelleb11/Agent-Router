@@ -43,6 +43,7 @@ import {
   sendNotice,
   silent,
   switcherOptions,
+  switcherSections,
   switchNotice,
   tabsFor,
   UNNAMED_MACHINE,
@@ -478,6 +479,37 @@ describe('answers and prompts', () => {
     expect(switcherOptions('effort', null, OPTIONS).map((o) => o.label)).toEqual(['effort: unknown', 'low', 'medium', 'high']);
     expect(switcherOptions('mode', 'default', OPTIONS)).toEqual([{ value: 'default', label: 'mode: Ask first', current: true }]);
     expect(switcherOptions('model', 'claude-haiku-4', OPTIONS).map((o) => o.label)).toEqual(['model: haiku-4', 'opus', 'sonnet', 'other…']);
+  });
+
+  it('SE-C233: the model switcher groups the router’s models under each provider, by display name, the value in force leading and other… ending it; a router that groups none is offered its flat list', () => {
+    const grouped = {
+      ...OPTIONS,
+      models: ['opus', 'sonnet', 'k3', 'kimi-for-coding'],
+      by_provider: [
+        { provider: 'anthropic', name: 'Anthropic', models: [{ id: 'opus', display_name: 'opus' }, { id: 'sonnet', display_name: 'sonnet' }] },
+        { provider: 'kimi', name: 'Kimi Code', models: [{ id: 'k3', display_name: 'Kimi K3' }, { id: 'kimi-for-coding', display_name: 'Kimi for Coding' }] },
+      ],
+    };
+    const options = switcherOptions('model', 'claude-opus-4-1', grouped);
+    expect(options).toEqual([
+      { value: 'opus-4-1', label: 'model: opus-4-1', current: true },
+      { value: 'opus', label: 'opus', current: false, group: 'Anthropic' },
+      { value: 'sonnet', label: 'sonnet', current: false, group: 'Anthropic' },
+      { value: 'k3', label: 'Kimi K3', current: false, group: 'Kimi Code' },
+      { value: 'kimi-for-coding', label: 'Kimi for Coding', current: false, group: 'Kimi Code' },
+      { value: '__other__', label: 'other…', current: false },
+    ]);
+    expect(switcherSections(options).map((s) => [s.group, s.options.map((o) => o.value)])).toEqual([
+      [null, ['opus-4-1']],
+      ['Anthropic', ['opus', 'sonnet']],
+      ['Kimi Code', ['k3', 'kimi-for-coding']],
+      [null, ['__other__']],
+    ]);
+    // On a Kimi Code model, the one in force reads by its display name and leaves its group.
+    expect(switcherOptions('model', 'k3', grouped).filter((o) => o.current || o.group === 'Kimi Code').map((o) => o.label)).toEqual(['model: Kimi K3', 'Kimi for Coding']);
+    // An older router: no groups, the flat list as it always was (SE-C139).
+    expect(switcherOptions('model', 'claude-haiku-4', OPTIONS).map((o) => o.label)).toEqual(['model: haiku-4', 'opus', 'sonnet', 'other…']);
+    expect(switcherOptions('model', 'claude-haiku-4', { ...OPTIONS, by_provider: [] }).map((o) => o.group ?? null)).toEqual([null, null, null, null]);
   });
 
   it("SE-C143, SE-C144: a switch says what the CLI said, else pending or set, and a refusal in the router's words", () => {

@@ -169,7 +169,10 @@ struct PasswordSection: View {
         Section {
             LabeledContent("Status", value: model.auth?.configured == true
                            ? "set" + (Fmt.date(ms: model.auth?.updatedAt).map { " · changed \(Fmt.ago($0))" } ?? "")
-                           : "not set — other devices are refused")
+                           : model.auth?.hasCredentials == true ? "not set — access tokens are configured" : "not set — other devices are refused")
+            if let auth = model.auth, auth.accessTokens > 0 {
+                LabeledContent("Active access tokens", value: "\(auth.accessTokens)")
+            }
             SecureField("New password", text: $a, prompt: Text("at least 8 characters"))
             SecureField("Confirm", text: $b, prompt: Text("again"))
             HStack {
@@ -189,12 +192,12 @@ struct PasswordSection: View {
         } header: {
             Text("Password")
         } footer: {
-            Text("Asked of any device that is not the Mac itself — this phone included, so changing it here changes what this phone must send next; edit the router afterwards. The Mac never needs the old one.")
+            Text("Changing the password affects devices using that password. Access tokens remain valid. If this phone uses the password, enter its replacement under Edit. Manage tokens in the web dashboard’s Settings → Access tokens.")
         }
         .confirmationDialog("Remove the password?", isPresented: $confirmRemove, titleVisibility: .visible) {
             Button("Remove", role: .destructive) { Task { await model.password(nil, clear: true) } }
         } message: {
-            Text("Other devices — this phone included — are refused until a new one is set from the Mac.")
+            Text("Devices using this password lose access. Access tokens remain valid. If this phone uses the password, replace its credential under Edit.")
         }
     }
 }

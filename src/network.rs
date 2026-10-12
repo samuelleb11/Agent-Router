@@ -363,10 +363,10 @@ pub mod api {
         // choice is being made, rather than discovered later from a phone. 409: the
         // request is fine; the router's state is what stands in the way, and setting a
         // password is the fix.
-        if !state.auth.configured().await {
+        if !state.auth.configured().await && crate::auth::tokens::active_count(&state.config.db_path).await.unwrap_or(0) == 0 {
             return Err((
                 StatusCode::CONFLICT,
-                "set a password first — until one exists, callers from other machines are refused".into(),
+                "create an access token or set a password first — callers from other machines need a router credential".into(),
             ));
         }
         // 400 for either refusal below: the address sent is wrong whatever the router's

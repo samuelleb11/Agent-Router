@@ -3,6 +3,7 @@
 /target
 /target-*
 /.cargo
+/.ci/
 
 # Router data lives in ~/.agent-router, never in the tree: no database, journal or log
 # belongs here

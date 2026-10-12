@@ -37,6 +37,8 @@ const ASK_WAIT: Duration = Duration::from_secs(4);
 /// The router pings this often, and gives up on a connection silent for `IDLE_LIMIT`.
 const PING_EVERY: Duration = Duration::from_secs(20);
 const IDLE_LIMIT: Duration = Duration::from_secs(60);
+/// A revoked or expired access token must release its already-connected machine too.
+const TOKEN_CHECK_EVERY: Duration = Duration::from_secs(5);
 /// A collected answer (a list, the notifier's evidence) is never bigger than this.
 const MAX_COLLECTED: usize = 16 * 1024 * 1024;
 
@@ -299,11 +301,35 @@ impl Machines {
 
     /// One agent's connection, for as long as it lasts.
     pub async fn serve(self: Arc<Self>, socket: WebSocket) {
+        self.serve_authorized(socket, None).await;
+    }
+
+    pub async fn serve_with_token(
+        self: Arc<Self>,
+        socket: WebSocket,
+        db: std::path::PathBuf,
+        token: crate::auth::tokens::Token,
+    ) {
+        self.serve_authorized(socket, Some((db, token))).await;
+    }
+
+    async fn serve_authorized(
+        self: Arc<Self>,
+        socket: WebSocket,
+        token: Option<(std::path::PathBuf, crate::auth::tokens::Token)>,
+    ) {
         if self.is_stopping() {
             return;
         }
+        let invalidated = token_invalidated(token);
+        tokio::pin!(invalidated);
         let (mut sink, mut stream) = socket.split();
-        let hello = match tokio::time::timeout(Duration::from_secs(10), stream.next()).await {
+        let first = tokio::select! {
+            first = tokio::time::timeout(Duration::from_secs(10), stream.next()) => first,
+            () = &mut invalidated => return,
+            () = self.until_stopped() => return,
+        };
+        let hello = match first {
             Ok(Some(Ok(Message::Binary(data)))) => match tunnel::decode(&data) {
                 Some((tunnel::HELLO, _, payload)) => serde_json::from_slice::<Hello>(payload).ok(),
                 _ => None,
@@ -323,7 +349,8 @@ impl Machines {
             next: AtomicU32::new(1),
             pending: Mutex::new(HashMap::new()),
         });
-        if let Some(previous) = locked(&self.online).insert(hello.machine.clone(), machine.clone()) {
+        if let Some(previous) = locked(&self.online).insert(hello.machine.clone(), machine.clone())
+        {
             previous.fail_all("the machine reconnected");
         }
         locked(&self.heard).remove(&hello.machine);
@@ -347,6 +374,7 @@ impl Machines {
             let next = tokio::select! {
                 next = tokio::time::timeout(IDLE_LIMIT, stream.next()) => next,
                 () = self.until_stopped() => break,
+                () = &mut invalidated => break,
             };
             match next {
                 Ok(Some(Ok(Message::Binary(data)))) => machine.dispatch(&data),
@@ -360,7 +388,9 @@ impl Machines {
         // have taken its place.
         let current = {
             let mut online = locked(&self.online);
-            let current = online.get(&hello.machine).is_some_and(|m| Arc::ptr_eq(m, &machine));
+            let current = online
+                .get(&hello.machine)
+                .is_some_and(|m| Arc::ptr_eq(m, &machine));
             if current {
                 online.remove(&hello.machine);
             }
@@ -556,6 +586,24 @@ impl Machines {
     }
 }
 
+/// Polling also covers expiration and revocation from another router process sharing
+/// the store. No raw credential is retained after the HTTP upgrade.
+async fn token_invalidated(token: Option<(std::path::PathBuf, crate::auth::tokens::Token)>) {
+    let Some((db, token)) = token else {
+        return std::future::pending().await;
+    };
+    loop {
+        match crate::auth::tokens::is_active(&db, &token.id).await {
+            Ok(true) => tokio::time::sleep(TOKEN_CHECK_EVERY).await,
+            Ok(false) => return,
+            Err(error) => {
+                tracing::warn!(%error, "machine access token could not be checked; closing the connection");
+                return;
+            }
+        }
+    }
+}
+
 /// Percent-encoding for a query value.
 pub fn encode(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
@@ -575,7 +623,7 @@ pub mod api {
 
     use axum::body::Body;
     use axum::extract::ws::WebSocketUpgrade;
-    use axum::extract::{FromRequest, Request, State};
+    use axum::extract::{Extension, FromRequest, Request, State};
     use axum::http::StatusCode;
     use axum::response::{IntoResponse, Response};
     use axum::Json;
@@ -593,7 +641,11 @@ pub mod api {
 
     /// `GET /_router/agent`: an agent connecting. A stopping router turns it away, and the
     /// agent tries again, through the load balancer, to the router replacing it.
-    pub async fn connect(State(state): State<Arc<AppState>>, ws: WebSocketUpgrade) -> Response {
+    pub async fn connect(
+        State(state): State<Arc<AppState>>,
+        token: Option<Extension<crate::auth::tokens::Token>>,
+        ws: WebSocketUpgrade,
+    ) -> Response {
         if state.machines.is_stopping() {
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -602,15 +654,23 @@ pub mod api {
                 .into_response();
         }
         let machines = state.machines.clone();
+        let db = state.config.db_path.clone();
         ws.max_message_size(crate::tunnel::MAX_MESSAGE)
             .max_frame_size(crate::tunnel::MAX_MESSAGE)
-            .on_upgrade(move |socket| machines.serve(socket))
+            .on_upgrade(move |socket| async move {
+                match token {
+                    Some(Extension(token)) => machines.serve_with_token(socket, db, token).await,
+                    None => machines.serve(socket).await,
+                }
+            })
     }
 
     /// `GET /api/machines`: each machine, with where its Library stands (`library::push`),
-    /// from what it last said and what is live now.
+    /// from what it last said and what is live now, and the clients it last reported
+    /// (`clients`).
     pub async fn machines(State(state): State<Arc<AppState>>) -> Json<Value> {
         let standings = crate::library::push::standings(&state).await;
+        let clients = crate::places::clients(&state).await;
         let rows = state
             .machines
             .seen()
@@ -619,6 +679,7 @@ pub mod api {
                 let library = standings.get(&m.id).cloned().unwrap_or_else(crate::library::push::Standing::not_yet);
                 let mut row = json!(m);
                 row["library"] = json!(library);
+                row["clients"] = clients.get(&m.id).cloned().unwrap_or_else(|| json!([]));
                 row
             })
             .collect();
@@ -636,7 +697,15 @@ pub mod api {
         req.headers()
             .iter()
             .filter(|(name, _)| crate::tunnel::carried(name.as_str()))
-            .filter_map(|(name, value)| Some((name.as_str().to_string(), value.to_str().ok()?.to_string())))
+            .filter(|(name, _)| {
+                !matches!(
+                    name.as_str(),
+                    "x-api-key" | "x-agent-router-password" | "x-agent-router-token"
+                )
+            })
+            .filter_map(|(name, value)| {
+                Some((name.as_str().to_string(), value.to_str().ok()?.to_string()))
+            })
             .collect()
     }
 
@@ -644,17 +713,13 @@ pub mod api {
         req.uri().path_and_query().map(|pq| pq.as_str().to_string()).unwrap_or_else(|| req.uri().path().to_string())
     }
 
-    fn session_in_query(req: &Request) -> Option<String> {
-        req.uri().query()?.split('&').find_map(|pair| {
-            let (k, v) = pair.split_once('=')?;
-            (k == "session").then(|| v.to_string())
-        })
-    }
-
     /// A request that names its session in the query: follow, stats, prompt.
     pub async fn by_query(State(state): State<Arc<AppState>>, req: Request) -> Response {
-        let Some(session) = session_in_query(&req) else {
-            return Relay::Unknown.into_response();
+        // Use the machine handler's form-query rules for lookup. In particular,
+        // codex%3A... names codex:..., while the original encoded URL is relayed.
+        let session = match axum::extract::Query::<Named>::try_from_uri(req.uri()) {
+            Ok(axum::extract::Query(named)) => named.session,
+            Err(refused) => return refused.into_response(),
         };
         let machine = match state.machines.holder(&session).await {
             Ok(m) => m,
@@ -667,7 +732,7 @@ pub mod api {
         }
     }
 
-    /// What a relayed body must name, read the way the machine reads its whole body.
+    /// What a relayed query or body must name, read the way the machine reads it.
     #[derive(Deserialize)]
     struct Named {
         session: String,
@@ -705,6 +770,39 @@ pub mod api {
         }
     }
 
+    /// What a request that starts something must name: the machine to start it on.
+    #[derive(Deserialize)]
+    struct OnMachine {
+        machine: String,
+    }
+
+    /// A request that names its machine in its JSON body: a hosted Kimi Code session started
+    /// there (`kimi::live::start`). Refused here as the machine would refuse a body it cannot
+    /// read, and as offline when that machine is not connected.
+    pub async fn by_machine(State(state): State<Arc<AppState>>, req: Request) -> Response {
+        let (method, path, headers) = (req.method().clone(), path_of(&req), carried_headers(&req));
+        let (parts, body) = req.into_parts();
+        let Ok(body) = axum::body::to_bytes(body, MAX_BODY).await else {
+            return (StatusCode::PAYLOAD_TOO_LARGE, Json(json!({ "ok": false, "error": "that request is too long" }))).into_response();
+        };
+        let named = Request::from_parts(parts, Body::from(body.clone()));
+        let id = match <LiveBody<OnMachine> as FromRequest<()>>::from_request(named, &()).await {
+            Ok(JsonBody(OnMachine { machine })) => machine,
+            Err(refused) => return refused,
+        };
+        let Some(machine) = state.machines.online(&id) else {
+            let label = state.machines.seen().into_iter().find(|m| m.id == id).map(|m| m.label);
+            return match label {
+                Some(label) => Relay::Offline(label).into_response(),
+                None => (StatusCode::NOT_FOUND, Json(json!({ "ok": false, "error": "No such machine." }))).into_response(),
+            };
+        };
+        match machine.request(&method, &path, headers, &body, HEAD_WAIT).await {
+            Ok(response) => response,
+            Err(why) => why.into_response(),
+        }
+    }
+
     /// `GET /api/live/project`: one working directory's totals, from every machine that
     /// has sessions there, added up.
     pub async fn project(State(state): State<Arc<AppState>>, req: Request) -> Response {
@@ -730,6 +828,12 @@ pub mod api {
     /// `POST /api/live/archive`: the router's own shelf, for a session some machine lists. A
     /// body it cannot read is refused as a router on a machine refuses it (`refusal::LiveBody`).
     pub async fn archive(State(state): State<Arc<AppState>>, JsonBody(body): LiveBody<crate::live::ArchiveBody>) -> Response {
+        if crate::codex::live::is_codex(&body.session) {
+            let machine=match state.machines.holder(&body.session).await {Ok(m)=>m,Err(why)=>return why.into_response()};
+            let payload=serde_json::to_vec(&json!({"session":body.session,"archived":body.archived})).unwrap();
+            let response=match machine.request(&axum::http::Method::POST,"/api/live/archive",vec![("content-type".into(),"application/json".into())],&payload,HEAD_WAIT).await {Ok(r)=>r,Err(why)=>return why.into_response()};
+            if !response.status().is_success() {return response;}
+        }
         if let Err(why) = state.machines.holder(&body.session).await {
             if matches!(why, Relay::Unknown) {
                 return why.into_response();
@@ -767,6 +871,7 @@ pub mod api {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tower::ServiceExt;
 
     fn machine() -> (Arc<Machine>, mpsc::UnboundedReceiver<Vec<u8>>) {
         let (out, rx) = mpsc::unbounded_channel();
@@ -853,5 +958,291 @@ mod tests {
     fn query_values_are_encoded() {
         assert_eq!(encode("req:abc-1_2.3~"), "req%3Aabc-1_2.3~");
         assert_eq!(encode("a b&c"), "a%20b%26c");
+    }
+
+    #[tokio::test]
+    async fn hosted_session_queries_decode_the_session_without_rewriting_the_relay_path() {
+        let lab = crate::api_refusals::Lab::hosted("relay-encoded-session").await;
+        let (m, mut sent) = machine();
+        locked(&lab.state.machines.online).insert("m-1".into(), m.clone());
+        for (session, query) in [
+            ("codex:thread-1", "session=codex%3Athread-1"),
+            ("codex:%3Athread", "session=codex%3A%253Athread"),
+            ("codex:unusual + café", "ses%73ion=codex%3Aunusual+%2B+caf%C3%A9"),
+        ] {
+            locked(&lab.state.machines.sessions).insert(session.into(), "m-1".into());
+            for endpoint in ["prompt", "stats", "stream"] {
+                let path = format!("/api/live/{endpoint}?{query}");
+                let agent = async {
+                    let frame = sent.recv().await.unwrap();
+                    let (kind, id, payload) = tunnel::decode(&frame).unwrap();
+                    assert_eq!(kind, tunnel::REQUEST);
+                    let req: tunnel::Request = serde_json::from_slice(payload).unwrap();
+                    assert_eq!(req.method, "GET");
+                    assert_eq!(req.path, path, "lookup must decode once while the relayed URL stays intact");
+                    let head = serde_json::to_vec(&Head {status:200, headers:vec![("content-type".into(),"application/json".into())]}).unwrap();
+                    m.dispatch(&tunnel::encode(tunnel::HEAD, id, &head));
+                    m.dispatch(&tunnel::encode(tunnel::BODY, id, br#"{"pending":false}"#));
+                    m.dispatch(&tunnel::encode(tunnel::END, id, b""));
+                };
+                let ((status, body), ()) = tokio::join!(lab.get(&path), agent);
+                assert_eq!(status, StatusCode::OK, "{path}: {body}");
+                assert_eq!(body["pending"], false);
+            }
+        }
+    }
+
+    /// A hosted router relays a start to the machine its body names, as that machine's
+    /// agent answers it; a machine it does not know is refused.
+    #[tokio::test]
+    async fn the_hosted_router_relays_a_start_to_its_machine() {
+        let lab = crate::api_refusals::Lab::hosted("relays-start").await;
+        let (m, mut sent) = machine();
+        locked(&lab.state.machines.online).insert("m-1".into(), m.clone());
+        lab.state.machines.note(&m, true);
+        let body = json!({ "machine": "m-1", "cwd": "/Users/u/code/demo", "model": "k3" });
+        let agent = async {
+            let frame = sent.recv().await.unwrap();
+            let (kind, id, payload) = tunnel::decode(&frame).unwrap();
+            assert_eq!(kind, tunnel::REQUEST);
+            let req: tunnel::Request = serde_json::from_slice(payload).unwrap();
+            assert_eq!((req.method.as_str(), req.path.as_str()), ("POST", "/api/live/start"));
+            let head = serde_json::to_vec(&Head { status: 200, headers: vec![("content-type".into(), "application/json".into())] }).unwrap();
+            m.dispatch(&tunnel::encode(tunnel::HEAD, id, &head));
+            m.dispatch(&tunnel::encode(tunnel::BODY, id, br#"{"ok":true,"session":"session_new"}"#));
+            m.dispatch(&tunnel::encode(tunnel::END, id, b""));
+        };
+        let body = body.to_string();
+        let ((status, answer), ()) = tokio::join!(lab.post("/api/live/start", &body), agent);
+        assert_eq!(status, StatusCode::OK, "{answer}");
+        assert_eq!(answer["session"], "session_new");
+
+        let elsewhere = json!({ "machine": "m-2", "cwd": "/Users/u", "model": "k3" });
+        let (status, _) = lab.post("/api/live/start", &elsewhere.to_string()).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    /// The router's credential belongs to the router, whichever header carried it.
+    /// An agent still receives the headers its handler needs to stream a response.
+    #[tokio::test]
+    async fn credentials_stay_out_of_requests_relayed_to_a_machine() {
+        let lab = crate::api_refusals::Lab::hosted("relay-credentials").await;
+        let (m, mut sent) = machine();
+        locked(&lab.state.machines.online).insert("m-1".into(), m.clone());
+        let request = axum::http::Request::post("/api/live/start")
+            .header("authorization", "Bearer SECRET-BEARER")
+            .header("cookie", "router=SECRET-COOKIE")
+            .header("x-api-key", "SECRET-API-KEY")
+            .header("x-agent-router-password", "SECRET-PASSWORD")
+            .header("x-agent-router-token", "SECRET-TOKEN")
+            .header("content-type", "application/json")
+            .header("accept", "text/event-stream")
+            .header("last-event-id", "event-7")
+            .body(Body::from(r#"{"machine":"m-1","cwd":"/tmp","model":"k3"}"#))
+            .unwrap();
+        let agent = async {
+            let frame = sent.recv().await.unwrap();
+            let (kind, id, payload) = tunnel::decode(&frame).unwrap();
+            assert_eq!(kind, tunnel::REQUEST);
+            let req: tunnel::Request = serde_json::from_slice(payload).unwrap();
+            assert!(
+                req.headers
+                    .iter()
+                    .all(|(_, value)| !value.contains("SECRET")),
+                "router credentials must not travel to its agents"
+            );
+            for (name, value) in [
+                ("content-type", "application/json"),
+                ("accept", "text/event-stream"),
+                ("last-event-id", "event-7"),
+            ] {
+                assert!(
+                    req.headers.contains(&(name.to_string(), value.to_string())),
+                    "{name} must still reach the agent"
+                );
+            }
+            let head = serde_json::to_vec(&Head {
+                status: 200,
+                headers: vec![],
+            })
+            .unwrap();
+            m.dispatch(&tunnel::encode(tunnel::HEAD, id, &head));
+            m.dispatch(&tunnel::encode(tunnel::END, id, b""));
+        };
+        let (response, ()) = tokio::join!(
+            api::by_machine(axum::extract::State(lab.state.clone()), request),
+            agent
+        );
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    async fn invalidated_token_disconnects_machine(expire: bool) {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+        let lab = crate::api_refusals::Lab::hosted(if expire {
+            "machine-token-expiry"
+        } else {
+            "machine-token-revoke"
+        })
+        .await;
+        let (status, made) = lab
+            .post(
+                "/api/auth/tokens",
+                r#"{"name":"test machine","scope":"machine"}"#,
+            )
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "{made}");
+        let (id, token) = (
+            made["id"].as_str().unwrap(),
+            made["token"].as_str().unwrap(),
+        );
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = lab
+            .app
+            .clone()
+            .into_make_service_with_connect_info::<std::net::SocketAddr>();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await });
+        let mut request = format!("ws://{addr}{}", tunnel::PATH)
+            .into_client_request()
+            .unwrap();
+        request
+            .headers_mut()
+            .insert("authorization", format!("Bearer {token}").parse().unwrap());
+        let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let (mut socket, _) = tokio_tungstenite::client_async(request, tcp).await.unwrap();
+        let hello = Hello {
+            machine: "token-machine".into(),
+            label: "test machine".into(),
+            platform: "test".into(),
+            version: "test".into(),
+            build: "test".into(),
+        };
+        socket
+            .send(tokio_tungstenite::tungstenite::Message::Binary(
+                tunnel::encode(tunnel::HELLO, 0, &serde_json::to_vec(&hello).unwrap()).into(),
+            ))
+            .await
+            .unwrap();
+        let machine = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if let Some(machine) = lab.state.machines.online(&hello.machine) {
+                    break machine;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the valid token connects a machine");
+        let pending = tokio::spawn(async move {
+            machine
+                .request(
+                    &Method::GET,
+                    "/api/live/stats?session=s",
+                    vec![],
+                    &[],
+                    Duration::from_secs(20),
+                )
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if let Some(Ok(tokio_tungstenite::tungstenite::Message::Binary(frame))) =
+                    socket.next().await
+                {
+                    if tunnel::decode(&frame).is_some_and(|(kind, _, _)| kind == tunnel::REQUEST) {
+                        break;
+                    }
+                }
+            }
+        })
+        .await
+        .expect("the machine has an outstanding request");
+
+        if expire {
+            rusqlite::Connection::open(&lab.state.config.db_path)
+                .unwrap()
+                .execute(
+                    "UPDATE auth_tokens SET expires_at = ?2 WHERE id = ?1",
+                    rusqlite::params![id, crate::db::now_ms() - 1],
+                )
+                .unwrap();
+        } else {
+            let mut request = axum::http::Request::delete(format!("/api/auth/tokens/{id}"))
+                .header("host", "127.0.0.1")
+                .header("authorization", format!("Bearer {}", lab.password.unwrap()))
+                .body(Body::empty())
+                .unwrap();
+            request.extensions_mut().insert(axum::extract::ConnectInfo(
+                std::net::SocketAddr::from(([127, 0, 0, 1], 50_000)),
+            ));
+            let response = lab.app.clone().oneshot(request).await.unwrap();
+            assert!(response.status().is_success(), "revocation must succeed");
+        }
+        let failed = tokio::time::timeout(TOKEN_CHECK_EVERY + Duration::from_secs(3), pending)
+            .await
+            .expect("invalidating the token releases its existing connection")
+            .unwrap();
+        assert!(
+            matches!(failed, Err(Relay::Failed(ref why)) if why.contains("offline")),
+            "the outstanding request must fail immediately: {failed:?}"
+        );
+        assert!(lab.state.machines.online(&hello.machine).is_none());
+        assert!(lab
+            .state
+            .machines
+            .seen()
+            .iter()
+            .any(|m| m.id == hello.machine && !m.online));
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                match socket.next().await {
+                    None
+                    | Some(Err(_))
+                    | Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_))) => break,
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .expect("the old WebSocket must close");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn revoking_a_machine_token_closes_its_existing_connection() {
+        invalidated_token_disconnects_machine(false).await;
+    }
+
+    #[tokio::test]
+    async fn expiring_a_machine_token_closes_its_existing_connection() {
+        invalidated_token_disconnects_machine(true).await;
+    }
+
+    /// The clients a machine reports with its places come back on `/api/machines`; a report
+    /// that does not name them (an older agent's) leaves them as they were.
+    #[tokio::test]
+    async fn machines_report_their_clients() {
+        let lab = crate::api_refusals::Lab::hosted("machines-clients").await;
+        let (m, _sent) = machine();
+        lab.state.machines.note(&m, true);
+        let clients = json!([
+            { "client": "claude-code", "cli": { "path": "/u/.local/bin/claude", "version": "2.1.267" },
+              "extensions": [{ "editor": "vscode", "version": "2.1.296" }], "home": "/u/.claude" },
+            { "client": "kimi-code", "cli": { "path": "/u/.kimi-code/bin/kimi", "version": "2.1.1" },
+              "extensions": [], "home": "/u/.kimi-code" },
+        ]);
+        let (status, _) = lab.post("/api/machines/places", &json!({ "machine": "m-1", "clients": clients }).to_string()).await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, rows) = lab.get("/api/machines").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(rows[0]["id"], "m-1");
+        assert_eq!(rows[0]["clients"], clients);
+
+        let (status, _) = lab.post("/api/machines/places", &json!({ "machine": "m-1" }).to_string()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(lab.get("/api/machines").await.1[0]["clients"], clients, "an older agent's report keeps them");
     }
 }

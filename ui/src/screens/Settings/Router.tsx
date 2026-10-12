@@ -3,6 +3,7 @@
 // page opens, and a failed read is said, never kept as an empty answer for the visit.
 import { useQuery } from '@tanstack/react-query';
 import { CodeSnippet } from '@carbon/react';
+import { Link } from 'react-router';
 import { keys } from '~/app/query';
 import { CopyButton } from '~/components/CopyButton';
 import { Page } from '~/components/Page';
@@ -10,6 +11,7 @@ import { readHealth } from '~/data/router';
 import { useAuth } from '~/data/settings';
 import { refusalText } from '~/lib/errors';
 import { since } from '~/lib/freshness';
+import { settingsPath } from '~/lib/routes';
 import { connectSnippet, notes, routerFacts } from '~/model/settings';
 import { Explain, Fact, Facts, Words } from './parts';
 import styles from './Settings.module.scss';
@@ -45,6 +47,7 @@ export default function RouterPage() {
         <Explain>
           Add this to a project’s <code>.claude/settings.local.json</code>:
         </Explain>
+        <Explain>For another machine, use a <Link to={settingsPath('access-tokens')}>Client access token</Link>; the existing router password also works. Set up Claude Code, Codex or OpenCode from <Link to={settingsPath('clients')}>Clients</Link>.</Explain>
         <CodeSnippet type="multi" wrapText hideCopyButton className={styles.snippet} aria-label="What to add to .claude/settings.local.json">
           {snippet}
         </CodeSnippet>

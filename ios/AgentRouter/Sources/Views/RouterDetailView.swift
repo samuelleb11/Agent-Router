@@ -201,7 +201,7 @@ struct RouterDetailView: View {
                 LabeledContent("Version", value: "\(h.version) · pid \(h.pid)")
             }
             if let auth = state.auth {
-                LabeledContent("Password", value: auth.configured ? "set" : "not set")
+                LabeledContent("Authentication", value: auth.credentialStatus)
             }
             if let t = state.lastRefresh {
                 LabeledContent("Updated", value: Fmt.ago(t))

@@ -158,21 +158,15 @@ fun RouterFormScreen(
             }
 
             SettingsSection(
-                header = "Password",
-                footer = if (existing != null) {
-                    "Leave this blank to keep the password already stored."
-                } else if (hosted) {
-                    "The router password, set by its deployment. It is kept in this phone's " +
-                        "keystore, not in the file that holds the address."
-                } else {
-                    "The router password, set on its dashboard on the Mac. It is kept in this " +
-                        "phone's keystore, not in the file that holds the address."
-                },
+                header = "Router credential",
+                footer = "Use an Administrator access token from Settings → Access tokens so this phone " +
+                    "can read and control sessions. The router password also works. Kept in this phone’s keystore. " +
+                    if (existing != null) "Leave blank to keep the stored credential." else "",
             ) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     OutlinedTextField(
                         value = password, onValueChange = { password = it; probe = null },
-                        label = { Text(if (existing == null) "Password" else "New password") },
+                        label = { Text(if (existing == null) "Router credential" else "New credential") },
                         singleLine = true,
                         visualTransformation = PasswordVisualTransformation(),
                         modifier = Modifier.fillMaxWidth(),
@@ -206,7 +200,7 @@ fun RouterFormScreen(
             }
 
             if (existing != null) {
-                SettingsSection(footer = "Removing a router forgets its password on this phone too.") {
+                SettingsSection(footer = "Removing a router forgets its credential on this phone too.") {
                     Column(Modifier.padding(16.dp)) {
                         Button(
                             onClick = { confirmRemove = true },
@@ -226,7 +220,7 @@ fun RouterFormScreen(
         androidx.compose.material3.AlertDialog(
             onDismissRequest = { confirmRemove = false },
             title = { Text("Remove ${existing.name}?") },
-            text = { Text("This phone forgets its address and password. The router itself is untouched.") },
+            text = { Text("This phone forgets its address and credential. The router itself is untouched.") },
             confirmButton = {
                 TextButton(onClick = { app.remove(existing.id); confirmRemove = false; onRemoved() }) {
                     Text("Remove")
@@ -255,11 +249,11 @@ private suspend fun testConnection(baseUrl: String, password: String?, hosted: B
         .getOrElse {
             return when (it) {
                 is RouterFailure.Unauthorized ->
-                    Probe(false, "Agent Router ${health.version} answered, but that password is wrong")
+                    Probe(false, "Agent Router ${health.version} answered, but that credential is invalid, expired or revoked")
                 is RouterFailure.NoPasswordSet -> Probe(
                     false,
-                    "Agent Router ${health.version} answered, but it has no password set yet — " +
-                        if (hosted) "a hosted router's password is set by its deployment" else "set one on its dashboard",
+                    "Agent Router ${health.version} answered, but it has no router credential configured — " +
+                        "create an Administrator token or set a password in its dashboard",
                 )
                 else -> Probe(false, RouterState.describe(it))
             }
@@ -269,7 +263,7 @@ private suspend fun testConnection(baseUrl: String, password: String?, hosted: B
     if (!auth.reachableOffHost) {
         return Probe(false, "Agent Router ${health.version} answered, but it only listens on the Mac itself — turn on Listen on your network in its dashboard settings", auth)
     }
-    return Probe(true, "Agent Router ${health.version} answered, and the password is right", auth)
+    return Probe(true, "Agent Router ${health.version} answered, and the router credential was accepted", auth)
 }
 
 /** What Test connection found: whether it passed, the sentence to show, and `/api/auth`'s reply when it got one. */

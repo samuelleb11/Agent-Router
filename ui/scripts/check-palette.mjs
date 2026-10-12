@@ -74,7 +74,7 @@ const SETS = [
   {
     name: 'model family',
     job: 'categorical',
-    tokens: ['model-opus', 'model-sonnet', 'model-haiku', 'model-other'],
+    tokens: ['model-opus', 'model-sonnet', 'model-haiku', 'model-kimi', 'model-other'],
     second: "the activity chart's legend and table view; a model chip carries the model's name",
   },
   {

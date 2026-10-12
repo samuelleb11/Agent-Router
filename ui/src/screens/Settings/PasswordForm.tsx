@@ -6,7 +6,7 @@ import { useMutation } from '@tanstack/react-query';
 import { Button, Form, PasswordInput } from '@carbon/react';
 import { keys } from '~/app/query';
 import { clearPassword, setPassword, useReread } from '~/data/settings';
-import { MIN_PASSWORD, passwordForm, passwordProblem, type Auth } from '~/model/settings';
+import { hasAccessTokens, MIN_PASSWORD, passwordForm, passwordProblem, type Auth } from '~/model/settings';
 import { Confirm, Outcome } from './parts';
 import styles from './Settings.module.scss';
 
@@ -115,7 +115,7 @@ export function PasswordForm({ auth, firstBoot = false, onSet, onNotNow }: { aut
         busy={set.isPending}
         busyText="Saving…"
         error={set.error ?? (clear.isPending || asking ? null : clear.error)}
-        done={set.isSuccess ? 'Password set.' : clear.isSuccess ? 'Removed — other devices are refused again until a new one is set.' : null}
+        done={set.isSuccess ? 'Password set.' : clear.isSuccess ? hasAccessTokens(auth) ? 'Password removed. Access tokens remain valid.' : 'Removed — other devices are refused again until a new one is set.' : null}
       />
       <Confirm
         open={asking}
@@ -127,9 +127,9 @@ export function PasswordForm({ auth, firstBoot = false, onSet, onNotNow }: { aut
         onClose={() => setAsking(false)}
         onConfirm={() => clear.mutate()}
       >
-        <p>Every other device is refused until a new one is set from this Mac.</p>
+        <p>{hasAccessTokens(auth) ? 'Devices using this password lose access. Access tokens remain valid.' : 'Every other device is refused until a new one is set from this Mac.'}</p>
         {auth?.from_loopback === false ? (
-          <p className={styles.bad}>You are reading this from another machine: this browser is locked out the moment it is removed.</p>
+          <p className={styles.bad}>{hasAccessTokens(auth) ? 'If this browser uses the password, it loses access when the password is removed.' : 'You are reading this from another machine: this browser is locked out the moment it is removed.'}</p>
         ) : null}
       </Confirm>
     </Form>

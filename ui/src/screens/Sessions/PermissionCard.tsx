@@ -33,14 +33,15 @@ function Subject({ text, titleId }: { text: string; titleId: string }) {
 /// visible button — Allow, each of the prompt's own suggestions, Deny (SE-C121, SE-C123). It
 /// answers the session it was drawn for (SE-C129), names its prompt (SE-C124), and only a press on
 /// one of its buttons answers it (SE-C130). While an answer is in flight every button is disabled;
-/// a refusal gives them back, in the router's words beside them (SE-C125).
-export function PermissionCard({ session, card, onAnswered }: { session: string; card: Card; onAnswered: (a: Answered) => void }) {
+/// a refusal gives them back, in the router's words beside them (SE-C125). On a session that takes no
+/// control from here, `held` says why, beside buttons that stay disabled (SE-C236).
+export function PermissionCard({ session, card, onAnswered, held = null }: { session: string; card: Card; onAnswered: (a: Answered) => void; held?: string | null }) {
   const titleId = useId();
   const [busy, setBusy] = useState(false);
   const [refused, setRefused] = useState<string | null>(null);
   const flying = useRef(false);
   const answer = async (choice: Choice) => {
-    if (flying.current) return;
+    if (flying.current || held) return;
     flying.current = true;
     setBusy(true);
     setRefused(null);
@@ -62,7 +63,7 @@ export function PermissionCard({ session, card, onAnswered }: { session: string;
             key={`${i}:${c.label}`}
             size="md"
             kind={i === 0 ? 'primary' : c.body.allow ? 'secondary' : 'danger--tertiary'}
-            disabled={busy}
+            disabled={busy || held !== null}
             aria-describedby={titleId}
             onClick={() => void answer(c)}
           >
@@ -70,9 +71,9 @@ export function PermissionCard({ session, card, onAnswered }: { session: string;
           </Button>
         ))}
       </div>
-      {refused && (
+      {(refused ?? held) && (
         <p className={styles.cardRefused} role="status">
-          {refused}
+          {refused ?? held}
         </p>
       )}
     </Callout>

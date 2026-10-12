@@ -25,7 +25,7 @@ const MEANINGS = {
   context: ['--ar-ctx-tools', '--ar-ctx-system', '--ar-ctx-history', '--ar-ctx-results'],
   ramp: ['--ar-tok-2', '--ar-tok', '--ar-tok-3'],
   identity: ['--ar-project', '--ar-session', '--ar-subagent'],
-  family: ['--ar-model-opus', '--ar-model-sonnet', '--ar-model-haiku', '--ar-model-other'],
+  family: ['--ar-model-opus', '--ar-model-sonnet', '--ar-model-haiku', '--ar-model-kimi', '--ar-model-other'],
   status: ['--ar-ok', '--ar-warn', '--ar-bad', '--ar-ok-fill', '--ar-warn-fill', '--ar-bad-fill'],
 } as const;
 

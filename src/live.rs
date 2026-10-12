@@ -120,7 +120,7 @@ const TEXT_CAP: usize = 6000;
 /// The real floor on latency is elsewhere: a message reaches the transcript only when
 /// it is complete, so partial output cannot appear here at any poll rate. This is set
 /// to be well under the gap between completed events rather than to chase tokens.
-const POLL: Duration = Duration::from_millis(200);
+pub(crate) const POLL: Duration = Duration::from_millis(200);
 /// An unchanged status is re-sent this often, so the phones' "· 12s" counters tick. The
 /// counter is recomputed from each frame's `quiet_ms`; any slower and it jumps.
 const HEARTBEAT: Duration = Duration::from_secs(1);
@@ -225,6 +225,13 @@ pub struct LiveSession {
     pub tone: &'static str,
     /// "registry" when the CLI's own status decided, "transcript" when inferred.
     pub source: &'static str,
+    /// The client running it, when it is not Claude Code: `kimi-code` (`kimi::session`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client: Option<&'static str>,
+    /// For a Kimi Code session: whether the router hosts it, and so drives it
+    /// (`kimi::live`); one it does not is watched only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hosted: Option<bool>,
     /// The router's clock when this was worked out, so a client whose own clock is off
     /// still shows the right elapsed times.
     pub as_of_ms: i64,
@@ -234,7 +241,13 @@ pub struct LiveSession {
 /// quiet, and then the most recently active of the rest, up to `MAX_LISTED`.
 pub fn discover() -> Vec<LiveSession> {
     let reg = crate::registry::snapshot();
-    discover_in(&Roots::system(), &reg, &archived_set(), now_ms())
+    let (archived, now) = (archived_set(), now_ms());
+    let mut rows = discover_in(&Roots::system(), &reg, &archived, now);
+    // Kimi Code's, from its own files and hooks (`kimi::session`).
+    rows.extend(crate::kimi::session::discover(&archived, now));
+    rows.extend(crate::codex::session::discover(&archived, now));
+    rows.sort_by_key(|r| std::cmp::Reverse(r.last_activity_ms));
+    rows
 }
 
 fn discover_in(
@@ -355,6 +368,8 @@ fn list_row(
         background: a.background,
         tone: a.tone(),
         source: a.source,
+        client: None,
+        hosted: None,
         as_of_ms: o.as_of_ms,
     }
 }
@@ -525,7 +540,7 @@ fn first_user_text(v: &Value) -> Option<String> {
 }
 
 /// One rendered row in the live view.
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct Item {
     /// Millisecond timestamp from the transcript, when it carries one.
     pub t: Option<String>,
@@ -579,6 +594,25 @@ pub struct StreamStatus {
 }
 
 impl StreamStatus {
+    /// The status of a session whose activity is all there is to say: Kimi Code's
+    /// (`kimi::live`), with nothing queued.
+    pub(crate) fn of_activity(a: &Activity, as_of_ms: i64) -> Self {
+        StreamStatus {
+            state: a.legacy_stream_state(),
+            detail: a.detail.clone(),
+            quiet_ms: a.since_ms.map_or(0, |since| (as_of_ms - since).max(0)),
+            queued: 0,
+            activity: a.kind.as_str(),
+            open: a.open,
+            since_ms: a.since_ms,
+            as_of_ms,
+            waiting_on: a.waiting_on.clone(),
+            background: a.background,
+            tone: a.tone(),
+            ended_ms: a.ended_ms,
+        }
+    }
+
     fn of(o: &Observed) -> Self {
         let a = &o.activity;
         StreamStatus {
@@ -616,7 +650,7 @@ impl StreamStatus {
 }
 
 /// Whether to send a status now: on a change, and otherwise once per `HEARTBEAT`.
-fn status_due(last: Option<&StreamStatus>, now: &StreamStatus, since_sent: Duration) -> bool {
+pub(crate) fn status_due(last: Option<&StreamStatus>, now: &StreamStatus, since_sent: Duration) -> bool {
     match last {
         None => true,
         Some(old) => old.differs(now) || since_sent >= HEARTBEAT,
@@ -1229,6 +1263,12 @@ pub async fn send(JsonBody(body): LiveBody<SendBody>) -> Response {
     if text.is_empty() {
         return bad(axum::http::StatusCode::BAD_REQUEST, "Nothing to send.");
     }
+    if crate::codex::live::is_codex(&body.session) {
+        return crate::codex::live::send(&body.session, &text).await;
+    }
+    if crate::kimi::live::is_kimi(&body.session) {
+        return crate::kimi::live::send(crate::kimi::live::host(), &body.session, &text).await;
+    }
     // A wrapped session is addressed by id alone. Only the peer fallback needs the
     // transcript, to work out which process owns it — so requiring one up front would
     // refuse the very sessions we can serve best.
@@ -1310,7 +1350,7 @@ fn first_event_ms(path: &Path) -> Option<i64> {
 }
 
 /// What a session has spent, and how it is configured.
-#[derive(Serialize, Default)]
+#[derive(Serialize, Default, Clone)]
 pub struct Stats {
     pub model: Option<String>,
     pub effort: Option<String>,
@@ -1336,10 +1376,26 @@ pub struct Stats {
 /// The transcript is used rather than the router's own capture because it covers every
 /// session, including ones that never went through the proxy.
 pub async fn stats(Query(q): Query<StreamQuery>) -> Response {
-    let Some(path) = transcript_path(&q.session) else {
-        return bad(axum::http::StatusCode::NOT_FOUND, "No such session.");
+    let out = tokio::task::spawn_blocking(move || {
+        if crate::codex::live::is_codex(&q.session) {
+            let mut st = crate::codex::session::find(&q.session)?.stats();
+            st.cost = price(&st);
+            return Some(st);
+        }
+        // Kimi Code's sessions are read from its own files (`kimi::session`).
+        if let Some(kimi) = crate::kimi::session::find(&q.session) {
+            let mut st = kimi.stats();
+            st.cost = price(&st);
+            return Some(st);
+        }
+        transcript_path(&q.session).map(|path| scan_stats(&path))
+    })
+    .await;
+    let out = match out {
+        Ok(Some(st)) => Ok(st),
+        Ok(None) => return bad(axum::http::StatusCode::NOT_FOUND, "No such session."),
+        Err(e) => Err(e),
     };
-    let out = tokio::task::spawn_blocking(move || scan_stats(&path)).await;
     match out {
         Ok(st) => Json(st).into_response(),
         Err(e) => bad(axum::http::StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
@@ -1464,17 +1520,28 @@ fn project_stats_in(roots: &Roots, reg: &Snapshot, archived: &HashMap<String, i6
     let mut sessions = 0i64;
     let mut models: std::collections::BTreeSet<String> = Default::default();
 
-    for s in discover_in(roots, reg, archived, now) {
+    let mut listed = discover_in(roots, reg, archived, now);
+    if roots.projects == projects_root() {
+        listed.extend(crate::kimi::session::discover(archived, now));
+        listed.extend(crate::codex::session::discover(archived, now));
+    }
+    for s in listed {
         if project_of(&s) != Some(project) {
             continue;
         }
         if is_shelved(archived, &s.session_id, s.last_activity_ms) {
             continue;
         }
-        let Some(path) = transcript_path_in(&roots.projects, &s.session_id) else {
-            continue;
+        let st = if crate::codex::live::is_codex(&s.session_id) {
+            let Some(session) = crate::codex::session::find(&s.session_id) else { continue };
+            let mut st = session.stats(); st.cost = price(&st); st
+        } else if crate::kimi::live::is_kimi(&s.session_id) {
+            let Some(session) = crate::kimi::session::find(&s.session_id) else { continue };
+            let mut st = session.stats(); st.cost = price(&st); st
+        } else {
+            let Some(path) = transcript_path_in(&roots.projects, &s.session_id) else { continue };
+            scan_stats(&path)
         };
-        let st = scan_stats(&path);
         if let Some(m) = st.model.clone() {
             models.insert(m);
         }
@@ -1515,7 +1582,17 @@ pub struct ArchiveBody {
 /// Stored as a plain list of ids rather than in the database, because it is the
 /// reader's shelf and should survive the database being deleted or rebuilt.
 pub async fn archive(JsonBody(body): LiveBody<ArchiveBody>) -> Response {
-    if transcript_path(&body.session).is_none() {
+    if crate::codex::live::is_codex(&body.session) && crate::codex::runtime::host().is_some_and(|h|h.hosts(&body.session)) {
+        let method=if body.archived {"thread/archive"} else {"thread/unarchive"};
+        let response=crate::codex::live::action(&body.session,method).await;
+        if !response.status().is_success() {return response;}
+    }
+    let exists = if crate::codex::live::is_codex(&body.session) {
+        crate::codex::session::find(&body.session).is_some()
+    } else if crate::kimi::live::is_kimi(&body.session) {
+        crate::kimi::session::find(&body.session).is_some()
+    } else { transcript_path(&body.session).is_some() };
+    if !exists {
         return bad(axum::http::StatusCode::NOT_FOUND, "No such session.");
     }
     let done = tokio::task::spawn_blocking(move || -> anyhow::Result<usize> {
@@ -1567,6 +1644,12 @@ pub struct AnswerBody {
 /// than the one its transcript happened to record: the newest of the prompts that count
 /// (the one the session's status names), and how many there are in all.
 pub async fn prompt(Query(q): Query<StreamQuery>) -> Response {
+    if crate::codex::live::is_codex(&q.session) {
+        return crate::codex::live::prompt(&q.session).await;
+    }
+    if crate::kimi::live::is_kimi(&q.session) {
+        return crate::kimi::live::prompt(&q.session).await;
+    }
     let session = q.session.clone();
     let seen = tokio::task::spawn_blocking(move || session_activity(&session, now_ms())).await;
     let o = match seen {
@@ -1767,6 +1850,12 @@ fn pick_prompt<'a>(
 
 /// Answer the pending question — the editor's Submit, from anywhere.
 pub async fn answer(JsonBody(body): LiveBody<AnswerBody>) -> Response {
+    if crate::codex::live::is_codex(&body.session) {
+        return crate::codex::live::answer(&body).await;
+    }
+    if crate::kimi::live::is_kimi(&body.session) {
+        return crate::kimi::live::answer(crate::kimi::live::host(), &body).await;
+    }
     let session = body.session.clone();
     let done = tokio::task::spawn_blocking(move || {
         let reg = crate::registry::snapshot();
@@ -1881,18 +1970,93 @@ pub fn valid_model(m: &str) -> bool {
         && m.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '_' | '[' | ']' | ':' | '/'))
 }
 
-/// What the two UIs offer, from one place.
-pub async fn options() -> Json<serde_json::Value> {
+/// What the UIs offer, from one place. `models` is every name a session can be moved to,
+/// as every client before there was a second provider reads it; `by_provider` is the same
+/// names grouped by the provider that serves them, Claude's aliases under Anthropic and each
+/// other provider's models from the catalogue (`models`) under it, for a picker to show.
+pub async fn options(axum::extract::State(state): axum::extract::State<Arc<crate::proxy::AppState>>) -> Response {
+    let catalogue = match state.reads.get().and_then(|conn| Ok(crate::models::catalogue(&conn)?)) {
+        Ok(catalogue) => catalogue,
+        Err(e) => return bad(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    };
     let mut models: Vec<String> = Vec::new();
+    let mut anthropic: Vec<Value> = Vec::new();
     for a in MODEL_ALIASES {
-        models.push(a.to_string());
-        models.push(format!("{a}[1m]"));
+        for name in [a.to_string(), format!("{a}[1m]")] {
+            anthropic.push(serde_json::json!({ "id": name, "display_name": name }));
+            models.push(name);
+        }
+    }
+    let mut by_provider = vec![serde_json::json!({
+        "provider": crate::accounts::Provider::Anthropic.as_str(),
+        "name": crate::accounts::Provider::Anthropic.name(),
+        "models": anthropic,
+    })];
+    // Claude's own ids stay behind its aliases, as the CLI's picker has them.
+    let mut others: Vec<(crate::accounts::Provider, Vec<Value>)> = Vec::new();
+    for m in catalogue.iter().filter(|m| m.provider != crate::accounts::Provider::Anthropic) {
+        let entry = serde_json::json!({ "id": m.id, "display_name": m.display_name });
+        models.push(m.id.clone());
+        match others.iter_mut().find(|(p, _)| *p == m.provider) {
+            Some((_, list)) => list.push(entry),
+            None => others.push((m.provider, vec![entry])),
+        }
+    }
+    for (provider, list) in others {
+        by_provider.push(serde_json::json!({ "provider": provider.as_str(), "name": provider.name(), "models": list }));
     }
     let modes: Vec<serde_json::Value> = MODES
         .iter()
         .map(|(value, label)| serde_json::json!({ "value": value, "label": label }))
         .collect();
-    Json(serde_json::json!({ "models": models, "efforts": EFFORTS, "modes": modes }))
+    Json(serde_json::json!({ "models": models, "by_provider": by_provider, "efforts": EFFORTS, "modes": modes })).into_response()
+}
+
+/// Why no source serves `model`, if none does: a name the CLI knows as one of Claude's
+/// aliases, or that is Anthropic's, is taken; any other must be a model of a provider the
+/// router has an account at, as the proxy would route it (`models::account_for`).
+fn unserved(state: &crate::proxy::AppState, model: &str) -> anyhow::Result<Option<(StatusCode, String)>> {
+    let base = model.trim_end_matches("[1m]");
+    if MODEL_ALIASES.contains(&base) {
+        return Ok(None);
+    }
+    let provider = crate::models::provider_of(model);
+    if provider == Some(crate::accounts::Provider::Anthropic)
+        || crate::models::account_for(&*state.reads.get()?, model)?.is_some()
+    {
+        return Ok(None);
+    }
+    let why = format!("no source serves the model {model:?}");
+    // A provider's model with no account to serve it waits on the store; any other name
+    // waits on nothing the router holds.
+    let code = if provider.is_some() { StatusCode::CONFLICT } else { StatusCode::BAD_REQUEST };
+    Ok(Some((code, why)))
+}
+
+/// The router's refusal of a session's move to `model`, if nothing serves it. Asked by the
+/// router before anything reaches the session, on this machine (`set_model_checked`) and on
+/// a hosted router before the request goes down a machine's tunnel; the machine agent's own
+/// `set_model` has no catalogue to ask.
+pub fn refuse_unserved(state: &crate::proxy::AppState, model: &str) -> Option<Response> {
+    match unserved(state, model.trim()) {
+        Ok(None) => None,
+        Ok(Some((code, why))) => Some(bad(code, &why)),
+        Err(e) => Some(bad(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string())),
+    }
+}
+
+/// `set_model` on a router: a model nothing serves is refused before the session is asked,
+/// since it would only fail the session's next turn.
+pub async fn set_model_checked(
+    axum::extract::State(state): axum::extract::State<Arc<crate::proxy::AppState>>,
+    JsonBody(body): LiveBody<ModelBody>,
+) -> Response {
+    if valid_model(&body.model) {
+        if let Some(refused) = refuse_unserved(&state, &body.model) {
+            return refused;
+        }
+    }
+    set_model(JsonBody(body)).await
 }
 
 #[derive(Deserialize)]
@@ -1908,6 +2072,12 @@ pub async fn set_model(JsonBody(body): LiveBody<ModelBody>) -> Response {
     let model = body.model.trim().to_string();
     if !valid_model(&model) {
         return bad(axum::http::StatusCode::BAD_REQUEST, "That is not a model name.");
+    }
+    if crate::codex::live::is_codex(&body.session) {
+        return crate::codex::live::settings(&body.session, serde_json::json!({"model":model})).await;
+    }
+    if crate::kimi::live::is_kimi(&body.session) {
+        return crate::kimi::live::set_model(crate::kimi::live::host(), &body.session, &model).await;
     }
     if !crate::peer::wrapper_alive(&body.session) {
         return bad(axum::http::StatusCode::SERVICE_UNAVAILABLE, "Only a session under the wrapper can change model; restart it after installing the wrapper.");
@@ -1948,6 +2118,12 @@ pub struct EffortBody {
 
 /// Set the effort level, as `/effort <level>` typed into the session.
 pub async fn set_effort(JsonBody(body): LiveBody<EffortBody>) -> Response {
+    if crate::codex::live::is_codex(&body.session) {
+        return crate::codex::live::settings(&body.session, serde_json::json!({"effort":body.effort})).await;
+    }
+    if crate::kimi::live::is_kimi(&body.session) {
+        return crate::kimi::live::unsupported("effort to set");
+    }
     let level = body.effort.trim().to_ascii_lowercase();
     if !EFFORTS.contains(&level.as_str()) {
         return bad(axum::http::StatusCode::BAD_REQUEST, "Effort is one of low, medium, high, xhigh, max.");
@@ -1980,6 +2156,12 @@ pub struct ModeBody {
 /// for and the CLI's own sentence is passed back, rather than reporting a success the
 /// session did not agree to.
 pub async fn set_mode(JsonBody(body): LiveBody<ModeBody>) -> Response {
+    if crate::codex::live::is_codex(&body.session) {
+        return crate::codex::live::mode(&body.session, &body.mode).await;
+    }
+    if crate::kimi::live::is_kimi(&body.session) {
+        return crate::kimi::live::set_mode(crate::kimi::live::host(), &body.session, &body.mode).await;
+    }
     let mode = body.mode.trim().to_string();
     if !MODES.iter().any(|(v, _)| *v == mode) {
         return bad(axum::http::StatusCode::BAD_REQUEST, "That is not a permission mode.");
@@ -2082,6 +2264,12 @@ fn stop_refusal(kind: Kind) -> Option<&'static str> {
 /// Only wrapped sessions can be stopped: an interrupt is a control frame on stdin, and
 /// the peer socket carries user messages, not control.
 pub async fn interrupt(JsonBody(body): LiveBody<InterruptBody>) -> Response {
+    if crate::codex::live::is_codex(&body.session) {
+        return crate::codex::live::interrupt(&body.session).await;
+    }
+    if crate::kimi::live::is_kimi(&body.session) {
+        return crate::kimi::live::interrupt(crate::kimi::live::host(), &body.session).await;
+    }
     let session = body.session.clone();
     let done = tokio::task::spawn_blocking(move || -> Result<(), (StatusCode, String)> {
         let kind = session_activity(&session, now_ms()).activity.kind;
@@ -2181,6 +2369,12 @@ fn shelve(session_id: &str) {
 /// a brief answer, and the fork shelved so it does not clutter the list. It costs one
 /// replay of the session's context, mostly cached.
 pub async fn aside(JsonBody(body): LiveBody<AsideBody>) -> Response {
+    if crate::codex::live::is_codex(&body.session) {
+        return crate::codex::live::unsupported();
+    }
+    if crate::kimi::live::is_kimi(&body.session) {
+        return crate::kimi::live::unsupported("side question to ask");
+    }
     let text = body.text.trim().to_string();
     if text.is_empty() {
         return bad(axum::http::StatusCode::BAD_REQUEST, "Nothing to ask.");
@@ -2259,9 +2453,17 @@ pub struct StreamQuery {
 /// Polling rather than filesystem events: a 500 ms poll of a file whose length is all
 /// that matters costs a `stat`, works identically on every platform, and cannot miss a
 /// write the way a coalesced event can.
-pub async fn stream(
-    Query(q): Query<StreamQuery>,
-) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+pub async fn stream(Query(q): Query<StreamQuery>) -> Response {
+    if crate::codex::live::is_codex(&q.session) {
+        return crate::codex::live::stream(&q.session);
+    }
+    if crate::kimi::live::is_kimi(&q.session) {
+        return crate::kimi::live::stream(&q.session);
+    }
+    claude_stream(q).into_response()
+}
+
+fn claude_stream(q: StreamQuery) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let path = transcript_path(&q.session);
     let session = q.session.clone();
 
@@ -2360,6 +2562,11 @@ fn observe_session(session_id: &str, path: Option<&Path>, now: i64) -> Observed 
 
 /// What to call a session in a notification: its project, and its title if it has one.
 pub fn session_label(session_id: &str) -> Option<(String, Option<String>)> {
+    if crate::codex::live::is_codex(session_id) {
+        let session = crate::codex::session::find(session_id)?;
+        let project = session.cwd.as_deref().map(basename).filter(|s| !s.is_empty()).unwrap_or("session").to_owned();
+        return Some((project, session.title.clone()));
+    }
     let path = transcript_path(session_id)?;
     let seen = tracked(&path)?;
     let project = seen
@@ -3455,5 +3662,68 @@ mod tests {
         let o = lab.observe(&reg, "s-k", now);
         assert_eq!((o.activity.kind, o.activity.detail.as_str()), (Kind::Tool, "Running Bash"));
         assert!(stop_refusal(o.activity.kind).is_none());
+    }
+
+    /// A router with a Claude account and, unless `claude_only`, a Kimi Code one.
+    async fn router_with(tag: &str, claude_only: bool) -> crate::api_refusals::Lab {
+        let lab = crate::api_refusals::Lab::local(tag);
+        let mut adds = vec![serde_json::json!({ "label": format!("{tag} work"), "source": "token", "token": "sk-ant-oat01-not-a-credential" })];
+        if !claude_only {
+            adds.push(serde_json::json!({ "label": format!("{tag} kimi"), "source": "token", "provider": "kimi", "token": "sk-kimi-not-a-credential" }));
+        }
+        for add in adds {
+            assert_eq!(lab.post("/api/accounts", &add.to_string()).await.0, StatusCode::OK);
+        }
+        lab
+    }
+
+    async fn options_of(lab: &crate::api_refusals::Lab) -> Value {
+        let res = options(axum::extract::State(lab.state.clone())).await;
+        serde_json::from_slice(&axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn live_options_offer_each_providers_models() {
+        let lab = router_with("options-providers", false).await;
+        let got = options_of(&lab).await;
+        let groups = got["by_provider"].as_array().unwrap();
+        assert_eq!(groups.len(), 2, "{got}");
+        assert_eq!((&groups[0]["provider"], &groups[0]["name"]), (&serde_json::json!("anthropic"), &serde_json::json!("Anthropic")));
+        let claude: Vec<&str> = groups[0]["models"].as_array().unwrap().iter().map(|m| m["id"].as_str().unwrap()).collect();
+        assert_eq!(&claude[..4], ["opus", "opus[1m]", "sonnet", "sonnet[1m]"], "Claude's aliases, as the CLI's picker has them");
+        assert_eq!((&groups[1]["provider"], &groups[1]["name"]), (&serde_json::json!("kimi"), &serde_json::json!("Kimi Code")));
+        assert_eq!(groups[1]["models"][0], serde_json::json!({ "id": "k3", "display_name": "Kimi K3" }));
+        // Every client that reads the flat list can move a session to a Kimi Code model too.
+        let flat: Vec<&str> = got["models"].as_array().unwrap().iter().map(|m| m.as_str().unwrap()).collect();
+        assert!(flat.contains(&"opus") && flat.contains(&"k3") && flat.contains(&"kimi-for-coding"), "{flat:?}");
+
+        // With no Kimi Code account there is nothing to offer under it.
+        let lab = router_with("options-claude-only", true).await;
+        let got = options_of(&lab).await;
+        assert_eq!(got["by_provider"].as_array().unwrap().len(), 1, "{got}");
+        assert!(!got["models"].as_array().unwrap().contains(&serde_json::json!("k3")));
+    }
+
+    #[tokio::test]
+    async fn set_model_refuses_a_model_no_source_serves() {
+        let lab = router_with("set-model-unserved", true).await;
+        let session = "6f708192-0000-4000-8000-0000000000aa";
+        let ask = |model: &str| serde_json::json!({ "session": session, "model": model }).to_string();
+        // No session by that id is under a wrapper here, so anything that got past the router's
+        // own check would be answered "only a session under the wrapper", 503.
+        for (model, code) in [("gpt-9", StatusCode::CONFLICT), ("unknown-model", StatusCode::BAD_REQUEST), ("k3", StatusCode::CONFLICT)] {
+            let (status, body) = lab.post("/api/live/model", &ask(model)).await;
+            assert_eq!(status, code, "{model}: {body}");
+            assert_eq!(body["reason"], format!("no source serves the model \"{model}\""), "{model}");
+        }
+        // Claude's aliases and ids are still taken, and reach the session check.
+        for model in ["opus", "sonnet[1m]", "claude-opus-5-5"] {
+            assert_eq!(lab.post("/api/live/model", &ask(model)).await.0, StatusCode::SERVICE_UNAVAILABLE, "{model}");
+        }
+
+        // A hosted router refuses it before the request goes down any machine's tunnel.
+        let hosted = crate::api_refusals::Lab::hosted("set-model-unserved-hosted").await;
+        let (status, body) = hosted.post("/api/live/model", &ask("k3")).await;
+        assert_eq!((status, body["reason"].as_str()), (StatusCode::CONFLICT, Some(r#"no source serves the model "k3""#)), "{body}");
     }
 }

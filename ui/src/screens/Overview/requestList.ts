@@ -6,13 +6,16 @@
 //   value has left the loaded rows is cleared (OV-C153);
 // - the Slow filter states its threshold as visible text (OV-C150), and every row it keeps carries
 //   the slow badge, an error row included (OV-C151);
-// - the cap's note offers "scope to a session" only where that can help (OV-C147).
+// - the cap's note offers "scope to a session" only where that can help (OV-C147);
+// - a request the router could not price reads "not priced", never "$0", and its detail says why
+//   (OV-C229).
 
 import type { Fact } from '~/components/RequestRow';
 import type { Part } from '~/components/ShareBar';
 import type { RequestRecord } from '~/data/overview';
-import { compact, count, family, hm, id8, monthDay, ms, pct, plural, projectName, shortModel, usd, when, type Family } from '~/model/format';
+import { DASH, compact, count, family, hm, id8, monthDay, ms, pct, plural, projectName, requestCost, shortModel, when, type Family } from '~/model/format';
 import type { RequestFilters, RequestKind, Scope } from '~/model/scope';
+import type { Account } from '~/model/settings';
 import { CONTEXT } from './panels';
 
 /// The list holds the 300 newest requests in scope (src/api.rs).
@@ -124,13 +127,14 @@ export function requestTime(at: number, now: number = Date.now()): string {
   return today ? new Date(at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : `${monthDay(at)} ${hm(at)}`;
 }
 
-/// The card's figures, in the formatters' words (OV-C156): the share cached is "—" without a prompt.
+/// The card's figures, in the formatters' words (OV-C156): the share cached is "—" without a prompt,
+/// and a request with usage the router could not price is "not priced", never "$0" (OV-C229).
 export function figures(r: RequestRecord): { prompt: string; cached: string; output: string; cost: string; firstToken: string } {
   return {
     prompt: compact(r.prompt_tokens),
     cached: n(r.prompt_tokens) ? `${pct(r.cache_read_tokens, r.prompt_tokens)} cached` : '—',
     output: `${compact(r.output_tokens)} out`,
-    cost: usd(r.cost),
+    cost: requestCost(r).text,
     firstToken: ms(r.ttfb_ms),
   };
 }
@@ -155,7 +159,8 @@ export function toolsCalled(s: string | null | undefined): string[] {
 /// Everything recorded about one request (OV-C158): its id; its session and project unless a session
 /// is scoped; the whole reply's time with the first token's; the stop reason; thinking; cache read ·
 /// written · uncached; a subagent's agent id; the tools called; the error at full width; and its
-/// context window part by part.
+/// context window part by part. A request the card says is not priced says why, which the card,
+/// a button, cannot hold (OV-C229).
 export function detail(r: RequestRecord, scope: Scope): { facts: Fact[]; error?: string; context?: Part[] } {
   const facts: Fact[] = [{ label: 'request id', value: r.request_id || '—', mono: true }];
   if (!scope.session) facts.push({ label: 'session', value: `${id8(r.session_id)}${r.session_id ? ` · ${projectName(r.project)}` : '—'}`, mono: false });
@@ -165,6 +170,8 @@ export function detail(r: RequestRecord, scope: Scope): { facts: Fact[]; error?:
     { label: 'thinking', value: `${compact(r.thinking_tokens)} tokens` },
     { label: 'cache', value: `${compact(r.cache_read_tokens)} read · ${compact(r.cache_write_tokens)} written · ${compact(r.input_tokens)} uncached` },
   );
+  const cost = requestCost(r);
+  for (const m of cost.marks) facts.push({ label: 'cost', value: `${m.value} — ${m.label}` });
   if (r.agent_id) facts.push({ label: 'agent id', value: r.agent_id, mono: true });
   const tools = toolsCalled(r.tools);
   if (tools.length) facts.push({ label: 'tools called', value: tools.join(', '), wide: true });
@@ -175,6 +182,17 @@ export function detail(r: RequestRecord, scope: Scope): { facts: Fact[]; error?:
       ? CONTEXT.map((c) => ({ key: c.key, label: c.label, value: ctx[c.key] ?? 0, colour: c.colour, concept: c.concept, figure: compact(ctx[c.key] ?? 0) }))
       : undefined;
   return { facts, ...(r.error ? { error: r.error } : {}), ...(context ? { context } : {}) };
+}
+
+/// The account that served a request, as the lists name an account — its email, else its label, else
+/// its id — with its router id beside it (OV-C17, OV-C231). An account the router no longer holds is
+/// its id, and a request recorded before accounts were is "—".
+export function servedBy(r: Pick<RequestRecord, 'account_id'>, accounts: readonly Pick<Account, 'id' | 'label' | 'email'>[] | null | undefined): string {
+  const id = r.account_id;
+  if (!id) return DASH;
+  const a = accounts?.find((x) => x.id === id);
+  const name = a?.email || a?.label || id;
+  return name === id ? id : `${name} · ${id}`;
 }
 
 /// The full date and time a request started, for its detail.

@@ -6,11 +6,12 @@ import { Button } from '@carbon/react';
 import { Fragment, useState } from 'react';
 import { Link } from 'react-router';
 import { BarList } from '~/components/BarList';
+import { ProviderMark } from '~/components/ProviderMark';
 import type { TabPart, Tools as ToolsRead } from '~/data/overview';
 import { CONCEPTS, paint } from '~/lib/concepts';
 import { settingsPath } from '~/lib/routes';
 import { useCoarse } from '~/lib/viewport';
-import { count } from '~/model/format';
+import { costNote, count, type CostFigure } from '~/model/format';
 import { toggle, type Scope } from '~/model/scope';
 import { isHosted, settingsPages, type Auth } from '~/model/settings';
 import {
@@ -21,6 +22,7 @@ import {
   LIST_PAGE,
   nothingRecorded,
   projectRows,
+  providerWords,
   scopingCaption,
   sessionRows,
   sessionsCaption,
@@ -48,25 +50,49 @@ function NotYetAttributed({ row }: { row: Unattributed }) {
   );
 }
 
-/// How to start, where the router says how: Settings → Claude Code on a router that runs on this
-/// Mac, the Router page's connection snippet on a hosted one. Nothing until the router has said
-/// which it is, so the page never assumes a Mac (OV-C203).
+/// How to start, each client by its name and its own way, side by side (OV-C230): for Claude Code,
+/// Settings → Claude Code on a router that runs on this Mac, the Router page's connection snippet on
+/// a hosted one; for Kimi Code, the two commands that point it here. Nothing until the router has
+/// said which it is, so the page never assumes a Mac (OV-C203).
 function HowToStart({ auth }: { auth: Auth | null }) {
   if (!auth) return null;
   const local = settingsPages(auth).includes('claude-code');
   return (
-    <p className={styles.note}>
-      {local ? (
-        <>
-          <Link to={settingsPath('claude-code')}>Settings → Claude Code</Link> routes every project through it.
-        </>
-      ) : (
-        <>
-          <Link to={settingsPath('router')}>Settings → Router</Link> has the line that points a Claude Code at {isHosted(auth) ? 'this deployment' : 'it'}.
-        </>
-      )}
-    </p>
+    <ul className={styles.howToStart} aria-label="How to start" data-how-to-start="">
+      <li className={styles.note} data-client="claude-code">
+        <strong>Claude Code</strong>{' '}
+        {local ? (
+          <>
+            <Link to={settingsPath('claude-code')}>Settings → Claude Code</Link> routes every project through it.
+          </>
+        ) : (
+          <>
+            <Link to={settingsPath('router')}>Settings → Router</Link> has the line that points a Claude Code at {isHosted(auth) ? 'this deployment' : 'it'}.
+          </>
+        )}
+      </li>
+      <li className={styles.note} data-client="kimi-code">
+        <strong>Kimi Code</strong> <code className={styles.mono}>agent-router install</code> writes the router into Kimi Code’s config.toml, and{' '}
+        <code className={styles.mono}>agent-router kimi</code> starts a hosted session from a terminal.
+      </li>
+      <li className={styles.note} data-client="codex">
+        <strong>Codex</strong>{' '}
+        {local ? <><code className={styles.mono}>agent-router install</code> connects Codex through the router.</> : <>The machine installer connects Codex to this router.</>}{' '}
+        Start it in its terminal or VS Code, then follow its sessions here.
+      </li>
+    </ul>
   );
+}
+
+/// What the marks on a list's costs mean, once, under the list: its rows are buttons, whose tooltip
+/// is only a title (OV-C229, OV-C232, SH-C30).
+function CostNote({ rows }: { rows: readonly { readonly cost: CostFigure }[] }) {
+  const note = costNote(rows.map((r) => r.cost));
+  return note ? (
+    <p className={styles.note} data-cost-note="">
+      {note}
+    </p>
+  ) : null;
 }
 
 function ShowMore({ total, shown, onMore, onFewer }: { total: number; shown: number; onMore: () => void; onFewer: () => void }) {
@@ -116,7 +142,7 @@ export function Lists({
   const sessions = sessionRows(part.sessions, scope, now);
   // Sessions holds up to 200: a first page and "Show more", never every row at once (OV-C139). The
   // page returns to its first twenty when the scope changes (OV-C33).
-  const scopeKey = `${scope.account}|${scope.project}|${scope.session}|${scope.range}`;
+  const scopeKey = `${scope.provider}|${scope.account}|${scope.project}|${scope.session}|${scope.range}`;
   const [paging, setPaging] = useState({ key: scopeKey, shown: LIST_PAGE });
   const shown = paging.key === scopeKey ? paging.shown : LIST_PAGE;
   const orphanProjects = unattributed(orphans, 'project', scope);
@@ -131,7 +157,9 @@ export function Lists({
             label="Accounts"
             rows={accountRows(split, now).map((a) => ({
               ...a,
-              chips: a.active ? <span className={styles.activeTag}>active</span> : undefined,
+              // Its provider's mark and name, and while it signs that provider's new requests, "active
+              // for" it: an Anthropic account and a Kimi Code account can both be active (OV-C231).
+              chips: <ProviderMark provider={a.provider} words={providerWords(a.provider, a.active)} className={a.active ? styles.activeTag : styles.chip} />,
             }))}
             selected={scope.account}
             onSelect={(key) => onScope(toggle(scope, 'account', key))}
@@ -163,6 +191,7 @@ export function Lists({
             {start && <HowToStart auth={auth} />}
           </>
         )}
+        <CostNote rows={projects} />
         {orphanProjects && <NotYetAttributed row={orphanProjects} />}
       </Panel>
 
@@ -187,7 +216,13 @@ export function Lists({
                         {s.chipsOf.project.name}
                       </span>
                     )}
-                    {s.chipsOf.client && <span className={styles.chip}>{s.chipsOf.client.name}</span>}
+                    {/* The providers of its requests, each its mark alone, beside its client (SE-C242). */}
+                    <span className={styles.chip} data-providers="">
+                      {s.providers.map((p) => (
+                        <ProviderMark key={p} provider={p} alone />
+                      ))}
+                      {s.chipsOf.client?.name}
+                    </span>
                     {s.chipsOf.families.map((f) => (
                       <Fragment key={f.family}>
                         <Swatch family={f.family} />
@@ -203,6 +238,7 @@ export function Lists({
               }}
             />
             <ShowMore total={sessions.length} shown={shown} onMore={() => setPaging({ key: scopeKey, shown: shown + LIST_PAGE })} onFewer={() => setPaging({ key: scopeKey, shown: LIST_PAGE })} />
+            <CostNote rows={sessions.slice(0, shown)} />
           </>
         ) : (
           <p className={styles.empty}>{emptyWords('sessions', scope)}</p>

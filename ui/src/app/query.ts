@@ -34,9 +34,11 @@ export const keys = {
   projects: ['projects'] as const,
   /// The Overview's snapshot, one per scope and open tab: a reply lands under the scope it was read
   /// for, so an older scope's can never be drawn under newer crumbs (OV-C162).
-  overview: (scope: { readonly account: string | null; readonly project: string | null; readonly session: string | null; readonly range: string }, tab: string) =>
-    ['overview', scope.account ?? '', scope.project ?? '', scope.session ?? '', scope.range, tab] as const,
-  /// A scope picker's rows, by the levels above it and the range (OV-C217).
+  overview: (
+    scope: { readonly provider: string | null; readonly account: string | null; readonly project: string | null; readonly session: string | null; readonly range: string },
+    tab: string,
+  ) => ['overview', scope.provider ?? '', scope.account ?? '', scope.project ?? '', scope.session ?? '', scope.range, tab] as const,
+  /// A scope picker's rows, by the range, the provider and the levels above it (OV-C217, OV-C227).
   picker: (level: string, ...above: readonly (string | null)[]) => ['picker', level, ...above.map((x) => x ?? '')] as const,
   /// `GET /api/auth`: what kind of router this is.
   auth: ['auth'] as const,

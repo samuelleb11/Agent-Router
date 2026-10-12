@@ -1,5 +1,5 @@
 // Copied from Northstar ui/src/screens/Settings/Layout.spec.tsx at e9c1589.
-// Changed: agent-router's six sections, and its breadcrumb; the sections are offered as the router's
+// Changed: agent-router's seven sections, and its breadcrumb; the sections are offered as the router's
 // /api/auth allows, so every case answers it, and the cases for a hosted router and one that has not
 // answered yet are agent-router's.
 import { act, fireEvent, screen, waitFor } from '@testing-library/react';
@@ -12,17 +12,20 @@ import SettingsSection from './Section';
 import { NO_MACHINE } from './rules';
 import { HOSTED, LOCAL, ok, stubRouter, type Answer } from './testing';
 
-const SIX = ['Accounts', 'Claude Code', 'Network', 'Password', 'Notifications', 'Router'];
+const SEVEN = ['Accounts', 'Models', 'Clients', 'Claude Code', 'Network', 'Access tokens', 'Password', 'Notifications', 'Router'];
 
 const pages = (
   <Route path="/settings" element={<SettingsLayout />}>
     <Route path="accounts" element={<div>ACCOUNTS PAGE</div>} />
+    <Route path="models" element={<div>MODELS PAGE</div>} />
+    <Route path="clients" element={<div>CLIENTS PAGE</div>} />
     <Route path="claude-code" element={<div>CLAUDE CODE PAGE</div>} />
     <Route path="network" element={<div>NETWORK PAGE</div>} />
+    <Route path="access-tokens" element={<div>ACCESS TOKENS PAGE</div>} />
     <Route path="password" element={<div>PASSWORD PAGE</div>} />
     <Route path="notifications" element={<div>NOTIFICATIONS PAGE</div>} />
     <Route path="router" element={<div>ROUTER PAGE</div>} />
-    {/* A segment none of the six pages owns still lands in the layout, as the app would
+    {/* A segment none of the seven pages owns still lands in the layout, as the app would
         route it, so the layout's own answer to it is what is tested. */}
     <Route path="*" element={<div>NOWHERE</div>} />
   </Route>
@@ -30,7 +33,7 @@ const pages = (
 
 const show = (at: string) => renderScreen(<Routes>{pages}</Routes>, { path: '/*', at });
 
-/// Every case starts on a local router, which has all six pages, and waits for it to say so.
+/// Every case starts on a local router, which has all seven pages, and waits for it to say so.
 let router: ReturnType<typeof stubRouter>;
 const answer = (auth: Auth | null, more: Record<string, Answer> = {}) =>
   (router = stubRouter({ '/api/auth': auth ? ok(auth) : () => new Promise<Response>(() => {}), ...more }));
@@ -41,10 +44,10 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('SettingsLayout', () => {
-  it('renders the page for the URL beside six destinations', async () => {
+  it('renders the page for the URL beside seven destinations', async () => {
     show('/settings/router');
     expect(screen.getByText('ROUTER PAGE')).toBeInTheDocument();
-    await waitFor(() => expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual(SIX));
+    await waitFor(() => expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual(SEVEN));
     expect(screen.getByRole('tab', { name: 'Router' })).toHaveAttribute('aria-selected', 'true');
   });
 
@@ -60,8 +63,8 @@ describe('SettingsLayout', () => {
   it('each tab is an anchor to its page', async () => {
     show('/settings/router');
     await screen.findByRole('tab', { name: 'Network' });
-    const slugs = ['accounts', 'claude-code', 'network', 'password', 'notifications', 'router'];
-    SIX.forEach((name, i) => {
+    const slugs = ['accounts', 'models', 'clients', 'claude-code', 'network', 'access-tokens', 'password', 'notifications', 'router'];
+    SEVEN.forEach((name, i) => {
       const tab = screen.getByRole('tab', { name });
       expect(tab.tagName).toBe('A');
       expect(tab).toHaveAttribute('href', `/settings/${slugs[i]}`);
@@ -96,13 +99,13 @@ describe('SettingsLayout', () => {
     expect(screen.getByText('ACCOUNTS PAGE')).toBeInTheDocument();
   });
 
-  /// The SAME control in a hand — the same six tabs, each still an anchor to its page.
-  it('in a hand offers the same six destinations, as the same tabs', async () => {
+  /// The SAME control in a hand — the same seven tabs, each still an anchor to its page.
+  it('in a hand offers the same seven destinations, as the same tabs', async () => {
     stubNarrow();
     show('/settings/network');
     await screen.findByRole('tab', { name: 'Network' });
     const tabs = screen.getAllByRole('tab');
-    expect(tabs.map((t) => t.textContent)).toEqual(SIX);
+    expect(tabs.map((t) => t.textContent)).toEqual(SEVEN);
     expect(screen.getByRole('tab', { name: 'Network' })).toHaveAttribute('aria-selected', 'true');
     for (const t of tabs) expect(t.tagName).toBe('A');
     fireEvent.click(screen.getByRole('tab', { name: 'Router' }));
@@ -110,7 +113,7 @@ describe('SettingsLayout', () => {
   });
 
   /// The page opens the way every screen opens: a breadcrumb whose parent is a link, and a
-  /// title. The six pages are a sub-navigation under it, not six page headers.
+  /// title. The seven pages are a sub-navigation under it, not seven page headers.
   it('opens with one page header: a breadcrumb to the Overview, and one title', () => {
     show('/settings/accounts');
     expect(screen.getByRole('link', { name: 'Overview' })).toHaveAttribute('href', '/');
@@ -162,14 +165,14 @@ describe('Settings, as the router allows', () => {
     answer(null);
     real('/settings/network');
     expect(await screen.findByText('Asking the router what kind it is…')).toBeInTheDocument();
-    expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual(['Accounts', 'Password', 'Notifications', 'Router']);
+    expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual(['Accounts', 'Models', 'Clients', 'Access tokens', 'Password', 'Notifications', 'Router']);
     expect(screen.queryByRole('switch')).toBeNull();
   });
 
   it('ST-C100: an answer without mode is a local router that predates the field, and reads exactly as local', async () => {
     answer({ configured: true, remote_bind: false, from_loopback: true }, { '/api/setup': ok({ service: { registered: false, supported: true, platform: 'macos' }, managed: [], global_settings_path: '/x' }), '/api/setup/shim': ok({ targets: [] }) });
     real('/settings/claude-code');
-    await waitFor(() => expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual(SIX));
+    await waitFor(() => expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual(SEVEN));
     expect(await screen.findByRole('switch', { name: 'Start at login' })).toBeInTheDocument();
   });
 
@@ -178,7 +181,7 @@ describe('Settings, as the router allows', () => {
     real('/settings/network');
     expect(await screen.findByText(NO_MACHINE)).toBeInTheDocument();
     expect(screen.getByText('Network is not on this router')).toBeInTheDocument();
-    expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual(['Accounts', 'Password', 'Notifications', 'Router', 'Forges', 'Library']);
+    expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual(['Accounts', 'Models', 'Clients', 'Access tokens', 'Password', 'Notifications', 'Router', 'Forges', 'Library']);
     expect(screen.queryByRole('tab', { selected: true })).toBeNull();
     vi.unstubAllGlobals();
     document.body.innerHTML = '';

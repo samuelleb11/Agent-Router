@@ -44,6 +44,16 @@ const DEFAULTS: &[(&str, Rates)] = &[
     ("claude-sonnet-4",   Rates { input: 3.0,  cache_write_5m: 3.75,  cache_write_1h: 6.0,  cache_read: 0.30, output: 15.0 }),
     ("claude-haiku-4-5",  Rates { input: 1.0,  cache_write_5m: 1.25,  cache_write_1h: 2.0,  cache_read: 0.10, output: 5.0 }),
     ("claude-haiku-3-5",  Rates { input: 0.80, cache_write_5m: 1.00,  cache_write_1h: 1.60, cache_read: 0.08, output: 4.0 }),
+    // Kimi Code's models, at Moonshot's Open Platform rates as read on 2026-10-10
+    // (docs/sources-and-models.md, "Kimi Code rates"). `k3-256k` is K3 in a smaller window,
+    // so K3's rates, on a row of its own so it never falls to `k3`'s by accident. The coding
+    // models are not listed there: `kimi-for-coding` is priced as K2.7 Code, and its
+    // HighSpeed as K2.7 Code HighSpeed, the nearest that are. K2 caches with no write
+    // charge, so a write costs what an uncached input does.
+    ("k3",                        Rates { input: 3.0,  cache_write_5m: 3.00,  cache_write_1h: 6.0,  cache_read: 0.30, output: 15.0 }),
+    ("k3-256k",                   Rates { input: 3.0,  cache_write_5m: 3.00,  cache_write_1h: 6.0,  cache_read: 0.30, output: 15.0 }),
+    ("kimi-for-coding",           Rates { input: 0.95, cache_write_5m: 0.95,  cache_write_1h: 0.95, cache_read: 0.19, output: 4.0 }),
+    ("kimi-for-coding-highspeed", Rates { input: 1.90, cache_write_5m: 1.90,  cache_write_1h: 1.90, cache_read: 0.38, output: 8.0 }),
 ];
 
 pub fn ensure_table(db: &Connection) -> rusqlite::Result<()> {
@@ -386,5 +396,22 @@ mod tests {
         );
         // 3.09M writes at $6.25 + 90M reads at $0.50 + 544k out at $25 ~= $77.
         assert!((c - 77.3).abs() < 1.0, "expected about $77, got ${c:.2}");
+    }
+
+    #[test]
+    fn kimi_models_are_priced_each_at_its_own_row() {
+        let db = Connection::open_in_memory().unwrap();
+        ensure_table(&db).unwrap();
+        for model in ["k3", "k3-256k", "kimi-for-coding", "kimi-for-coding-highspeed"] {
+            resolve_one(&db, model).unwrap();
+            let key: Option<String> =
+                db.query_row("SELECT key FROM model_rate WHERE model = ?1", [model], |r| r.get(0)).unwrap();
+            assert_eq!(key.as_deref(), Some(model), "{model} is priced at its own row, not a shorter one's");
+        }
+        let t = table();
+        assert_eq!(rate_for(&t, "k3").unwrap(), rate_for(&t, "k3-256k").unwrap(), "one model in two windows");
+        assert_eq!((rate_for(&t, "k3").unwrap().input, rate_for(&t, "k3").unwrap().output), (3.0, 15.0));
+        assert_eq!(rate_for(&t, "kimi-for-coding-highspeed").unwrap().output, 8.0);
+        assert_eq!(rate_for(&t, "kimi-for-coding").unwrap().cache_read, 0.19);
     }
 }

@@ -45,6 +45,7 @@ export const AR_TOKENS = [
   '--ar-model-opus',
   '--ar-model-sonnet',
   '--ar-model-haiku',
+  '--ar-model-kimi',
   '--ar-model-other',
   '--ar-ok',
   '--ar-warn',
@@ -121,13 +122,23 @@ export const CONCEPTS = {
 
 export type Concept = keyof typeof CONCEPTS;
 
-/// A model's family colour (OV-C10). The family itself is read from the model's name by the
-/// formatters; "other" is drawn as a hollow ring, never as a fourth fill.
+/// A model's family colour (OV-C10, OV-C222). The family itself is read from the model's name by
+/// the formatters; "other" is drawn as a hollow ring, never as a fill of its own.
 export const FAMILY_COLOUR = {
   opus: '--ar-model-opus',
   sonnet: '--ar-model-sonnet',
   haiku: '--ar-model-haiku',
+  kimi: '--ar-model-kimi',
   other: '--ar-model-other',
 } as const satisfies Record<string, ArToken>;
 
 export type Family = keyof typeof FAMILY_COLOUR;
+
+/// A provider's colour in a bar of their shares (OV-C226): Anthropic's the token slate, since its
+/// models wear three families' colours of their own, Kimi Code's its family's, and any other the
+/// "other" family's. Beside it, always, the provider's own mark (SH-C56): the colour only keys the bar.
+export function providerColour(provider: string | null | undefined): ArToken {
+  if (!provider || provider === 'anthropic') return '--ar-tok';
+  if (provider === 'kimi') return FAMILY_COLOUR.kimi;
+  return FAMILY_COLOUR.other;
+}

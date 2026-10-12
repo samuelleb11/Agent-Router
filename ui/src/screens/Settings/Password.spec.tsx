@@ -110,6 +110,21 @@ describe('Password', () => {
     expect(screen.queryByLabelText('New password')).toBeNull();
   });
 
+  it('removing the legacy password preserves access tokens and explains that token users keep access', async () => {
+    const r = show({ ...LOCAL, access_tokens: 1, from_loopback: false }, { 'POST /api/auth': ok({ ok: true, configured: false }) });
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove password' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog).toHaveTextContent('Devices using this password lose access. Access tokens remain valid.');
+    expect(dialog).not.toHaveTextContent('Every other device is refused');
+    expect(dialog).toHaveTextContent('If this browser uses the password, it loses access when the password is removed.');
+    expect(dialog).not.toHaveTextContent('this browser is locked out the moment');
+    r.set({ configured: false });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Remove password' }));
+    expect(await screen.findByText('Password removed. Access tokens remain valid.')).toBeInTheDocument();
+    expect(await screen.findByText('not set — access tokens are configured')).toBeInTheDocument();
+    expect(r.posts('/api/auth')).toEqual([{ clear: true }]);
+  });
+
   it('ST-C83, ST-C10: once set, both fields are emptied and /api/auth is read again; a refused one stays in both fields and never reads "set"', async () => {
     const r = show(UNSET, { 'POST /api/auth': () => refusal('the store is read-only') });
     const { password, again } = await fields();

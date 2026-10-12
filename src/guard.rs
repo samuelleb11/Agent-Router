@@ -2,7 +2,7 @@
 //! request it forwards, so the set of callers allowed to reach it is kept as narrow
 //! as it can be.
 //!
-//! Five independent layers, each closing a different hole:
+//! Independent layers, each closing a different hole:
 //!
 //! 1. **Loopback bind** (see `config` and `network`) — the socket is never exposed
 //!    off-host unless the stored setting or `AGENT_ROUTER_BIND` says so.
@@ -31,11 +31,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use axum::extract::{ConnectInfo, Request, State};
-use axum::http::{header, HeaderMap, Method, StatusCode};
+use axum::http::{header, HeaderMap, Method, StatusCode, Uri};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 
-use crate::auth::Verdict;
+use crate::auth::{tokens, Verdict};
 use crate::proxy::AppState;
 
 /// A Host header without its port: `[::1]:8787` is `::1`, `example.com:443` is
@@ -139,7 +139,8 @@ fn host_is_ip_literal(host: &str) -> bool {
 /// phones, Claude Code and Northstar send no `Origin` at all. `Origin: null` (a sandboxed
 /// frame, a file) is refused, since it names no site that could be this one.
 pub fn check_origin(method: &Method, headers: &HeaderMap) -> Result<(), &'static str> {
-    if matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS) {
+    let websocket = headers.get(header::UPGRADE).and_then(|v| v.to_str().ok()).is_some_and(|v| v.eq_ignore_ascii_case("websocket"));
+    if matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS) && !websocket {
         return Ok(());
     }
     let Some(origin) = headers.get(header::ORIGIN) else {
@@ -157,6 +158,33 @@ pub fn check_origin(method: &Method, headers: &HeaderMap) -> Result<(), &'static
         Ok(())
     } else {
         Err(REFUSED)
+    }
+}
+
+/// Scope grants name exact operations. A prefix grant for `/v1/*` would also lend
+/// provider credentials to unrelated upstream APIs, and a Library write grant
+/// would let a machine publish executable components to other machines.
+fn permits(scope: tokens::Scope, method: &Method, uri: &Uri) -> bool {
+    let path = uri.path();
+    if scope == tokens::Scope::Admin {
+        return true;
+    }
+    let inference = (*method == Method::GET && matches!(path, "/v1/models" | "/_router/models"))
+        || (*method == Method::POST && matches!(path,
+            "/v1/messages" | "/v1/messages/count_tokens" | "/v1/chat/completions" | "/v1/responses" | "/codex/responses"
+            | "/v1/responses/compact" | "/codex/responses/compact"));
+    if inference || scope != tokens::Scope::Machine {
+        return inference;
+    }
+    match *method {
+        Method::GET => matches!(path, "/api/auth" | "/api/models" | "/_router/agent"
+            | "/api/library/manifest" | "/api/quota")
+            || (path == "/api/summary" && uri.query() == Some("parts=providers"))
+            || path.strip_prefix("/api/library/blobs/").is_some_and(|digest| {
+                digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit())
+            }),
+        Method::POST => matches!(path, "/api/machines/places" | "/api/library/report"),
+        _ => false,
     }
 }
 
@@ -206,7 +234,26 @@ pub async fn layer(
     // secret instead (`library::hooks`).
     let open = path == "/_router/health"
         || (state.config.server && (crate::downloads::is_open(path) || crate::library::hooks::is_open(path)));
-    if asks && !open {
+    // Explicit access tokens retain their limits on loopback as well. A revoked,
+    // expired or malformed token never falls through to the legacy local owner.
+    if !open {
+        if let Some(credential) = tokens::presented(req.headers()) {
+            let token = match tokens::check(&state.config.db_path, &credential).await {
+                Ok(token) => token,
+                Err(tokens::Invalid::Unavailable) => {
+                    return (StatusCode::SERVICE_UNAVAILABLE, "agent-router: authentication store unavailable\n").into_response();
+                }
+                Err(_) => return token_challenge(req.headers()),
+            };
+            if !permits(token.scope, req.method(), req.uri()) {
+                return (StatusCode::FORBIDDEN, "agent-router: this access token does not permit that operation\n").into_response();
+            }
+            req.extensions_mut().insert(token);
+            return next.run(req).await;
+        }
+    }
+    let library_token_attempt = crate::auth::presented(req.headers()).is_some_and(|value| value.starts_with(crate::library::tokens::PREFIX));
+    if (asks || library_token_attempt) && !open {
         // A Library publish token, on the one route it may use and on a hosted router alone:
         // publishing a version. Anywhere else it is no password (`library::tokens`).
         let token = match state.config.server {
@@ -220,6 +267,9 @@ pub async fn layer(
         match state.auth.check(req.headers()).await {
             Verdict::Ok => {}
             Verdict::NoPassword => {
+                if tokens::active_count(&state.config.db_path).await.is_ok_and(|count| count > 0) {
+                    return challenge(req.uri().path());
+                }
                 tracing::warn!(%peer, "refused: no password is set");
                 return (
                     StatusCode::FORBIDDEN,
@@ -243,13 +293,21 @@ pub async fn layer(
     next.run(req).await
 }
 
+fn token_challenge(headers: &HeaderMap) -> Response {
+    let basic = headers.get(header::AUTHORIZATION).and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split_whitespace().next()).is_some_and(|scheme| scheme.eq_ignore_ascii_case("basic"));
+    let challenge = if basic {"Basic realm=\"agent-router\", charset=\"UTF-8\""} else {"Bearer realm=\"agent-router\", error=\"invalid_token\""};
+    (StatusCode::UNAUTHORIZED, [(header::WWW_AUTHENTICATE, challenge)], "agent-router: invalid or expired access token\n").into_response()
+}
+
 /// A browser gets the Basic challenge and shows its prompt. An agent path does not:
 /// nothing on `/v1/` is a browser, and the fix there is an environment variable.
 fn challenge(path: &str) -> Response {
-    if path.starts_with("/v1/") {
+    if path.starts_with("/v1/") || path.starts_with("/codex/") {
         return (
             StatusCode::UNAUTHORIZED,
-            "agent-router: this router has a password — set ANTHROPIC_AUTH_TOKEN to it\n",
+            [(header::WWW_AUTHENTICATE, "Bearer realm=\"agent-router\"")],
+            "agent-router: present a router access token or the legacy router password\n",
         )
             .into_response();
     }
@@ -328,6 +386,67 @@ mod tests {
         assert!(check_origin(&Method::POST, &headers(&[("host", "127.0.0.1:8787")])).is_ok());
         let cross = headers(&[("origin", "https://evil.example.com"), ("host", "127.0.0.1:8787")]);
         assert!(check_origin(&Method::GET, &cross).is_ok());
+        let mut websocket = cross;
+        websocket.insert("upgrade", HeaderValue::from_static("websocket"));
+        assert!(check_origin(&Method::GET, &websocket).is_err());
+        websocket.insert("origin", HeaderValue::from_static("http://127.0.0.1:8787"));
+        assert!(check_origin(&Method::GET, &websocket).is_ok());
+    }
+
+    async fn token_request(lab: &crate::api_refusals::Lab, method: Method, path: &str, credential: &str) -> axum::response::Response {
+        authenticated_request(lab, method, path, &format!("Bearer {credential}")).await
+    }
+
+    async fn authenticated_request(lab: &crate::api_refusals::Lab, method: Method, path: &str, authorization: &str) -> axum::response::Response {
+        use axum::body::Body;
+        use tower::ServiceExt;
+        let mut request = axum::http::Request::builder().method(method).uri(path)
+            .header("host", "127.0.0.1").header("authorization", authorization)
+            .header("content-type", "application/json").body(Body::from("{}")).unwrap();
+        request.extensions_mut().insert(axum::extract::ConnectInfo(std::net::SocketAddr::from(([127,0,0,1],50000))));
+        lab.app.clone().oneshot(request).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn scoped_tokens_cannot_use_local_bootstrap_or_cross_privilege_boundaries() {
+        use axum::http::StatusCode;
+        let lab = crate::api_refusals::Lab::local("guard-access-tokens");
+        for scope in ["client", "machine", "admin"] {
+            let (status, made) = lab.post("/api/auth/tokens", &serde_json::json!({"name":scope,"scope":scope}).to_string()).await;
+            assert_eq!(status, StatusCode::CREATED);
+            let token = made["token"].as_str().unwrap();
+            assert_eq!(token_request(&lab, Method::GET, "/v1/models", token).await.status(), StatusCode::OK);
+            assert_eq!(token_request(&lab, Method::GET, "/_router/models", token).await.status(), StatusCode::OK);
+            let administrative = if scope == "admin" {StatusCode::OK} else {StatusCode::FORBIDDEN};
+            assert_eq!(token_request(&lab, Method::GET, "/api/auth/tokens", token).await.status(), administrative);
+            // A valid routing token cannot borrow another upstream API or become a
+            // Library publisher. A machine can sync the Library, but cannot publish.
+            if scope != "admin" {
+                for (method, path) in [(Method::POST,"/v1/files"),(Method::DELETE,"/api/auth/tokens/other"),
+                    (Method::POST,"/api/library/items/skill/shared/versions"),(Method::GET,"/api/sessions")] {
+                    assert_eq!(token_request(&lab, method, path, token).await.status(), StatusCode::FORBIDDEN, "{scope}: {path}");
+                }
+            }
+            if scope == "machine" {
+                assert_eq!(token_request(&lab, Method::GET, "/api/models", token).await.status(), StatusCode::OK);
+                assert_eq!(token_request(&lab, Method::GET, "/api/summary?parts=providers", token).await.status(), StatusCode::OK);
+                for path in ["/api/summary", "/api/summary?parts=providers,threads", "/api/summary?parts=providers&parts=threads"] {
+                    assert_eq!(token_request(&lab, Method::GET, path, token).await.status(), StatusCode::FORBIDDEN);
+                }
+            }
+            let (_, _) = lab.post("/api/auth", &serde_json::json!({"password":"legacy-pass"}).to_string()).await;
+            let id = made["id"].as_str().unwrap();
+            assert_eq!(token_request(&lab, Method::DELETE, &format!("/api/auth/tokens/{id}"), "legacy-pass").await.status(), StatusCode::OK);
+            assert_eq!(token_request(&lab, Method::GET, "/v1/models", token).await.status(), StatusCode::UNAUTHORIZED);
+            assert_eq!(token_request(&lab, Method::GET, "/_router/models", token).await.status(), StatusCode::UNAUTHORIZED);
+        }
+        // Malformed named tokens are not native provider credentials, even on loopback.
+        assert_eq!(token_request(&lab, Method::GET, "/api/auth/tokens", "arr_bad").await.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(token_request(&lab, Method::GET, "/api/auth/tokens", "arl_bad").await.status(), StatusCode::UNAUTHORIZED);
+        let basic = format!("Basic {}", crate::tunnel::base64(b"dashboard:arr_bad"));
+        let response = authenticated_request(&lab, Method::GET, "/", &basic).await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert!(response.headers()["www-authenticate"].to_str().unwrap().starts_with("Basic "), "a browser can replace a revoked or expired token");
     }
 
     #[test]

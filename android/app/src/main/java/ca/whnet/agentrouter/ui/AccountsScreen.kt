@@ -112,6 +112,8 @@ fun AccountsScreen(app: AppState, router: Router, onBack: () -> Unit) {
                             Column(Modifier.weight(1f)) {
                                 Text(acc.title, style = MaterialTheme.typography.bodyLarge)
                                 val bits = buildList {
+                                    add(acc.providerName)
+                                    if (acc.isCodexLogin) add("Codex login")
                                     acc.subscriptionType?.let { add(it) }
                                     acc.orgName?.let { add(it) }
                                     acc.detail?.let { add(it) }
@@ -178,32 +180,33 @@ fun AccountsScreen(app: AppState, router: Router, onBack: () -> Unit) {
                     OutlinedTextField(
                         value = email,
                         onValueChange = { email = it },
+                        enabled = !acc.isCodexLogin,
                         label = { Text("Who it is") },
                         placeholder = { Text("name@example.com") },
                         singleLine = true,
                     )
-                    OutlinedTextField(
+                    if (acc.source == "token") { OutlinedTextField(
                         value = token,
                         onValueChange = { token = it },
                         label = { Text("Rotate credential") },
-                        placeholder = { Text("a fresh setup-token value") },
+                        placeholder = { Text(if (acc.provider == "openai") "a fresh OpenAI API key" else if (acc.provider == "kimi") "a fresh Kimi Code key" else "a fresh setup-token value") },
                         singleLine = true,
                     )
                     Text(
-                        "A fresh `claude setup-token` value, if the current one was revoked or " +
-                            "you want to rotate it. Leave blank to keep the one stored.",
+                        "A fresh ${acc.providerName} credential replaces the stored one. Leave blank to keep it.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    OutlinedTextFieldForUsageKey(app, router, acc) { notice = it }
-                    if (!acc.isActive) {
+                    ) }
+                    if (acc.takesUsageKey) OutlinedTextFieldForUsageKey(app, router, acc) { notice = it }
+                    if (!acc.isActive && (!acc.isCodexLogin || state.isHosted)) {
                         TextButton(onClick = { editing = null; removing = acc }) {
                             Text("Remove this account", color = MaterialTheme.colorScheme.error)
                         }
                     } else {
                         // The router refuses it anyway; saying so beats a failed call.
                         Text(
-                            "The serving account cannot be removed. Switch to another first.",
+                            if (acc.isCodexLogin && !state.isHosted) "Discovered from the Codex login on this machine, so the router does not own it."
+                            else "The serving account cannot be removed. Switch to another first.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -221,7 +224,7 @@ fun AccountsScreen(app: AppState, router: Router, onBack: () -> Unit) {
                                 AccountEditBody(
                                     id = acc.id,
                                     label = label.trim(),
-                                    email = email.trim().ifEmpty { null },
+                                    email = if (acc.isCodexLogin) null else email.trim().ifEmpty { null },
                                     token = token.trim().ifEmpty { null },
                                 ),
                             )?.problem ?: if (token.isNotBlank()) "Saved, credential rotated." else "Saved."
@@ -269,6 +272,7 @@ private fun AddAccountDialog(app: AppState, router: Router, onDone: (String?) ->
     val scope = rememberCoroutineScope()
     val clipboard = LocalClipboardManager.current
     var source by remember { mutableStateOf("login") }
+    var provider by remember { mutableStateOf("anthropic") }
     var label by remember { mutableStateOf("") }
     var token by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
@@ -293,6 +297,14 @@ private fun AddAccountDialog(app: AppState, router: Router, onDone: (String?) ->
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf("anthropic" to "Anthropic", "kimi" to "Kimi Code", "openai" to "OpenAI").forEach { (key, name) ->
+                        FilterChip(selected = provider == key, enabled = !busy, onClick = {
+                            if (provider != key) { token = ""; provider = key }
+                            if (key != "anthropic") source = "token"
+                        }, label = { Text(name) })
+                    }
+                }
+                if (provider == "anthropic") { Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf("login" to "Sign in", "token" to "Token", "profile" to "Profile")
                         .forEach { (key, name) ->
                             FilterChip(
@@ -302,7 +314,7 @@ private fun AddAccountDialog(app: AppState, router: Router, onDone: (String?) ->
                                 label = { Text(name) },
                             )
                         }
-                }
+                } }
                 OutlinedTextField(
                     value = label,
                     onValueChange = { label = it },
@@ -316,7 +328,7 @@ private fun AddAccountDialog(app: AppState, router: Router, onDone: (String?) ->
                         value = token,
                         onValueChange = { token = it },
                         enabled = !busy,
-                        label = { Text("sk-ant-… token") },
+                        label = { Text(if (provider == "openai") "OpenAI API key" else if (provider == "kimi") "Kimi Code key" else "sk-ant-… token") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
                     )
@@ -375,7 +387,7 @@ private fun AddAccountDialog(app: AppState, router: Router, onDone: (String?) ->
                             } else {
                                 val r = client?.post<AddAccountBody, OkReply>(
                                     "/api/accounts",
-                                    AddAccountBody(label.trim(), source, token.trim()),
+                                    AddAccountBody(label.trim(), source, token.trim(), provider = if (provider == "anthropic") null else provider),
                                 )
                                 busy = false
                                 r?.problem

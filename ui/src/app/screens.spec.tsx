@@ -14,7 +14,7 @@ import { Notices } from '~/app/notices';
 import { dismiss, snapshot } from '~/app/notify';
 import { json, refusal, renderScreen, stubFetch } from '~/test-utils';
 import Overview from '~/screens/Overview';
-import { HOUR, MIN, NOW, QUOTA, refused, router } from '~/screens/Overview/fixtures';
+import { anthropicBlock, HOUR, kimiBlock, MIN, NOW, QUOTA, refused, router } from '~/screens/Overview/fixtures';
 import { quotaView } from '~/screens/Overview/quotaView';
 import AccountsPage from '~/screens/Settings/Accounts';
 import { ACCOUNTS as SETTINGS_ACCOUNTS, LOCAL as SETTINGS_LOCAL, ok as answers, stubRouter as settingsRouter } from '~/screens/Settings/testing';
@@ -88,7 +88,9 @@ describe('a sentence that names a control links to it', () => {
     settingsRouter({ '/api/auth': answers(SETTINGS_LOCAL), '/api/accounts': answers(SETTINGS_ACCOUNTS), '/api/login/status': answers({ phase: 'failed', url: null }) });
     renderScreen(<AccountsPage />, { path: '/settings/accounts', at: '/settings/accounts' });
     const work = await screen.findByLabelText('Account work');
-    for (const control of ['Use', 'Edit', 'Remove']) expect(within(work).getByRole('button', { name: control })).toBeInTheDocument();
+    for (const control of ['Edit', 'Remove']) expect(within(work).getByRole('button', { name: control })).toBeInTheDocument();
+    // Switched in its provider's list box, above the cards (ST-C125).
+    expect(screen.getByRole('combobox', { name: 'Requests go to' })).toBeInTheDocument();
   });
 });
 
@@ -139,8 +141,10 @@ describe('every figure says when it was measured', () => {
     const read = (source: string, extra: object = {}) => ({ value: { ...QUOTA, source, ...extra }, at: NOW, kept: false, for: 'secondary' });
     expect(quotaView(read('usage-api', { age_ms: MIN }), null, null, NOW)?.source).toBe('checked 1 min ago');
     expect(quotaView(read('response-headers', { seen_at: NOW - 2 * MIN }), null, null, NOW)?.source).toBe('from the last request 2 min ago');
-    const headers = { started_at: NOW - 3 * MIN, rl_5h_utilization: 0.4, rl_5h_reset: (NOW + HOUR) / 1000, rl_7d_utilization: 0.5, rl_7d_reset: (NOW + 24 * HOUR) / 1000, rl_status: 'allowed' };
-    expect(quotaView(null, headers as never, null, NOW)?.source).toBe('from the last request 3 min ago');
+    const headers = anthropicBlock({ at: NOW - 3 * MIN, windows: { five_hour: { utilization: 0.4, resets_at: (NOW + HOUR) / 1000 }, seven_day: { utilization: 0.5, resets_at: (NOW + 24 * HOUR) / 1000 } } });
+    expect(quotaView(null, headers, null, NOW)?.source).toBe('from the last request 3 min ago');
+    // Kimi Code's block is its usage API's reading: checked, as the usage endpoint's is.
+    expect(quotaView(null, kimiBlock({ at: NOW - 2 * MIN }), null, NOW)?.source).toBe('checked 2 min ago');
   });
 
   it('SH-C21: the Overview says when its figures were read, and the quota which source they came from', async () => {

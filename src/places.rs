@@ -43,6 +43,10 @@ pub struct Report {
     /// Those directories, each with its git remotes.
     #[serde(default)]
     pub directories: Vec<Directory>,
+    /// The coding clients it has (`clients`). None from an agent that does not say, which
+    /// leaves what an earlier report said.
+    #[serde(default)]
+    pub clients: Option<Vec<crate::clients::Client>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -83,10 +87,11 @@ pub fn record(conn: &Connection, report: &Report, now: i64) -> Result<Recorded> 
     let machine = report.machine.as_str();
     if !machine.is_empty() {
         tx.execute(
-            "INSERT INTO machines (id, label, platform, last_seen_at) VALUES (?1, ?2, ?3, ?4)
+            "INSERT INTO machines (id, label, platform, last_seen_at, clients) VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT(id) DO UPDATE SET label = coalesce(excluded.label, label),
-               platform = coalesce(excluded.platform, platform), last_seen_at = excluded.last_seen_at",
-            params![machine, report.label, report.platform, now],
+               platform = coalesce(excluded.platform, platform), last_seen_at = excluded.last_seen_at,
+               clients = coalesce(excluded.clients, clients)",
+            params![machine, report.label, report.platform, now, report.clients.as_ref().map(serde_json::to_string).transpose()?],
         )?;
     }
     let mut done = Recorded::default();
@@ -123,17 +128,21 @@ pub fn record(conn: &Connection, report: &Report, now: i64) -> Result<Recorded> 
     Ok(done)
 }
 
-/// This machine's places, from its own list of sessions: what an agent sends and a local
-/// router records. Blocking: it reads the transcripts and asks `git`.
+/// This machine's places, from its own list of sessions, and its clients: what an agent sends
+/// and a local router records. Blocking: it reads the transcripts and asks `git`.
 pub fn here(machine: &str, label: Option<&str>, platform: Option<&str>) -> Report {
-    let listed = crate::live::discover();
+    // Claude Code's sessions and Kimi Code's (`kimi::session`), whose ids are the ones its
+    // requests are filed under.
+    let listed: Vec<Listed> =
+        crate::live::discover().into_iter().map(|s| Listed { session: s.session_id, cwd: s.cwd }).collect();
     let cwds: BTreeSet<String> = listed.iter().filter_map(|s| s.cwd.clone()).collect();
     Report {
         machine: machine.to_string(),
         label: label.map(str::to_owned),
         platform: platform.map(str::to_owned),
-        sessions: listed.into_iter().map(|s| Listed { session: s.session_id, cwd: s.cwd }).collect(),
+        sessions: listed,
         directories: cwds.into_iter().map(|cwd| Directory { remotes: repository::remotes_cached(&cwd), cwd }).collect(),
+        clients: Some(crate::clients::here()),
     }
 }
 
@@ -178,6 +187,29 @@ fn writer(path: &std::path::Path) -> Result<Connection> {
     let conn = Connection::open(path)?;
     conn.busy_timeout(Duration::from_secs(30))?;
     Ok(conn)
+}
+
+/// Each machine's clients, as it last reported them, by its id: what `/api/machines` gives.
+pub async fn clients(state: &Arc<AppState>) -> std::collections::HashMap<String, serde_json::Value> {
+    let state = state.clone();
+    let read = tokio::task::spawn_blocking(move || -> Result<_> {
+        let conn = state.reads.get()?;
+        let mut stmt = conn.prepare("SELECT id, clients FROM machines WHERE clients IS NOT NULL")?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        Ok(rows.flatten().filter_map(|(id, kept)| Some((id, serde_json::from_str(&kept).ok()?))).collect())
+    })
+    .await;
+    match read {
+        Ok(Ok(clients)) => clients,
+        Ok(Err(e)) => {
+            tracing::warn!("machines' clients unread: {e:#}");
+            Default::default()
+        }
+        Err(e) => {
+            tracing::warn!("machines' clients unread: {e}");
+            Default::default()
+        }
+    }
 }
 
 /// `POST /api/machines/places`: a machine's report of its places, from its agent or from the
@@ -264,6 +296,7 @@ mod tests {
                 },
                 Directory { cwd: "/home/u/scratch".into(), remotes: vec![] },
             ],
+            clients: None,
         };
         let done = record(&conn, &report, 100).unwrap();
         assert_eq!(done, Recorded { placed: 3, repositories: 2, directories: 2 });
@@ -311,6 +344,7 @@ mod tests {
                 cwd: "/Users/u/code/ui-kit-web".into(),
                 remotes: vec![remote("origin", "https://gitlab.example.com/acme/ui-kit-web.git")],
             }],
+            clients: None,
         };
         deliver(&router, &report).await.unwrap();
         assert_eq!(

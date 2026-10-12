@@ -10,6 +10,7 @@ import { Notices } from '~/app/notices';
 import { dismiss, snapshot } from '~/app/notify';
 import type { ProjectRow } from '~/data/router';
 import { Unreachable } from '~/lib/errors';
+import { CODEX_WATCHED } from '~/model/clients';
 import { json, refusal, renderScreen, settle, stubFetch, stubNarrow, unreachable, type Answers } from '~/test-utils';
 import type { Account, LiveOptions, LiveSession, SearchAnswer, SearchHit } from './api';
 import { MAX_JUMPS, SEARCH_LIMIT, markRuns, resolve, sessionHref, switchPost, validModel, type Context } from './hits';
@@ -867,6 +868,24 @@ describe('resolve (the rules, without a modal)', () => {
     ...over,
   });
 
+  it('holds Codex switches with its own reason before its row arrives and in a saved step', () => {
+    const id = 'codex:12345678-1234';
+    const run = resolve('>', ctx({ onScreen: id })).runs.find((r) => r.key === 'commands:session');
+    expect(run?.hits.filter((h) => h.action === null).map((h) => h.why)).toEqual([CODEX_WATCHED, CODEX_WATCHED, CODEX_WATCHED]);
+    const step = { kind: 'value', setting: 'model', session: { id, name: 'Codex' } } as const;
+    const values = resolve('', ctx({ step }));
+    expect(values.runs).toEqual([]);
+    expect(values.notices[0]?.text).toBe(CODEX_WATCHED);
+  });
+
+  it('labels OpenAI account commands by their provider', () => {
+    const accounts: Account[] = [{ id: 'openai-work', label: 'OpenAI work', email: null, active: 0, provider: 'openai' }];
+    const run = resolve('>', ctx({ accounts: { state: 'read', value: accounts } })).runs.find((r) => r.key === 'commands:account');
+    expect(run?.hits[0]?.label).toBe('Use OpenAI work for OpenAI');
+    const action = run?.hits[0]?.action;
+    expect(action?.type === 'post' ? action.post.done({ ok: true }).title : null).toBe('OpenAI work signs OpenAI’s requests now');
+  });
+
   it('OV-C50: runs the hits by kind in the order the best of each came, a system prompt in its word and a new kind as sent', () => {
     expect(resolve('palette', ctx()).runs.map((r) => r.label)).toEqual(['Sessions', 'Tool calls', 'Messages', 'Tool results', 'Thinking']);
     const answer: SearchAnswer = {
@@ -932,6 +951,43 @@ describe('resolve (the rules, without a modal)', () => {
       type: 'post',
       post: { path: '/api/live/archive', body: { session: S2, archived: true } },
     });
+  });
+
+  it('SE-C233: Set the model lists the router’s models in a run per provider, by display name, and a provider’s name finds its models', () => {
+    const options: LiveOptions = {
+      ...OPTIONS,
+      models: ['opus', 'sonnet', 'k3', 'kimi-for-coding'],
+      by_provider: [
+        { provider: 'anthropic', name: 'Anthropic', models: [{ id: 'opus', display_name: 'opus' }, { id: 'sonnet', display_name: 'sonnet' }] },
+        { provider: 'kimi', name: 'Kimi Code', models: [{ id: 'k3', display_name: 'Kimi K3' }, { id: 'kimi-for-coding', display_name: 'Kimi for Coding' }] },
+      ],
+    };
+    const step = { kind: 'value', setting: 'model', session: { id: S1, name: 'Rebuild the palette' } } as const;
+    const all = resolve('', ctx({ step, options: { state: 'read', value: options } })).runs;
+    expect(all.map((r) => [r.label, r.hits.map((h) => h.label)])).toEqual([
+      ['Anthropic', ['opus', 'sonnet']],
+      ['Kimi Code', ['Kimi K3', 'Kimi for Coding']],
+    ]);
+    // A display name that is not the id shows the id beside it, and the id is what is sent.
+    expect(all[1]?.hits[0]).toMatchObject({ ident: 'k3', action: { type: 'post', post: { path: '/api/live/model', body: { session: S1, model: 'k3' } } } });
+    // Typed words that could name a model are still offered as one, after the list (SE-C141).
+    expect(resolve('kimi', ctx({ step, options: { state: 'read', value: options } })).runs.map((r) => [r.label, r.hits.map((h) => h.label)])).toEqual([
+      ['Kimi Code', ['Kimi K3', 'Kimi for Coding']],
+      ['Models', ['Use “kimi”']],
+    ]);
+    // An older router groups nothing: one run, as it always was.
+    expect(resolve('', ctx({ step })).runs.map((r) => r.label)).toEqual(['Models']);
+  });
+
+  it('ST-C121: a Kimi Code account’s Use says it is Kimi Code’s, and its outcome says whose requests it signs', () => {
+    const accounts: Account[] = [...ACCOUNTS, { id: 'kimi', label: 'Kimi', email: null, active: 0, provider: 'kimi' }];
+    const run = resolve('>', ctx({ accounts: { state: 'read', value: accounts } })).runs.find((r) => r.key === 'commands:account');
+    const kimi = run?.hits.find((h) => h.id === 'cmd:account:kimi');
+    expect(kimi?.label).toBe('Use Kimi for Kimi Code');
+    expect(run?.hits.find((h) => h.id === 'cmd:account:work')?.label).toBe('Use work@example.com');
+    const post = kimi?.action?.type === 'post' ? kimi.action.post : null;
+    expect(post?.body).toEqual({ id: 'kimi' });
+    expect(post?.done({ ok: true }).title).toBe('Kimi signs Kimi Code’s requests now');
   });
 
   it('says a source is still being read or could not be read, and never lists it as empty', () => {

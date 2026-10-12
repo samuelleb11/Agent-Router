@@ -151,6 +151,16 @@
 /// Two pairs sit in the validator's 6–8 band, legal only with a second channel, and keep their
 /// values: g100's status fills (ok/warn 7.3, ok/bad 7.9), which always ship with their icon and
 /// their words, and white's busy/wait states (6.8), whose dot is never shown without its words.
+///
+/// ADDED SINCE, and why:
+///
+/// - --ar-model-kimi (2026-10-10, AGEN-0092): Kimi Code's models, a fifth family. Indigo, the arc
+///   left that clears all four families under every deficiency while keeping off the session's
+///   sky blue: on white #434697 (worst ΔE 11.3, from Opus under tritanopia; 17.3 from the session
+///   blue), on g100 #5e4bbc (worst ΔE 14.5, from Opus under protanopia; 15.1 from the session
+///   blue). The g100 value reaches only 2.76:1 on $background and 2.31:1 on $layer-01, under 3:1
+///   as "other" is, so a chart in it keeps its legend and its table view, and a chip its model's
+///   name.
 @mixin ar-light {
   // The context window: what the model read, by kind.
   --ar-ctx-tools: #4f46e5;
@@ -173,6 +183,7 @@
   --ar-model-opus: #7c3aed;
   --ar-model-sonnet: #ea580c;
   --ar-model-haiku: #0d9488;
+  --ar-model-kimi: #434697;
   --ar-model-other: #854d0e;
 
   // Status: words, then marks. The words reach 4.5:1 on $background and $layer-01; Carbon's
@@ -210,6 +221,7 @@
   --ar-model-opus: #9b72f5;
   --ar-model-sonnet: #ea580c;
   --ar-model-haiku: #0ea89a;
+  --ar-model-kimi: #5e4bbc;
   --ar-model-other: #895902;
 
   --ar-ok: #4ade80;

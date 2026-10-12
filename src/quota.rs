@@ -26,11 +26,51 @@ use http_body_util::BodyExt;
 use rusqlite::Connection;
 use serde_json::{json, Value};
 
+use crate::accounts::{Account, Provider, Store};
 use crate::db::now_ms;
 use crate::proxy::AppState;
 use crate::refusal::{failed, refuse, JsonBody};
 
 const UPSTREAM_PATH: &str = "/api/oauth/usage";
+
+/// Anthropic's usage readings — `/api/oauth/usage` and claude.ai's — are asked with the
+/// account's own credential, so only an Anthropic account's may go to them: another
+/// provider's key sent there would be handed to a third party. Each fetch checks this
+/// itself, before it builds a request, so no caller can get it wrong.
+#[derive(Debug)]
+pub struct NotAnthropic {
+    id: String,
+    provider: Provider,
+}
+
+impl std::fmt::Display for NotAnthropic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{:?} is a {} account, and Anthropic's usage readings are never asked with its key",
+            self.id,
+            self.provider.name()
+        )
+    }
+}
+
+impl std::error::Error for NotAnthropic {}
+
+fn anthropic_only(account: &Account) -> anyhow::Result<()> {
+    if account.provider != Provider::Anthropic {
+        return Err(NotAnthropic { id: account.id.clone(), provider: account.provider }.into());
+    }
+    Ok(())
+}
+
+/// The account with this id, read from the store.
+async fn account_of(state: &AppState, id: &str) -> anyhow::Result<Account> {
+    let (db, id) = (state.config.db_path.clone(), id.to_string());
+    tokio::task::spawn_blocking(move || {
+        Store::new(db).get(&id)?.ok_or_else(|| anyhow::anyhow!("no account with id {id:?}"))
+    })
+    .await?
+}
 const CACHE_MS: i64 = 45_000;
 
 pub struct Cached {
@@ -89,7 +129,7 @@ pub async fn set_usage_token(
         let id = req.account_id.clone();
         let _ = tokio::task::spawn_blocking(move || crate::accounts::forget_usage_token(&id)).await;
         set_flag(&state, &req.account_id, false);
-        *state.quota_cache.write().await = None;
+        state.quota_cache.write().await.remove(&req.account_id);
         return Json(json!({ "ok": true, "cleared": true })).into_response();
     }
     // 400 for either refusal below: what was sent is not a session key — nothing, or most
@@ -112,7 +152,7 @@ pub async fn set_usage_token(
         Ok(Ok(())) => {
             set_flag(&state, &req.account_id, true);
             // The stored key changes where quota comes from, so drop what we cached.
-            *state.quota_cache.write().await = None;
+            state.quota_cache.write().await.remove(&req.account_id);
             Json(json!({ "ok": true, "account_id": req.account_id })).into_response()
         }
         // 500: the secrets file would not take it, which is the router failing.
@@ -128,7 +168,11 @@ pub async fn raw_usage(State(state): State<Arc<AppState>>) -> impl IntoResponse 
         Ok((id, _)) => id,
         Err(err) => return Json(json!({ "error": err.to_string() })),
     };
-    match fetch_claude_ai_raw(&state, &account_id).await {
+    let account = match account_of(&state, &account_id).await {
+        Ok(account) => account,
+        Err(err) => return Json(json!({ "error": err.to_string() })),
+    };
+    match fetch_claude_ai_raw(&state, &account).await {
         Ok(v) => Json(v),
         Err(e) => Json(json!({ "error": e.to_string() })),
     }
@@ -166,9 +210,10 @@ async fn get_json(
 }
 
 /// Fetch usage from claude.ai with the account's session key, discovering the
-/// organisation id on the way.
-async fn fetch_claude_ai_raw(state: &AppState, account_id: &str) -> anyhow::Result<Value> {
-    let id = account_id.to_string();
+/// organisation id on the way. Never for another provider's account (`NotAnthropic`).
+async fn fetch_claude_ai_raw(state: &AppState, account: &Account) -> anyhow::Result<Value> {
+    anthropic_only(account)?;
+    let id = account.id.clone();
     let key = tokio::task::spawn_blocking(move || crate::accounts::usage_token(&id))
         .await?
         .ok_or_else(|| anyhow::anyhow!("no claude.ai session key stored for this account"))?;
@@ -190,24 +235,28 @@ async fn fetch_claude_ai_raw(state: &AppState, account_id: &str) -> anyhow::Resu
 }
 
 pub async fn quota(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let account_id = match state.signing_credential().await {
-        Ok((id, _)) => id,
+    let (account_id, token) = match state.signing_credential().await {
+        Ok(signing) => signing,
         Err(err) => return Json(json!({ "error": err.to_string() })),
     };
 
     // The endpoint's reading while it is fresh; while backing off from a failure, the
     // store's newest reading, read again.
-    let held = held(state.quota_cache.read().await.as_ref(), &account_id, now_ms());
+    let held = held(state.quota_cache.read().await.get(&account_id), &account_id, now_ms());
     match held {
         Some(Ok((value, age))) => return Json(annotate(value, age)),
         Some(Err(err)) => return Json(fallback(&state, &account_id, &err)),
         None => {}
     }
 
-    match fetch_upstream(&state).await {
+    let fetched = match account_of(&state, &account_id).await {
+        Ok(account) => fetch_upstream(&state, &account, &token).await,
+        Err(err) => Err(err),
+    };
+    match fetched {
         Ok(value) => {
             let value = value_for(&account_id, value, "usage-api");
-            *state.quota_cache.write().await = Some(Cached {
+            state.quota_cache.write().await.insert(account_id.clone(), Cached {
                 account_id,
                 fetched_at: now_ms(),
                 upstream: Ok(value.clone()),
@@ -224,7 +273,7 @@ pub async fn quota(State(state): State<Arc<AppState>>) -> impl IntoResponse {
                 "quota endpoint unavailable; falling back to captured headers"
             );
             let value = fallback(&state, &account_id, &err);
-            *state.quota_cache.write().await = Some(Cached {
+            state.quota_cache.write().await.insert(account_id.clone(), Cached {
                 account_id,
                 fetched_at: now_ms(),
                 upstream: Err(err),
@@ -275,8 +324,10 @@ fn value_for(account_id: &str, mut value: Value, source: &str) -> Value {
     value
 }
 
-async fn fetch_upstream(state: &AppState) -> anyhow::Result<Value> {
-    let (_, token) = state.signing_credential().await?;
+/// Anthropic's own reading of `account`'s windows, asked with `token`, its credential.
+/// Never for another provider's account (`NotAnthropic`).
+async fn fetch_upstream(state: &AppState, account: &Account, token: &str) -> anyhow::Result<Value> {
+    anthropic_only(account)?;
     let uri: axum::http::Uri = format!("{}{UPSTREAM_PATH}", state.config.upstream).parse()?;
 
     let mut req = axum::http::Request::builder()
@@ -334,6 +385,339 @@ async fn fetch_upstream(state: &AppState) -> anyhow::Result<Value> {
         "seven_day": window("seven_day"),
         "severity":  severity,
     }))
+}
+
+/// `GET /api/quota`, and `GET /api/quota?account=<id>` for one account in particular: a
+/// Kimi Code account's windows come from Kimi Code's own usage API (`kimi_quota`); any other
+/// account named that is not the one signing is answered from the store, since only the
+/// signing account's quota is asked of Anthropic.
+#[derive(serde::Deserialize)]
+pub struct QuotaQuery {
+    pub account: Option<String>,
+}
+
+pub async fn quota_route(State(state): State<Arc<AppState>>, axum::extract::Query(q): axum::extract::Query<QuotaQuery>) -> Response {
+    let Some(id) = q.account.filter(|a| !a.trim().is_empty()) else {
+        return quota(State(state)).await.into_response();
+    };
+    let account = match account_of(&state, &id).await {
+        Ok(account) => account,
+        Err(e) => return Json(json!({ "error": e.to_string() })).into_response(),
+    };
+    if account.provider == Provider::Kimi {
+        let base = account.base_url.clone().or(Provider::Kimi.default_base_url().map(str::to_owned)).unwrap_or_default();
+        let fetch = |token: String| {
+            let state = state.clone();
+            async move { fetch_kimi_usages(&state, &base, &token).await }
+        };
+        return Json(kimi_quota(&state, &account, fetch).await).into_response();
+    }
+    if account.provider == Provider::OpenAI {
+        return Json(fallback(&state, &account.id, "OpenAI account quota is available only when the upstream reports a subscription window")).into_response();
+    }
+    match state.signing_credential().await {
+        Ok((signing, _)) if signing == account.id => quota(State(state)).await.into_response(),
+        _ => Json(fallback(&state, &account.id, "only the signing account's quota is asked of Anthropic")).into_response(),
+    }
+}
+
+/// One window of a provider's own reading: how much of it is used (0..1), and when it
+/// resets (epoch seconds), as the `rl_*` columns hold them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Window {
+    pub used: f64,
+    pub reset_at: i64,
+}
+
+/// Kimi Code's windows as its usage API gives them: a 5-hour window, and a second one, named
+/// as the forecast names it, that is weekly where the plan counts a week (legacy plans) and
+/// the monthly total otherwise.
+#[derive(Debug, Clone, PartialEq)]
+pub struct KimiReading {
+    pub five_hour: Option<Window>,
+    pub second: Option<(&'static str, Window)>,
+}
+
+/// Read both shapes `/v1/usages` has answered in (docs/sources-and-models.md): the newer,
+/// pools of `{used_ratio, reset_time}` under `usages`, and the older, a weekly `usage` beside
+/// `limits[]`, whose counts are strings. `None` when neither gives a window.
+pub fn kimi_windows(body: &Value) -> Option<KimiReading> {
+    fn reset(v: Option<&Value>) -> Option<i64> {
+        crate::fold::parse_rfc3339_ms(v?.as_str()?).map(|ms| ms / 1000)
+    }
+    fn num(v: Option<&Value>) -> Option<f64> {
+        let v = v?;
+        v.as_f64().or_else(|| v.as_str()?.trim().parse().ok())
+    }
+    let pool = |name: &str| -> Option<Window> {
+        let p = body.get("usages")?.get(name)?;
+        Some(Window { used: num(p.get("used_ratio"))?.clamp(0.0, 1.0), reset_at: reset(p.get("reset_time"))? })
+    };
+    // A count: what is used of a limit, from `used`, else from what `remaining` leaves.
+    let count = |d: &Value| -> Option<Window> {
+        let limit = num(d.get("limit")).filter(|l| *l > 0.0)?;
+        let used = num(d.get("used")).or_else(|| Some(limit - num(d.get("remaining"))?))?;
+        Some(Window { used: (used / limit).clamp(0.0, 1.0), reset_at: reset(d.get("resetTime"))? })
+    };
+    let five_hour_limit = body.get("limits").and_then(Value::as_array).and_then(|limits| {
+        limits.iter().find_map(|l| {
+            let w = l.get("window")?;
+            let minutes = num(w.get("duration"))?;
+            (minutes == 300.0 && w.get("timeUnit").and_then(Value::as_str) == Some("TIME_UNIT_MINUTE"))
+                .then(|| count(l.get("detail")?))
+                .flatten()
+        })
+    });
+    let five_hour = pool("limit_5h").or(five_hour_limit);
+    let second = pool("limit_7d")
+        .map(|w| ("seven_day", w))
+        .or_else(|| pool("limit_month_total").map(|w| ("month", w)))
+        .or_else(|| body.get("usage").and_then(count).map(|w| ("seven_day", w)));
+    (five_hour.is_some() || second.is_some()).then_some(KimiReading { five_hour, second })
+}
+
+/// The request for an account's windows: its key as a bearer token, and the router's own
+/// User-Agent, as Kimi Code's terms ask of every tool. Never Kimi's CLI's.
+pub fn kimi_usages_request(base_url: &str, key: &str) -> anyhow::Result<axum::http::Request<axum::body::Body>> {
+    let mut auth = axum::http::HeaderValue::from_str(&format!("Bearer {key}"))?;
+    auth.set_sensitive(true);
+    Ok(axum::http::Request::builder()
+        .method("GET")
+        .uri(format!("{}/v1/usages", base_url.trim_end_matches('/')))
+        .header("accept", "application/json")
+        .header("user-agent", concat!("agent-router/", env!("CARGO_PKG_VERSION")))
+        .header("authorization", auth)
+        .body(axum::body::Body::empty())?)
+}
+
+async fn fetch_kimi_usages(state: &AppState, base_url: &str, key: &str) -> anyhow::Result<Value> {
+    let resp = tokio::time::timeout(Duration::from_secs(10), state.client.request(kimi_usages_request(base_url, key)?))
+        .await??;
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await?.to_bytes();
+    if !status.is_success() {
+        anyhow::bail!("Kimi Code returned {status}");
+    }
+    Ok(serde_json::from_slice(&bytes)?)
+}
+
+/// The window a Kimi Code 403 says is spent, by its message (Kimi's error reference): the
+/// 5-hour, the weekly (legacy plans) and the monthly. The concurrency limit is risk control,
+/// not a spent quota, and names none.
+pub fn kimi_spent_window(message: &str) -> Option<&'static str> {
+    let m = message.to_ascii_lowercase();
+    if !m.contains("usage limit") {
+        None
+    } else if m.contains("5-hour") {
+        Some("five_hour")
+    } else if m.contains("weekly") || m.contains("7-day") {
+        Some("seven_day")
+    } else if m.contains("monthly") {
+        Some("month")
+    } else {
+        None
+    }
+}
+
+/// Epoch seconds in RFC 3339, UTC.
+pub(crate) fn iso(at: i64) -> String {
+    let days = at.div_euclid(86_400);
+    let secs = at.rem_euclid(86_400);
+    // Days since 1970-01-01 to a civil date (Howard Hinnant's algorithm).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z", secs / 3600, secs / 60 % 60, secs % 60)
+}
+
+/// The windows a provider said are spent and that have not reset yet, by name: when it said
+/// so, and until when (epoch seconds).
+pub fn spent_windows(conn: &Connection, account_id: &str, now_ms: i64) -> rusqlite::Result<Vec<(String, i64, i64)>> {
+    let mut stmt = conn.prepare(
+        "SELECT window, at, until FROM spent_windows WHERE account_id = ?1 AND until > ?2 ORDER BY window",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![account_id, now_ms / 1000], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+    rows.collect()
+}
+
+/// A reading with what the provider said is spent laid over it: a spent window reads full
+/// until it resets, whatever the usage API still says, since its counters can lag.
+fn with_spent(state: &AppState, account_id: &str, mut v: Value) -> Value {
+    let spent = state.reads.get().ok().and_then(|conn| spent_windows(&conn, account_id, now_ms()).ok()).unwrap_or_default();
+    if spent.is_empty() {
+        return v;
+    }
+    for (window, _, until) in &spent {
+        v[window.as_str()] = json!({ "utilization": 100.0, "resets_at": iso(*until), "spent": true });
+    }
+    v["severity"] = json!("critical");
+    v["spent"] = json!(spent.iter().map(|(w, _, _)| w.clone()).collect::<Vec<_>>());
+    v
+}
+
+/// A reading as `/api/quota` answers, in the shape Anthropic's is answered in: each window's
+/// utilisation 0..100 and its reset in RFC 3339, under the forecast's name for it.
+fn kimi_value(account_id: &str, r: &KimiReading) -> Value {
+    let window = |w: &Window| json!({ "utilization": w.used * 100.0, "resets_at": iso(w.reset_at) });
+    let most = r.five_hour.iter().chain(r.second.iter().map(|(_, w)| w)).map(|w| w.used).fold(0.0, f64::max);
+    let mut v = json!({
+        "account_id": account_id,
+        "source": "kimi-usages",
+        "severity": if most >= 0.95 { "critical" } else if most >= 0.8 { "warning" } else { "normal" },
+        "five_hour": r.five_hour.as_ref().map(window),
+    });
+    if let Some((name, w)) = &r.second {
+        v[*name] = window(w);
+        v["second_window"] = json!(name);
+    }
+    v
+}
+
+/// Keep a reading, for the forecast: one row per reading, as `requests` keeps a row per
+/// response for Anthropic's.
+fn store_reading(db: &std::path::Path, account_id: &str, r: &KimiReading) -> anyhow::Result<()> {
+    let conn = Connection::open(db)?;
+    conn.execute(
+        "INSERT INTO quota_readings (account_id, at, five_hour_used, five_hour_reset, second_window, second_used, second_reset)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        rusqlite::params![
+            account_id,
+            now_ms(),
+            r.five_hour.map(|w| w.used),
+            r.five_hour.map(|w| w.reset_at),
+            r.second.map(|(n, _)| n),
+            r.second.map(|(_, w)| w.used),
+            r.second.map(|(_, w)| w.reset_at),
+        ],
+    )?;
+    Ok(())
+}
+
+/// A Kimi Code account's windows, asked of its usage API with `fetch` (given the account's
+/// key), cached and backed off as Anthropic's endpoint is. When asking fails, the newest kept
+/// reading answers, saying so; with none, why there is none.
+pub async fn kimi_quota<F, Fut>(state: &AppState, account: &Account, fetch: F) -> Value
+where
+    F: FnOnce(String) -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<Value>>,
+{
+    let answer = kimi_reading(state, account, fetch).await;
+    with_spent(state, &account.id, answer)
+}
+
+async fn kimi_reading<F, Fut>(state: &AppState, account: &Account, fetch: F) -> Value
+where
+    F: FnOnce(String) -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<Value>>,
+{
+    let id = account.id.clone();
+    match held(state.quota_cache.read().await.get(&id), &id, now_ms()) {
+        Some(Ok((value, age))) => return annotate(value, age),
+        Some(Err(err)) => return kimi_fallback(state, &id, &err),
+        None => {}
+    }
+    let asked = async {
+        let signer = state.signer(&id).await?;
+        let body = fetch(signer.token).await?;
+        kimi_windows(&body).ok_or_else(|| anyhow::anyhow!("Kimi Code's usage answer gave no window"))
+    }
+    .await;
+    match asked {
+        Ok(reading) => {
+            let (db, account_id, kept) = (state.config.db_path.clone(), id.clone(), reading.clone());
+            if let Ok(Err(e)) = tokio::task::spawn_blocking(move || store_reading(&db, &account_id, &kept)).await {
+                tracing::warn!(account = %id, "a Kimi Code reading could not be kept: {e:#}");
+            }
+            let value = kimi_value(&id, &reading);
+            state.quota_cache.write().await.insert(
+                id.clone(),
+                Cached { account_id: id.clone(), fetched_at: now_ms(), upstream: Ok(value.clone()), retry_after: 0 },
+            );
+            annotate(value, 0)
+        }
+        Err(err) => {
+            let err = err.to_string();
+            let backoff = backoff_for(&err);
+            tracing::warn!(account = %id, error = %err, "Kimi Code's usage API unavailable");
+            state.quota_cache.write().await.insert(
+                id.clone(),
+                Cached { account_id: id.clone(), fetched_at: now_ms(), upstream: Err(err.clone()), retry_after: now_ms() + backoff },
+            );
+            kimi_fallback(state, &id, &err)
+        }
+    }
+}
+
+/// The newest kept reading for a Kimi Code account, or why there is none.
+fn kimi_fallback(state: &AppState, account_id: &str, err: &str) -> Value {
+    let kept = state.reads.get().ok().and_then(|conn| {
+        conn.query_row(
+            "SELECT five_hour_used, five_hour_reset, second_window, second_used, second_reset, at
+             FROM quota_readings WHERE account_id = ?1 ORDER BY at DESC LIMIT 1",
+            [account_id],
+            |r| {
+                let five = match (r.get::<_, Option<f64>>(0)?, r.get::<_, Option<i64>>(1)?) {
+                    (Some(used), Some(reset_at)) => Some(Window { used, reset_at }),
+                    _ => None,
+                };
+                let second = match (r.get::<_, Option<String>>(2)?, r.get::<_, Option<f64>>(3)?, r.get::<_, Option<i64>>(4)?) {
+                    (Some(n), Some(used), Some(reset_at)) => {
+                        Some((if n == "month" { "month" } else { "seven_day" }, Window { used, reset_at }))
+                    }
+                    _ => None,
+                };
+                Ok((KimiReading { five_hour: five, second }, r.get::<_, i64>(5)?))
+            },
+        )
+        .ok()
+    });
+    match kept {
+        Some((reading, at)) => {
+            let mut v = kimi_value(account_id, &reading);
+            v["source"] = json!("kimi-usages-kept");
+            v["seen_at"] = json!(at);
+            v["detail"] = json!(err);
+            annotate(v, 0)
+        }
+        None => annotate(json!({ "account_id": account_id, "source": "unavailable", "detail": err }), 0),
+    }
+}
+
+/// Ask every Kimi Code account's usage API now and then, so its card on the forecast stays
+/// current with nobody looking at its quota. Started once with the router.
+pub fn keep_kimi_readings(state: Arc<AppState>) {
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_secs(5 * 60));
+        loop {
+            tick.tick().await;
+            let db = state.config.db_path.clone();
+            let ids: Vec<String> = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<String>> {
+                let conn = Connection::open(db)?;
+                let mut stmt = conn.prepare("SELECT id FROM accounts WHERE provider = 'kimi'")?;
+                let ids = stmt.query_map([], |r| r.get(0))?.collect::<Result<Vec<String>, _>>()?;
+                Ok(ids)
+            })
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or_default();
+            for id in ids {
+                let Ok(account) = account_of(&state, &id).await else { continue };
+                let base = account.base_url.clone().or(Provider::Kimi.default_base_url().map(str::to_owned)).unwrap_or_default();
+                let fetch = |token: String| {
+                    let state = state.clone();
+                    async move { fetch_kimi_usages(&state, &base, &token).await }
+                };
+                kimi_quota(&state, &account, fetch).await;
+            }
+        }
+    });
 }
 
 /// The most recent rate-limit headers this account actually received. Stored as a
@@ -440,6 +824,293 @@ mod tests {
         assert_eq!(from_store(&conn, "nobody"), None);
 
         drop(conn);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn account(id: &str, provider: Provider) -> Account {
+        Account {
+            id: id.into(),
+            label: id.into(),
+            source: crate::accounts::Source::Token,
+            provider,
+            base_url: provider.default_base_url().map(str::to_owned),
+            profile_dir: None,
+            email: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn quota_never_sends_a_kimi_key_to_anthropic() {
+        let lab = crate::api_refusals::Lab::local("quota-kimi");
+        let kimi = account("quota-kimi", Provider::Kimi);
+        let refused = fetch_upstream(&lab.state, &kimi, "sk-kimi-not-a-credential").await.unwrap_err();
+        assert!(refused.downcast_ref::<NotAnthropic>().is_some(), "refused before any request: {refused:#}");
+        assert!(anthropic_only(&account("work", Provider::Anthropic)).is_ok(), "an Anthropic account's is asked");
+
+        // A router whose only account is a Kimi Code one: /api/quota has no Anthropic account
+        // to read for, and says so rather than reading for the Kimi Code one.
+        let lab = crate::api_refusals::Lab::hosted("quota-kimi-only").await;
+        let add = json!({ "label": "Quota Kimi only", "source": "token", "provider": "kimi", "token": "sk-kimi-not-a-credential" });
+        assert_eq!(lab.post("/api/accounts", &add.to_string()).await.0, StatusCode::OK);
+        let answer = quota(State(lab.state.clone())).await.into_response();
+        let answer: Value =
+            serde_json::from_slice(&axum::body::to_bytes(answer.into_body(), 1 << 20).await.unwrap()).unwrap();
+        assert!(answer["error"].as_str().unwrap_or_default().contains("no account to sign with"), "{answer}");
+        assert!(answer.get("source").is_none(), "{answer}");
+    }
+
+    #[tokio::test]
+    async fn the_claude_ai_fallback_skips_a_kimi_account() {
+        let lab = crate::api_refusals::Lab::local("quota-kimi-sid");
+        let kimi = account("quota-kimi-sid", Provider::Kimi);
+        // Even with a claude.ai session key stored under it, nothing goes to claude.ai.
+        crate::accounts::store_usage_token(&kimi.id, "sk-ant-sid01-not-a-credential").unwrap();
+        let refused = fetch_claude_ai_raw(&lab.state, &kimi).await.unwrap_err();
+        crate::accounts::forget_usage_token(&kimi.id).unwrap();
+        assert!(refused.downcast_ref::<NotAnthropic>().is_some(), "refused before any request: {refused:#}");
+    }
+
+    #[test]
+    fn kimi_usages_newer_shape_gives_its_windows() {
+        // As recorded from the owner's plan on 2026-10-10 (fixtures/kimi/usages.json).
+        let recorded: Value = serde_json::from_str(include_str!("../fixtures/kimi/usages.json")).unwrap();
+        assert_eq!(
+            kimi_windows(&recorded),
+            Some(KimiReading {
+                five_hour: Some(Window { used: 0.0, reset_at: 1_791_618_562 }),
+                second: Some(("month", Window { used: 0.0, reset_at: 1_794_355_200 })),
+            })
+        );
+        // A weekly pool, where a plan counts a week, is the second window before the month.
+        let weekly = json!({ "usages": {
+            "limit_5h": { "used_ratio": 0.25, "reset_time": "2026-10-10T07:49:22Z" },
+            "limit_7d": { "used_ratio": 0.42, "reset_time": "2026-11-11T00:00:00Z" },
+            "limit_month_total": { "used_ratio": 0.9, "reset_time": "2026-11-11T00:00:00Z" } } });
+        let r = kimi_windows(&weekly).unwrap();
+        assert_eq!(r.second, Some(("seven_day", Window { used: 0.42, reset_at: 1_794_355_200 })));
+        // With no 5-hour pool, the 300-minute count window stands in, from what remains of it.
+        let counted = json!({ "limits": [{ "window": { "duration": 300, "timeUnit": "TIME_UNIT_MINUTE" },
+            "detail": { "limit": "100", "remaining": "60", "resetTime": "2026-10-10T07:49:23.451603Z" } }] });
+        assert_eq!(kimi_windows(&counted).unwrap().five_hour, Some(Window { used: 0.4, reset_at: 1_791_618_563 }));
+        assert_eq!(kimi_windows(&json!({ "nothing": true })), None);
+    }
+
+    #[test]
+    fn kimi_usages_older_shape_gives_its_windows() {
+        // The shape third-party meters read before `usages`: a weekly `usage` beside
+        // `limits[]`, counts as strings.
+        let older = json!({
+            "usage": { "limit": "100", "used": "51", "remaining": "49", "resetTime": "2026-08-31T23:09:00Z" },
+            "limits": [{ "window": { "duration": 300, "timeUnit": "TIME_UNIT_MINUTE" },
+                         "detail": { "limit": "100", "used": "100", "remaining": "0", "resetTime": "2026-08-30T01:09:00Z" } }],
+        });
+        assert_eq!(
+            kimi_windows(&older),
+            Some(KimiReading {
+                five_hour: Some(Window { used: 1.0, reset_at: 1_788_052_140 }),
+                second: Some(("seven_day", Window { used: 0.51, reset_at: 1_788_217_740 })),
+            })
+        );
+    }
+
+    #[test]
+    fn kimi_usages_is_asked_as_agent_router() {
+        let req = kimi_usages_request("https://api.kimi.com/coding/", "sk-kimi-not-a-credential").unwrap();
+        assert_eq!(req.method(), "GET");
+        assert_eq!(req.uri().to_string(), "https://api.kimi.com/coding/v1/usages", "at the account's own base URL");
+        assert_eq!(req.headers()["authorization"], "Bearer sk-kimi-not-a-credential", "with the account's key");
+        let ua = req.headers()["user-agent"].to_str().unwrap();
+        assert!(ua.starts_with("agent-router/"), "the router's own User-Agent: {ua}");
+        assert!(!ua.to_ascii_lowercase().contains("kimi"), "never Kimi's CLI's: {ua}");
+    }
+
+    #[tokio::test]
+    async fn api_quota_answers_a_kimi_accounts_windows() {
+        let lab = crate::api_refusals::Lab::local("quota-kimi-windows");
+        let add = json!({ "label": "Quota kimi windows", "source": "token", "provider": "kimi", "token": "sk-kimi-not-a-credential" });
+        assert_eq!(lab.post("/api/accounts", &add.to_string()).await.0, StatusCode::OK);
+        let account = account_of(&lab.state, "quota-kimi-windows").await.unwrap();
+
+        // Kimi Code's usage API, as the reader asks it: with the account's own key.
+        let answer = json!({ "usages": {
+            "limit_5h": { "used_ratio": 0.25, "reset_time": "2099-01-01T05:00:00Z" },
+            "limit_month_total": { "used_ratio": 0.5, "reset_time": "2099-02-01T00:00:00Z" } } });
+        let asked = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let fetch = |token: String| {
+            let (asked, answer) = (asked.clone(), answer.clone());
+            async move {
+                *asked.lock().unwrap() = Some(token);
+                Ok(answer)
+            }
+        };
+        let got = kimi_quota(&lab.state, &account, fetch).await;
+        assert_eq!(asked.lock().unwrap().as_deref(), Some("sk-kimi-not-a-credential"));
+        assert_eq!((&got["source"], &got["second_window"]), (&json!("kimi-usages"), &json!("month")));
+        assert_eq!(got["five_hour"], json!({ "utilization": 25.0, "resets_at": "2099-01-01T05:00:00Z" }));
+        assert_eq!(got["month"], json!({ "utilization": 50.0, "resets_at": "2099-02-01T00:00:00Z" }));
+        let kept: i64 = Connection::open(&lab.state.config.db_path)
+            .unwrap()
+            .query_row("SELECT count(*) FROM quota_readings WHERE account_id = 'quota-kimi-windows'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(kept, 1, "the reading is kept for the forecast");
+
+        // GET /api/quota?account= answers the same, from the reading just taken.
+        let query = QuotaQuery { account: Some("quota-kimi-windows".into()) };
+        let res = quota_route(State(lab.state.clone()), axum::extract::Query(query)).await;
+        let routed: Value = serde_json::from_slice(&axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap()).unwrap();
+        assert_eq!((&routed["five_hour"], &routed["month"]), (&got["five_hour"], &got["month"]), "{routed}");
+    }
+
+    /// A router of its own whose captures the test reads: its store, its state, and the
+    /// receiving end of its capture queue, with a Kimi Code account for each id given.
+    fn capturing(
+        tag: &str,
+        kimi: &[&str],
+    ) -> (std::path::PathBuf, Arc<AppState>, tokio::sync::mpsc::Receiver<crate::capture::CaptureEvent>) {
+        let dir = std::env::temp_dir().join(format!("ar-spent-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("agent-router.db");
+        crate::db::Db::open(&db_path).unwrap();
+        crate::pricing::ensure_table(&Connection::open(&db_path).unwrap()).unwrap();
+        for id in kimi {
+            Store::new(db_path.clone())
+                .add(id, id, crate::accounts::Source::Token, Provider::Kimi, Provider::Kimi.default_base_url(), None,
+                     &crate::accounts::AuthStatus::default(), || Ok(()))
+                .unwrap();
+        }
+        rustls::crypto::ring::default_provider().install_default().ok();
+        let config = crate::config::Config {
+            server: false,
+            bind: std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
+            upstream: "https://upstream.invalid".into(),
+            db_path: db_path.clone(),
+            body_cap: 64 * 1024,
+            dump_headers: 0,
+            allow_hosts: Vec::new(),
+            public_url: None,
+            push_keys_dir: None,
+            agents_dir: None,
+            drain: Duration::from_secs(1),
+            stop_delay: Duration::ZERO,
+        };
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+        let (network, _) = crate::network::switch();
+        (dir, AppState::new(config, tx, network).unwrap(), rx)
+    }
+
+    /// One response from Kimi Code to `account`, as the proxy hands it to capture, recorded.
+    async fn answered(
+        state: &Arc<AppState>,
+        rx: &mut tokio::sync::mpsc::Receiver<crate::capture::CaptureEvent>,
+        account: &str,
+        status: i64,
+        body: &str,
+        at: i64,
+    ) -> crate::capture::CaptureEvent {
+        let pending = crate::capture::Pending {
+            request_id: Some(format!("req-{account}-{status}-{at}")),
+            session_id: None,
+            agent_id: None,
+            account_id: account.into(),
+            account_email: None,
+            provider: Provider::Kimi,
+            entrypoint: None,
+            method: "POST".into(),
+            path: "/v1/messages?beta=true".into(),
+            started_at_ms: at,
+            ttfb_ms: 1,
+            status,
+            streaming_requested: true,
+            rl: Default::default(),
+            shape: None,
+            request_bytes: 10,
+        };
+        let mut tee = crate::capture::Tee::new(state.clone(), pending, None, false, 64 * 1024, std::time::Instant::now());
+        tee.feed(body.as_bytes());
+        drop(tee);
+        let ev = rx.recv().await.expect("the capture event");
+        crate::db::Db::open(&state.config.db_path).unwrap().record(&ev).unwrap();
+        ev
+    }
+
+    /// What `/api/quota?account=` answers, with the usage API's last reading at 0%, as its
+    /// lagging counters gave it.
+    async fn quota_of(state: &Arc<AppState>, account: &str) -> Value {
+        let zero = json!({ "account_id": account, "source": "kimi-usages", "severity": "normal",
+                           "five_hour": { "utilization": 0.0, "resets_at": "2099-01-01T00:00:00Z" } });
+        state.quota_cache.write().await.insert(
+            account.into(),
+            Cached { account_id: account.into(), fetched_at: now_ms(), upstream: Ok(zero), retry_after: 0 },
+        );
+        let res = quota_route(State(state.clone()), axum::extract::Query(QuotaQuery { account: Some(account.into()) })).await;
+        serde_json::from_slice(&axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap()).unwrap()
+    }
+
+    fn card(state: &AppState, account: &str) -> Value {
+        let everything = crate::api::Filter { project: None, session: None, account: None, since: None, until: None, tz: None, provider: None };
+        let got = crate::api::forecast_inner(state, &everything).unwrap();
+        got["accounts"].as_array().unwrap().iter().find(|a| a["id"] == account).unwrap().clone()
+    }
+
+    #[tokio::test]
+    async fn a_kimi_403_for_each_window_marks_the_account_spent() {
+        let (dir, state, mut rx) = capturing("windows", &["kimi-5h", "kimi-week", "kimi-month"]);
+        let now = now_ms();
+        let at = now - 60_000;
+        // The usage API last gave the 5-hour window's reset; the others it never gave.
+        let five_reset = now / 1000 + 2 * 3600;
+        Connection::open(&state.config.db_path)
+            .unwrap()
+            .execute(
+                "INSERT INTO quota_readings (account_id, at, five_hour_used, five_hour_reset) VALUES ('kimi-5h', ?1, 0.0, ?2)",
+                rusqlite::params![now - 120_000, five_reset],
+            )
+            .unwrap();
+        for (account, body, window, until) in [
+            ("kimi-5h", include_str!("../fixtures/kimi/403-five-hour.documented.json"), "five_hour", five_reset),
+            ("kimi-week", include_str!("../fixtures/kimi/403-weekly.documented.json"), "seven_day", (at + 7 * 86_400_000) / 1000),
+            ("kimi-month", include_str!("../fixtures/kimi/403-monthly.documented.json"), "month", (at + 30 * 86_400_000) / 1000),
+        ] {
+            let ev = answered(&state, &mut rx, account, 403, body, at).await;
+            let message: Value = serde_json::from_str(body).unwrap();
+            assert_eq!(ev.error.as_deref(), message["error"]["message"].as_str(), "{account}: the message is recorded");
+
+            let conn = Connection::open(&state.config.db_path).unwrap();
+            assert_eq!(spent_windows(&conn, account, now).unwrap(), [(window.to_string(), at, until)], "{account}");
+
+            let quota = quota_of(&state, account).await;
+            assert_eq!((&quota[window]["spent"], &quota[window]["utilization"]), (&json!(true), &json!(100.0)), "{account}: {quota}");
+            assert_eq!((&quota["severity"], &quota["spent"]), (&json!("critical"), &json!([window])), "{account}");
+
+            let card = card(&state, account);
+            assert_eq!(card["status"], "rejected", "{account}");
+            assert_eq!((&card[window]["spent"], &card[window]["used"], &card[window]["reset_at"]), (&json!(true), &json!(1.0), &json!(until)), "{account}: {card}");
+        }
+        drop(state);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_kimi_concurrency_limit_is_not_a_spent_quota() {
+        let (dir, state, mut rx) = capturing("concurrency", &["kimi-busy"]);
+        let now = now_ms();
+        let too_many = r#"{"error":{"message":"We're receiving too many requests at the moment. Please wait a moment and try again."}}"#;
+        for (status, body) in [(403, include_str!("../fixtures/kimi/403-concurrency.documented.json")), (429, too_many)] {
+            let ev = answered(&state, &mut rx, "kimi-busy", status, body, now - 30_000).await;
+            assert!(ev.error.is_some(), "{status}: its message is recorded");
+        }
+        let conn = Connection::open(&state.config.db_path).unwrap();
+        // Counted as errors: the request list's rule is `status >= 400 OR error IS NOT NULL`.
+        let errors: i64 = conn
+            .query_row("SELECT count(*) FROM requests WHERE account_id = 'kimi-busy' AND status >= 400 AND error IS NOT NULL", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(errors, 2);
+        assert!(spent_windows(&conn, "kimi-busy", now).unwrap().is_empty(), "neither is a spent window");
+        let quota = quota_of(&state, "kimi-busy").await;
+        assert_eq!((&quota["severity"], quota.get("spent")), (&json!("normal"), None), "{quota}");
+        assert_eq!(card(&state, "kimi-busy")["status"], Value::Null);
+        drop(state);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

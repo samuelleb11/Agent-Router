@@ -1,0 +1,1 @@
+{"code":0,"msg":"success","data":{"busy":false,"model":"agent-router/k3-256k","thinking_level":"on","permission":"auto","plan_mode":false,"swarm_mode":false,"tower_mode":false,"context_tokens":1571,"max_context_tokens":262144,"context_usage":0.005992889404296875},"request_id":"01M4KEKYXTV0GJWZYTD46Y69NQ"}

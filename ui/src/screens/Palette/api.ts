@@ -74,14 +74,23 @@ export interface LiveSession {
   readonly archived: boolean;
   /// Under the wrapper and answering on its socket: only such a session can be switched.
   readonly wrapped: boolean;
+  readonly client?: string | null;
+  readonly hosted?: boolean | null;
 }
 
 export const readLiveSessions = (signal?: AbortSignal) => getJson<LiveSession[]>('/api/live/sessions', { signal });
 
 /// `GET /api/live/options` (src/live.rs, `options`): what a session can be switched to, one list
 /// for every client. Models and efforts are bare values; modes carry the router's labels (SE-C138).
+/// `by_provider` is the same models grouped by provider, each with its display name; a router from
+/// before there was a second provider sends none (SE-C233).
 export interface LiveOptions {
   readonly models: readonly string[];
+  readonly by_provider?: readonly {
+    readonly provider: string;
+    readonly name: string;
+    readonly models: readonly { readonly id: string; readonly display_name?: string | null }[];
+  }[];
   readonly efforts: readonly string[];
   readonly modes: readonly { readonly value: string; readonly label: string }[];
 }
@@ -94,8 +103,11 @@ export interface Account {
   readonly id: string;
   readonly label: string;
   readonly email: string | null;
-  /// SQLite's integer: 1 for the account that signs requests now.
+  /// SQLite's integer: 1 for the account that signs its provider's requests now. Each provider has
+  /// its own.
   readonly active: number | boolean;
+  /// `anthropic` or `kimi`; absent from a router that predates providers.
+  readonly provider?: string | null;
 }
 
 /// Read only while the commands are on screen: the router checks every account's credential on

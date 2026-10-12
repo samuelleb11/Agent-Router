@@ -901,7 +901,7 @@ describe('the live view, as scripts/check-live-ui.js checked it', () => {
     // And how to connect a machine, on the Machines screen the list links to: the installer the
     // router serves, for each platform, at the page's own origin, which asks there for the
     // router's password.
-    expect(CONNECT_HOW, 'what to do with the commands').toMatch(/asks for this router’s password\.$/);
+    expect(CONNECT_HOW, 'what to do with the commands').toContain('Machine access token');
     expect(installCommands('https://router.example'), 'the commands that connect a machine').toEqual([
       { label: 'macOS and Linux', command: 'curl -fsSL https://router.example/agent/install.sh | sh' },
       { label: 'Windows (PowerShell)', command: 'irm https://router.example/agent/install.ps1 | iex' },

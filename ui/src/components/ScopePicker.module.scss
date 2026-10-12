@@ -122,6 +122,14 @@ $ar-picker-max-block: 26.25rem;
   white-space: nowrap;
 }
 
+/// A provider's mark before the name, a space after it (OV-C231, SE-C242); a session's several
+/// providers' side by side.
+.mark {
+  display: inline-flex;
+  gap: $spacing-02;
+  vertical-align: middle;
+}
+
 .name[data-mono] {
   @include type-style('code-02');
   font-weight: inherit;

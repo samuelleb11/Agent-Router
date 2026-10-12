@@ -45,5 +45,5 @@ const TABS_REACHABLE = {
 
 /// The checks for each Settings page, by its path.
 export const SETTINGS_CHECKS = Object.fromEntries(
-  ['accounts', 'claude-code', 'network', 'password', 'notifications', 'router'].map((slug) => [`/settings/${slug}`, [TABS_REACHABLE]]),
+  ['accounts', 'models', 'claude-code', 'network', 'password', 'notifications', 'router'].map((slug) => [`/settings/${slug}`, [TABS_REACHABLE]]),
 );

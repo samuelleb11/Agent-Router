@@ -33,6 +33,8 @@ pub enum Source {
     Keychain,
     Token,
     Profile,
+    /// Codex's own local sign-in, read from its credential store.
+    Codex,
 }
 
 impl Source {
@@ -41,6 +43,7 @@ impl Source {
             Source::Keychain => "keychain",
             Source::Token => "token",
             Source::Profile => "profile",
+            Source::Codex => "codex",
         }
     }
     pub fn parse(s: &str) -> Result<Self> {
@@ -48,7 +51,94 @@ impl Source {
             "keychain" => Ok(Source::Keychain),
             "token" => Ok(Source::Token),
             "profile" => Ok(Source::Profile),
+            "codex" => Ok(Source::Codex),
             other => Err(anyhow!("unknown account source {other:?}")),
+        }
+    }
+}
+
+/// The service an account belongs to. It fixes where the account's requests go, how they
+/// are signed, how its quota is read and what a spent limit looks like
+/// (docs/sources-and-models.md). Where the credential is kept is `Source`, which says
+/// nothing about this: a Kimi Code key is kept as a setup-token is, `Source::Token`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Provider {
+    Anthropic,
+    /// Kimi Code, Moonshot's coding subscription, through its Anthropic-compatible endpoint.
+    Kimi,
+    OpenAI,
+}
+
+impl Provider {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Provider::Anthropic => "anthropic",
+            Provider::Kimi => "kimi",
+            Provider::OpenAI => "openai",
+        }
+    }
+
+    pub fn parse(s: &str) -> Result<Self> {
+        match s {
+            "anthropic" => Ok(Provider::Anthropic),
+            "kimi" => Ok(Provider::Kimi),
+            "openai" => Ok(Provider::OpenAI),
+            other => Err(anyhow!("unknown provider {other:?}")),
+        }
+    }
+
+    /// The provider's name as the dashboard and the phones write it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Provider::Anthropic => "Anthropic",
+            Provider::Kimi => "Kimi Code",
+            Provider::OpenAI => "OpenAI",
+        }
+    }
+
+    /// The article its name takes: "an Anthropic account", "a Kimi Code account".
+    pub fn article(self) -> &'static str {
+        match self {
+            Provider::Anthropic => "an",
+            Provider::Kimi => "a",
+            Provider::OpenAI => "an",
+        }
+    }
+
+    /// Where an account of this provider sends its requests when it names no base URL of
+    /// its own. An Anthropic account has none here: it goes to the router's `upstream`.
+    pub fn default_base_url(self) -> Option<&'static str> {
+        match self {
+            Provider::Anthropic => None,
+            Provider::Kimi => Some("https://api.kimi.ai/coding"),
+            Provider::OpenAI => Some("https://api.openai.com"),
+        }
+    }
+
+    /// Why `key` cannot be this provider's credential, if it cannot. A key pasted into the
+    /// wrong provider's field would otherwise be stored, and refused upstream at every
+    /// request it signed.
+    pub fn key_problem(self, key: &str) -> Option<&'static str> {
+        match self {
+            Provider::Anthropic if key.starts_with("sk-ant-sid") => Some(
+                "that is a claude.ai session key — it belongs in the session-key field, \
+                 and cannot sign API requests",
+            ),
+            Provider::Anthropic if !key.starts_with("sk-ant-") => {
+                Some("expected a token starting sk-ant- (from `claude setup-token`)")
+            }
+            Provider::Kimi if key.starts_with("sk-ant-") => Some(
+                "that is an Anthropic token — a Kimi Code account takes a key from the \
+                 Kimi Code console",
+            ),
+            Provider::OpenAI if key.starts_with("sk-ant-") => Some(
+                "that is an Anthropic token — an OpenAI account takes an OpenAI API key",
+            ),
+            Provider::OpenAI if !key.starts_with("sk-") => Some(
+                "expected an OpenAI API key starting sk-; use the Codex login source for a ChatGPT subscription",
+            ),
+            _ => None,
         }
     }
 }
@@ -58,6 +148,10 @@ pub struct Account {
     pub id: String,
     pub label: String,
     pub source: Source,
+    pub provider: Provider,
+    /// Where this account's requests go, when not its provider's default. Always `None`
+    /// for an Anthropic account.
+    pub base_url: Option<String>,
     pub profile_dir: Option<String>,
     /// The identity this account was recorded as. For a Keychain account this is
     /// checked before signing: `/login` rewrites that Keychain entry in place, so the
@@ -73,6 +167,10 @@ pub struct Resolved {
     pub identity: Option<String>,
     /// Milliseconds since the Unix epoch, or 0 when the token has no known expiry.
     pub expires_at_ms: i64,
+    /// ChatGPT sign-ins use Codex's backend rather than the public API endpoint.
+    pub openai_chatgpt: bool,
+    /// The selected workspace, sent as ChatGPT-Account-Id for a Codex sign-in.
+    pub chatgpt_account_id: Option<String>,
 }
 
 fn now_ms() -> i64 {
@@ -149,7 +247,7 @@ pub fn resolve(account: &Account) -> Result<Resolved> {
         Source::Keychain => {
             if let Ok(token) = std::env::var("AGENT_ROUTER_ACCESS_TOKEN") {
                 if !token.is_empty() {
-                    return Ok(Resolved { token, identity: None, expires_at_ms: 0 });
+                    return Ok(Resolved { token, identity: None, expires_at_ms: 0, openai_chatgpt: false, chatgpt_account_id: None });
                 }
             }
             if crate::config::is_server() {
@@ -175,6 +273,8 @@ pub fn resolve(account: &Account) -> Result<Resolved> {
                 token: token.trim().to_string(),
                 identity: account.email.clone(),
                 expires_at_ms: 0,
+                openai_chatgpt: false,
+                chatgpt_account_id: None,
             })
         }
         Source::Profile => {
@@ -199,6 +299,16 @@ pub fn resolve(account: &Account) -> Result<Resolved> {
                 .or_else(|| account.email.clone());
             Ok(resolved)
         }
+        Source::Codex => {
+            if account.provider != Provider::OpenAI {
+                bail!("a Codex login can only sign for an OpenAI account");
+            }
+            if crate::config::is_server() {
+                bail!("a hosted router cannot read a machine's Codex login — add an OpenAI API key as a token account");
+            }
+            let dir = account.profile_dir.as_ref().map(PathBuf::from).map(Ok).unwrap_or_else(codex_home)?;
+            parse_codex_credentials(&read_codex_credentials(&dir)?)
+        }
     }
 }
 
@@ -210,7 +320,101 @@ fn parse_stored(raw: &str) -> Result<Resolved> {
         token: stored.oauth.access_token,
         identity: None,
         expires_at_ms: stored.oauth.expires_at,
+        openai_chatgpt: false,
+        chatgpt_account_id: None,
     })
+}
+
+/// The home used by Codex's CLI and IDE extension. No credential is created or changed.
+pub fn codex_home() -> Result<PathBuf> {
+    match std::env::var_os("CODEX_HOME").filter(|h| !h.is_empty()) {
+        Some(home) => Ok(PathBuf::from(home)),
+        None => Ok(crate::setup::home_dir()?.join(".codex")),
+    }
+}
+
+fn read_codex_credentials(home: &Path) -> Result<String> {
+    let config = match std::fs::read_to_string(home.join("config.toml")) {
+        Ok(text) => text.parse::<toml_edit::DocumentMut>().map_err(|_| anyhow!("Codex config.toml is not valid TOML"))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => toml_edit::DocumentMut::new(),
+        Err(e) => return Err(e).context("reading Codex config.toml"),
+    };
+    let mode = config.get("cli_auth_credentials_store").and_then(toml_edit::Item::as_str).unwrap_or("file");
+    if !matches!(mode, "file" | "keyring" | "auto" | "ephemeral") {
+        bail!("Codex's configured credential store is not supported");
+    }
+    if mode == "ephemeral" {
+        bail!("Codex's login is held in its process only — use an OpenAI API key account");
+    }
+    if mode == "keyring" || mode == "auto" {
+        #[cfg(target_os = "macos")]
+        {
+            use sha2::{Digest, Sha256};
+            if config.get("features").and_then(|f| f.get("secret_auth_storage")).and_then(toml_edit::Item::as_bool) == Some(true) {
+                bail!("Codex's encrypted credential store cannot be read here — use an OpenAI API key account");
+            }
+            let canonical = home.canonicalize().unwrap_or_else(|_| home.to_path_buf());
+            let digest = format!("{:x}", Sha256::digest(canonical.to_string_lossy().as_bytes()));
+            let key = format!("cli|{}", &digest[..16]);
+            match keychain_read("Codex Auth", &key) {
+                Ok(raw) => return Ok(raw),
+                Err(e) if mode == "keyring" => return Err(e).context("reading Codex's Keychain login — run `codex login` first"),
+                Err(_) => {}
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        if mode == "keyring" {
+            bail!("Codex's keyring login cannot be read on this platform — use an OpenAI API key account");
+        }
+    }
+    std::fs::read_to_string(home.join("auth.json")).context("reading Codex auth.json — run `codex login` first")
+}
+
+/// Read the two supported native Codex login forms. JWT claims describe the credential;
+/// their signature is checked by OpenAI, never treated as router authentication.
+pub fn parse_codex_credentials(raw: &str) -> Result<Resolved> {
+    let v: serde_json::Value = serde_json::from_str(raw).context("Codex credentials are not valid JSON")?;
+    let mode = v.get("auth_mode").and_then(serde_json::Value::as_str);
+    if !matches!(mode, None | Some("apikey" | "chatgpt" | "chatgptAuthTokens")) {
+        bail!("this Codex login mode is not supported; use ChatGPT sign-in or an OpenAI API key");
+    }
+    let api_key = v.get("OPENAI_API_KEY").and_then(serde_json::Value::as_str).filter(|s| !s.trim().is_empty());
+    if matches!(mode, None | Some("apikey")) {
+        if let Some(key) = api_key {
+            return Ok(Resolved { token: key.trim().to_owned(), identity: None, expires_at_ms: 0,
+                openai_chatgpt: false, chatgpt_account_id: None });
+        }
+        if mode == Some("apikey") {
+            bail!("Codex's API key login has no API key — run `codex login` first");
+        }
+    }
+    let tokens = v.get("tokens").ok_or_else(|| anyhow!("Codex has no saved login — run `codex login` first"))?;
+    let access = tokens.get("access_token").and_then(serde_json::Value::as_str)
+        .filter(|s| !s.trim().is_empty()).ok_or_else(|| anyhow!("Codex's saved login has no access token"))?;
+    let claims = jwt_claims(access).unwrap_or_default();
+    let id_claims = tokens.get("id_token").and_then(serde_json::Value::as_str).and_then(jwt_claims).unwrap_or_default();
+    let text = |v: &serde_json::Value, key: &str| v.get(key).and_then(serde_json::Value::as_str)
+        .filter(|s| !s.trim().is_empty()).map(str::to_owned);
+    let auth = id_claims.get("https://api.openai.com/auth").or_else(|| claims.get("https://api.openai.com/auth"));
+    let account_id = text(tokens, "account_id").or_else(|| auth.and_then(|a| text(a, "chatgpt_account_id")));
+    let identity = text(&id_claims, "email")
+        .or_else(|| id_claims.get("https://api.openai.com/profile").and_then(|p| text(p, "email")))
+        .or_else(|| text(&claims, "email"));
+    Ok(Resolved {
+        token: access.to_owned(), identity,
+        expires_at_ms: claims.get("exp").and_then(serde_json::Value::as_i64).unwrap_or(0).saturating_mul(1000),
+        openai_chatgpt: true, chatgpt_account_id: account_id,
+    })
+}
+
+fn jwt_claims(jwt: &str) -> Option<serde_json::Value> {
+    let mut parts = jwt.split('.');
+    let (header, payload, signature) = (parts.next()?, parts.next()?, parts.next()?);
+    if header.is_empty() || payload.is_empty() || signature.is_empty() || parts.next().is_some() {
+        return None;
+    }
+    let bytes = crate::auth::base64_decode(&payload.replace('-', "+").replace('_', "/"))?;
+    serde_json::from_slice(&bytes).ok()
 }
 
 /// Router-owned secrets live in a 0600 file, not the Keychain.
@@ -526,13 +730,23 @@ impl Store {
         Ok(rusqlite::Connection::open(&self.path)?)
     }
 
+    /// The active Anthropic account: the one every request is signed with until requests
+    /// are routed by their model (docs/sources-and-models.md).
     pub fn active(&self) -> Result<Account> {
+        self.active_for(Provider::Anthropic)
+    }
+
+    /// The account `provider`'s requests go to when nothing else is chosen. Each provider
+    /// has its own, so making a Kimi Code account active leaves the Claude account active.
+    pub fn active_for(&self, provider: Provider) -> Result<Account> {
         let account = self
             .conn()?
             .query_row(
-                "SELECT id, label, source, profile_dir, email FROM accounts
-                 WHERE active = 1 ORDER BY created_at LIMIT 1",
-                [],
+                &format!(
+                    "SELECT {ACCOUNT_COLUMNS} FROM accounts
+                     WHERE active = 1 AND provider = ?1 ORDER BY created_at LIMIT 1"
+                ),
+                [provider.as_str()],
                 account_row,
             )
             .optional()?;
@@ -545,7 +759,7 @@ impl Store {
     pub fn get(&self, id: &str) -> Result<Option<Account>> {
         self.conn()?
             .query_row(
-                "SELECT id, label, source, profile_dir, email FROM accounts WHERE id = ?1",
+                &format!("SELECT {ACCOUNT_COLUMNS} FROM accounts WHERE id = ?1"),
                 [id],
                 account_row,
             )
@@ -569,6 +783,9 @@ impl Store {
     pub fn check_free(&self, id: &str) -> Result<()> {
         match self.holder(id)? {
             Some(holder) => Err(Conflict::NameTaken { id: id.to_string(), holder }.into()),
+            None if id == crate::codex::ACCOUNT_ID => Err(Conflict::NameTaken {
+                id: id.to_owned(), holder: "Codex login (discovered automatically)".into(),
+            }.into()),
             None => Ok(()),
         }
     }
@@ -583,25 +800,33 @@ impl Store {
     /// first, as this once did, wrote it over the holder's before anything had looked.
     /// When the credential cannot be stored, the row comes out again: an account with
     /// nothing behind it would only fail every request it signed.
+    #[allow(clippy::too_many_arguments)]
     pub fn add(
         &self,
         id: &str,
         label: &str,
         source: Source,
+        provider: Provider,
+        base_url: Option<&str>,
         profile_dir: Option<&str>,
         status: &AuthStatus,
         credential: impl FnOnce() -> Result<()>,
     ) -> Result<()> {
+        if id == crate::codex::ACCOUNT_ID {
+            self.check_free(id)?;
+        }
         let conn = self.conn()?;
         let added = conn.execute(
-            "INSERT INTO accounts (id, label, source, profile_dir, email, org_name,
-                                   subscription_type, active, created_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,0,?8)
+            "INSERT INTO accounts (id, label, source, provider, base_url, profile_dir, email,
+                                   org_name, subscription_type, active, created_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,0,?10)
              ON CONFLICT(id) DO NOTHING",
             rusqlite::params![
                 id,
                 label,
                 source.as_str(),
+                provider.as_str(),
+                base_url,
                 profile_dir,
                 status.email,
                 status.org_name,
@@ -618,8 +843,9 @@ impl Store {
             return Err(e);
         }
         // Never leave the router with nothing to sign with: the first account a store
-        // gets is the one it signs with. Locally the discovered default always holds
-        // that place, so this matters to a hosted router, whose store starts empty. Only
+        // gets of a provider is the one that provider's requests go to. Locally the
+        // discovered default always holds Anthropic's place, so this matters to a hosted
+        // router, whose store starts empty, and to every provider's first account. Only
         // now, with the credential stored, so it never signs from an empty entry.
         conn_activate_if_none(&conn, id)?;
         Ok(())
@@ -654,13 +880,16 @@ impl Store {
         Ok(())
     }
 
-    /// Exactly one account is active; switching is a single transaction.
+    /// Exactly one account of each provider is active; switching is a single transaction,
+    /// and touches only the provider of the account switched to.
     pub fn activate(&self, id: &str) -> Result<()> {
         let mut conn = self.conn()?;
         let tx = conn.transaction()?;
-        let n = tx.execute("UPDATE accounts SET active = 0 WHERE active = 1", [])?;
-        let _ = n;
-        let hit = tx.execute("UPDATE accounts SET active = 1 WHERE id = ?1", [id])?;
+        let hit = tx.execute(
+            "UPDATE accounts SET active = (id = ?1)
+              WHERE provider = (SELECT provider FROM accounts WHERE id = ?1)",
+            [id],
+        )?;
         if hit == 0 {
             return Err(Conflict::NoAccount(id.to_string()).into());
         }
@@ -670,22 +899,22 @@ impl Store {
 
     pub fn remove(&self, id: &str) -> Result<()> {
         let conn = self.conn()?;
-        let was_active: bool = conn
-            .query_row("SELECT active FROM accounts WHERE id = ?1", [id], |r| {
-                r.get::<_, i64>(0)
+        let was_active: Option<String> = conn
+            .query_row("SELECT provider FROM accounts WHERE id = ?1 AND active = 1", [id], |r| {
+                r.get(0)
             })
-            .optional()?
-            .map(|v| v == 1)
-            .unwrap_or(false);
+            .optional()?;
         conn.execute("DELETE FROM accounts WHERE id = ?1", [id])?;
+        // Its models go back to their provider's active account.
+        conn.execute("DELETE FROM model_assignments WHERE account_id = ?1", [id])?;
         let _ = forget_token(id);
         let _ = forget_usage_token(id);
-        if was_active {
-            // Never leave the router with nothing to sign with.
+        if let Some(provider) = was_active {
+            // Never leave a provider with nothing to sign with while it has an account.
             conn.execute(
                 "UPDATE accounts SET active = 1 WHERE id =
-                   (SELECT id FROM accounts ORDER BY created_at LIMIT 1)",
-                [],
+                   (SELECT id FROM accounts WHERE provider = ?1 ORDER BY created_at LIMIT 1)",
+                [provider],
             )?;
         }
         Ok(())
@@ -695,25 +924,32 @@ impl Store {
 fn conn_activate_if_none(conn: &rusqlite::Connection, id: &str) -> Result<()> {
     conn.execute(
         "UPDATE accounts SET active = 1
-          WHERE id = ?1 AND NOT EXISTS (SELECT 1 FROM accounts WHERE active = 1)",
+          WHERE id = ?1 AND NOT EXISTS (
+            SELECT 1 FROM accounts o
+             WHERE o.active = 1 AND o.provider = (SELECT provider FROM accounts WHERE id = ?1))",
         [id],
     )?;
     Ok(())
 }
 
-/// One row as `SELECT id, label, source, profile_dir, email` reads it.
-type AccountRow = (String, String, Option<String>, Option<String>, Option<String>);
+/// What every read of an account selects, in the order `account_row` takes it.
+const ACCOUNT_COLUMNS: &str = "id, label, source, provider, base_url, profile_dir, email";
+
+/// One row as `SELECT {ACCOUNT_COLUMNS}` reads it.
+type AccountRow = (String, String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>);
 
 fn account_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<AccountRow> {
-    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?))
 }
 
 impl Account {
-    fn from_row((id, label, source, profile_dir, email): AccountRow) -> Result<Self> {
+    fn from_row((id, label, source, provider, base_url, profile_dir, email): AccountRow) -> Result<Self> {
         Ok(Account {
             id,
             label,
             source: Source::parse(source.as_deref().unwrap_or("keychain"))?,
+            provider: Provider::parse(provider.as_deref().unwrap_or("anthropic"))?,
+            base_url,
             profile_dir,
             email,
         })
@@ -797,6 +1033,20 @@ pub fn slugify(label: &str) -> String {
     }
 }
 
+/// A credential's kind by its account's provider, safe to show and to log: an Anthropic
+/// token's by its prefix (`token_kind`), a Kimi Code account's as its key, whose form Kimi Code
+/// does not promise. Never any part of the secret.
+pub fn credential_kind(provider: Provider, token: &str) -> &str {
+    match provider {
+        Provider::Kimi if token.trim().is_empty() => "<empty>",
+        Provider::Kimi => "Kimi Code key",
+        Provider::Anthropic => token_kind(token),
+        Provider::OpenAI if token.trim().is_empty() => "<empty>",
+        Provider::OpenAI if token.starts_with("sk-") => "OpenAI API key",
+        Provider::OpenAI => "Codex ChatGPT login",
+    }
+}
+
 /// The token's family prefix, safe to log. Never log the token itself.
 pub fn token_kind(token: &str) -> &str {
     let t = token.strip_prefix("Bearer ").unwrap_or(token).trim();
@@ -828,5 +1078,150 @@ mod tests {
         assert_eq!(token_kind(t), "sk-ant-oat01 (subscription OAuth)");
         assert!(!token_kind(t).contains("SECRET"));
         assert_eq!(token_kind("Bearer sk-ant-api03-x"), "sk-ant-api03 (API key)");
+    }
+
+    /// A Kimi Code key was "<unrecognised>" on its card, as an Anthropic token of no known
+    /// family would be (AGEN-0123).
+    #[test]
+    fn a_kimi_code_key_is_described_as_one() {
+        let key = "sk-kimi-SECRETSECRET";
+        assert_eq!(credential_kind(Provider::Kimi, key), "Kimi Code key");
+        assert!(!credential_kind(Provider::Kimi, key).contains("SECRET"));
+        assert_eq!(credential_kind(Provider::Kimi, " "), "<empty>");
+        assert_eq!(credential_kind(Provider::Anthropic, "sk-ant-oat01-SECRET"), "sk-ant-oat01 (subscription OAuth)");
+        assert_eq!(credential_kind(Provider::Anthropic, "sk-kimi-SECRET"), "<unrecognised>", "an Anthropic account's is still its token's family");
+    }
+
+    #[test]
+    fn codex_credentials_keep_api_and_subscription_auth_distinct() {
+        let key = parse_codex_credentials(r#"{"auth_mode":"apikey","OPENAI_API_KEY":"sk-test-secret"}"#).unwrap();
+        assert_eq!(key.token, "sk-test-secret");
+        assert!(!key.openai_chatgpt);
+        assert!(key.chatgpt_account_id.is_none());
+        assert_eq!(credential_kind(Provider::OpenAI, &key.token), "OpenAI API key");
+
+        let claims = serde_json::json!({ "exp": 1900000000, "email": "person@example.com",
+            "https://api.openai.com/auth": { "chatgpt_account_id": "workspace-from-claim" } });
+        let encoded = crate::tunnel::base64(claims.to_string().as_bytes()).trim_end_matches('=')
+            .replace('+', "-").replace('/', "_");
+        let jwt = format!("header.{encoded}.signature");
+        let raw = serde_json::json!({ "auth_mode": "chatgpt", "OPENAI_API_KEY": "sk-stale-key",
+            "tokens": { "access_token": jwt, "id_token": jwt, "account_id": "selected-workspace" } });
+        let login = parse_codex_credentials(&raw.to_string()).unwrap();
+        assert!(login.openai_chatgpt, "the selected auth mode overrides a stale API key");
+        assert_eq!(login.token, jwt);
+        assert_eq!(login.expires_at_ms, 1900000000000);
+        assert_eq!(login.identity.as_deref(), Some("person@example.com"));
+        assert_eq!(login.chatgpt_account_id.as_deref(), Some("selected-workspace"));
+        assert_eq!(credential_kind(Provider::OpenAI, &login.token), "Codex ChatGPT login");
+
+        assert!(parse_codex_credentials(r#"{"auth_mode":"apikey","tokens":{"access_token":"stale"}}"#).is_err());
+        assert!(parse_codex_credentials(r#"{"tokens":{"access_token":""}}"#).is_err());
+        assert!(parse_codex_credentials(r#"{"auth_mode":"agentIdentity"}"#).is_err());
+        assert!(Provider::OpenAI.key_problem("sk-ant-oat01-other").is_some());
+        assert!(Provider::OpenAI.key_problem("jwt-token").is_some());
+        assert!(Provider::OpenAI.key_problem("sk-proj-test").is_none());
+        assert_eq!(Source::parse("codex").unwrap(), Source::Codex);
+    }
+
+    /// A store of its own under the temp directory, opened as the router opens one at start.
+    struct Scratch {
+        dir: PathBuf,
+        path: PathBuf,
+    }
+
+    impl Scratch {
+        fn new(tag: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("ar-accounts-{tag}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            Self { path: dir.join("agent-router.db"), dir }
+        }
+
+        /// Open the store as a start of the router does, and hand back its accounts.
+        fn start(&self) -> Store {
+            crate::db::Db::open(&self.path).unwrap();
+            Store::new(self.path.clone())
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    fn add(store: &Store, id: &str, provider: Provider, base_url: Option<&str>) {
+        store
+            .add(id, id, Source::Token, provider, base_url, None, &AuthStatus::default(), || Ok(()))
+            .unwrap();
+    }
+
+    #[test]
+    fn an_account_carries_its_provider_and_base_url() {
+        let scratch = Scratch::new("provider");
+        let store = scratch.start();
+        add(&store, "work", Provider::Anthropic, None);
+        add(&store, "kimi", Provider::Kimi, Some("https://api.kimi.com/coding"));
+
+        // Read again by a router started over the same store.
+        let store = scratch.start();
+        let work = store.get("work").unwrap().unwrap();
+        assert_eq!((work.provider, work.base_url), (Provider::Anthropic, None));
+        let kimi = store.get("kimi").unwrap().unwrap();
+        assert_eq!(kimi.provider, Provider::Kimi);
+        assert_eq!(kimi.base_url.as_deref(), Some("https://api.kimi.com/coding"));
+        assert_eq!(kimi.source, Source::Token, "a Kimi Code key is kept as a setup-token is");
+    }
+
+    #[test]
+    fn an_account_stored_before_providers_reads_as_anthropic() {
+        let scratch = Scratch::new("before-providers");
+        // The accounts table as it was before there was a second provider.
+        let conn = rusqlite::Connection::open(&scratch.path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE accounts (
+                id TEXT PRIMARY KEY, label TEXT NOT NULL, source TEXT NOT NULL DEFAULT 'keychain',
+                profile_dir TEXT, email TEXT, org_name TEXT, subscription_type TEXT,
+                active INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL);
+             INSERT INTO accounts (id, label, source, active, created_at)
+             VALUES ('default', 'Claude Code', 'keychain', 1, 1), ('work', 'Work', 'token', 0, 2);",
+        )
+        .unwrap();
+        drop(conn);
+
+        let store = scratch.start();
+        for id in ["default", "work"] {
+            let account = store.get(id).unwrap().unwrap();
+            assert_eq!((account.provider, account.base_url), (Provider::Anthropic, None), "{id}");
+        }
+        assert_eq!(store.active().unwrap().id, "default", "it still signs");
+    }
+
+    #[test]
+    fn each_provider_keeps_its_own_active_account() {
+        let scratch = Scratch::new("active-per-provider");
+        let store = scratch.start();
+        // The first account of each provider is the one its requests go to.
+        add(&store, "work", Provider::Anthropic, None);
+        add(&store, "kimi", Provider::Kimi, Some("https://api.kimi.ai/coding"));
+        add(&store, "home", Provider::Anthropic, None);
+        add(&store, "kimi-two", Provider::Kimi, Some("https://api.kimi.ai/coding"));
+        let active = |p| store.active_for(p).unwrap().id;
+        assert_eq!((active(Provider::Anthropic), active(Provider::Kimi)), ("work".into(), "kimi".into()));
+
+        store.activate("home").unwrap();
+        assert_eq!(active(Provider::Anthropic), "home");
+        assert_eq!(active(Provider::Kimi), "kimi", "activating a Claude account leaves Kimi Code's");
+
+        store.activate("kimi-two").unwrap();
+        assert_eq!(active(Provider::Kimi), "kimi-two");
+        assert_eq!(active(Provider::Anthropic), "home", "activating a Kimi Code account leaves Claude's");
+        assert_eq!(store.active().unwrap().id, "home", "what signs is the active Anthropic account");
+
+        // Removing a provider's active account hands its place to that provider's next one.
+        store.remove("kimi-two").unwrap();
+        assert_eq!((active(Provider::Anthropic), active(Provider::Kimi)), ("home".into(), "kimi".into()));
+        assert!(store.activate("nobody").is_err());
     }
 }

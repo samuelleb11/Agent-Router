@@ -17,6 +17,9 @@ mod api_refusals;
 mod apns;
 mod auth;
 mod capture;
+mod chat_completions;
+mod clients;
+mod client_setup;
 mod config;
 mod console;
 mod db;
@@ -26,6 +29,7 @@ mod fold;
 mod forecast;
 mod guard;
 mod hosted;
+mod kimi;
 mod library;
 mod lifecycle;
 mod live;
@@ -35,6 +39,8 @@ mod peer;
 mod places;
 mod pricing;
 mod login;
+mod models;
+mod provider_registry;
 mod notify;
 mod proxy;
 mod quota;
@@ -44,6 +50,9 @@ mod repository;
 mod setup;
 mod shim;
 mod transcript;
+mod responses;
+mod translate;
+mod codex;
 mod tunnel;
 
 use std::sync::Arc;
@@ -67,6 +76,11 @@ USAGE:
   agent-router status                show what is installed and what is managed
   agent-router agent [OPTIONS]       connect this machine's sessions to a hosted router
   agent-router library status|sync   the hosted router's Library on this machine
+  agent-router codex models refresh|restore
+                                     refresh Codex's server model list or restore it
+  agent-router kimi [--model <id>] [prompt]
+                                     a hosted Kimi Code session in this directory,
+                                     worked with here and from the console
 
 SERVE OPTIONS:
   --bind <ip>            also listen here, not only on loopback (like AGENT_ROUTER_BIND)
@@ -123,6 +137,9 @@ fn loopback_addr_on(port: u16) -> std::net::SocketAddr {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if std::env::current_exe()?.file_stem().is_some_and(|s|s=="agent-router-codex") {
+        return codex::runtime::adapter(&args).await;
+    }
     match args.first().map(String::as_str) {
         Some("serve") => {
             return match config::ServeArgs::parse(&args[1..]) {
@@ -138,6 +155,9 @@ async fn main() -> anyhow::Result<()> {
         Some("install") => return cmd_install(&args[1..]),
         Some("uninstall") => return cmd_uninstall(),
         Some("status") => return cmd_status(),
+        Some("hook") => return kimi::hook(&args[1..]),
+        Some("kimi") => return kimi::launch::main(&args[1..]).await,
+        Some("codex") => return codex::runtime::cli(&args[1..]).await,
         Some("-h") | Some("--help") | Some("help") => {
             print!("{USAGE}");
             return Ok(());
@@ -252,8 +272,89 @@ fn cmd_install(args: &[String]) -> anyhow::Result<()> {
         setup::Applied::AlreadySet => println!("config    already pointing at {url}"),
     }
     println!("          {} ({scope})", path.display());
+    match local_picker_rows() {
+        Ok(0) => {}
+        Ok(n) => println!("picker    {n} model(s) of other providers offered in Claude Code's /model"),
+        Err(e) => println!("picker    left alone ({e:#})"),
+    }
+    match local_kimi_config(&url, true) {
+        Ok(Some(_)) => {
+            println!("kimi      Kimi Code's config.toml: the router's provider, its Kimi models and hooks");
+            println!("          uninstall takes them out and puts back the default model")
+        }
+        Ok(None) => {}
+        Err(e) => println!("kimi      Kimi Code's config.toml left alone ({e:#})"),
+    }
+    match codex::here(&url, "agent-router", true, true) {
+        Ok(Some(_)) => {
+            println!("codex     Codex's config.toml: Responses through Agent Router; uninstall restores its provider");
+            if let Err(error)=local_codex_catalogue(true) {println!("codex     model catalogue left alone ({error:#})");}
+        },
+        Ok(None) => {},
+        Err(e) => println!("codex     Codex's config.toml left alone ({e:#})"),
+    }
     println!("\ndashboard {url}");
     Ok(())
+}
+
+/// The router's catalogue, from this machine's own store; empty for a store not made yet.
+fn local_catalogue() -> anyhow::Result<Vec<serde_json::Value>> {
+    let db = config::db_path()?;
+    if !db.exists() {
+        return Ok(Vec::new());
+    }
+    let conn = rusqlite::Connection::open(&db)?;
+    Ok(models::catalogue(&conn)?.iter().map(models::row).collect())
+}
+
+fn local_codex_catalogue(install: bool) -> anyhow::Result<()> {
+    let db=config::db_path()?;
+    let path=accounts::codex_home()?.join("config.toml");
+    if !db.exists() || !path.exists() {return Ok(());}
+    let metadata=models::client_catalogue(&rusqlite::Connection::open(db)?)?;
+    if install && metadata.models.is_empty() {return Ok(());}
+    codex::catalogue::sync(&path.canonicalize()?,&metadata,install)?;
+    Ok(())
+}
+
+/// This machine's Kimi Code pointed at the local router at `url` (`kimi::config::here`). A
+/// local router takes requests from loopback without a password, so the key is a name.
+fn local_kimi_config(url: &str, install: bool) -> anyhow::Result<Option<bool>> {
+    let consented = setup::base_url_in(&setup::settings_path(None)?)?
+        .is_some_and(|set| set.trim_end_matches('/') == url.trim_end_matches('/'));
+    let db = config::db_path()?;
+    if db.exists() {
+        if let Err(e) = codex::discover_account(&db) { tracing::warn!("Codex account discovery: {e:#}"); }
+    }
+    if !install {
+        if let Err(e) = codex::here(url, "agent-router", false, consented) { tracing::warn!("Codex config could not be kept in step: {e:#}"); }
+        if let Err(e) = local_codex_catalogue(false) {tracing::warn!("Codex model catalogue could not be kept in step: {e:#}");}
+    }
+    kimi::config::here(url, "agent-router", &local_catalogue()?, install, consented)
+}
+
+/// Kimi Code's entries put back after it updates itself, every fifteen minutes, as an agent
+/// does for a hosted router's (`agent::keep_clients`).
+async fn keep_local_kimi_config(url: String) {
+    loop {
+        let url = url.clone();
+        match tokio::task::spawn_blocking(move || local_kimi_config(&url, false)).await {
+            Ok(Ok(Some(true))) => tracing::info!("Kimi Code's config.toml: the router's entries put back"),
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => tracing::warn!("Kimi Code's config.toml could not be kept: {e:#}"),
+            Err(e) => tracing::warn!("Kimi Code's config.toml could not be kept: {e}"),
+        }
+        tokio::time::sleep(library::sync::EVERY).await;
+    }
+}
+
+/// Offer the router's non-Claude models in Claude Code's `/model` picker, from this
+/// machine's own store: rows of `modelPicker.options` in the user's settings
+/// (`setup::sync_picker_rows`). A store not made yet has no other provider to offer.
+fn local_picker_rows() -> anyhow::Result<usize> {
+    let rows = setup::picker_models(&local_catalogue()?);
+    setup::sync_picker_rows(&setup::settings_path(None)?, &rows)?;
+    Ok(rows.len())
 }
 
 fn cmd_uninstall() -> anyhow::Result<()> {
@@ -276,6 +377,16 @@ fn cmd_uninstall() -> anyhow::Result<()> {
             }
             setup::Reverted::NotManaged => {}
         }
+    }
+    match kimi::config::take_out() {
+        Ok(Some(true)) => println!("kimi      the router's entries taken out of Kimi Code's config.toml"),
+        Ok(_) => {}
+        Err(e) => println!("kimi      Kimi Code's config.toml left alone ({e:#})"),
+    }
+    match codex::take_out() {
+        Ok(Some(true)) => println!("codex     the previous Codex provider restored"),
+        Ok(_) => {},
+        Err(e) => println!("codex     Codex's config.toml left alone ({e:#})"),
     }
     setup::service::uninstall()?;
     println!("service   unregistered");
@@ -377,6 +488,7 @@ async fn serve_here(args: config::ServeArgs) -> anyhow::Result<()> {
                 .clone()
                 .unwrap_or_else(|| "Claude Code (default profile)".to_string());
             db.upsert_default_account(proxy::ACCOUNT_ID, &label, &status)?;
+            codex::discover_account(&db_path)?;
             match wide {
                 // The wide listener announces itself as it comes up, in `network`.
                 Some(ip) => tracing::info!("agent-router listening on http://{bind} and on {ip}"),
@@ -413,6 +525,8 @@ async fn serve_here(args: config::ServeArgs) -> anyhow::Result<()> {
     }
     // Watches for prompts for the life of the process; a restart announces nothing.
     tokio::spawn(state.push.clone().watch());
+    // Kimi Code accounts' windows, read from Kimi Code's usage API every five minutes.
+    quota::keep_kimi_readings(state.clone());
     // Wraps every Claude Code extension VSCode adds, when the switch is on. A hosted
     // router has no editor to watch.
     if !server {
@@ -462,6 +576,9 @@ async fn serve_here(args: config::ServeArgs) -> anyhow::Result<()> {
     // This machine's places, every minute, as an agent reports its own to a hosted router:
     // which repository each session works in.
     tokio::spawn(places::keep_here(db_path.clone()));
+    tokio::spawn(kimi::live::keep_host());
+    tokio::spawn(codex::runtime::keep_host());
+    tokio::spawn(keep_local_kimi_config(format!("http://127.0.0.1:{}", loopback_addr().port())));
 
     // The wider listener, when there is to be one, serves this same app from a second
     // socket. Started last, once loopback is about to be accepted on and the incumbent
@@ -515,15 +632,33 @@ fn app_with(state: Arc<proxy::AppState>, console: console::Files) -> Router {
         .route("/api/accounts/edit", post(api::accounts_edit))
         .route("/api/forecast", get(api::forecast))
         .route("/api/auth", get(auth::api::status).post(auth::api::set))
+        .route("/api/auth/tokens", get(auth::tokens::list).post(auth::tokens::create))
+        .route("/api/auth/tokens/{id}", axum::routing::delete(auth::tokens::revoke))
         .route("/api/push", get(notify::api::status))
         .route("/api/push/config", post(notify::api::config))
         .route("/api/push/register", post(notify::api::register))
         .route("/api/push/unregister", post(notify::api::unregister))
         .route("/api/push/test", post(notify::api::test))
-        .route("/api/quota", get(quota::quota))
+        .route("/api/quota", get(quota::quota_route))
         .route("/api/quota/raw", get(quota::raw_usage))
         .route("/api/usage-token", post(quota::set_usage_token))
         .route("/api/live/options", get(live::options))
+        .route("/api/models", get(models::list))
+        .route("/api/clients", get(client_setup::status))
+        .route("/api/clients/{client}/preview", post(client_setup::preview))
+        .route("/api/clients/{client}/apply", post(client_setup::apply))
+        .route("/api/clients/{client}/restore", post(client_setup::restore))
+        .route("/api/clients/{client}/check", post(client_setup::check))
+        .route("/api/provider-registry", get(provider_registry::status))
+        .route("/api/provider-registry/services", post(provider_registry::add_service))
+        .route("/api/provider-registry/services/{id}", axum::routing::delete(provider_registry::remove_service))
+        .route("/api/provider-registry/models", post(provider_registry::add_model))
+        .route("/api/provider-registry/models/{alias}", axum::routing::delete(provider_registry::remove_model))
+        .route("/api/models/assign", post(models::assign_route))
+        // Answered from the catalogue, never forwarded (`models::v1_models`).
+        .route("/v1/models", get(models::v1_models))
+        .route("/_router/models", get(models::client_metadata))
+        .route("/v1/chat/completions", post(chat_completions::handle))
         .route("/_router/health", get(api::health));
     let routes = if state.config.server { hosted::routes(common) } else { machine_routes(common) };
     routes
@@ -560,10 +695,13 @@ fn machine_routes(router: Router<Arc<proxy::AppState>>) -> Router<Arc<proxy::App
         .route("/api/live/answer", post(live::answer))
         .route("/api/live/archive", post(live::archive))
         .route("/api/live/project", get(live::project_stats))
-        .route("/api/live/model", post(live::set_model))
+        .route("/api/live/model", post(live::set_model_checked))
         .route("/api/live/effort", post(live::set_effort))
         .route("/api/live/mode", post(live::set_mode))
         .route("/api/live/aside", post(live::aside))
+        .route("/api/live/start", post(codex::live::start_route))
+        .route("/api/live/resume", post(codex::live::resume_route))
+        .route("/api/live/compact", post(codex::live::compact_route))
         // A router on a developer's machine keeps no Library, and says so at its addresses
         // rather than passing them to the proxy.
         .route("/api/library", any(library::api::not_offered))

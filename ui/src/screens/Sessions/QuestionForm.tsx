@@ -46,8 +46,10 @@ export type Deliver = (text: string, opts?: { readonly ask?: boolean }) => Promi
 /// One question form. It answers the session it was drawn in, whatever is open by the time the
 /// router replies (SE-C119): `session` is fixed when the form is drawn, and what it says lands only
 /// in its own place. What is half-picked is kept under its session (`formKey` names the transcript
-/// row), so it stays with that session and follows the reader nowhere (SE-C192).
-export function QuestionForm({ session, ask, formKey, deliver }: { session: string; ask: Ask; formKey: string; deliver: Deliver }) {
+/// row), so it stays with that session and follows the reader nowhere (SE-C192). Where the router
+/// takes no answer from here, `held` says why in its words, and the form is disabled (SE-C236,
+/// SE-C237).
+export function QuestionForm({ session, ask, formKey, deliver, held = null }: { session: string; ask: Ask; formKey: string; deliver: Deliver; held?: string | null }) {
   const questions = ask.questions ?? [];
   const names = questionTabs(ask);
   // Each form's choices are its own: its groups are named from useId, never `q0` (SE-C108).
@@ -66,7 +68,7 @@ export function QuestionForm({ session, ask, formKey, deliver }: { session: stri
 
   const submit = async () => {
     // One tap, one answer: a second tap while one is in flight does nothing (SE-C118).
-    if (flying.current || spent) return;
+    if (flying.current || spent || held) return;
     const { answers, lines } = composeAnswers(ask, selections);
     if (!lines.length) {
       setHint(PICK_FIRST);
@@ -129,7 +131,7 @@ export function QuestionForm({ session, ask, formKey, deliver }: { session: stri
                 q={q}
                 name={`${group}-q${i}`}
                 picked={pickOf(i)}
-                disabled={spent}
+                disabled={spent || held !== null}
                 onPick={(p) => set(i, p)}
               />
             </TabPanel>
@@ -137,11 +139,11 @@ export function QuestionForm({ session, ask, formKey, deliver }: { session: stri
         </TabPanels>
       </Tabs>
       <div className={styles.askFoot}>
-        <Button size="md" onClick={() => void submit()} disabled={busy || spent}>
+        <Button size="md" onClick={() => void submit()} disabled={busy || spent || held !== null}>
           Submit answers
         </Button>
         <span className={styles.askHint} role="status">
-          {hint}
+          {held ?? hint}
         </span>
       </div>
       <NoticeLine notice={notice} onClose={() => say(null)} />

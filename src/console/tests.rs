@@ -1034,7 +1034,13 @@ fn the_console_is_built_once_before_cargo_and_never_by_it() {
     let ui = job(&ci, "build:ui");
     assert!(ui.contains("pnpm run build"), "{ui}");
     assert!(ui.contains("artifacts:") && ui.contains("ui/dist"), "{ui}");
-    assert!(job(&ci, ".vsix-build").contains("needs: [\"build:ui\"]"), "every binary job takes it");
+    // Every binary job takes it: `build:ui` is among the jobs .vsix-build needs, beside the
+    // `package` gate a release waits behind on `dev` (AGEN-0120).
+    let vsix = job(&ci, ".vsix-build");
+    assert!(
+        vsix.lines().any(|l| l.trim_start().starts_with("needs:") && l.contains("\"build:ui\"")),
+        "every binary job takes it: {vsix}"
+    );
     for binary in ["build:macos", "build:linux", "build:windows"] {
         assert!(job(&ci, binary).contains("extends: .vsix-build"), "{binary}");
     }

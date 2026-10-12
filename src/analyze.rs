@@ -31,6 +31,18 @@ impl Usage {
         self.cache_creation_5m_tokens + self.cache_creation_1h_tokens
     }
 
+    /// This usage as Anthropic counts it, whichever provider reported it, so every rollup,
+    /// the context panels and the cost view read one meaning. Anthropic's `input_tokens`
+    /// leaves out what was read from cache; Kimi Code's holds it (measured 2026-10-10,
+    /// docs/sources-and-models.md), so its fresh input is what is left once the cache reads
+    /// are taken out.
+    pub fn in_anthropic_terms(mut self, provider: crate::accounts::Provider) -> Self {
+        if provider == crate::accounts::Provider::Kimi {
+            self.input_tokens = (self.input_tokens - self.cache_read_tokens).max(0);
+        }
+        self
+    }
+
     fn merge_from(&mut self, u: &Value) {
         let n = |k: &str| u.get(k).and_then(Value::as_i64).unwrap_or(0);
         // message_start carries the prompt side; message_delta carries the final
@@ -99,13 +111,30 @@ impl SseScanner {
     /// A non-streaming JSON response body, parsed whole.
     pub fn absorb_json_body(&mut self, body: &[u8]) {
         if let Ok(v) = serde_json::from_slice::<Value>(body) {
+            if let Some(detail) = v.get("detail").and_then(Value::as_str) {
+                self.error = Some(detail.to_owned());
+                return;
+            }
+            if crate::responses::absorb(self, &v) {
+                return;
+            }
             self.absorb_message(&v);
             self.absorb(&v);
+            // Kimi Code's error bodies are `{"error": {"message", "type"}}`, with no
+            // top-level `"type": "error"` for `absorb` to know them by.
+            if self.error.is_none() {
+                if let Some(message) = v.get("error").and_then(|e| e.get("message")).and_then(Value::as_str) {
+                    self.error = Some(message.to_string());
+                }
+            }
         }
     }
 
     fn absorb(&mut self, v: &Value) {
         self.saw_any_event = true;
+        if crate::responses::absorb(self, v) {
+            return;
+        }
         match v.get("type").and_then(Value::as_str) {
             Some("message_start") => {
                 if let Some(m) = v.get("message") {
@@ -135,6 +164,7 @@ impl SseScanner {
                 self.error = Some(
                     v.get("error")
                         .and_then(|e| e.get("message"))
+                        .or_else(|| v.get("message"))
                         .and_then(Value::as_str)
                         .unwrap_or("unknown error")
                         .to_string(),
@@ -189,6 +219,10 @@ pub struct ToolResult {
 #[derive(Debug, Default)]
 pub struct RequestShape {
     pub model: Option<String>,
+    /// Explicit route attribution, retained when a registered alias differs from
+    /// the upstream model. These values describe this request at send time.
+    pub service_id: Option<String>,
+    pub upstream_model: Option<String>,
     pub streaming: bool,
     pub message_count: i64,
     pub system_chars: i64,
@@ -205,6 +239,32 @@ pub struct RequestShape {
     /// the CLI never wrote to disk. See `environment_of`.
     pub cwd: Option<String>,
     pub git_branch: Option<String>,
+    /// The session a Kimi Code request names in its body, `metadata.user_id`, which is
+    /// `session_<uuid>` on every request, its subagents' included (docs/kimi-client.md).
+    /// Claude Code's own `metadata.user_id` is another shape and is never taken.
+    pub body_session: Option<String>,
+}
+
+/// The client a User-Agent names, as the dashboards label it. `None` for any other caller.
+pub fn client_of(user_agent: &str) -> Option<&'static str> {
+    let ua = user_agent.trim();
+    if ua.starts_with("agent_router_codex/") {
+        Some("codex-managed")
+    } else if ua.starts_with("codex_cli_rs/") || ua.starts_with("codex_exec/") || ua.starts_with("codex/") || ua.starts_with("codex-cli/") {
+        Some("codex-cli")
+    } else if ua.starts_with("codex_vscode/") || ua.starts_with("codex-vscode/") {
+        Some("codex-vscode")
+    } else if ua.starts_with("opencode/") {
+        Some("opencode")
+    } else if let Some(rest) = ua.strip_prefix("kimi-code-cli/") {
+        Some(if rest.contains("(web)") { "kimi-code-web" } else { "kimi-code-cli" })
+    } else if ua.starts_with("kimi-code-vscode/") {
+        Some("kimi-code-vscode")
+    } else if ua.starts_with("claude-cli/") {
+        Some(if ua.contains("claude-vscode") { "claude-code-vscode" } else { "claude-code-cli" })
+    } else {
+        None
+    }
 }
 
 /// One content block out of the conversation, as the search index stores it.
@@ -237,6 +297,12 @@ pub fn analyze_request(body: &[u8]) -> Option<RequestShape> {
         streaming: v.get("stream").and_then(Value::as_bool).unwrap_or(false),
         cwd,
         git_branch,
+        body_session: v
+            .get("metadata")
+            .and_then(|m| m.get("user_id"))
+            .and_then(Value::as_str)
+            .filter(|id| id.starts_with("session_") && id.len() <= 128)
+            .map(str::to_owned),
         ..Default::default()
     };
 
@@ -380,6 +446,13 @@ pub fn environment_in(texts: &[&str]) -> (Option<String>, Option<String>) {
     });
     // The older line, only when the newer one is not there.
     let cwd = primary.or_else(|| lines().find_map(|l| l.strip_prefix("Working directory: ").and_then(as_path)));
+    // Kimi Code says it in a sentence of its own: "The current working directory is `<path>`".
+    let cwd = cwd.or_else(|| {
+        texts.iter().find_map(|t| {
+            let (_, rest) = t.split_once("The current working directory is `")?;
+            as_path(rest.split_once('`')?.0)
+        })
+    });
     let branch = lines().find_map(|l| {
         let name = l.strip_prefix("Current branch: ")?.trim();
         (!name.is_empty() && name.len() <= 255 && !name.contains(char::is_whitespace)).then(|| name.to_string())
@@ -605,6 +678,14 @@ fn json_chars(v: &Value) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_codex_exec_requests_are_attributed_to_the_cli() {
+        assert_eq!(client_of("codex_exec/0.162.0-alpha.17.2 (Mac OS 26.6.2; arm64) unknown (codex_exec; 0.162.0-alpha.17.2)"), Some("codex-cli"));
+        assert_eq!(client_of("codex_cli_rs/0.162.0"), Some("codex-cli"));
+        assert_eq!(client_of("codex_vscode/0.162.0"), Some("codex-vscode"));
+        assert_eq!(client_of("some_other_codex_exec/0.162.0"), None);
+    }
     use serde_json::json;
 
     fn env_of(v: Value) -> (Option<String>, Option<String>) {

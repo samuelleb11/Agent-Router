@@ -5,6 +5,8 @@
 import { ChevronRight, Fork, Time, WarningAlt } from '@carbon/icons-react';
 import { useId, type ReactNode } from 'react';
 import { CONCEPTS, FAMILY_COLOUR, paint, type Family } from '~/lib/concepts';
+import type { Provider } from '~/model/settings';
+import { ProviderMark } from './ProviderMark';
 import { ShareBar, type Part } from './ShareBar';
 import styles from './RequestRow.module.scss';
 
@@ -34,10 +36,14 @@ export interface Detail {
 /// region named by it. Whether it is open is the caller's — the address holds the open rows, so they
 /// stay open across polls and reloads (OV-C157). On a phone it is a two-line card, the first token
 /// moving into the detail (OV-C159). Its words are on the card, never in a title: the badges say
-/// "subagent" and "slow", and the detail gives the full time and model id (OV-C156).
+/// "subagent" and "slow", and the detail gives the full time and model id (OV-C156). Given the
+/// provider that served it, the card wears its mark alone and the detail names it, with the account
+/// that served it, in words (OV-C231).
 export function RequestRow({
   time,
   at,
+  provider,
+  account,
   model,
   modelShort,
   family,
@@ -57,6 +63,10 @@ export function RequestRow({
   time: string;
   /// The full date and time, in the detail.
   at: string;
+  /// The provider that served it: its mark alone on the card, its mark and name in the detail.
+  provider?: Provider;
+  /// The account that served it, in words, in the detail: "work@example.test · work".
+  account?: string;
   /// The model's full id, in the detail.
   model: string | null;
   /// Its short name on the card, as every client spells it: "opus-4-5-20251101" (OV-C184).
@@ -88,7 +98,14 @@ export function RequestRow({
   const more = open && detail ? detail() : null;
   // The time and the model in full, and the first token, which a phone's card leaves to the detail.
   const facts: readonly Fact[] = open
-    ? [{ label: 'at', value: at }, { label: 'model', value: model ?? '—', mono: true }, { label: 'first token', value: figures.firstToken }, ...(more?.facts ?? [])]
+    ? [
+        { label: 'at', value: at },
+        { label: 'model', value: model ?? '—', mono: true },
+        ...(provider !== undefined ? [{ label: 'provider', value: <ProviderMark provider={provider} /> }] : []),
+        ...(account !== undefined ? [{ label: 'account', value: account }] : []),
+        { label: 'first token', value: figures.firstToken },
+        ...(more?.facts ?? []),
+      ]
     : [];
 
   return (
@@ -105,6 +122,11 @@ export function RequestRow({
         {/* Spaces between the cells, so the button's name reads as words. */}
         <span className={styles.head}>
           <span className={styles.time}>{time}</span>{' '}
+          {provider !== undefined && (
+            <>
+              <ProviderMark provider={provider} alone />{' '}
+            </>
+          )}
           <span className={styles.model}>
             <span className={styles.swatch} data-family={family} style={family === 'other' ? undefined : { background: paint(FAMILY_COLOUR[family]) }} aria-hidden="true" />
             <span className={styles.modelName}>{modelShort}</span>

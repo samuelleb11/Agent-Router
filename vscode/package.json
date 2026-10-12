@@ -73,12 +73,22 @@
       },
       {
         "command": "agentRouter.connect",
-        "title": "Connect to a Server…",
+        "title": "Connect to a Server\u2026",
         "category": "Agent Router"
       },
       {
         "command": "agentRouter.disconnect",
         "title": "Disconnect from the Server",
+        "category": "Agent Router"
+      },
+      {
+        "command": "agentRouter.connectCodex",
+        "title": "Connect Managed Codex",
+        "category": "Agent Router"
+      },
+      {
+        "command": "agentRouter.restoreCodex",
+        "title": "Restore Codex Launch Configuration",
         "category": "Agent Router"
       }
     ],
@@ -102,7 +112,7 @@
           "default": "",
           "scope": "machine",
           "order": 0,
-          "markdownDescription": "A hosted Agent Router's address, such as `https://router.example.com`. **Empty is local mode**: the router runs on your machine, and what it records stays on your machine. **Set, it is remote mode**: no router runs here, Claude Code goes through the server, and what it records stays on your server: the requests Claude Code makes with their responses (your prompts and code), and your accounts and their tokens. This machine then runs only the agent, which lets the phone follow and steer its sessions. Set it with **Agent Router: Connect to a Server…**, which also asks for the password and keeps it in VS Code's secret storage, never in settings. On Windows, only remote mode is available."
+          "markdownDescription": "A hosted Agent Router's address, such as `https://router.example.com`. **Empty is local mode**: the router runs on your machine, and what it records stays on your machine. **Set, it is remote mode**: no router runs here, Claude Code goes through the server, and what it records stays on your server: the requests Claude Code makes with their responses (your prompts and code), and your accounts and their tokens. This machine then runs only the agent, which lets the phone follow and steer its sessions. Set it with **Agent Router: Connect to a Server\u2026**, which asks for a Machine access token or router password and keeps it in VS Code's secret storage, never in settings. On Windows, only remote mode is available."
         },
         "agentRouter.port": {
           "type": "number",
@@ -114,7 +124,7 @@
           "type": "boolean",
           "default": false,
           "scope": "machine",
-          "markdownDescription": "Local mode only; ignored when `#agentRouter.server#` is set. Listen on every interface so the phone app can reach the router. Set a router password in the dashboard first; only other devices are ever asked for it. Leave this alone to let the router keep its own setting, which the dashboard's Listen-on-your-network switch writes; setting it either way here overrides that on every start."
+          "markdownDescription": "Local mode only; ignored when `#agentRouter.server#` is set. Listen on every interface so the phone app can reach the router. Create an access token or set a router password in the dashboard first; other devices need a router credential. Use an Administrator token for phone apps. Leave this alone to let the router keep its own setting, which the dashboard's Listen-on-your-network switch writes; setting it either way here overrides that on every start."
         },
         "agentRouter.manageService": {
           "type": "boolean",
@@ -126,13 +136,13 @@
           "type": "boolean",
           "default": true,
           "scope": "machine",
-          "description": "Point Claude Code at the router and launch it through the router's wrapper (claudeCode.claudeProcessWrapper), which is what makes sessions followable from the phone. Local mode sets ANTHROPIC_BASE_URL in ~/.claude/settings.json to the router on your machine; remote mode sets ANTHROPIC_BASE_URL to the server and ANTHROPIC_AUTH_TOKEN to its password there."
+          "description": "Point Claude Code at the router and launch it through the router's wrapper (claudeCode.claudeProcessWrapper), which is what makes sessions followable from the phone. Local mode sets ANTHROPIC_BASE_URL in ~/.claude/settings.json to the router on your machine; remote mode sets ANTHROPIC_BASE_URL to the server and ANTHROPIC_AUTH_TOKEN to the saved router credential there."
         },
         "agentRouter.showStatusBar": {
           "type": "boolean",
           "default": true,
           "scope": "machine",
-          "description": "Show the 5-hour and 7-day quota in the status bar. In remote mode it is the server's quota, read with the saved password."
+          "description": "Show the 5-hour and 7-day quota in the status bar. In remote mode it is the server's quota, read with the saved Machine access token or router password."
         }
       }
     }
@@ -140,7 +150,7 @@
   "scripts": {
     "compile": "tsc -p .",
     "watch": "tsc -p . --watch",
-    "test": "tsc -p . && node --test out/test/*.test.js",
+    "test": "tsc -p . && node --test --test-reporter=tap out/test/*.test.js",
     "package": "vsce package"
   },
   "devDependencies": {

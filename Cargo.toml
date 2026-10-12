@@ -6,11 +6,11 @@ name = "agent-router"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "A local proxy between Claude Code and Anthropic: several accounts on one machine, and exact per-session token accounting."
+description = "Routes coding clients across Anthropic, OpenAI and Kimi with protocol translation and per-session usage accounting."
 repository = "https://github.com/samuelleb11/agent-router"
 
 [dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "process", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "process", "time", "io-std", "io-util"] }
 axum = { version = "0.8", features = ["ws"] }
 hyper = { version = "1", features = ["client", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["client", "client-legacy", "tokio", "http1", "http2"] }
@@ -21,6 +21,7 @@ http-body-util = "0.1"
 bytes = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
+toml_edit = "0.25"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"

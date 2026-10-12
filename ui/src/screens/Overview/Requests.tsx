@@ -6,7 +6,8 @@ import type { RequestRecord } from '~/data/overview';
 import { useCoarse } from '~/lib/viewport';
 import { count, family, shortModel } from '~/model/format';
 import type { RequestFilters, RequestKind, Scope } from '~/model/scope';
-import { badges, detail, figures, filtering, moreOrFewer, REQUEST_PAGE, requestsCaption, requestTime, startedAt } from './requestList';
+import { providerOf, type Account } from '~/model/settings';
+import { badges, detail, figures, filtering, moreOrFewer, REQUEST_PAGE, requestsCaption, requestTime, servedBy, startedAt } from './requestList';
 import { Panel, Swatch } from './parts';
 import styles from './Overview.module.scss';
 
@@ -15,6 +16,7 @@ export const REQUESTS_ID = 'requests';
 
 export function Requests({
   requests: list,
+  accounts,
   p95,
   scope,
   filters,
@@ -28,6 +30,9 @@ export function Requests({
 }: {
   /// The 300 newest in scope, read for the Requests tab.
   requests: readonly RequestRecord[];
+  /// The router's accounts, which name the account that served each request; null until read, or
+  /// when they could not be, and each account is then its id (OV-C231).
+  accounts: readonly Account[] | null;
   /// The top's time-to-first-byte p95, which marks a request slow.
   p95: number | null;
   scope: Scope;
@@ -128,6 +133,8 @@ export function Requests({
                 <RequestRow
                   time={requestTime(r.started_at, now)}
                   at={startedAt(r)}
+                  provider={providerOf(r)}
+                  account={servedBy(r, accounts)}
                   model={r.model}
                   modelShort={shortModel(r.model)}
                   family={family(r.model)}

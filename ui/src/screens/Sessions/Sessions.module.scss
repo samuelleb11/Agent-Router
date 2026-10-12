@@ -399,6 +399,22 @@ $ar-tab-rule: 0.125rem;
   color: $text-primary;
 }
 
+/// The client a Kimi Code session runs in, beside live or view (SE-C235), cut short on a phone
+/// rather than widen the row.
+.rowClient {
+  @include type-style('label-01');
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: $text-secondary;
+}
+
+/// Its provider's mark before the client's words, a little space after it (SE-C242).
+.rowProvider {
+  margin-inline-end: $spacing-02;
+}
+
 .rowAge {
   @include type-style('label-01');
   flex: none;

@@ -86,17 +86,13 @@ struct RouterFormView: View {
                     Text("The Mac running Agent Router, as this phone can reach it. Turn on Listen on your network in the router's dashboard settings first. A hosted router is added by its https URL, such as `https://agent-router.example.com`.")
                 }
                 Section {
-                    SecureField(editing == nil ? "Password" : "New password (leave blank to keep)", text: $password)
+                    SecureField(editing == nil ? "Router credential" : "New credential (leave blank to keep)", text: $password)
                         .textContentType(.password)
                         .accessibilityIdentifier("form-password")
                 } header: {
-                    Text("Password")
+                    Text("Router credential")
                 } footer: {
-                    if hosted {
-                        Text("Set by the router's deployment. Kept in this phone's Keychain.")
-                    } else {
-                        Text("Set on the router's dashboard, on the Mac. Kept in this phone's Keychain.")
-                    }
+                    Text("Use an Administrator access token from Settings → Access tokens so this phone can read and control sessions. The router password also works. Kept in this phone's Keychain.")
                 }
                 Section {
                     Button {
@@ -159,7 +155,7 @@ struct RouterFormView: View {
             let health: Health = try await client.get("/_router/health")
             let auth: AuthStatus = try await client.get("/api/auth")
             tested = auth
-            testResult = (true, "Agent Router \(health.version) answered\(auth.fromLoopback ? "" : ", and the password is right").")
+            testResult = (true, "Agent Router \(health.version) answered\(auth.fromLoopback ? "" : ", and the router credential was accepted").")
         } catch let e as RouterClient.Failure {
             testResult = (false, e.errorDescription ?? "Failed.")
         } catch {

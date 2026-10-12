@@ -1,10 +1,11 @@
-//! The router's password.
+//! The router's dashboard password and individual access tokens.
 //!
-//! One rule: a request from a peer that is **not on this machine** must carry the
-//! password — as `Authorization: Basic` (a browser; the username is ignored) or as
-//! `Authorization: Bearer <password>` (an agent: a remote Claude Code sets
-//! `ANTHROPIC_AUTH_TOKEN` to it and needs nothing else). Loopback callers are never
-//! asked. Claude Code, the wrapper, the menubar app and the local browser all reach the
+//! A request from a peer that is **not on this machine** must carry a scoped access
+//! token ([`tokens`]) or the legacy dashboard password. Passwords work as
+//! `Authorization: Basic` (the username is ignored), `Authorization: Bearer`, or
+//! `x-api-key`. Local loopback remains the dashboard bootstrap and recovery path.
+//! A presented access token is always verified and scoped, including on loopback.
+//! Claude Code, the wrapper, the menubar app and the local browser all reach the
 //! router over loopback, and none of them can do Basic auth without plumbing that would
 //! buy nothing on a single-user machine: whoever sits here already holds the Keychain.
 //!
@@ -13,9 +14,9 @@
 //! Demanding Basic there would break the swap; accepting the password *as* the bearer
 //! keeps a remote agent possible and still closes the hole.
 //!
-//! With no password set, a non-loopback caller is refused outright. That is the safe
-//! default, and it makes the first set loopback-only by construction: nothing off-host
-//! can reach `POST /api/auth` until a password exists. It is also the recovery path —
+//! With no password or valid token, a non-loopback caller is refused outright. That
+//! is the safe default, and makes the first credential loopback-only by construction.
+//! It is also the recovery path —
 //! loopback may replace a forgotten password without knowing it.
 //!
 //! This is HTTP, so the password crosses the network in the clear. The bind that makes
@@ -33,6 +34,8 @@ use axum::http::HeaderMap;
 use ring::rand::SecureRandom;
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use sha2::{Digest, Sha256};
+
+pub mod tokens;
 
 /// OWASP's 2023 figure for PBKDF2-HMAC-SHA256. About 300 ms here, paid once per
 /// browser session thanks to `REMEMBER`, and paid in full by every wrong guess.
@@ -134,9 +137,25 @@ pub(crate) fn base64_decode(s: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// The password a request presents, whichever way it presents it.
+/// The router credential a request presents, whichever way it presents it: `Authorization` (Basic,
+/// Bearer), else `x-api-key`, which is how a Kimi Code provider sends its key and sends no
+/// `Authorization` at all (docs/kimi-client.md).
 pub fn presented(headers: &HeaderMap) -> Option<String> {
-    let value = headers.get("authorization")?.to_str().ok()?.trim();
+    if let Some(key) = headers.get("x-agent-router-token") {
+        let key = key.to_str().ok()?.trim();
+        return (!key.is_empty()).then(|| key.to_string());
+    }
+    // Codex keeps its own OpenAI sign-in while a provider header authenticates to
+    // the router. Never mistake that sign-in token for the router password.
+    if let Some(key) = headers.get("x-agent-router-password") {
+        let key = key.to_str().ok()?.trim();
+        return (!key.is_empty()).then(|| key.to_string());
+    }
+    let Some(value) = headers.get("authorization") else {
+        let key = headers.get("x-api-key")?.to_str().ok()?.trim();
+        return (!key.is_empty()).then(|| key.to_string());
+    };
+    let value = value.to_str().ok()?.trim();
     let (scheme, rest) = value.split_once(' ')?;
     let rest = rest.trim();
     if scheme.eq_ignore_ascii_case("basic") {
@@ -173,7 +192,7 @@ pub enum Verdict {
 
 pub struct Auth {
     record: tokio::sync::RwLock<Option<Record>>,
-    /// SHA-256 of `Authorization` values that have verified — never the values
+    /// SHA-256 of presented passwords that have verified — never the values
     /// themselves, so the cache holds no password material.
     accepted: std::sync::Mutex<Vec<[u8; 32]>>,
     /// One derivation at a time. A flood of guesses costs one core, not the proxy's.
@@ -244,20 +263,26 @@ impl Auth {
     }
 
     pub async fn check(&self, headers: &HeaderMap) -> Verdict {
-        let Some(record) = self.record.read().await.as_ref().map(|r| r.hash.clone()) else {
+        let current = self.record.read().await;
+        if current.is_none() {
             return Verdict::NoPassword;
-        };
-        let Some(raw) = headers.get("authorization").and_then(|v| v.to_str().ok()) else {
-            return Verdict::Missing;
-        };
+        }
         let Some(password) = presented(headers) else {
             return Verdict::Missing;
         };
-        let digest: [u8; 32] = Sha256::digest(raw.as_bytes()).into();
+        let digest: [u8; 32] = Sha256::digest(password.as_bytes()).into();
+        // Keep the record read guard while consulting the cache. Rotation updates
+        // the record and clears that cache together under the write guard.
         if self.remembered(&digest) {
             return Verdict::Ok;
         }
+        drop(current);
         let _one_at_a_time = self.verifying.lock().await;
+        // Rotation and removal take the same lock. A queued check must use the
+        // current record rather than revive a hash it saw before waiting.
+        let Some(record) = self.record.read().await.as_ref().map(|r| r.hash.clone()) else {
+            return Verdict::NoPassword;
+        };
         // A sibling request — the dashboard fires eight at once — may have verified
         // this very credential while we waited for the lock.
         if self.remembered(&digest) {
@@ -288,19 +313,23 @@ impl Auth {
     }
 
     pub async fn set(&self, db_path: &Path, password: &str) -> anyhow::Result<()> {
+        let _one_at_a_time = self.verifying.lock().await;
         let owned = password.to_string();
         let hash = tokio::task::spawn_blocking(move || hash_password(&owned)).await?;
         let now = crate::db::now_ms();
         write(db_path, Some((&hash, now)))?;
-        *self.record.write().await = Some(Record { hash, updated_at: now });
+        let mut record = self.record.write().await;
         self.accepted.lock().unwrap().clear();
+        *record = Some(Record { hash, updated_at: now });
         Ok(())
     }
 
     pub async fn clear(&self, db_path: &Path) -> anyhow::Result<()> {
+        let _one_at_a_time = self.verifying.lock().await;
         write(db_path, None)?;
-        *self.record.write().await = None;
+        let mut record = self.record.write().await;
         self.accepted.lock().unwrap().clear();
+        *record = None;
         Ok(())
     }
 }
@@ -336,14 +365,14 @@ pub mod api {
     pub struct SetReq {
         #[serde(default)]
         pub password: String,
-        /// Remove the password instead of setting one. Remote callers go back to
-        /// being refused until a new one is set from this machine.
+        /// Remove the legacy password instead of setting one. Individual access
+        /// tokens remain valid until their own revocation or expiration.
         #[serde(default)]
         pub clear: bool,
     }
 
-    /// Reachable by loopback, or by a remote caller that already presented the
-    /// password — `guard` enforces that, so there is nothing to check here.
+    /// Reachable by loopback, the password, or an allowed token. `guard` enforces
+    /// the credential and scope before this handler runs.
     pub async fn status(
         State(state): State<Arc<AppState>>,
         ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -357,6 +386,7 @@ pub mod api {
             "mode":            if state.config.server { "server" } else { "local" },
             "password_pinned": state.auth.pinned(),
             "public_url":      state.config.public_url,
+            "access_tokens":   super::tokens::active_count(&state.config.db_path).await.unwrap_or(0),
         });
         // `remote_bind` and the rest of the socket's story come from `network`, which
         // owns the answer — it can change while the router runs. Both phone apps read
@@ -403,6 +433,9 @@ pub mod api {
 
 #[cfg(test)]
 mod tests {
+    use std::future::Future;
+    use std::task::{Context, Waker};
+
     use super::*;
     use axum::http::HeaderValue;
 
@@ -523,6 +556,64 @@ mod tests {
         assert!(matches!(auth.check(&headers("Bearer hunter22")).await, Verdict::Ok));
         assert!(matches!(auth.check(&headers("Bearer hunter23")).await, Verdict::Wrong));
         // A wrong guess is never remembered.
-        assert_eq!(auth.accepted.lock().unwrap().len(), 2);
+        assert_eq!(auth.accepted.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn cached_router_password_does_not_trust_a_clients_provider_token() {
+        let auth = Auth::with(Some(Record { hash: hash_with("router-password", QUICK), updated_at: 1 }));
+        let mut h = headers("Bearer native-provider-token");
+        h.insert("x-agent-router-password", HeaderValue::from_static("router-password"));
+        assert!(matches!(auth.check(&h).await, Verdict::Ok));
+        h.insert("x-agent-router-password", HeaderValue::from_static("wrong-password"));
+        assert!(matches!(auth.check(&h).await, Verdict::Wrong));
+        h.remove("x-agent-router-password");
+        assert!(matches!(auth.check(&h).await, Verdict::Wrong));
+        h.remove("authorization");
+        h.insert("x-agent-router-password", HeaderValue::from_static("router-password"));
+        assert!(matches!(auth.check(&h).await, Verdict::Ok));
+    }
+
+    #[tokio::test]
+    async fn a_queued_check_cannot_revive_a_rotated_password() {
+        let lab = crate::api_refusals::Lab::local("auth-password-rotate-queue");
+        let auth = Auth::with(Some(Record { hash: hash_with("old-password", QUICK), updated_at: 1 }));
+        let old_headers = headers("Bearer old-password");
+        let held = auth.verifying.lock().await;
+        let mut rotate = Box::pin(auth.set(&lab.state.config.db_path, "new-password"));
+        let mut old_check = Box::pin(auth.check(&old_headers));
+        let mut cx = Context::from_waker(Waker::noop());
+        // Polling fixes the queue order without depending on scheduler timing:
+        // rotation first, then a request that saw the previous record.
+        assert!(rotate.as_mut().poll(&mut cx).is_pending());
+        assert!(old_check.as_mut().poll(&mut cx).is_pending());
+        drop(held);
+        rotate.await.unwrap();
+        assert!(matches!(old_check.await, Verdict::Wrong));
+        assert!(auth.accepted.lock().unwrap().is_empty());
+        assert!(matches!(auth.check(&old_headers).await, Verdict::Wrong));
+        assert!(matches!(auth.check(&headers("Bearer new-password")).await, Verdict::Ok));
+        let restarted = Auth::load(&lab.state.config.db_path).unwrap();
+        assert!(matches!(restarted.check(&old_headers).await, Verdict::Wrong));
+        assert!(matches!(restarted.check(&headers("Bearer new-password")).await, Verdict::Ok));
+    }
+
+    #[tokio::test]
+    async fn a_queued_check_cannot_restore_a_removed_password() {
+        let lab = crate::api_refusals::Lab::local("auth-password-clear-queue");
+        let auth = Auth::with(Some(Record { hash: hash_with("old-password", QUICK), updated_at: 1 }));
+        let old_headers = headers("Bearer old-password");
+        let held = auth.verifying.lock().await;
+        let mut clear = Box::pin(auth.clear(&lab.state.config.db_path));
+        let mut old_check = Box::pin(auth.check(&old_headers));
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(clear.as_mut().poll(&mut cx).is_pending());
+        assert!(old_check.as_mut().poll(&mut cx).is_pending());
+        drop(held);
+        clear.await.unwrap();
+        assert!(matches!(old_check.await, Verdict::NoPassword));
+        assert!(auth.accepted.lock().unwrap().is_empty());
+        assert!(!auth.configured().await);
+        assert!(matches!(Auth::load(&lab.state.config.db_path).unwrap().check(&old_headers).await, Verdict::NoPassword));
     }
 }

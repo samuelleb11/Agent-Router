@@ -9,10 +9,13 @@ import { useAuth } from '~/data/settings';
 import { SECTIONS, type SectionSlug } from '~/lib/routes';
 import { isHosted, settingsPages } from '~/model/settings';
 import AccountsPage from './Accounts';
+import ModelsPage from './Models';
+import ClientsPage from './Clients';
 import ClaudeCodePage from './ClaudeCode';
 import NetworkPage from './Network';
 import NotificationsPage from './Notifications';
 import PasswordPage from './Password';
+import AccessTokensPage from './AccessTokens';
 import RouterPage from './Router';
 import ForgesPage from './Forges';
 import LibraryPage from './Library';
@@ -22,9 +25,12 @@ import { NO_MACHINE } from './rules';
 
 const PAGES: Readonly<Record<SectionSlug, ComponentType>> = {
   accounts: AccountsPage,
+  models: ModelsPage,
+  clients: ClientsPage,
   'claude-code': ClaudeCodePage,
   network: NetworkPage,
   password: PasswordPage,
+  'access-tokens': AccessTokensPage,
   notifications: NotificationsPage,
   router: RouterPage,
   forges: ForgesPage,

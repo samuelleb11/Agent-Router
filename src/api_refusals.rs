@@ -96,15 +96,25 @@ impl Lab {
     }
 
     /// POST `body` as JSON, from this machine, and read the answer.
-    async fn post(&self, path: &str, body: &str) -> (StatusCode, Value) {
+    pub(crate) async fn post(&self, path: &str, body: &str) -> (StatusCode, Value) {
         self.send(path, Some("application/json"), body).await
     }
 
+    /// GET `path`, from this machine, and read the answer.
+    pub(crate) async fn get(&self, path: &str) -> (StatusCode, Value) {
+        self.answer(path, Request::get(path), "").await
+    }
+
     async fn send(&self, path: &str, content_type: Option<&str>, body: &str) -> (StatusCode, Value) {
-        let mut req = Request::post(path).header(header::HOST, "127.0.0.1");
+        let mut req = Request::post(path);
         if let Some(t) = content_type {
             req = req.header(header::CONTENT_TYPE, t);
         }
+        self.answer(path, req, body).await
+    }
+
+    async fn answer(&self, path: &str, req: axum::http::request::Builder, body: &str) -> (StatusCode, Value) {
+        let mut req = req.header(header::HOST, "127.0.0.1");
         if let Some(p) = self.password {
             req = req.header(header::AUTHORIZATION, format!("Bearer {p}"));
         }
@@ -164,7 +174,7 @@ async fn the_network_switch_is_refused_without_a_password_and_for_an_address_it_
     let refused = lab.post("/api/network", r#"{"enable":true}"#).await;
     assert_eq!(
         words(refused, StatusCode::CONFLICT),
-        "set a password first — until one exists, callers from other machines are refused"
+        "create an access token or set a password first — callers from other machines need a router credential"
     );
 
     // With a password set, what is left to refuse is the address itself.
@@ -656,6 +666,8 @@ fn held(lab: &Lab, id: &str) -> Option<Held> {
         id: id.to_string(),
         label: String::new(),
         source: crate::accounts::Source::Token,
+        provider: crate::accounts::Provider::Anthropic,
+        base_url: None,
         profile_dir: None,
         email: None,
     };

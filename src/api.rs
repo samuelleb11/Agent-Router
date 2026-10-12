@@ -34,6 +34,11 @@ pub struct Filter {
     /// The viewer's UTC offset in minutes (JavaScript's `-getTimezoneOffset()`), so
     /// day-sized timeline buckets start at the viewer's midnight rather than UTC's.
     pub tz: Option<i64>,
+    /// Which provider served the request (`anthropic`, `kimi`). Absent means every provider;
+    /// a name no provider has is refused before any read. A request recorded before providers
+    /// is Anthropic's.
+    #[serde(default)]
+    pub provider: Option<crate::accounts::Provider>,
 }
 
 /// Whether the session joined as `s` is in the project bound as parameter `?n`. A project
@@ -64,6 +69,23 @@ const SCOPE: &str = concat!(
                      AND (?5 IS NULL OR r.started_at < ?5)"
 );
 
+/// `SCOPE`, narrowed to one provider's requests when the scope names one (AGEN-0130). The
+/// provider is written into the statement by its own name rather than bound: it is one of
+/// `Provider`'s closed set, and a sixth bound parameter would renumber every read that binds
+/// its own after the scope's five.
+fn scope_sql(f: &Filter) -> String {
+    format!("{SCOPE}{}", provider_test(f.provider))
+}
+
+/// The provider half of `scope_sql`, for a read that writes the rest of its scope itself:
+/// nothing when the scope names no provider.
+fn provider_test(provider: Option<crate::accounts::Provider>) -> String {
+    match provider {
+        Some(provider) => format!("\n                     AND coalesce(r.provider, 'anthropic') = '{}'", provider.as_str()),
+        None => String::new(),
+    }
+}
+
 fn scope_params(f: &Filter) -> [&dyn rusqlite::ToSql; 5] {
     [&f.project, &f.session, &f.since, &f.account, &f.until]
 }
@@ -71,14 +93,14 @@ fn scope_params(f: &Filter) -> [&dyn rusqlite::ToSql; 5] {
 /// A percentile of a request column within the scope, by ORDER BY + OFFSET. SQLite
 /// has no percentile function, and the row counts here never justify pulling the
 /// whole column into memory.
-fn pctile(col: &str, pct: i64) -> String {
+fn pctile(col: &str, pct: i64, scope: &str) -> String {
     format!(
         "(SELECT r.{col} FROM requests r LEFT JOIN sessions s ON s.id = r.session_id
-          WHERE r.{col} IS NOT NULL AND {SCOPE}
+          WHERE r.{col} IS NOT NULL AND {scope}
           ORDER BY r.{col}
           LIMIT 1 OFFSET (SELECT (count(*) * {pct}) / 100
                           FROM requests r LEFT JOIN sessions s ON s.id = r.session_id
-                          WHERE r.{col} IS NOT NULL AND {SCOPE}))"
+                          WHERE r.{col} IS NOT NULL AND {scope}))"
     )
 }
 
@@ -254,8 +276,8 @@ impl Memo {
 /// Everything that changes an answer, and nothing that does not.
 fn memo_key(name: &str, f: &Filter) -> String {
     format!(
-        "{name}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
-        f.project, f.session, f.since, f.account, f.tz, f.until
+        "{name}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
+        f.project, f.session, f.since, f.account, f.tz, f.until, f.provider
     )
 }
 
@@ -294,7 +316,7 @@ fn one(conn: &Connection, sql: &str, params: &[&dyn rusqlite::ToSql]) -> anyhow:
 
 /// The parts of the summary a caller can name in `parts=`, in the order the answer gives
 /// them. `totals` brings `unattributed` with it: both come from one statement.
-const SUMMARY_PARTS: [&str; 11] = [
+const SUMMARY_PARTS: [&str; 12] = [
     "totals",
     "quota",
     "account",
@@ -306,6 +328,7 @@ const SUMMARY_PARTS: [&str; 11] = [
     "by_account",
     "timeline",
     "quota_history",
+    "providers",
 ];
 
 /// `GET /api/summary`'s own parameter, beside the scope every read shares.
@@ -384,6 +407,7 @@ fn summary_parts_of(conn: &Connection, f: &Filter, parts: &[&str]) -> anyhow::Re
     let mut out = Map::new();
     let now = crate::db::now_ms();
     let p = scope_params(f);
+    let scope = scope_sql(f);
     if want("totals") {
         let mut totals = one(
             conn,
@@ -391,6 +415,8 @@ fn summary_parts_of(conn: &Connection, f: &Filter, parts: &[&str]) -> anyhow::Re
                 "SELECT count(*) AS requests,
                         coalesce(sum(u.prompt_tokens),0)   AS prompt_tokens,
                         coalesce(sum(c.cost),0) AS cost,
+                        coalesce(sum(CASE WHEN u.request_id IS NOT NULL AND c.request_id IS NULL THEN 1 ELSE 0 END),0) AS unpriced,
+                        coalesce(sum(u.estimated),0) AS estimated,
                         coalesce(sum(u.input_tokens),0)    AS input_tokens,
                         coalesce(sum(u.output_tokens),0)   AS output_tokens,
                         coalesce(sum(u.thinking_tokens),0) AS thinking_tokens,
@@ -409,10 +435,36 @@ fn summary_parts_of(conn: &Connection, f: &Filter, parts: &[&str]) -> anyhow::Re
                  LEFT JOIN usage u    ON u.request_id = r.id
                  LEFT JOIN request_cost c ON c.request_id = r.id
                  LEFT JOIN sessions s ON s.id = r.session_id
-                 WHERE {SCOPE}"
+                 WHERE {scope}"
             ),
             &p,
         )?;
+        // Each figure's split by provider, kept under the one total (AGEN-0130). Anthropic's
+        // first; a request recorded before providers is Anthropic's.
+        let split = rows(
+            conn,
+            &format!(
+                "SELECT coalesce(r.provider, 'anthropic') AS provider,
+                        count(*) AS requests,
+                        coalesce(sum(u.prompt_tokens),0) AS prompt_tokens,
+                        coalesce(sum(c.cost),0) AS cost,
+                        coalesce(sum(CASE WHEN u.request_id IS NOT NULL AND c.request_id IS NULL THEN 1 ELSE 0 END),0) AS unpriced,
+                        coalesce(sum(u.estimated),0) AS estimated,
+                        coalesce(sum(u.output_tokens),0) AS output_tokens,
+                        coalesce(sum(u.cache_read_tokens),0) AS cache_read_tokens,
+                        coalesce(sum(u.cache_creation_5m_tokens + u.cache_creation_1h_tokens),0) AS cache_write_tokens
+                 FROM requests r
+                 LEFT JOIN usage u    ON u.request_id = r.id
+                 LEFT JOIN request_cost c ON c.request_id = r.id
+                 LEFT JOIN sessions s ON s.id = r.session_id
+                 WHERE {scope}
+                 GROUP BY 1 ORDER BY 1 <> 'anthropic', 1"
+            ),
+            &p,
+        )?;
+        if let Some(t) = totals.as_object_mut() {
+            t.insert("by_provider".into(), split);
+        }
         // The requests in the scope that no session holds: Claude Code sent no session id, or
         // sent one the store has no session row for. Neither the Projects nor the Sessions
         // list can show them — both join on the session — so the dashboard ends each list
@@ -440,7 +492,7 @@ fn summary_parts_of(conn: &Connection, f: &Filter, parts: &[&str]) -> anyhow::Re
                     started_at
              FROM requests
              WHERE rl_status IS NOT NULL
-               AND account_id = (SELECT id FROM accounts WHERE active = 1 LIMIT 1)
+               AND account_id = (SELECT id FROM accounts WHERE active = 1 AND provider = 'anthropic' LIMIT 1)
              ORDER BY started_at DESC LIMIT 1",
             &[],
         )?;
@@ -450,7 +502,7 @@ fn summary_parts_of(conn: &Connection, f: &Filter, parts: &[&str]) -> anyhow::Re
         let account = one(
             conn,
             "SELECT id, label, email, org_name, subscription_type
-             FROM accounts WHERE active = 1 LIMIT 1",
+             FROM accounts WHERE active = 1 AND provider = 'anthropic' LIMIT 1",
             &[],
         )?;
         out.insert("account".into(), account);
@@ -475,7 +527,7 @@ fn summary_parts_of(conn: &Connection, f: &Filter, parts: &[&str]) -> anyhow::Re
                  LEFT JOIN model_rate m ON m.model = r.model
                  LEFT JOIN pricing p    ON p.model = m.key
                  LEFT JOIN sessions s  ON s.id = r.session_id
-                 WHERE {SCOPE}
+                 WHERE {scope}
                  GROUP BY c.component ORDER BY est_tokens DESC"
             ),
             &p,
@@ -486,9 +538,11 @@ fn summary_parts_of(conn: &Connection, f: &Filter, parts: &[&str]) -> anyhow::Re
         let models = rows(
             conn,
             &format!(
-                "SELECT r.model, count(*) AS requests,
+                "SELECT r.model, coalesce(max(r.provider), 'anthropic') AS provider, count(*) AS requests,
                         coalesce(sum(u.prompt_tokens),0)   AS prompt_tokens,
                         coalesce(sum(c.cost),0) AS cost,
+                        coalesce(sum(CASE WHEN u.request_id IS NOT NULL AND c.request_id IS NULL THEN 1 ELSE 0 END),0) AS unpriced,
+                        coalesce(sum(u.estimated),0) AS estimated,
                         coalesce(sum(u.output_tokens),0)   AS output_tokens,
                         coalesce(sum(u.thinking_tokens),0) AS thinking_tokens,
                         coalesce(sum(u.cache_read_tokens),0) AS cache_read_tokens,
@@ -498,7 +552,7 @@ fn summary_parts_of(conn: &Connection, f: &Filter, parts: &[&str]) -> anyhow::Re
                  LEFT JOIN usage u    ON u.request_id = r.id
                  LEFT JOIN request_cost c ON c.request_id = r.id
                  LEFT JOIN sessions s ON s.id = r.session_id
-                 WHERE r.model IS NOT NULL AND {SCOPE}
+                 WHERE r.model IS NOT NULL AND {scope}
                  GROUP BY r.model ORDER BY prompt_tokens DESC"
             ),
             &p,
@@ -515,6 +569,8 @@ fn summary_parts_of(conn: &Connection, f: &Filter, parts: &[&str]) -> anyhow::Re
                         count(*) AS requests,
                         coalesce(sum(u.prompt_tokens),0) AS prompt_tokens,
                         coalesce(sum(c.cost),0) AS cost,
+                        coalesce(sum(CASE WHEN u.request_id IS NOT NULL AND c.request_id IS NULL THEN 1 ELSE 0 END),0) AS unpriced,
+                        coalesce(sum(u.estimated),0) AS estimated,
                         coalesce(sum(u.output_tokens),0) AS output_tokens,
                         coalesce(sum(u.cache_read_tokens),0) AS cache_read_tokens,
                         count(DISTINCT r.agent_id) AS agents
@@ -522,7 +578,7 @@ fn summary_parts_of(conn: &Connection, f: &Filter, parts: &[&str]) -> anyhow::Re
                  LEFT JOIN usage u    ON u.request_id = r.id
                  LEFT JOIN request_cost c ON c.request_id = r.id
                  LEFT JOIN sessions s ON s.id = r.session_id
-                 WHERE {SCOPE}
+                 WHERE {scope}
                  GROUP BY coalesce(r.is_sidechain,0) ORDER BY coalesce(r.is_sidechain,0)"
             ),
             &p,
@@ -535,11 +591,11 @@ fn summary_parts_of(conn: &Connection, f: &Filter, parts: &[&str]) -> anyhow::Re
             &format!(
                 "SELECT {} AS ttfb_p50, {} AS ttfb_p95, {} AS duration_p50, {} AS duration_p95,
                         (SELECT max(r.duration_ms) FROM requests r
-                         LEFT JOIN sessions s ON s.id = r.session_id WHERE {SCOPE}) AS duration_max",
-                pctile("ttfb_ms", 50),
-                pctile("ttfb_ms", 95),
-                pctile("duration_ms", 50),
-                pctile("duration_ms", 95),
+                         LEFT JOIN sessions s ON s.id = r.session_id WHERE {scope}) AS duration_max",
+                pctile("ttfb_ms", 50, &scope),
+                pctile("ttfb_ms", 95, &scope),
+                pctile("duration_ms", 50, &scope),
+                pctile("duration_ms", 95, &scope),
             ),
             &p,
         )?;
@@ -551,7 +607,7 @@ fn summary_parts_of(conn: &Connection, f: &Filter, parts: &[&str]) -> anyhow::Re
             &format!(
                 "SELECT coalesce(r.stop_reason, '(none)') AS stop_reason, count(*) AS requests
                  FROM requests r LEFT JOIN sessions s ON s.id = r.session_id
-                 WHERE {SCOPE}
+                 WHERE {scope}
                  GROUP BY 1 ORDER BY 2 DESC"
             ),
             &p,
@@ -561,12 +617,18 @@ fn summary_parts_of(conn: &Connection, f: &Filter, parts: &[&str]) -> anyhow::Re
     if want("by_account") {
         let by_account = rows(
             conn,
-            "SELECT r.account_id AS id,
+            &format!(
+                "SELECT r.account_id AS id,
                     coalesce(a.email, a.label, r.account_id) AS label,
+                    -- The account's own, else what its requests were signed for: an account
+                    -- removed since keeps naming its provider.
+                    coalesce(max(a.provider), max(r.provider), 'anthropic') AS provider,
                     max(coalesce(a.active, 0)) AS active,
                     count(*) AS requests,
                     coalesce(sum(u.prompt_tokens),0) AS prompt_tokens,
                         coalesce(sum(c.cost),0) AS cost,
+                        coalesce(sum(CASE WHEN u.request_id IS NOT NULL AND c.request_id IS NULL THEN 1 ELSE 0 END),0) AS unpriced,
+                        coalesce(sum(u.estimated),0) AS estimated,
                     coalesce(sum(u.output_tokens),0) AS output_tokens,
                     count(DISTINCT r.session_id) AS sessions,
                     max(r.started_at) AS last_seen
@@ -575,13 +637,15 @@ fn summary_parts_of(conn: &Connection, f: &Filter, parts: &[&str]) -> anyhow::Re
              LEFT JOIN request_cost c ON c.request_id = r.id
              LEFT JOIN accounts a ON a.id = r.account_id
              WHERE (?1 IS NULL OR r.started_at >= ?1)
-               AND (?2 IS NULL OR r.started_at < ?2)
+               AND (?2 IS NULL OR r.started_at < ?2){provider}
              GROUP BY r.account_id ORDER BY prompt_tokens DESC",
+                provider = provider_test(f.provider),
+            ),
             &[&f.since, &f.until],
         )?;
         out.insert("by_account".into(), by_account);
     }
-    if !want("timeline") && !want("quota_history") {
+    if !want("timeline") && !want("quota_history") && !want("providers") {
         return Ok(Value::Object(out));
     }
 
@@ -592,7 +656,7 @@ fn summary_parts_of(conn: &Connection, f: &Filter, parts: &[&str]) -> anyhow::Re
         conn,
         &format!(
             "SELECT min(r.started_at) AS lo, max(r.started_at) AS hi
-             FROM requests r LEFT JOIN sessions s ON s.id = r.session_id WHERE {SCOPE}"
+             FROM requests r LEFT JOIN sessions s ON s.id = r.session_id WHERE {scope}"
         ),
         &p,
     )?;
@@ -625,6 +689,8 @@ fn summary_parts_of(conn: &Connection, f: &Filter, parts: &[&str]) -> anyhow::Re
                                 count(*) AS requests,
                                 coalesce(sum(u.prompt_tokens),0) AS prompt_tokens,
                         coalesce(sum(c.cost),0) AS cost,
+                        coalesce(sum(CASE WHEN u.request_id IS NOT NULL AND c.request_id IS NULL THEN 1 ELSE 0 END),0) AS unpriced,
+                        coalesce(sum(u.estimated),0) AS estimated,
                                 coalesce(sum(u.output_tokens),0) AS output_tokens,
                                 coalesce(sum(u.cache_read_tokens),0) AS cache_read_tokens,
                                 coalesce(sum(CASE WHEN coalesce(r.is_sidechain,0) = 1 THEN u.prompt_tokens ELSE 0 END),0) AS subagent_tokens,
@@ -633,7 +699,7 @@ fn summary_parts_of(conn: &Connection, f: &Filter, parts: &[&str]) -> anyhow::Re
                          LEFT JOIN usage u    ON u.request_id = r.id
                          LEFT JOIN request_cost c ON c.request_id = r.id
                          LEFT JOIN sessions s ON s.id = r.session_id
-                         WHERE {SCOPE}
+                         WHERE {scope}
                          GROUP BY t, r.model ORDER BY t, r.model"
                     ),
                     &[&f.project, &f.session, &f.since, &f.account, &f.until, &tz_ms, &bucket],
@@ -652,7 +718,7 @@ fn summary_parts_of(conn: &Connection, f: &Filter, parts: &[&str]) -> anyhow::Re
                      FROM requests
                      WHERE rl_status IS NOT NULL
                        AND started_at >= ?3 AND started_at <= ?4
-                       AND account_id = (SELECT id FROM accounts WHERE active = 1 LIMIT 1)
+                       AND account_id = (SELECT id FROM accounts WHERE active = 1 AND provider = 'anthropic' LIMIT 1)
                      GROUP BY t ORDER BY t",
                     &[&tz_ms, &bucket, &start, &end],
                 )?
@@ -675,7 +741,107 @@ fn summary_parts_of(conn: &Connection, f: &Filter, parts: &[&str]) -> anyhow::Re
     if want("quota_history") {
         out.insert("quota_history".into(), quota_history);
     }
+    if want("providers") {
+        out.insert("providers".into(), providers_quota(conn, range, tz_ms, bucket, now)?);
+    }
     Ok(Value::Object(out))
+}
+
+/// Each provider's serving account and its quota windows, with their history over the
+/// timeline's buckets (AGEN-0129): the Overview's one block per provider. Anthropic's come from
+/// the rate-limit headers its requests carry, Kimi Code's from the readings of its usage API,
+/// its second window by its own name (`month`, else `seven_day`) and a window it said is spent
+/// read as full. A provider with no account is left out; Anthropic's comes first. Times are
+/// epoch ms, a window's `resets_at` epoch seconds, as the headers give them.
+fn providers_quota(conn: &Connection, span: Option<(i64, i64)>, tz_ms: i64, bucket: i64, now: i64) -> anyhow::Result<Value> {
+    // The serving account first within each provider: its active one, else its oldest.
+    let accounts = rows(
+        conn,
+        "SELECT coalesce(provider, 'anthropic') AS provider, id, label, email, org_name, subscription_type
+         FROM accounts
+         ORDER BY coalesce(provider, 'anthropic') <> 'anthropic', coalesce(provider, 'anthropic'), active DESC, created_at",
+        &[],
+    )?;
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for a in accounts.as_array().map(Vec::as_slice).unwrap_or_default() {
+        let provider = a["provider"].as_str().unwrap_or("anthropic").to_string();
+        let Some(id) = a["id"].as_str() else { continue };
+        if !seen.insert(provider.clone()) {
+            continue;
+        }
+        let account = json!({ "id": id, "label": a["label"], "email": a["email"], "org_name": a["org_name"], "plan": a["subscription_type"] });
+        let window = |utilization: &Value, resets_at: &Value| {
+            if utilization.is_null() && resets_at.is_null() {
+                Value::Null
+            } else {
+                json!({ "utilization": utilization, "resets_at": resets_at })
+            }
+        };
+        let block = if provider == "kimi" {
+            let latest = one(
+                conn,
+                "SELECT at, five_hour_used, five_hour_reset, coalesce(second_window, 'month') AS second_window, second_used, second_reset
+                 FROM quota_readings WHERE account_id = ?1 ORDER BY at DESC LIMIT 1",
+                &[&id],
+            )?;
+            let second = latest["second_window"].as_str().unwrap_or("month").to_string();
+            let mut windows = Map::new();
+            windows.insert("five_hour".into(), window(&latest["five_hour_used"], &latest["five_hour_reset"]));
+            windows.insert(second.clone(), window(&latest["second_used"], &latest["second_reset"]));
+            let spent = crate::quota::spent_windows(conn, id, now)?;
+            for (name, _, until) in &spent {
+                windows.insert(name.clone(), json!({ "utilization": 1.0, "resets_at": until }));
+            }
+            let history = match span {
+                Some((start, end)) => {
+                    let mut h = rows(
+                        conn,
+                        "SELECT ((at + ?1) / ?2) * ?2 - ?1 AS t, max(five_hour_used) AS five_hour, max(second_used) AS second
+                         FROM quota_readings WHERE account_id = ?5 AND at >= ?3 AND at <= ?4
+                         GROUP BY t ORDER BY t",
+                        &[&tz_ms, &bucket, &start, &end, &id],
+                    )?;
+                    for row in h.as_array_mut().into_iter().flatten().filter_map(Value::as_object_mut) {
+                        let v = row.remove("second").unwrap_or(Value::Null);
+                        row.insert(second.clone(), v);
+                    }
+                    h
+                }
+                None => json!([]),
+            };
+            let status = if spent.is_empty() { latest.get("at").filter(|v| !v.is_null()).map(|_| "allowed") } else { Some("rejected") };
+            json!({ "provider": provider, "account": account, "windows": windows, "status": status,
+                    "at": latest.get("at").cloned().unwrap_or(Value::Null), "history": history })
+        } else {
+            let latest = one(
+                conn,
+                "SELECT rl_status, rl_5h_utilization, rl_7d_utilization, rl_5h_reset, rl_7d_reset, started_at
+                 FROM requests WHERE rl_status IS NOT NULL AND account_id = ?1
+                 ORDER BY started_at DESC LIMIT 1",
+                &[&id],
+            )?;
+            let history = match span {
+                Some((start, end)) => rows(
+                    conn,
+                    "SELECT ((started_at + ?1) / ?2) * ?2 - ?1 AS t,
+                            max(rl_5h_utilization) AS five_hour, max(rl_7d_utilization) AS seven_day
+                     FROM requests
+                     WHERE rl_status IS NOT NULL AND account_id = ?5 AND started_at >= ?3 AND started_at <= ?4
+                     GROUP BY t ORDER BY t",
+                    &[&tz_ms, &bucket, &start, &end, &id],
+                )?,
+                None => json!([]),
+            };
+            json!({ "provider": provider, "account": account,
+                    "windows": { "five_hour": window(&latest["rl_5h_utilization"], &latest["rl_5h_reset"]),
+                                 "seven_day": window(&latest["rl_7d_utilization"], &latest["rl_7d_reset"]) },
+                    "status": latest.get("rl_status").cloned().unwrap_or(Value::Null),
+                    "at": latest.get("started_at").cloned().unwrap_or(Value::Null), "history": history })
+        };
+        out.push(block);
+    }
+    Ok(Value::Array(out))
 }
 
 /// The project navigator. Never narrowed by project or session (it is how you pick
@@ -697,12 +863,15 @@ fn projects_inner(state: &AppState, f: &Filter) -> anyhow::Result<Value> {
 fn projects_of(conn: &Connection, f: &Filter) -> anyhow::Result<Value> {
     let mut projects = rows(
         conn,
-        "SELECT s.project AS project,
+        &format!(
+            "SELECT s.project AS project,
                 max(s.repository)    AS repository,
                 count(DISTINCT s.id) AS sessions,
                 count(*)             AS requests,
                 coalesce(sum(u.prompt_tokens),0) AS prompt_tokens,
                     coalesce(sum(c.cost),0) AS cost,
+                    coalesce(sum(CASE WHEN u.request_id IS NOT NULL AND c.request_id IS NULL THEN 1 ELSE 0 END),0) AS unpriced,
+                    coalesce(sum(u.estimated),0) AS estimated,
                 coalesce(sum(u.output_tokens),0) AS output_tokens,
                 coalesce(sum(u.cache_read_tokens),0) AS cache_read_tokens,
                 coalesce(sum(CASE WHEN coalesce(r.is_sidechain,0) = 1 THEN u.prompt_tokens ELSE 0 END),0) AS subagent_tokens,
@@ -716,8 +885,10 @@ fn projects_of(conn: &Connection, f: &Filter) -> anyhow::Result<Value> {
          JOIN sessions s   ON s.id = r.session_id
          WHERE (?1 IS NULL OR r.started_at >= ?1)
            AND (?2 IS NULL OR r.account_id = ?2)
-           AND (?3 IS NULL OR r.started_at < ?3)
+           AND (?3 IS NULL OR r.started_at < ?3){provider}
          GROUP BY s.project ORDER BY prompt_tokens DESC",
+            provider = provider_test(f.provider),
+        ),
         &[&f.since, &f.account, &f.until],
     )?;
 
@@ -774,19 +945,23 @@ fn sessions_inner(state: &AppState, f: &Filter) -> anyhow::Result<Value> {
 /// Scoped by `SCOPE` itself, so a project lists the sessions the summary counts for it,
 /// `(unresolved)` included. The one bound it never takes is the session: the list is how
 /// a session is picked, so that place in the scope is bound empty.
-fn sessions_of(conn: &Connection, f: &Filter) -> anyhow::Result<Value> {
+pub(crate) fn sessions_of(conn: &Connection, f: &Filter) -> anyhow::Result<Value> {
+    let scope = scope_sql(f);
     let sql = format!(
         "SELECT s.id, s.project, s.cwd, s.repository, s.machine AS machine_id, m.label AS machine_label,
                 s.git_branch, s.entrypoint, s.started_at, s.last_seen_at,
                 count(*) AS requests,
                 coalesce(sum(u.prompt_tokens),0) AS prompt_tokens,
                 coalesce(sum(c.cost),0) AS cost,
+                coalesce(sum(CASE WHEN u.request_id IS NOT NULL AND c.request_id IS NULL THEN 1 ELSE 0 END),0) AS unpriced,
+                coalesce(sum(u.estimated),0) AS estimated,
                 coalesce(sum(u.output_tokens),0) AS output_tokens,
                 coalesce(sum(u.cache_read_tokens),0) AS cache_read_tokens,
                 coalesce(sum(CASE WHEN coalesce(r.is_sidechain,0) = 1 THEN u.prompt_tokens ELSE 0 END),0) AS subagent_tokens,
                 coalesce(sum(CASE WHEN r.status >= 400 OR r.error IS NOT NULL THEN 1 ELSE 0 END),0) AS errors,
                 count(DISTINCT r.agent_id) AS subagents,
                 group_concat(DISTINCT r.model) AS models,
+                group_concat(DISTINCT coalesce(r.provider, 'anthropic')) AS providers,
                 min(r.started_at) AS first_request_at,
                 max(r.started_at) AS last_request_at
          FROM requests r
@@ -794,7 +969,7 @@ fn sessions_of(conn: &Connection, f: &Filter) -> anyhow::Result<Value> {
          LEFT JOIN request_cost c ON c.request_id = r.id
          JOIN sessions s   ON s.id = r.session_id
          LEFT JOIN machines m ON m.id = s.machine
-         WHERE {SCOPE}
+         WHERE {scope}
          GROUP BY s.id ORDER BY s.last_seen_at DESC LIMIT 200"
     );
     let every_session: Option<String> = None;
@@ -809,6 +984,14 @@ fn sessions_of(conn: &Connection, f: &Filter) -> anyhow::Result<Value> {
                 _ => Value::Null,
             };
             row.insert("machine".into(), machine);
+            // Which client it was, from the User-Agent its requests carried.
+            let client = row.get("entrypoint").and_then(Value::as_str).and_then(crate::analyze::client_of);
+            row.insert("client".into(), json!(client));
+            // Which providers served it, Anthropic's first: one session can move between them.
+            let mut providers: Vec<String> =
+                row.get("providers").and_then(Value::as_str).unwrap_or_default().split(',').filter(|p| !p.is_empty()).map(str::to_owned).collect();
+            providers.sort_by_key(|p| (p != "anthropic", p.clone()));
+            row.insert("providers".into(), json!(providers));
         }
     }
     Ok(listed)
@@ -826,6 +1009,13 @@ pub struct SearchQuery {
     pub kind: Option<String>,
     pub since: Option<i64>,
     pub limit: Option<i64>,
+    /// The rest of the page's scope, which Search follows like every other panel (AGEN-0132):
+    /// the account and the provider that served the request a match came from, and the end
+    /// of the time range.
+    pub account: Option<String>,
+    pub until: Option<i64>,
+    #[serde(default)]
+    pub provider: Option<crate::accounts::Provider>,
 }
 
 /// Find every session and every message whose text matches.
@@ -892,15 +1082,19 @@ fn hits_for(
          JOIN bodies_db.blocks b       ON b.id  = blocks_fts.rowid
          JOIN bodies_db.block_sites st ON st.block_id = b.id
          LEFT JOIN main.sessions s     ON s.id  = st.session_id
+         LEFT JOIN main.requests r     ON r.id  = st.request_id
          WHERE blocks_fts MATCH ?1
            AND {project}
            AND (?3 IS NULL OR st.session_id = ?3)
            AND (?4 IS NULL OR b.kind = ?4)
            AND (?5 IS NULL OR st.at >= ?5)
+           AND (?7 IS NULL OR r.account_id = ?7)
+           AND (?8 IS NULL OR st.at < ?8){provider}
          ORDER BY rank LIMIT ?6",
         project = in_project!(2),
+        provider = provider_test(f.provider),
     );
-    rows(conn, &sql, &[&expr, &f.project, &f.session, &f.kind, &f.since, &limit])
+    rows(conn, &sql, &[&expr, &f.project, &f.session, &f.kind, &f.since, &limit, &f.account, &f.until])
 }
 
 /// The same matches rolled up per session — "which conversations talk about this".
@@ -915,16 +1109,20 @@ fn sessions_for(conn: &Connection, expr: &str, f: &SearchQuery) -> anyhow::Resul
          JOIN bodies_db.blocks b       ON b.id  = blocks_fts.rowid
          JOIN bodies_db.block_sites st ON st.block_id = b.id
          LEFT JOIN main.sessions s     ON s.id  = st.session_id
+         LEFT JOIN main.requests r     ON r.id  = st.request_id
          WHERE blocks_fts MATCH ?1
            AND {project}
            AND (?3 IS NULL OR st.session_id = ?3)
            AND (?4 IS NULL OR b.kind = ?4)
            AND (?5 IS NULL OR st.at >= ?5)
+           AND (?6 IS NULL OR r.account_id = ?6)
+           AND (?7 IS NULL OR st.at < ?7){provider}
          GROUP BY st.session_id
          ORDER BY hits DESC, last_at DESC LIMIT 200",
         project = in_project!(2),
+        provider = provider_test(f.provider),
     );
-    rows(conn, &sql, &[&expr, &f.project, &f.session, &f.kind, &f.since])
+    rows(conn, &sql, &[&expr, &f.project, &f.session, &f.kind, &f.since, &f.account, &f.until])
 }
 
 /// Every word as a literal term, all of them required. `"` is FTS5's own escape for a
@@ -951,9 +1149,12 @@ fn requests_inner(state: &AppState, f: &Filter) -> anyhow::Result<Value> {
 }
 
 /// The 300 most recent requests in scope, from whichever connection it is handed.
-fn requests_of(conn: &Connection, f: &Filter) -> anyhow::Result<Value> {
+pub(crate) fn requests_of(conn: &Connection, f: &Filter) -> anyhow::Result<Value> {
+    let scope = scope_sql(f);
     let sql = format!(
         "SELECT r.id, r.request_id, r.session_id, s.project AS project, r.model, r.status,
+                r.account_id, coalesce(r.provider, 'anthropic') AS provider,
+                r.service_id, r.upstream_model,
                 r.ttfb_ms, r.duration_ms, r.stop_reason, r.is_sidechain, r.agent_id,
                 r.started_at, substr(r.error, 1, 200) AS error,
                 u.prompt_tokens, u.input_tokens, u.output_tokens, u.thinking_tokens,
@@ -969,7 +1170,7 @@ fn requests_of(conn: &Connection, f: &Filter) -> anyhow::Result<Value> {
          LEFT JOIN usage u    ON u.request_id = r.id
          LEFT JOIN request_cost c ON c.request_id = r.id
          LEFT JOIN sessions s ON s.id = r.session_id
-         WHERE {SCOPE}
+         WHERE {scope}
          ORDER BY r.started_at DESC LIMIT 300"
     );
     Ok(rows(conn, &sql, &scope_params(f))?)
@@ -991,6 +1192,7 @@ fn tools_of(conn: &Connection, f: &Filter) -> anyhow::Result<Value> {
     // Results are keyed by tool_use_id and carry their own session and timestamp, so
     // they scope directly rather than through the request that first carried them: the
     // project test every read shares, and their own bounds for the rest.
+    let scope = scope_sql(f);
     let produced = rows(
         conn,
         &format!(
@@ -1012,9 +1214,10 @@ fn tools_of(conn: &Connection, f: &Filter) -> anyhow::Result<Value> {
                AND (?2 IS NULL OR tc.session_id = ?2)
                AND (?3 IS NULL OR tc.seen_at >= ?3)
                AND (?4 IS NULL OR r.account_id = ?4)
-               AND (?5 IS NULL OR tc.seen_at < ?5)
+               AND (?5 IS NULL OR tc.seen_at < ?5){provider}
              GROUP BY tc.name ORDER BY est_tokens DESC",
             project = in_project!(1),
+            provider = provider_test(f.provider),
         ),
         &scope_params(f),
     )?;
@@ -1027,7 +1230,7 @@ fn tools_of(conn: &Connection, f: &Filter) -> anyhow::Result<Value> {
              FROM tool_invocations ti
              JOIN requests r      ON r.id = ti.request_id
              LEFT JOIN sessions s ON s.id = r.session_id
-             WHERE {SCOPE}
+             WHERE {scope}
              GROUP BY ti.name ORDER BY calls DESC"
         ),
         &scope_params(f),
@@ -1067,6 +1270,94 @@ const WINDOWS: [Win; 2] = [
 /// for rows belonging to `reset`. Rows outside that window — and rows that carried no
 /// rate-limit header at all — still come back, because they are work, and work is the
 /// denominator the burn rate divides by.
+/// An account's windows from the readings its provider's usage API gave (`quota_readings`),
+/// forecast as Anthropic's are: the work in the window is every request the account served,
+/// and each reading is a utilisation at the time it was taken. A window the provider said is
+/// spent (`spent_windows`) reads full until it resets, whatever the readings say, since its
+/// counters can lag; the account is then `rejected`, as a spent Claude account is. A window
+/// nothing gives is `null`; one whose reset has passed is `expired`. The second window carries
+/// its own name: `seven_day`, else `month`.
+fn reading_windows(
+    conn: &Connection,
+    id: &str,
+    now: i64,
+) -> anyhow::Result<(Map<String, Value>, Option<i64>, Option<&'static str>)> {
+    use rusqlite::OptionalExtension;
+    let mut windows = Map::new();
+    windows.insert(crate::forecast::FIVE_HOUR.name.into(), Value::Null);
+    windows.insert(crate::forecast::SEVEN_DAY.name.into(), Value::Null);
+    let latest: Option<(i64, Option<i64>, Option<String>, Option<i64>)> = conn
+        .query_row(
+            "SELECT at, five_hour_reset, second_window, second_reset FROM quota_readings
+             WHERE account_id = ?1 ORDER BY at DESC LIMIT 1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()?;
+    let spent = crate::quota::spent_windows(conn, id, now)?;
+    let marker = |name: &str| spent.iter().find(|(w, _, _)| w == name).map(|(_, at, until)| (*at, *until));
+    if latest.is_none() && spent.is_empty() {
+        return Ok((windows, None, None));
+    }
+    let read = latest.is_some();
+    let (read_at, five_reset, second_name, second_reset) = latest.unwrap_or((0, None, None, None));
+    let seen_at = spent.iter().map(|(_, at, _)| *at).chain(read.then_some(read_at)).max();
+    let month = second_name.as_deref() == Some("month") || (second_name.is_none() && marker("month").is_some());
+    let second_kind = if month { crate::forecast::MONTH } else { crate::forecast::SEVEN_DAY };
+    for (kind, reading_reset, used_col, reset_col, session_duty) in [
+        (crate::forecast::FIVE_HOUR, five_reset, "five_hour_used", "five_hour_reset", true),
+        (second_kind, second_reset, "second_used", "second_reset", false),
+    ] {
+        let spent_here = marker(kind.name);
+        let Some(reset) = spent_here.map(|(_, until)| until).or(reading_reset) else { continue };
+        if reset.saturating_mul(1000) <= now {
+            windows.insert(kind.name.into(), json!({ "expired": true, "reset_at": reset, "seen_at": seen_at }));
+            continue;
+        }
+        let from_ms = (reset - kind.span_ms / 1000).saturating_mul(1000);
+        // No costs: these readings are of Kimi Code's usage, not of the requests that spent
+        // it, so there is no load to weigh and the window carries no short trend.
+        let mut readings: Vec<crate::forecast::Reading> = {
+            let mut stmt = conn.prepare(
+                "SELECT started_at FROM requests WHERE account_id = ?1 AND started_at >= ?2 ORDER BY started_at",
+            )?;
+            let work = stmt
+                .query_map(rusqlite::params![id, from_ms], |r| Ok(crate::forecast::Reading { at_ms: r.get(0)?, util: None, cost: 0.0 }))?
+                .collect::<Result<Vec<_>, _>>()?;
+            work
+        };
+        {
+            let mut stmt = conn.prepare(&format!(
+                "SELECT at, {used_col} FROM quota_readings
+                 WHERE account_id = ?1 AND {reset_col} = ?2 AND at >= ?3 AND {used_col} IS NOT NULL ORDER BY at"
+            ))?;
+            let taken = stmt
+                .query_map(rusqlite::params![id, reset, from_ms], |r| {
+                    Ok(crate::forecast::Reading { at_ms: r.get(0)?, util: Some(r.get(1)?), cost: 0.0 })
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            readings.extend(taken);
+        }
+        // What the provider said outweighs a reading taken before or after it.
+        if let Some((at, _)) = spent_here {
+            readings.retain(|r| r.util.is_none());
+            readings.push(crate::forecast::Reading { at_ms: at, util: Some(1.0), cost: 0.0 });
+        }
+        readings.sort_by_key(|r| r.at_ms);
+        let win = Win { kind, reset_col: "", util_col: "", session_duty };
+        let fc = crate::forecast::forecast(&readings, kind, reset, now, None, duty_band_for(conn, id, &win, &readings, reset, now)?);
+        let mut v = serde_json::to_value(&fc)?;
+        if let Some(o) = v.as_object_mut() {
+            o.insert("expired".into(), json!(false));
+            o.insert("seen_at".into(), json!(seen_at));
+            o.insert("series".into(), json!([]));
+            o.insert("spent".into(), json!(spent_here.is_some()));
+        }
+        windows.insert(kind.name.into(), v);
+    }
+    Ok((windows, seen_at, (!spent.is_empty()).then_some("rejected")))
+}
+
 fn window_readings(
     conn: &Connection,
     account: &str,
@@ -1074,16 +1365,19 @@ fn window_readings(
     reset: i64,
     from_ms: i64,
 ) -> anyhow::Result<Vec<crate::forecast::Reading>> {
+    // Each request's cost is its weight in the load the short trend compares; one the
+    // router could not price weighs nothing rather than counting as free work.
     let mut stmt = conn.prepare(&format!(
-        "SELECT r.started_at, CASE WHEN r.{reset} = ?2 THEN r.{util} END
-         FROM requests r WHERE r.account_id = ?1 AND r.started_at >= ?3
+        "SELECT r.started_at, CASE WHEN r.{reset} = ?2 THEN r.{util} END, coalesce(c.cost, 0)
+         FROM requests r LEFT JOIN request_cost c ON c.request_id = r.id
+         WHERE r.account_id = ?1 AND r.started_at >= ?3
          ORDER BY r.started_at",
         reset = win.reset_col,
         util = win.util_col,
     ))?;
     let out = stmt
         .query_map(rusqlite::params![account, reset, from_ms], |row| {
-            Ok(crate::forecast::Reading { at_ms: row.get(0)?, util: row.get(1)? })
+            Ok(crate::forecast::Reading { at_ms: row.get(0)?, util: row.get(1)?, cost: row.get(2)? })
         })?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(out)
@@ -1239,7 +1533,7 @@ pub async fn forecast(State(state): State<Arc<AppState>>, Query(mut f): Query<Fi
     Ok(Json(state.memo.get_or_fill(&key, || forecast_inner(&state, &f))?))
 }
 
-fn forecast_inner(state: &AppState, f: &Filter) -> anyhow::Result<Value> {
+pub(crate) fn forecast_inner(state: &AppState, f: &Filter) -> anyhow::Result<Value> {
     let conn = open(state)?;
     let now = crate::db::now_ms();
     let since = f.since;
@@ -1250,10 +1544,10 @@ fn forecast_inner(state: &AppState, f: &Filter) -> anyhow::Result<Value> {
     let ids = rows(
         &conn,
         "SELECT a.id AS id, coalesce(a.email, a.label, a.id) AS label, a.email AS email,
-                a.subscription_type AS plan, coalesce(a.active, 0) AS active
+                a.subscription_type AS plan, coalesce(a.active, 0) AS active, a.provider AS provider
          FROM accounts a
          UNION
-         SELECT DISTINCT r.account_id, r.account_id, NULL, NULL, 0
+         SELECT DISTINCT r.account_id, r.account_id, NULL, NULL, 0, NULL
          FROM requests r
          WHERE r.account_id IS NOT NULL
            AND r.account_id NOT IN (SELECT id FROM accounts)",
@@ -1270,6 +1564,12 @@ fn forecast_inner(state: &AppState, f: &Filter) -> anyhow::Result<Value> {
                     coalesce(sum(u.prompt_tokens),0)  AS prompt_tokens,
                     coalesce(sum(u.output_tokens),0)  AS output_tokens,
                     coalesce(sum(c.cost),0)           AS cost,
+                    -- Requests with usage the router could not price: a cost of 0 beside them
+                    -- is not free, and the dashboard says so rather than showing $0.
+                    coalesce(sum(CASE WHEN u.request_id IS NOT NULL AND c.request_id IS NULL
+                                      THEN 1 ELSE 0 END),0) AS unpriced,
+                    -- Requests whose tokens are an estimate (`db::recompute_kimi_usage`).
+                    coalesce(sum(u.estimated),0)      AS estimated,
                     max(r.started_at)                 AS last_seen
              FROM requests r
              LEFT JOIN usage u        ON u.request_id = r.id
@@ -1283,6 +1583,8 @@ fn forecast_inner(state: &AppState, f: &Filter) -> anyhow::Result<Value> {
         let week = one(
             &conn,
             "SELECT coalesce(sum(c.cost),0) AS cost,
+                    coalesce(sum(CASE WHEN u.request_id IS NOT NULL AND c.request_id IS NULL THEN 1 ELSE 0 END),0) AS unpriced,
+                    coalesce(sum(u.estimated),0) AS estimated,
                     coalesce(sum(u.prompt_tokens),0) AS prompt_tokens,
                     count(*) AS requests
              FROM requests r
@@ -1291,6 +1593,23 @@ fn forecast_inner(state: &AppState, f: &Filter) -> anyhow::Result<Value> {
              WHERE r.account_id = ?1 AND r.started_at >= ?2",
             &[&id, &week_ago],
         )?;
+
+        // A provider that sends no rate-limit headers reports its windows through its own
+        // usage API instead, and the router keeps each reading (`quota::kimi_quota`).
+        if item.get("provider").and_then(Value::as_str) == Some("kimi") {
+            let (windows, seen_at, status) = reading_windows(&conn, id, now)?;
+            let mut row = item.clone();
+            if let Some(o) = row.as_object_mut() {
+                o.insert("usage".into(), usage);
+                o.insert("week".into(), week);
+                o.insert("seen_at".into(), json!(seen_at));
+                o.insert("status".into(), json!(status));
+                o.insert("pool".into(), Value::Null);
+                o.extend(windows);
+            }
+            out.push(row);
+            continue;
+        }
 
         let latest = one(
             &conn,
@@ -1391,6 +1710,11 @@ fn forecast_inner(state: &AppState, f: &Filter) -> anyhow::Result<Value> {
 ///
 /// This is a reporting figure. The router does not route around a spent limit; the
 /// active-account switch stays where it was, in the user's hands.
+///
+/// Headroom is each provider's own (`providers`, AGEN-0129): no figure compares one
+/// provider's windows with another's, Anthropic's 7-day with Kimi Code's month. Kimi Code's
+/// month window counts in its own. `combined_headroom` is Anthropic's, which is what the
+/// clients that predate providers have always read there.
 fn global_rollup(accounts: &[Value], now: i64) -> Value {
     let sum = |key: &str, field: &str| -> f64 {
         accounts
@@ -1398,7 +1722,42 @@ fn global_rollup(accounts: &[Value], now: i64) -> Value {
             .filter_map(|a| a.get(key)?.get(field)?.as_f64())
             .sum()
     };
+    let provider_of = |a: &Value| a.get("provider").and_then(Value::as_str).unwrap_or("anthropic").to_string();
+    let mut providers = Map::new();
+    let mut names: Vec<String> = accounts.iter().map(provider_of).collect();
+    names.sort_by_key(|p| (p != "anthropic", p.clone()));
+    names.dedup();
+    for name in names {
+        let theirs: Vec<&Value> = accounts.iter().filter(|a| provider_of(a) == name).collect();
+        providers.insert(name, headroom_of(&theirs, now));
+    }
+    let anthropic: Vec<&Value> = accounts.iter().filter(|a| provider_of(a) == "anthropic").collect();
 
+    let week_cost = sum("week", "cost");
+    let week_tokens = sum("week", "prompt_tokens");
+    json!({
+        "requests":      sum("usage", "requests"),
+        "prompt_tokens": sum("usage", "prompt_tokens"),
+        "output_tokens": sum("usage", "output_tokens"),
+        "cost":          sum("usage", "cost"),
+        "accounts":      accounts.len(),
+        "combined_headroom": headroom_of(&anthropic, now),
+        "providers": providers,
+        "pace_30d": {
+            "cost":          week_cost * 30.0 / 7.0,
+            // The week's requests the router could not price, which its cost leaves out.
+            "unpriced":      sum("week", "unpriced"),
+            // And those whose tokens are an estimate (`db::recompute_kimi_usage`).
+            "estimated":     sum("week", "estimated"),
+            "prompt_tokens": week_tokens * 30.0 / 7.0,
+            "basis":         "the last 7 days of recorded spend",
+        },
+    })
+}
+
+/// The hours of work left across `accounts`, one provider's, and the window that runs out
+/// first among them: every window each has, Kimi Code's month included.
+fn headroom_of(accounts: &[&Value], now: i64) -> Value {
     let mut pools: Map<String, Value> = Map::new();
     let mut soonest: Option<(i64, String, &str)> = None;
     for a in accounts {
@@ -1407,7 +1766,7 @@ fn global_rollup(accounts: &[Value], now: i64) -> Value {
             .get("pool")
             .and_then(Value::as_i64)
             .map_or_else(|| id.clone(), |p| p.to_string());
-        for key in ["five_hour", "seven_day"] {
+        for key in [crate::forecast::FIVE_HOUR.name, crate::forecast::SEVEN_DAY.name, crate::forecast::MONTH.name] {
             let Some(w) = a.get(key).filter(|w| w.is_object()) else { continue };
             if w.get("expired").and_then(Value::as_bool).unwrap_or(false) {
                 continue;
@@ -1427,27 +1786,12 @@ fn global_rollup(accounts: &[Value], now: i64) -> Value {
         }
     }
     let headroom: f64 = pools.values().filter_map(Value::as_f64).sum();
-
-    let week_cost = sum("week", "cost");
-    let week_tokens = sum("week", "prompt_tokens");
     json!({
-        "requests":      sum("usage", "requests"),
-        "prompt_tokens": sum("usage", "prompt_tokens"),
-        "output_tokens": sum("usage", "output_tokens"),
-        "cost":          sum("usage", "cost"),
-        "accounts":      accounts.len(),
-        "combined_headroom": {
-            "active_hours_left": if pools.is_empty() { Value::Null } else { json!(headroom) },
-            "pools": pools.len(),
-            "first_to_exhaust": soonest.map(|(at, id, window)| json!({
-                "account_id": id, "window": window, "at": at, "in_ms": at - now,
-            })),
-        },
-        "pace_30d": {
-            "cost":          week_cost * 30.0 / 7.0,
-            "prompt_tokens": week_tokens * 30.0 / 7.0,
-            "basis":         "the last 7 days of recorded spend",
-        },
+        "active_hours_left": if pools.is_empty() { Value::Null } else { json!(headroom) },
+        "pools": pools.len(),
+        "first_to_exhaust": soonest.map(|(at, id, window)| json!({
+            "account_id": id, "window": window, "at": at, "in_ms": at - now,
+        })),
     })
 }
 
@@ -1460,7 +1804,7 @@ fn global_rollup(accounts: &[Value], now: i64) -> Value {
 // and 500 only for the router failing. They all answered 500 once, refusals included, so a
 // client could not tell a name already taken from a disk that would not write.
 
-use crate::accounts::{Conflict, Source, Store};
+use crate::accounts::{Conflict, Provider, Source, Store};
 use crate::refusal::{failed, refuse, JsonBody};
 
 /// What an accounts write the store did not make answers: 409 and its words when the
@@ -1491,8 +1835,38 @@ fn failure(e: impl std::fmt::Display) -> Unmade {
 pub struct AddAccount {
     pub label: String,
     pub source: String,
-    /// Required for `token` accounts: the value `claude setup-token` printed.
+    /// Required for `token` accounts: the value `claude setup-token` printed, or a Kimi
+    /// Code console key.
     pub token: Option<String>,
+    /// `anthropic` when absent: every client before there was a second provider sends none.
+    pub provider: Option<String>,
+    /// Where a Kimi Code account's requests go, when not to its provider's default.
+    pub base_url: Option<String>,
+}
+
+/// The base URL an account of `provider` is stored with, from the one an add gave, or why
+/// that one cannot be. Kimi Code's default is stored rather than left implicit, so the host
+/// a key was added for is the host it keeps signing for.
+fn base_url_for(provider: Provider, given: Option<&str>) -> Result<Option<String>, String> {
+    let given = given.map(str::trim).filter(|u| !u.is_empty());
+    match (provider.default_base_url(), given) {
+        (None, None) => Ok(None),
+        (None, Some(_)) => Err(format!(
+            "an {} account goes to the router's own upstream, and takes no base URL",
+            provider.name()
+        )),
+        (Some(default), None) => Ok(Some(default.to_string())),
+        (Some(_), Some(url)) => {
+            let url = url.trim_end_matches('/');
+            let parsed: Option<axum::http::Uri> = url.parse().ok();
+            match parsed {
+                Some(uri) if uri.scheme_str() == Some("https") && uri.authority().is_some() => {
+                    Ok(Some(url.to_string()))
+                }
+                _ => Err(format!("{url:?} is not an https:// address")),
+            }
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -1527,7 +1901,8 @@ fn looks_like_email(s: &str) -> bool {
 ///
 /// What the edit carries is checked first, against nothing the store holds (400); then
 /// the account it names, which may be gone or may not be the router's to give a token
-/// (409).
+/// (409). A new credential is checked once the account is read, against its provider's
+/// format (400): an Anthropic token and a Kimi Code key look nothing alike.
 pub async fn accounts_edit(
     State(state): State<Arc<AppState>>,
     JsonBody(req): JsonBody<AccountEdit>,
@@ -1540,21 +1915,6 @@ pub async fn accounts_edit(
         }
     }
     let token = req.token.as_deref().map(str::trim).filter(|t| !t.is_empty()).map(str::to_owned);
-    if let Some(token) = &token {
-        if token.starts_with("sk-ant-sid") {
-            return refuse(
-                StatusCode::BAD_REQUEST,
-                "that is a claude.ai session key — it belongs in the session-key field, \
-                 and cannot sign API requests",
-            );
-        }
-        if !token.starts_with("sk-ant-") {
-            return refuse(
-                StatusCode::BAD_REQUEST,
-                "expected a token starting sk-ant- (from `claude setup-token`)",
-            );
-        }
-    }
 
     let store = Store::new(state.config.db_path.clone());
     let id = req.id.clone();
@@ -1565,6 +1925,11 @@ pub async fn accounts_edit(
         // Rotating the credential: replace it in the secrets file, in place, so the
         // account keeps its id and everything recorded against it.
         if let Some(token) = token {
+            // Whose format a credential must have is the account's provider's, so it is
+            // read before the credential is judged.
+            if let Some(why) = account.provider.key_problem(&token) {
+                return Err((StatusCode::BAD_REQUEST, why.to_string()));
+            }
             if account.source != Source::Token {
                 return Err((
                     StatusCode::CONFLICT,
@@ -1625,7 +1990,7 @@ struct Credential {
 /// like `has_token`, for every account — is read from the router's secrets file.
 fn check_credential(account: &crate::accounts::Account) -> Credential {
     let (ready, detail, expires_at) = match crate::accounts::resolve(account) {
-        Ok(r) => (true, crate::accounts::token_kind(&r.token).to_string(), r.expires_at_ms),
+        Ok(r) => (true, crate::accounts::credential_kind(account.provider, &r.token).to_string(), r.expires_at_ms),
         Err(e) => (false, e.to_string(), 0),
     };
     Credential { ready, detail, expires_at, has_token: crate::accounts::has_token(&account.id) }
@@ -1666,8 +2031,8 @@ where
         let conn = reads.get()?;
         rows(
             &conn,
-            "SELECT id, label, source, profile_dir, email, org_name, subscription_type,
-                    active, created_at, coalesce(usage_key, 0) AS usage_key
+            "SELECT id, label, source, provider, base_url, profile_dir, email, org_name,
+                    subscription_type, active, created_at, coalesce(usage_key, 0) AS usage_key
              FROM accounts ORDER BY created_at",
             &[],
         )?
@@ -1687,6 +2052,9 @@ where
                 obj.get("source").and_then(Value::as_str).unwrap_or("keychain"),
             )
             .unwrap_or(crate::accounts::Source::Keychain),
+            provider: Provider::parse(obj.get("provider").and_then(Value::as_str).unwrap_or("anthropic"))
+                .unwrap_or(Provider::Anthropic),
+            base_url: obj.get("base_url").and_then(Value::as_str).map(str::to_owned),
             profile_dir: obj
                 .get("profile_dir")
                 .and_then(Value::as_str)
@@ -1741,11 +2109,34 @@ pub async fn accounts_add(
                 "the default Keychain account is discovered automatically and cannot be added",
             )
         }
+        (Source::Codex, _) => return refuse(StatusCode::BAD_REQUEST, "the Codex login account is discovered automatically and cannot be added"),
         (Source::Token, None) => {
             return refuse(StatusCode::BAD_REQUEST, "a token is required for this account type")
         }
         (Source::Token, token) => token,
         (Source::Profile, _) => None,
+    };
+    let provider = match req.provider.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+        None => Provider::Anthropic,
+        Some(p) => match Provider::parse(p) {
+            Ok(provider) => provider,
+            Err(e) => return refuse(StatusCode::BAD_REQUEST, e.to_string()),
+        },
+    };
+    // A Claude Code login and a profile are Anthropic's; every other provider's account is
+    // a key pasted in, kept as a setup-token is.
+    if provider != Provider::Anthropic && source != Source::Token {
+        return refuse(
+            StatusCode::BAD_REQUEST,
+            format!("a {} account is added from its key, as a token account", provider.name()),
+        );
+    }
+    if let Some(why) = token.as_deref().and_then(|t| provider.key_problem(t)) {
+        return refuse(StatusCode::BAD_REQUEST, why);
+    }
+    let base_url = match base_url_for(provider, req.base_url.as_deref()) {
+        Ok(url) => url,
+        Err(why) => return refuse(StatusCode::BAD_REQUEST, why),
     };
     let id = crate::accounts::slugify(&req.label);
     let store = Store::new(state.config.db_path.clone());
@@ -1761,7 +2152,7 @@ pub async fn accounts_add(
                     ..Default::default()
                 };
                 // The token is stored by `add`, and only once the id is known to be free.
-                store.add(&id, &req.label, source, None, &status, || {
+                store.add(&id, &req.label, source, provider, base_url.as_deref(), None, &status, || {
                     crate::accounts::store_token(&id, &token)
                 })?;
                 Ok(json!({ "id": id, "ready": true }))
@@ -1774,7 +2165,7 @@ pub async fn accounts_add(
                 let dir = crate::accounts::profiles_root()?.join(&id);
                 std::fs::create_dir_all(&dir)?;
                 let status = crate::accounts::probe_profile(Some(&dir)).unwrap_or_default();
-                store.add(&id, &req.label, source, Some(&dir.to_string_lossy()), &status, || Ok(()))?;
+                store.add(&id, &req.label, source, provider, None, Some(&dir.to_string_lossy()), &status, || Ok(()))?;
                 Ok(json!({
                     "id": id,
                     "ready": status.logged_in,
@@ -1786,7 +2177,18 @@ pub async fn accounts_add(
     })
     .await;
     match done {
-        Ok(Ok(added)) => Json(added).into_response(),
+        Ok(Ok(added)) => {
+            if provider == Provider::OpenAI && !cfg!(test) {
+                if let Some(id) = added["id"].as_str().map(str::to_owned) {
+                    tokio::spawn(async move {
+                        if let Err(e) = crate::codex::refresh_models(&state, &id).await {
+                            tracing::warn!(account = id, "OpenAI model catalogue could not be refreshed: {e:#}");
+                        }
+                    });
+                }
+            }
+            Json(added).into_response()
+        },
         Ok(Err(e)) => not_made(e),
         Err(e) => failed(e),
     }
@@ -1807,6 +2209,16 @@ pub async fn accounts_probe(
         let Some(account) = store.get(&id).map_err(failure)? else {
             return Err((StatusCode::CONFLICT, Conflict::NoAccount(id).to_string()));
         };
+        // `claude auth status` is Claude Code's, and says who is logged in to Anthropic.
+        if account.provider != Provider::Anthropic {
+            return Err((
+                StatusCode::CONFLICT,
+                format!(
+                    "{id:?} is a {} account, so it has no Claude Code login to check",
+                    account.provider.name()
+                ),
+            ));
+        }
         let Some(dir) = account.profile_dir else {
             return Err((
                 StatusCode::CONFLICT,
@@ -1871,7 +2283,7 @@ pub async fn accounts_remove(
     // On a hosted router there is no discovery to bring it back, and a `default` row
     // can only have come with a store copied from a machine: it can never sign there.
     // 400 on a machine: whatever the store holds, the next start would put it back.
-    if req.id == crate::proxy::ACCOUNT_ID && !state.config.server {
+    if (req.id == crate::proxy::ACCOUNT_ID || req.id == "codex-default") && !state.config.server {
         return refuse(
             StatusCode::BAD_REQUEST,
             "the default account is discovered automatically and cannot be removed",
@@ -1948,6 +2360,7 @@ mod tests {
             since,
             until: None,
             tz: None,
+            provider: None,
         }
     }
 
@@ -1998,6 +2411,7 @@ mod tests {
             platform: None,
             sessions: listed.iter().map(|(s, c)| Listed { session: (*s).into(), cwd: Some((*c).into()) }).collect(),
             directories: dirs,
+            clients: None,
         };
         record(
             &store.conn,
@@ -2130,6 +2544,247 @@ mod tests {
         assert_eq!(key(Some("models,totals")), key(Some("totals, models,models")));
     }
 
+    /// Every row the Overview reads that names an account names its provider too, a model its
+    /// own, and a session every provider its requests went to (AGEN-0126). A request recorded
+    /// before providers is Anthropic's.
+    #[test]
+    fn the_overviews_rows_name_their_provider() {
+        let store = store("providers");
+        store
+            .conn
+            .execute_batch(
+                "INSERT INTO accounts (id, label, active, created_at, provider) VALUES ('work', 'work', 1, 1, 'anthropic');
+                 INSERT INTO accounts (id, label, active, created_at, provider) VALUES ('kimi', 'kimi', 1, 2, 'kimi');
+                 INSERT INTO sessions (id, cwd, started_at, last_seen_at) VALUES ('s', '/code/a', 1, 1);
+                 INSERT INTO requests (request_id, session_id, account_id, method, path, started_at, model, provider)
+                   VALUES ('a', 's', 'work', 'POST', '/v1/messages', 1700000000000, 'claude-opus-5-5', 'anthropic');
+                 INSERT INTO requests (request_id, session_id, account_id, method, path, started_at, model, provider)
+                   VALUES ('k', 's', 'kimi', 'POST', '/v1/messages', 1700000001000, 'k3', 'kimi');
+                 INSERT INTO requests (request_id, session_id, account_id, method, path, started_at, model)
+                   VALUES ('old', 's', 'gone', 'POST', '/v1/messages', 1700000002000, 'claude-sonnet-5-5');",
+            )
+            .unwrap();
+        let conn = store.reads.get().unwrap();
+        let all = scope(None, None, None, None);
+        let part = summary_parts_of(&conn, &all, &["by_account", "models"]).unwrap();
+        let named = |rows: &Value, key: &str| -> Vec<(String, String)> {
+            let mut out: Vec<(String, String)> = rows
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| (r[key].as_str().unwrap().to_string(), r["provider"].as_str().unwrap().to_string()))
+                .collect();
+            out.sort();
+            out
+        };
+        let pair = |a: &str, b: &str| (a.to_string(), b.to_string());
+        assert_eq!(named(&part["by_account"], "id"), [pair("gone", "anthropic"), pair("kimi", "kimi"), pair("work", "anthropic")]);
+        assert_eq!(
+            named(&part["models"], "model"),
+            [pair("claude-opus-5-5", "anthropic"), pair("claude-sonnet-5-5", "anthropic"), pair("k3", "kimi")]
+        );
+        assert_eq!(named(&requests_of(&conn, &all).unwrap(), "request_id").len(), 3);
+        assert_eq!(named(&requests_of(&conn, &all).unwrap(), "request_id")[1], pair("k", "kimi"));
+        let sessions = sessions_of(&conn, &all).unwrap();
+        assert_eq!(sessions[0]["providers"], json!(["anthropic", "kimi"]), "Anthropic's first");
+    }
+
+    /// A store with one session that went to both providers: two requests to Anthropic, the
+    /// second with no provider recorded (from before providers), and one to Kimi Code.
+    fn two_providers(tag: &str) -> Store {
+        let store = store(tag);
+        store
+            .conn
+            .execute_batch(
+                "INSERT INTO accounts (id, label, active, created_at, provider) VALUES ('work', 'work', 1, 1, 'anthropic');
+                 INSERT INTO accounts (id, label, active, created_at, provider) VALUES ('kimi', 'kimi', 1, 2, 'kimi');
+                 INSERT INTO sessions (id, cwd, started_at, last_seen_at) VALUES ('s', '/code/a', 1, 1);
+                 INSERT INTO requests (request_id, session_id, account_id, method, path, started_at, model, provider)
+                   VALUES ('a', 's', 'work', 'POST', '/v1/messages', 1700000000000, 'claude-opus-5-5', 'anthropic');
+                 INSERT INTO requests (request_id, session_id, account_id, method, path, started_at, model)
+                   VALUES ('old', 's', 'work', 'POST', '/v1/messages', 1700000001000, 'claude-opus-5-5');
+                 INSERT INTO requests (request_id, session_id, account_id, method, path, started_at, model, provider)
+                   VALUES ('k', 's', 'kimi', 'POST', '/v1/messages', 1700000002000, 'k3', 'kimi');",
+            )
+            .unwrap();
+        store
+    }
+
+    /// The scope takes a provider, as the console's scope sends it, and every read narrows to
+    /// it: totals, models, requests, sessions, By account. A name no provider has is refused,
+    /// and each provider's answer is kept apart (AGEN-0130).
+    #[test]
+    fn the_scope_takes_a_provider() {
+        let store = two_providers("scope-provider");
+        let conn = store.reads.get().unwrap();
+        let parse = |q: &str| Query::<Filter>::try_from_uri(&format!("/api/summary?{q}").parse::<axum::http::Uri>().unwrap()).map(|q| q.0);
+        let kimi = parse("since=0&provider=kimi").unwrap();
+        assert_eq!(kimi.provider, Some(crate::accounts::Provider::Kimi));
+        let openai = parse("provider=openai").unwrap();
+        assert_eq!(openai.provider, Some(crate::accounts::Provider::OpenAI));
+        assert_eq!(summary_parts_of(&conn, &openai, &["totals"]).unwrap()["totals"]["requests"], 0);
+        assert!(parse("provider=unknown").is_err(), "a provider the router does not have");
+        let anthropic = parse("provider=anthropic").unwrap();
+
+        let part = summary_parts_of(&conn, &kimi, &["totals", "models", "by_account"]).unwrap();
+        assert_eq!(part["totals"]["requests"], 1);
+        assert_eq!(part["models"].as_array().unwrap().iter().map(|m| m["model"].as_str().unwrap()).collect::<Vec<_>>(), ["k3"]);
+        assert_eq!(part["by_account"].as_array().unwrap().iter().map(|a| a["id"].as_str().unwrap()).collect::<Vec<_>>(), ["kimi"]);
+        let requests = requests_of(&conn, &kimi).unwrap();
+        assert_eq!(requests.as_array().unwrap().iter().map(|r| r["request_id"].as_str().unwrap()).collect::<Vec<_>>(), ["k"]);
+        assert_eq!(sessions_of(&conn, &kimi).unwrap()[0]["requests"], 1);
+        assert_eq!(projects_of(&conn, &kimi).unwrap()[0]["requests"], 1, "the project navigator too");
+
+        // A request recorded before providers is Anthropic's.
+        assert_eq!(summary_parts_of(&conn, &anthropic, &["totals"]).unwrap()["totals"]["requests"], 2);
+        assert_eq!(summary_parts_of(&conn, &scope(None, None, None, None), &["totals"]).unwrap()["totals"]["requests"], 3);
+        assert_ne!(memo_key("summary", &kimi), memo_key("summary", &anthropic), "each provider's answer kept apart");
+    }
+
+    /// Each total keeps one figure and carries its split by provider, Anthropic's first
+    /// (AGEN-0130).
+    #[test]
+    fn totals_are_split_by_provider() {
+        let store = two_providers("totals-split");
+        store
+            .conn
+            .execute_batch(
+                "INSERT INTO usage (request_id, prompt_tokens, input_tokens, output_tokens)
+                   SELECT id, 1000, 1000, 10 FROM requests WHERE request_id IN ('a', 'old');
+                 INSERT INTO usage (request_id, prompt_tokens, input_tokens, output_tokens)
+                   SELECT id, 400, 400, 4 FROM requests WHERE request_id = 'k';",
+            )
+            .unwrap();
+        let conn = store.reads.get().unwrap();
+        let totals = summary_parts_of(&conn, &scope(None, None, None, None), &["totals"]).unwrap()["totals"].clone();
+        assert_eq!((totals["requests"].as_i64(), totals["prompt_tokens"].as_i64()), (Some(3), Some(2400)), "one figure");
+        let split = totals["by_provider"].as_array().unwrap();
+        let read: Vec<(&str, i64, i64)> = split
+            .iter()
+            .map(|p| (p["provider"].as_str().unwrap(), p["requests"].as_i64().unwrap(), p["prompt_tokens"].as_i64().unwrap()))
+            .collect();
+        assert_eq!(read, [("anthropic", 2, 2000), ("kimi", 1, 400)]);
+        for key in ["cost", "output_tokens", "cache_read_tokens", "cache_write_tokens"] {
+            assert!(split[0].get(key).is_some(), "{key}");
+        }
+    }
+
+    /// A request the router could not price is counted beside every sum it is in, so a cost
+    /// never reads as if it were free (AGEN-0131): the totals and their split, models,
+    /// threads, By account, the timeline's buckets, projects, sessions and the 30-day pace.
+    #[test]
+    fn each_sum_counts_its_unpriced_requests() {
+        let store = store("unpriced");
+        store
+            .conn
+            .execute_batch(
+                "INSERT INTO accounts (id, label, active, created_at, provider) VALUES ('work', 'work', 1, 1, 'anthropic');
+                 INSERT INTO sessions (id, cwd, started_at, last_seen_at) VALUES ('s', '/code/a', 1, 1);
+                 INSERT INTO requests (request_id, session_id, account_id, method, path, started_at, model, provider)
+                   VALUES ('priced', 's', 'work', 'POST', '/v1/messages', 1700000000000, 'claude-opus-5-5', 'anthropic');
+                 INSERT INTO requests (request_id, session_id, account_id, method, path, started_at, model, provider)
+                   VALUES ('mystery', 's', 'work', 'POST', '/v1/messages', 1700000001000, 'mystery-model-1', 'anthropic');
+                 INSERT INTO usage (request_id, prompt_tokens, input_tokens, output_tokens)
+                   SELECT id, 1000, 1000, 10 FROM requests;",
+            )
+            .unwrap();
+        // As the router does for each model it has seen: matched against the rate table.
+        crate::pricing::resolve_models(&store.conn).unwrap();
+        let conn = store.reads.get().unwrap();
+        let all = scope(None, None, None, None);
+        let part = summary_parts_of(&conn, &all, &["totals", "models", "threads", "by_account", "timeline"]).unwrap();
+        assert_eq!(part["totals"]["unpriced"], 1);
+        assert!(part["totals"]["cost"].as_f64().unwrap() > 0.0, "the priced one is priced");
+        assert_eq!(part["totals"]["by_provider"][0]["unpriced"], 1);
+        let model = |name: &str| part["models"].as_array().unwrap().iter().find(|m| m["model"] == name).unwrap()["unpriced"].clone();
+        assert_eq!((model("claude-opus-5-5"), model("mystery-model-1")), (json!(0), json!(1)));
+        assert_eq!(part["threads"][0]["unpriced"], 1);
+        assert_eq!(part["by_account"][0]["unpriced"], 1);
+        let buckets: i64 = part["timeline"]["rows"].as_array().unwrap().iter().filter_map(|r| r["unpriced"].as_i64()).sum();
+        assert_eq!(buckets, 1);
+        assert_eq!(projects_of(&conn, &all).unwrap()[0]["unpriced"], 1);
+        assert_eq!(sessions_of(&conn, &all).unwrap()[0]["unpriced"], 1);
+        let pace = global_rollup(&[json!({ "id": "work", "week": { "cost": 1.0, "unpriced": 2 } })], 0)["pace_30d"].clone();
+        assert_eq!(pace["unpriced"], 2.0, "the 30-day pace says what its week left out");
+    }
+
+    /// Each provider's serving account, its own windows and their history: Anthropic's from
+    /// its requests' headers, Kimi Code's from its readings, month by name. A provider with no
+    /// account has no block, and no headroom (AGEN-0129).
+    #[test]
+    fn the_overview_reads_quota_per_provider() {
+        const T: i64 = 1_791_650_000_000;
+        let both = store("quota-providers");
+        both.conn
+            .execute_batch(&format!(
+                "INSERT INTO accounts (id, label, active, created_at, provider) VALUES ('work', 'work', 1, 1, 'anthropic');
+                 INSERT INTO accounts (id, label, active, created_at, provider) VALUES ('spare', 'spare', 0, 2, 'anthropic');
+                 INSERT INTO accounts (id, label, active, created_at, provider) VALUES ('kimi', 'kimi', 1, 3, 'kimi');
+                 INSERT INTO requests (request_id, account_id, method, path, started_at, provider, rl_status,
+                                       rl_5h_utilization, rl_7d_utilization, rl_5h_reset, rl_7d_reset)
+                   VALUES ('a', 'work', 'POST', '/v1/messages', {T}, 'anthropic', 'allowed', 0.48, 0.81, 1791660000, 1792000000);
+                 INSERT INTO quota_readings (account_id, at, five_hour_used, five_hour_reset, second_window, second_used, second_reset)
+                   VALUES ('kimi', {T}, 0.18, 1791660000, 'month', 0.27, 1793000000);"
+            ))
+            .unwrap();
+        let conn = both.reads.get().unwrap();
+        let read = |c: &Connection| summary_parts_of(c, &scope(None, None, None, Some(T - 60_000)), &["providers"]).unwrap();
+        let blocks = read(&conn)["providers"].clone();
+        assert_eq!(blocks.as_array().unwrap().len(), 2, "{blocks}");
+        let (anthropic, kimi) = (&blocks[0], &blocks[1]);
+        assert_eq!((anthropic["provider"].as_str(), anthropic["account"]["id"].as_str()), (Some("anthropic"), Some("work")), "its serving account");
+        assert_eq!(anthropic["windows"]["five_hour"]["utilization"], 0.48);
+        assert_eq!(anthropic["windows"]["seven_day"]["utilization"], 0.81);
+        assert_eq!(anthropic["history"][0]["seven_day"], 0.81);
+        assert_eq!((kimi["provider"].as_str(), kimi["account"]["id"].as_str()), (Some("kimi"), Some("kimi")));
+        assert_eq!(kimi["windows"]["five_hour"]["utilization"], 0.18);
+        assert_eq!(kimi["windows"]["month"]["utilization"], 0.27, "its second window by its own name");
+        assert!(kimi["windows"].get("seven_day").is_none());
+        assert_eq!(kimi["history"][0]["month"], 0.27);
+        assert_eq!(kimi["status"], "allowed");
+
+        // A router with Kimi Code's accounts only has Kimi Code's block, and its headroom only.
+        let only = store("quota-kimi-only");
+        only.conn
+            .execute_batch(&format!(
+                "INSERT INTO accounts (id, label, active, created_at, provider) VALUES ('kimi', 'kimi', 1, 1, 'kimi');
+                 INSERT INTO quota_readings (account_id, at, five_hour_used, five_hour_reset, second_window, second_used, second_reset)
+                   VALUES ('kimi', {T}, 0.5, 1791660000, 'month', 0.1, 1793000000);"
+            ))
+            .unwrap();
+        let only_blocks = read(&only.reads.get().unwrap())["providers"].clone();
+        assert_eq!(only_blocks.as_array().unwrap().len(), 1);
+        assert_eq!(only_blocks[0]["provider"], "kimi");
+        let rollup = global_rollup(&[json!({ "id": "kimi", "provider": "kimi", "month": { "active_hours_left": 9.0 } })], T);
+        assert_eq!(rollup["providers"].as_object().unwrap().keys().collect::<Vec<_>>(), ["kimi"]);
+        assert_eq!(rollup["combined_headroom"]["active_hours_left"], Value::Null, "no Anthropic account, no Anthropic headroom");
+    }
+
+    /// Kimi Code's month window counts in its own headroom, and is named when it runs out
+    /// first; no figure mixes it with Anthropic's windows (AGEN-0129).
+    #[test]
+    fn headroom_counts_kimi_codes_month_window() {
+        let now = 1_791_650_000_000;
+        let hours = |h: i64| now + h * 3_600_000;
+        let accounts = [
+            json!({ "id": "work", "provider": "anthropic", "pool": null,
+                    "five_hour": { "active_hours_left": 3.0, "exhausts_at": hours(10) },
+                    "seven_day": { "active_hours_left": 20.0, "exhausts_at": hours(120) } }),
+            json!({ "id": "kimi", "provider": "kimi", "pool": null,
+                    "five_hour": { "active_hours_left": 4.0 },
+                    "seven_day": null,
+                    "month": { "active_hours_left": 2.0, "exhausts_at": hours(3) } }),
+        ];
+        let rollup = global_rollup(&accounts, now);
+        let kimi = &rollup["providers"]["kimi"];
+        assert_eq!(kimi["active_hours_left"], 2.0, "its month binds before its 5-hour window");
+        assert_eq!(kimi["first_to_exhaust"]["window"], "month");
+        let anthropic = &rollup["providers"]["anthropic"];
+        assert_eq!(anthropic["active_hours_left"], 3.0);
+        assert_eq!(anthropic["first_to_exhaust"]["window"], "five_hour", "not Kimi Code's month, three hours sooner");
+        assert_eq!(rollup["combined_headroom"], *anthropic, "the old key is Anthropic's");
+    }
+
     /// The phones ask with no `parts=` and decode every key as they always have; the iPhone
     /// fails on any one of nine missing. Without parts the summary is whole.
     #[test]
@@ -2149,7 +2804,7 @@ mod tests {
             keys,
             [
                 "totals", "unattributed", "quota", "account", "context", "models", "threads",
-                "latency", "stop_reasons", "by_account", "timeline", "quota_history",
+                "latency", "stop_reasons", "by_account", "timeline", "quota_history", "providers",
             ]
         );
         assert_eq!(whole["totals"]["requests"], 2);
@@ -2371,6 +3026,50 @@ mod tests {
         assert_eq!(tally(&tools["produced"], "results"), bare_2);
     }
 
+    /// Search follows the rest of the page's scope like every other panel: the account and
+    /// the provider that served the request a match came from, and the end of the range
+    /// (AGEN-0132).
+    #[test]
+    fn search_follows_the_scope() {
+        let store = store("search-scope");
+        let side = crate::db::bodies_path(&store.dir.join("agent-router.db"));
+        store.conn.execute("ATTACH DATABASE ?1 AS bodies_db", [side.to_str().unwrap()]).unwrap();
+        // The same words, said in a session served by Anthropic and in one served by Kimi Code.
+        store
+            .conn
+            .execute_batch(
+                "INSERT INTO sessions (id, cwd, started_at, last_seen_at) VALUES ('claude-1', '/code/a', 1, 2), ('kimi-1', '/code/a', 3, 4);
+                 INSERT INTO requests (id, request_id, session_id, account_id, method, path, started_at, provider)
+                   VALUES (1, 'a', 'claude-1', 'work', 'POST', '/v1/messages', 10, 'anthropic'),
+                          (2, 'k', 'kimi-1', 'kimi', 'POST', '/v1/messages', 20, 'kimi');
+                 INSERT INTO bodies_db.blocks (id, hash, kind, chars, text)
+                   VALUES (1, x'01', 'text', 27, 'the heron waits at the weir');
+                 INSERT INTO bodies_db.block_sites (block_id, session_id, ordinal, role, request_id, at)
+                   VALUES (1, 'claude-1', 0, 'user', 1, 10), (1, 'kimi-1', 0, 'user', 2, 20);",
+            )
+            .unwrap();
+        let conn = store.reads.get().unwrap();
+        let found = |scope: &str| -> [Vec<String>; 2] {
+            let uri: axum::http::Uri = format!("/api/search?q=heron{scope}").parse().unwrap();
+            let f = Query::<SearchQuery>::try_from_uri(&uri).unwrap().0;
+            let ids = |list: Value| -> Vec<String> {
+                let mut ids: Vec<String> =
+                    list.as_array().unwrap().iter().map(|h| h["session_id"].as_str().unwrap().to_owned()).collect();
+                ids.sort();
+                ids
+            };
+            [ids(hits_for(&conn, &f.q, &f, 60).unwrap()), ids(sessions_for(&conn, &f.q, &f).unwrap())]
+        };
+        let both = vec!["claude-1".to_string(), "kimi-1".to_string()];
+        assert_eq!(found(""), [both.clone(), both]);
+        let kimi = vec!["kimi-1".to_string()];
+        let claude = vec!["claude-1".to_string()];
+        assert_eq!(found("&provider=kimi"), [kimi.clone(), kimi.clone()]);
+        assert_eq!(found("&provider=anthropic"), [claude.clone(), claude.clone()]);
+        assert_eq!(found("&account=kimi"), [kimi.clone(), kimi]);
+        assert_eq!(found("&until=15"), [claude.clone(), claude], "the end of the range too");
+    }
+
     /// Search is asked with the page's project too (the console's search panel sends it), and
     /// it wrote its own project test as well, so in the `(unresolved)` scope it found nothing
     /// at all. It finds what was said in the sessions with no recorded directory now: the
@@ -2490,5 +3189,232 @@ mod tests {
             assert_eq!(row["has_token"], source == "token", "{source}");
             assert_eq!(row["expires_at"], 0, "{source}");
         }
+    }
+
+    #[tokio::test]
+    async fn the_accounts_list_names_each_provider() {
+        let store = store("accounts-providers");
+        store
+            .conn
+            .execute_batch(
+                "INSERT INTO accounts (id, label, source, active, created_at)
+                 VALUES ('default', 'me@example.com', 'keychain', 1, 1);
+                 INSERT INTO accounts (id, label, source, provider, base_url, active, created_at)
+                 VALUES ('kimi', 'Kimi', 'token', 'kimi', 'https://api.kimi.ai/coding', 1, 2);",
+            )
+            .unwrap();
+        let unchecked = |_: &Account| -> Credential { unreachable!("nothing asked for a check") };
+        let list = accounts_of(&store.reads, &AccountsQuery { probe: None }, unchecked).await.unwrap();
+        let list = list.as_array().unwrap();
+        assert_eq!(list.len(), 2);
+        assert_eq!((&list[0]["provider"], &list[0]["base_url"]), (&json!("anthropic"), &Value::Null));
+        assert_eq!(
+            (&list[1]["provider"], &list[1]["base_url"]),
+            (&json!("kimi"), &json!("https://api.kimi.ai/coding"))
+        );
+        assert_eq!((&list[0]["active"], &list[1]["active"]), (&json!(1), &json!(1)), "one active account per provider");
+    }
+
+    /// Not a credential: no Kimi Code key looks like this.
+    const KIMI_KEY: &str = "sk-kimi-test-0123456789abcdefghijklmnopqrstuvwxyz";
+
+    /// Add `label` as a Kimi Code account through the API, and read it back from the store.
+    async fn add_kimi(lab: &crate::api_refusals::Lab, label: &str, base_url: Option<&str>) -> Account {
+        let mut body = json!({ "label": label, "source": "token", "provider": "kimi", "token": KIMI_KEY });
+        if let Some(url) = base_url {
+            body["base_url"] = json!(url);
+        }
+        let (status, added) = lab.post("/api/accounts", &body.to_string()).await;
+        assert_eq!(status, StatusCode::OK, "{added}");
+        let id = added["id"].as_str().unwrap().to_string();
+        let account = crate::accounts::Store::new(lab.state.config.db_path.clone()).get(&id).unwrap().unwrap();
+        assert_eq!(account.provider, Provider::Kimi);
+        assert_eq!(account.source, Source::Token, "kept as a setup-token is");
+        assert_eq!(crate::accounts::resolve(&account).unwrap().token, KIMI_KEY, "it signs with the key it was given");
+        account
+    }
+
+    #[tokio::test]
+    async fn a_kimi_account_is_added_from_its_key_locally() {
+        let lab = crate::api_refusals::Lab::local("kimi-local");
+        let kimi = add_kimi(&lab, "Kimi local", None).await;
+        assert_eq!(kimi.base_url.as_deref(), Some("https://api.kimi.ai/coding"), "its provider's default, stored");
+        let store = crate::accounts::Store::new(lab.state.config.db_path.clone());
+        assert_eq!(store.active_for(Provider::Kimi).unwrap().id, "kimi-local", "the first of its provider");
+
+        // Kimi Code's China host, given with the slash its guide puts on the end.
+        let china = add_kimi(&lab, "Kimi local China", Some("https://api.kimi.com/coding/")).await;
+        assert_eq!(china.base_url.as_deref(), Some("https://api.kimi.com/coding"));
+        assert_eq!(store.active_for(Provider::Kimi).unwrap().id, "kimi-local", "a second one waits its turn");
+    }
+
+    #[tokio::test]
+    async fn a_kimi_account_is_added_from_its_key_on_a_hosted_router() {
+        let lab = crate::api_refusals::Lab::hosted("kimi-hosted").await;
+        add_kimi(&lab, "Kimi hosted", None).await;
+        let store = crate::accounts::Store::new(lab.state.config.db_path.clone());
+        assert_eq!(store.active_for(Provider::Kimi).unwrap().id, "kimi-hosted");
+        assert!(store.active().is_err(), "a Kimi Code key never becomes what Claude's requests are signed with");
+        let (status, body) = lab.post("/api/accounts/activate", r#"{"id":"kimi-hosted"}"#).await;
+        assert_eq!(status, StatusCode::OK, "a hosted router signs with pasted keys, and this is one: {body}");
+    }
+
+    #[tokio::test]
+    async fn a_key_is_checked_against_its_providers_format() {
+        use crate::api_refusals::{words, Lab};
+        let lab = Lab::local("key-format");
+        let kimi_wants = "that is an Anthropic token — a Kimi Code account takes a key from the Kimi Code console";
+        for (body, said) in [
+            (json!({ "label": "kimi-format", "source": "token", "provider": "kimi", "token": "sk-ant-oat01-abc" }), kimi_wants),
+            (
+                json!({ "label": "claude-format", "source": "token", "token": KIMI_KEY }),
+                "expected a token starting sk-ant- (from `claude setup-token`)",
+            ),
+            (
+                json!({ "label": "claude-format", "source": "token", "provider": "anthropic", "token": "sk-ant-sid01-abc" }),
+                "that is a claude.ai session key — it belongs in the session-key field, and cannot sign API requests",
+            ),
+            (
+                json!({ "label": "kimi-format", "source": "profile", "provider": "kimi" }),
+                "a Kimi Code account is added from its key, as a token account",
+            ),
+            (json!({ "label": "kimi-format", "source": "token", "provider": "unknown", "token": KIMI_KEY }), r#"unknown provider "unknown""#),
+            (
+                json!({ "label": "kimi-format", "source": "token", "provider": "kimi", "token": KIMI_KEY, "base_url": "http://api.kimi.ai/coding" }),
+                r#""http://api.kimi.ai/coding" is not an https:// address"#,
+            ),
+            (
+                json!({ "label": "claude-format", "source": "token", "token": "sk-ant-oat01-abc", "base_url": "https://example.com" }),
+                "an Anthropic account goes to the router's own upstream, and takes no base URL",
+            ),
+        ] {
+            assert_eq!(words(lab.post("/api/accounts", &body.to_string()).await, StatusCode::BAD_REQUEST), said, "{body}");
+        }
+        let store = crate::accounts::Store::new(lab.state.config.db_path.clone());
+        for id in ["kimi-format", "claude-format"] {
+            assert!(store.get(id).unwrap().is_none(), "{id}: nothing refused was stored");
+        }
+
+        // A new credential for an account is held to that account's provider's format.
+        let kimi = add_kimi(&lab, "Kimi rotate", None).await;
+        let rotate = |token: &str| json!({ "id": kimi.id, "token": token }).to_string();
+        assert_eq!(words(lab.post("/api/accounts/edit", &rotate("sk-ant-oat01-abc")).await, StatusCode::BAD_REQUEST), kimi_wants);
+        assert_eq!(crate::accounts::resolve(&kimi).unwrap().token, KIMI_KEY, "the refused one was not stored");
+        assert_eq!(lab.post("/api/accounts/edit", &rotate("sk-kimi-rotated")).await.0, StatusCode::OK);
+        assert_eq!(crate::accounts::resolve(&kimi).unwrap().token, "sk-kimi-rotated");
+    }
+
+    #[tokio::test]
+    async fn the_profile_probe_skips_a_kimi_account() {
+        use crate::api_refusals::{words, Lab};
+        let lab = Lab::local("probe-kimi");
+        let kimi = add_kimi(&lab, "Kimi probe", None).await;
+        let refused = lab.post("/api/accounts/probe", &json!({ "id": kimi.id }).to_string()).await;
+        assert_eq!(
+            words(refused, StatusCode::CONFLICT),
+            r#""kimi-probe" is a Kimi Code account, so it has no Claude Code login to check"#
+        );
+    }
+
+    #[tokio::test]
+    async fn the_forecast_gives_a_kimi_accounts_windows() {
+        let lab = crate::api_refusals::Lab::local("forecast-kimi");
+        let add = json!({ "label": "Forecast kimi", "source": "token", "provider": "kimi", "token": "sk-kimi-not-a-credential" });
+        assert_eq!(lab.post("/api/accounts", &add.to_string()).await.0, StatusCode::OK);
+        // Two readings of Kimi Code's usage API, as the reader keeps them, an hour apart.
+        let now = crate::db::now_ms();
+        let (five_reset, month_reset) = (now / 1000 + 3 * 3600, now / 1000 + 20 * 86_400);
+        let conn = Connection::open(&lab.state.config.db_path).unwrap();
+        // The rate table and its cost view, as the router sets them up at start.
+        crate::pricing::ensure_table(&conn).unwrap();
+        for (at, five, month) in [(now - 3_600_000, 0.1, 0.30), (now - 60_000, 0.4, 0.35)] {
+            conn.execute(
+                "INSERT INTO quota_readings (account_id, at, five_hour_used, five_hour_reset, second_window, second_used, second_reset)
+                 VALUES ('forecast-kimi', ?1, ?2, ?3, 'month', ?4, ?5)",
+                params![at, five, five_reset, month, month_reset],
+            )
+            .unwrap();
+        }
+        let everything = Filter { project: None, session: None, account: None, since: None, until: None, tz: None, provider: None };
+        let got = forecast_inner(&lab.state, &everything).unwrap();
+        let card = got["accounts"].as_array().unwrap().iter().find(|a| a["id"] == "forecast-kimi").unwrap().clone();
+        assert_eq!(card["provider"], "kimi");
+        assert_eq!(card["seen_at"], json!(now - 60_000), "seen when it was last read");
+        assert_eq!((&card["five_hour"]["used"], &card["five_hour"]["reset_at"]), (&json!(0.4), &json!(five_reset)));
+        assert_eq!(card["five_hour"]["expired"], json!(false));
+        assert_eq!((&card["month"]["used"], &card["month"]["reset_at"]), (&json!(0.35), &json!(month_reset)));
+        assert_eq!(card["seven_day"], Value::Null, "a monthly plan has no weekly window");
+    }
+
+    #[tokio::test]
+    async fn the_forecast_counts_an_accounts_unpriced_requests() {
+        let lab = crate::api_refusals::Lab::local("forecast-unpriced");
+        let conn = Connection::open(&lab.state.config.db_path).unwrap();
+        crate::pricing::ensure_table(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO accounts (id, label, source, active, created_at) VALUES ('work', 'Work', 'token', 1, 1);
+             INSERT INTO requests (request_id, account_id, model, method, path, started_at)
+             VALUES ('priced', 'work', 'claude-opus-5-5', 'POST', '/v1/messages', 1000),
+                    ('unpriced', 'work', 'gpt-9', 'POST', '/v1/messages', 2000),
+                    ('refused', 'work', 'claude-opus-5-5', 'POST', '/v1/messages', 3000);
+             INSERT INTO usage (request_id, input_tokens, output_tokens)
+             SELECT id, 1000, 100 FROM requests WHERE request_id IN ('priced', 'unpriced');",
+        )
+        .unwrap();
+        crate::pricing::resolve_models(&conn).unwrap();
+        let everything = Filter { project: None, session: None, account: None, since: None, until: None, tz: None, provider: None };
+        let got = forecast_inner(&lab.state, &everything).unwrap();
+        let card = got["accounts"].as_array().unwrap().iter().find(|a| a["id"] == "work").unwrap().clone();
+        // A request with no usage (refused) has nothing to price; only the one with usage and
+        // no rate is unpriced, and the priced one still has its cost.
+        assert_eq!((&card["usage"]["requests"], &card["usage"]["unpriced"]), (&json!(3), &json!(1)), "{card}");
+        assert!(card["usage"]["cost"].as_f64().unwrap() > 0.0);
+    }
+
+    /// Three hours of one session, then half an hour of three: the 7-day window's short
+    /// trend carries the new load, weighed by what the requests cost, beside the long one.
+    #[tokio::test]
+    async fn the_forecast_gives_a_short_trend() {
+        let lab = crate::api_refusals::Lab::local("forecast-recent");
+        let conn = Connection::open(&lab.state.config.db_path).unwrap();
+        crate::pricing::ensure_table(&conn).unwrap();
+        conn.execute_batch("INSERT INTO accounts (id, label, source, active, created_at) VALUES ('work', 'Work', 'token', 1, 1);")
+            .unwrap();
+        let now = crate::db::now_ms();
+        let (five_reset, week_reset) = (now / 1000 + 2 * 3600, now / 1000 + 3 * 86_400);
+        let start = now - 210 * 60_000;
+        // One request a minute for three hours, then one every twenty seconds; each the same
+        // size, so cost follows the request count. The meter climbs a percent every 18 minutes.
+        let times: Vec<i64> =
+            (0..180).map(|i| start + i * 60_000).chain((0..90).map(|i| start + 180 * 60_000 + i * 20_000)).collect();
+        for (i, at) in times.iter().enumerate() {
+            let week = 0.10 + (at - start) as f64 / (18.0 * 60_000.0) * 0.01;
+            conn.execute(
+                "INSERT INTO requests (request_id, account_id, model, method, path, started_at,
+                                       rl_status, rl_5h_utilization, rl_5h_reset, rl_7d_utilization, rl_7d_reset)
+                 VALUES (?1, 'work', 'claude-opus-5-5', 'POST', '/v1/messages', ?2, 'allowed', 0.2, ?3, ?4, ?5)",
+                params![format!("r{i}"), at, five_reset, (week * 100.0).floor() / 100.0, week_reset],
+            )
+            .unwrap();
+        }
+        conn.execute_batch("INSERT INTO usage (request_id, input_tokens, output_tokens) SELECT id, 1000, 100 FROM requests;")
+            .unwrap();
+        crate::pricing::resolve_models(&conn).unwrap();
+
+        let everything = Filter { project: None, session: None, account: None, since: None, until: None, tz: None, provider: None };
+        let got = forecast_inner(&lab.state, &everything).unwrap();
+        let card = got["accounts"].as_array().unwrap().iter().find(|a| a["id"] == "work").unwrap().clone();
+        let week = &card["seven_day"];
+        assert_eq!(week["basis"], "this-window", "{week}");
+        let recent = &week["recent"];
+        let load = recent["load"].as_f64().unwrap_or_else(|| panic!("no short trend: {week}"));
+        // Three times the requests in the last half hour, against a long stretch that
+        // includes it: about 2.6×.
+        assert!((2.2..3.0).contains(&load), "load {load}");
+        let (long, short) = (week["burn_per_active_hour"].as_f64().unwrap(), recent["burn_per_active_hour"].as_f64().unwrap());
+        assert!((short - long * load).abs() < 1e-9);
+        assert_eq!(recent["measured_until"], json!(times.last().unwrap()));
+        // A flat 5-hour meter has no slope, so no long trend and no short one beside it.
+        assert_eq!(card["five_hour"]["recent"], Value::Null, "{}", card["five_hour"]);
     }
 }
