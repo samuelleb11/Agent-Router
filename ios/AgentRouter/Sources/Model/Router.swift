@@ -122,7 +122,12 @@ struct RequestRoute: Hashable {
 struct AccountsRoute: Hashable { let routerId: UUID }
 /// Search is per router: the index belongs to one store, and there is nothing to ask
 /// for a view across several.
-struct SearchRoute: Hashable { let routerId: UUID }
+/// Search, from the router's page (everything) or from a Usage page (its scope and range).
+struct SearchRoute: Hashable {
+    let routerId: UUID
+    var scope: UsageScope? = nil
+    var since: String? = nil
+}
 struct SettingsRoute: Hashable { let routerId: UUID }
 struct LibraryRoute: Hashable { let routerId: UUID }
 struct LibraryItemRoute: Hashable {

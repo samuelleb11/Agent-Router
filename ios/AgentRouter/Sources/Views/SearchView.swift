@@ -6,6 +6,9 @@ import SwiftUI
 /// there is no federated view to ask.
 struct SearchView: View {
     let state: RouterState
+    /// The Usage page's scope and the start of its range, when opened from one.
+    var scope: UsageScope? = nil
+    var since: String? = nil
 
     @State private var query = ""
     @State private var kind: Kind = .all
@@ -46,6 +49,8 @@ struct SearchView: View {
                 }
                 .pickerStyle(.segmented)
                 .accessibilityIdentifier("search-kind")
+            } footer: {
+                if let caption = ScopedSearch.caption(scope: scope) { Text(caption) }
             }
 
             if let failure {
@@ -187,7 +192,7 @@ struct SearchView: View {
             // and the rows below the first screenful are rarely the ones wanted.
             let r: SearchResults = try await client.get(
                 "/api/search",
-                query: ["q": q, "kind": kind.param, "limit": "25"]
+                query: ScopedSearch.query(q, kind: kind.param, scope: scope, since: since)
             )
             results = r
             failure = nil

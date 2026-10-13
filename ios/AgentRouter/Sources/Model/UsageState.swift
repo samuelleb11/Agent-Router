@@ -120,7 +120,11 @@ final class UsageState {
 
     var buckets: [Bucket] { summary.map { Bucket.build($0.timeline) } ?? [] }
 
-    private var since: String? { range.sinceMs.map { String(Int(Date().timeIntervalSince1970 * 1000) - $0) } }
+    /// The start of the range, epoch milliseconds as the router reads it; nil for all of it.
+    var since: String? { range.sinceMs.map { String(Int(Date().timeIntervalSince1970 * 1000) - $0) } }
+
+    /// Where the scoped project ran, when one is scoped.
+    var places: ProjectPlaces? { ProjectPlaces.of(scope.project, in: projects) }
 
     func refresh() async {
         guard let client = router.liveClient else { return }

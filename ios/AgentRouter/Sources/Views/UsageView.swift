@@ -31,6 +31,15 @@ struct UsageView: View {
             if let f = usage.failure {
                 Section { Label(f, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange) }
             }
+            if let places = usage.places {
+                // Where the scoped project ran: its repository, and each directory by its machine.
+                Section("Where this project ran") {
+                    if let repo = places.repository { LabeledContent("Repository") { Text(repo).font(.caption.monospaced()) } }
+                    ForEach(Array(places.directories.enumerated()), id: \.offset) { _, d in
+                        Text(d.label).font(.caption.monospaced()).foregroundStyle(.secondary)
+                    }
+                }
+            }
             if let s = usage.summary {
                 tiles(s)
                 if !usage.buckets.isEmpty {
@@ -242,6 +251,11 @@ struct UsageView: View {
             NavigationLink(value: UsageListRoute(routerId: id, scope: usage.scope, kind: .requests)) {
                 LabeledContent { Text(Fmt.count(Double(usage.requests.count))) } label: { Label("Requests", systemImage: "list.bullet") }
             }
+            // A search from here searches this page's scope, as the console's Search tab does.
+            NavigationLink(value: SearchRoute(routerId: id, scope: usage.narrowed(account: usage.scope.account, project: usage.scope.project, session: usage.scope.session), since: usage.since)) {
+                Label("Search in this scope", systemImage: "magnifyingglass")
+            }
+            .accessibilityIdentifier("usage-search")
         }
         .accessibilityIdentifier("usage-details")
     }
