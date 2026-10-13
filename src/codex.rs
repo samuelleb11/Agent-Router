@@ -353,6 +353,63 @@ pub fn remove(path: &Path, kept: &Path) -> Result<bool> {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn hosted_chatgpt_catalogue_discovers_visible_models_without_local_cache() {
+        use axum::{body::Body, http::{Request, StatusCode}, routing::get, Json, Router};
+        use serde_json::json;
+        use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+        use tower::ServiceExt;
+
+        let lab = crate::api_refusals::Lab::hosted("chatgpt-catalogue").await;
+        let conn = rusqlite::Connection::open(&lab.state.config.db_path).unwrap();
+        conn.execute("INSERT INTO accounts(id,label,source,provider,active,created_at) VALUES('plan','Plan','token','openai',1,1)", []).unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        let upstream = Router::new().route("/v1/models", get(move |req: Request<Body>| {
+            let observed = observed.clone();
+            async move {
+                assert_eq!(req.headers()["authorization"], "Bearer TEST-PLAN-TOKEN");
+                assert_eq!(req.headers()["chatgpt-account-id"], "test-workspace");
+                assert_eq!(req.headers()["originator"], "agent_router");
+                assert_eq!(req.uri().query(), Some(concat!("client_version=", "0.162.0-alpha.17.2")));
+                observed.fetch_add(1, Ordering::SeqCst);
+                Json(json!({"models":[
+                    {"slug":"gpt-hosted-fixture","display_name":"Hosted fixture","visibility":"list","base_instructions":"PRIVATE-MODEL-PROMPT"},
+                    {"slug":"gpt-hidden-fixture","visibility":"hide"},
+                    {"slug":"gpt-image-fixture","visibility":"list"},
+                    {"slug":"not-a-coding-model","visibility":"list"}
+                ]}))
+            }
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+        lab.state.credentials.write().await.insert("plan".into(), crate::proxy::Active {
+            account_id: "plan".into(), label: "Plan".into(), identity: None,
+            token: "TEST-PLAN-TOKEN".into(), expires_at_ms: i64::MAX,
+            provider: crate::accounts::Provider::OpenAI, base_url: Some(format!("http://{address}")),
+            openai_chatgpt: true, chatgpt_account_id: Some("test-workspace".into()),
+        });
+        refresh_models(&lab.state, "plan").await.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "ChatGPT accounts must fetch their own catalogue even on a hosted server");
+        let (status, token) = lab.post("/api/auth/tokens", &json!({"name":"catalogue-test","scope":"client"}).to_string()).await;
+        assert_eq!(status, StatusCode::CREATED);
+        let mut request = Request::get("/_router/models")
+            .header("host", "127.0.0.1").header("authorization", format!("Bearer {}", token["token"].as_str().unwrap()))
+            .body(Body::empty()).unwrap();
+        request.extensions_mut().insert(axum::extract::ConnectInfo(std::net::SocketAddr::from(([127,0,0,1],50000))));
+        let response = lab.app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), 1 << 20).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(body["models"].as_array().unwrap().iter().any(|m| m["id"] == "gpt-hosted-fixture"));
+        let text = String::from_utf8(bytes.to_vec()).unwrap();
+        for private in ["TEST-PLAN-TOKEN", "test-workspace", "PRIVATE-MODEL-PROMPT", "gpt-hidden-fixture", "gpt-image-fixture"] {
+            assert!(!text.contains(private), "scoped catalogue leaked {private}");
+        }
+        server.abort();
+    }
+
     struct ConfigFiles {
         root: PathBuf,
         path: PathBuf,
