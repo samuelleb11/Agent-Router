@@ -144,8 +144,8 @@ private struct RouterRow: View {
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                 HStack(spacing: 12) {
-                    MiniGauge(label: "5h", used: a.fiveHour)
-                    MiniGauge(label: "7d", used: a.sevenDay)
+                    MiniGauge(label: WindowKey.fiveHour.short, used: a.fiveHour)
+                    MiniGauge(label: a.secondKey.short, used: a.second)
                 }
                 if let c = state.sessionCounts {
                     // Waiting on you is the one worth colouring: it is the one that needs

@@ -1,0 +1,252 @@
+{
+ "generated_at": 1791860788908,
+ "since": null,
+ "accounts": [
+  {
+   "id": "work",
+   "label": "work",
+   "email": "work@example.com",
+   "plan": null,
+   "active": 1,
+   "provider": "anthropic",
+   "usage": {
+    "requests": 91318,
+    "prompt_tokens": 32078487015,
+    "output_tokens": 125056825,
+    "cost": 22862.8127977,
+    "unpriced": 0,
+    "estimated": 0,
+    "last_seen": 1791860766294
+   },
+   "week": {
+    "cost": 7192.29594975,
+    "unpriced": 0,
+    "estimated": 0,
+    "prompt_tokens": 10385673736,
+    "requests": 28142
+   },
+   "seen_at": 1791860766294,
+   "status": "allowed",
+   "pool": 1792357200,
+   "five_hour": {
+    "used": 0.01,
+    "reset_at": 1791876600,
+    "window_start": 1791858600,
+    "burn_per_active_hour": 0.04235162436125936,
+    "active_hours_left": 23.37572678571428,
+    "duty_fraction": 0.34376466899015407,
+    "duty": {
+     "low": 0.34376466899015407,
+     "mid": 0.34376466899015407,
+     "high": 0.34376466899015407
+    },
+    "exhausts_at": null,
+    "exhausts_at_early": null,
+    "exhausts_at_late": null,
+    "resets_first": true,
+    "verdict": "resets-first",
+    "projected_end_util": 0.0739426566640703,
+    "projected_end_util_low": 0.0739426566640703,
+    "projected_end_util_high": 0.0739426566640703,
+    "basis": "trailing-windows",
+    "measured_active_hours": 0.0,
+    "readings": 31,
+    "recent": null,
+    "expired": false,
+    "seen_at": 1791860766294,
+    "series": [
+     {
+      "t": 1791858375000,
+      "u": 0.0
+     },
+     {
+      "t": 1791858750000,
+      "u": 0.0
+     },
+     {
+      "t": 1791860250000,
+      "u": 0.01
+     },
+     {
+      "t": 1791860625000,
+      "u": 0.01
+     }
+    ]
+   },
+   "seven_day": {
+    "used": 0.04,
+    "reset_at": 1792357200,
+    "window_start": 1791752400,
+    "burn_per_active_hour": 0.008435262348960477,
+    "active_hours_left": 113.80796,
+    "duty_fraction": 0.20196994617136982,
+    "duty": {
+     "low": 0.11343487913262086,
+     "mid": 0.20196994617136982,
+     "high": 0.2905050132101188
+    },
+    "exhausts_at": null,
+    "exhausts_at_early": null,
+    "exhausts_at_late": null,
+    "resets_first": true,
+    "verdict": "resets-first",
+    "projected_end_util": 0.2749223411792073,
+    "projected_end_util_low": 0.1719423403450569,
+    "projected_end_util_high": 0.37790234201335765,
+    "basis": "this-window",
+    "measured_active_hours": 4.741998333333333,
+    "readings": 625,
+    "recent": {
+     "load": 1.2665101492197264,
+     "burn_per_active_hour": 0.010683345376289474,
+     "measured_active_hours": 0.5479677777777778,
+     "measured_from": 1791844440279,
+     "measured_until": 1791860766294,
+     "exhausts_at": null,
+     "projected_end_util": 0.33753152938192527
+    },
+    "expired": false,
+    "seen_at": 1791860766294,
+    "series": [
+     {
+      "t": 1791770400000,
+      "u": 0.02
+     },
+     {
+      "t": 1791783000000,
+      "u": 0.02
+     },
+     {
+      "t": 1791833400000,
+      "u": 0.04
+     },
+     {
+      "t": 1791846000000,
+      "u": 0.04
+     },
+     {
+      "t": 1791858600000,
+      "u": 0.04
+     }
+    ]
+   }
+  },
+  {
+   "id": "kimi-main",
+   "label": "kimi-main",
+   "email": null,
+   "plan": null,
+   "active": 1,
+   "provider": "kimi",
+   "usage": {
+    "requests": 0,
+    "prompt_tokens": 0,
+    "output_tokens": 0,
+    "cost": 0,
+    "unpriced": 0,
+    "estimated": 0,
+    "last_seen": null
+   },
+   "week": {
+    "cost": 0,
+    "unpriced": 0,
+    "estimated": 0,
+    "prompt_tokens": 0,
+    "requests": 0
+   },
+   "seen_at": 1791860508943,
+   "status": null,
+   "pool": null,
+   "five_hour": {
+    "used": 0.0,
+    "reset_at": 1791870562,
+    "window_start": 1791852562,
+    "burn_per_active_hour": 0.0,
+    "active_hours_left": null,
+    "duty_fraction": 0.9652356693794534,
+    "duty": {
+     "low": 0.9652356693794534,
+     "mid": 0.9652356693794534,
+     "high": 0.9652356693794534
+    },
+    "exhausts_at": null,
+    "exhausts_at_early": null,
+    "exhausts_at_late": null,
+    "resets_first": true,
+    "verdict": "resets-first",
+    "projected_end_util": 0.0,
+    "projected_end_util_low": 0.0,
+    "projected_end_util_high": 0.0,
+    "basis": "none",
+    "measured_active_hours": 0.0,
+    "readings": 27,
+    "recent": null,
+    "expired": false,
+    "seen_at": 1791860508943,
+    "series": [],
+    "spent": false
+   },
+   "seven_day": null,
+   "month": {
+    "used": 0.0553,
+    "reset_at": 1794355200,
+    "window_start": 1791763200,
+    "burn_per_active_hour": 0.0,
+    "active_hours_left": null,
+    "duty_fraction": 0.01,
+    "duty": {
+     "low": 0.01,
+     "mid": 0.01,
+     "high": 0.01
+    },
+    "exhausts_at": null,
+    "exhausts_at_early": null,
+    "exhausts_at_late": null,
+    "resets_first": true,
+    "verdict": "resets-first",
+    "projected_end_util": 0.0553,
+    "projected_end_util_low": 0.0553,
+    "projected_end_util_high": 0.0553,
+    "basis": "none",
+    "measured_active_hours": 0.0,
+    "readings": 325,
+    "recent": null,
+    "expired": false,
+    "seen_at": 1791860508943,
+    "series": [],
+    "spent": true
+   }
+  }
+ ],
+ "global": {
+  "requests": 197676.0,
+  "prompt_tokens": 69106692841.0,
+  "output_tokens": 262093620.0,
+  "cost": 50205.0879023,
+  "accounts": 2,
+  "combined_headroom": {
+   "active_hours_left": 23.37572678571428,
+   "pools": 2,
+   "first_to_exhaust": null
+  },
+  "providers": {
+   "anthropic": {
+    "active_hours_left": 23.37572678571428,
+    "pools": 2,
+    "first_to_exhaust": null
+   },
+   "kimi": {
+    "active_hours_left": null,
+    "pools": 0,
+    "first_to_exhaust": null
+   }
+  },
+  "pace_30d": {
+   "cost": 86525.35743685714,
+   "unpriced": 631.0,
+   "estimated": 0.0,
+   "prompt_tokens": 122764696881.42857,
+   "basis": "the last 7 days of recorded spend"
+  }
+ }
+}

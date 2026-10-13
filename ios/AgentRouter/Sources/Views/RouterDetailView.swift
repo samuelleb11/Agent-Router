@@ -23,8 +23,7 @@ struct RouterDetailView: View {
             sessionsSection
             if let a = state.activeAccount {
                 Section {
-                    QuotaRow(title: "5-hour window", window: a.fiveHour)
-                    QuotaRow(title: "7-day window", window: a.sevenDay)
+                    ForEach(a.windows, id: \.key) { w in QuotaRow(title: w.key.label, window: w.window) }
                 } header: {
                     Text("Quota — \(a.title)")
                 } footer: {
@@ -112,8 +111,8 @@ struct RouterDetailView: View {
     }
 
     @ViewBuilder private func burnDownSection(_ a: Forecast.ForecastAccount) -> some View {
-        let windows: [(String, Forecast.Window)] = [("5-hour", a.fiveHour), ("7-day", a.sevenDay)]
-            .compactMap { name, w in w.flatMap { $0.isExpired || $0.windowStart == nil ? nil : (name, $0) } }
+        let windows: [(String, Forecast.Window)] = a.windows
+            .compactMap { k, w in w.flatMap { $0.isExpired || $0.windowStart == nil ? nil : (k.name, $0) } }
         if !windows.isEmpty {
             Section {
                 ForEach(windows, id: \.0) { name, w in
@@ -246,8 +245,8 @@ private struct AccountRow: View {
                 HStack(spacing: 6) {
                     if let plan = account.plan { Text(plan) }
                     Text(Fmt.usd(account.week.cost) + " this week")
-                    if let w = account.sevenDay, !w.isExpired, let used = w.used {
-                        Text("7d " + Fmt.percent(used))
+                    if let w = account.second, !w.isExpired, let used = w.used {
+                        Text(account.secondKey.short + " " + Fmt.percent(used))
                     }
                 }
                 .font(.caption)

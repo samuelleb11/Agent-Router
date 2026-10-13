@@ -1,0 +1,131 @@
+{
+ "models": [
+  "opus",
+  "opus[1m]",
+  "sonnet",
+  "sonnet[1m]",
+  "haiku",
+  "haiku[1m]",
+  "fable",
+  "fable[1m]",
+  "mythos",
+  "mythos[1m]",
+  "opusplan",
+  "opusplan[1m]",
+  "k3",
+  "k3-256k",
+  "kimi-for-coding",
+  "kimi-for-coding-highspeed"
+ ],
+ "by_provider": [
+  {
+   "provider": "anthropic",
+   "name": "Anthropic",
+   "models": [
+    {
+     "id": "opus",
+     "display_name": "opus"
+    },
+    {
+     "id": "opus[1m]",
+     "display_name": "opus[1m]"
+    },
+    {
+     "id": "sonnet",
+     "display_name": "sonnet"
+    },
+    {
+     "id": "sonnet[1m]",
+     "display_name": "sonnet[1m]"
+    },
+    {
+     "id": "haiku",
+     "display_name": "haiku"
+    },
+    {
+     "id": "haiku[1m]",
+     "display_name": "haiku[1m]"
+    },
+    {
+     "id": "fable",
+     "display_name": "fable"
+    },
+    {
+     "id": "fable[1m]",
+     "display_name": "fable[1m]"
+    },
+    {
+     "id": "mythos",
+     "display_name": "mythos"
+    },
+    {
+     "id": "mythos[1m]",
+     "display_name": "mythos[1m]"
+    },
+    {
+     "id": "opusplan",
+     "display_name": "opusplan"
+    },
+    {
+     "id": "opusplan[1m]",
+     "display_name": "opusplan[1m]"
+    }
+   ]
+  },
+  {
+   "provider": "kimi",
+   "name": "Kimi Code",
+   "models": [
+    {
+     "id": "k3",
+     "display_name": "Kimi K3"
+    },
+    {
+     "id": "k3-256k",
+     "display_name": "Kimi K3 (256K)"
+    },
+    {
+     "id": "kimi-for-coding",
+     "display_name": "Kimi for Coding"
+    },
+    {
+     "id": "kimi-for-coding-highspeed",
+     "display_name": "Kimi for Coding HighSpeed"
+    }
+   ]
+  }
+ ],
+ "efforts": [
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max"
+ ],
+ "modes": [
+  {
+   "value": "default",
+   "label": "Ask"
+  },
+  {
+   "value": "acceptEdits",
+   "label": "Accept edits"
+  },
+  {
+   "value": "auto",
+   "label": "Auto"
+  },
+  {
+   "value": "dontAsk",
+   "label": "Don't ask"
+  },
+  {
+   "value": "plan",
+   "label": "Plan"
+  },
+  {
+   "value": "bypassPermissions",
+   "label": "Bypass"
+  }
+ ]
+}

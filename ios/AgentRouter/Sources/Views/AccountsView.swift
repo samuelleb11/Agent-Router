@@ -116,7 +116,10 @@ struct AccountEditSheet: View {
                     Section {
                         SecureField("New credential", text: $token, prompt: Text(account.provider == "openai" ? "sk-proj-…" : account.provider == "kimi" ? "Kimi Code key" : "sk-ant-oat01-…"))
                     } header: { Text("Credential") } footer: {
-                        Text(account.provider == "openai" ? "A fresh OpenAI API key, if the current one was revoked or you want to rotate it." : account.provider == "kimi" ? "A fresh Kimi Code key." : "A fresh `claude setup-token` value, if the current one was revoked or you want to rotate it.")
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(account.provider == "openai" ? "A fresh OpenAI API key, if the current one was revoked or you want to rotate it." : account.provider == "kimi" ? "A fresh Kimi Code key." : "A fresh `claude setup-token` value, if the current one was revoked or you want to rotate it.")
+                            if let p = Provider.keyProblem(account.provider ?? "anthropic", token) { Text(p).foregroundStyle(.red) }
+                        }
                     }
                 }
                 if account.takesUsageKey { Section {
@@ -135,7 +138,10 @@ struct AccountEditSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) { Button("Save") { Task { await save() } }.disabled(saving) }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") { Task { await save() } }
+                        .disabled(saving || Provider.keyProblem(account.provider ?? "anthropic", token) != nil)
+                }
             }
             .onAppear { label = account.label; email = account.email ?? "" }
         }
@@ -166,37 +172,51 @@ struct AddAccountSheet: View {
     @State private var source = "signin"
     @State private var provider = "anthropic"
     @State private var token = ""
+    @State private var baseURL = ""
     @State private var working = false
     @State private var login: LoginStatus?
     @State private var polling = false
     @State private var message: String?
 
+    /// A hosted router has no Mac to sign in on or keep a profile: an Anthropic account is a
+    /// pasted token there, as the console offers it.
+    private var hosted: Bool { model.router.auth?.isHosted == true }
+    private var how: String { provider == "anthropic" && !hosted ? source : "token" }
+    private var keyProblem: String? { how == "token" ? Provider.keyProblem(provider, token) : nil }
+    private var urlProblem: String? { provider == "anthropic" ? nil : Provider.baseURLProblem(baseURL) }
+
     private var valid: Bool {
-        !label.trimmingCharacters(in: .whitespaces).isEmpty && ((provider == "anthropic" && source != "token") || !token.isEmpty)
+        !label.trimmingCharacters(in: .whitespaces).isEmpty && (how != "token" || !token.trimmingCharacters(in: .whitespaces).isEmpty)
+            && keyProblem == nil && urlProblem == nil
     }
 
     var body: some View {
         NavigationStack {
             Form {
                 Section {
-                    TextField("Name", text: $label, prompt: Text("work"))
                     Picker("Provider", selection: $provider) {
-                        Text("Anthropic").tag("anthropic")
-                        Text("Kimi Code").tag("kimi")
-                        Text("OpenAI").tag("openai")
+                        ForEach(Provider.addable, id: \.self) { Text(Provider.name($0)).tag($0) }
                     }
                     .disabled(working || polling)
-                    .onChange(of: provider) { _, _ in token = "" }
-                    if provider == "anthropic" { Picker("How", selection: $source) {
+                    .onChange(of: provider) { _, _ in token = ""; baseURL = "" }
+                    TextField("Name", text: $label, prompt: Text("work"))
+                    if provider == "anthropic" && !hosted { Picker("How", selection: $source) {
                         Text("Sign in from here").tag("signin")
                         Text("Paste a token").tag("token")
                         Text("Separate profile").tag("profile")
                     } }
-                    if provider != "anthropic" || source == "token" {
+                    if how == "token" {
                         SecureField(provider == "openai" ? "OpenAI API key" : provider == "kimi" ? "Kimi Code key" : "Token", text: $token, prompt: Text(provider == "openai" ? "sk-proj-…" : provider == "kimi" ? "Kimi Code key" : "sk-ant-oat01-…"))
                     }
+                    if provider != "anthropic" {
+                        TextField("Base URL", text: $baseURL, prompt: Text(Provider.defaultBaseURL(provider) ?? ""))
+                            .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
+                    }
                 } footer: {
-                    Text(help)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(help)
+                        if let p = keyProblem ?? urlProblem { Text(p).foregroundStyle(.red) }
+                    }
                 }
                 if let login {
                     Section("Sign-in") {
@@ -220,7 +240,7 @@ struct AddAccountSheet: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(provider == "anthropic" && source == "signin" ? "Start sign-in" : "Add") { Task { await go() } }
+                    Button(how == "signin" ? "Start sign-in" : "Add") { Task { await go() } }
                         .disabled(!valid || working || polling)
                 }
             }
@@ -244,9 +264,9 @@ struct AddAccountSheet: View {
     }
 
     private var help: String {
-        if provider == "openai" { return "An API key from your OpenAI project. A local router also discovers the Codex login automatically." }
-        if provider == "kimi" { return "A key from the Kimi Code console." }
-        return switch source {
+        if provider == "openai" { return "An API key from your OpenAI project. A local router also discovers the Codex login automatically. Leave the base URL blank for OpenAI's own." }
+        if provider == "kimi" { return "A key from the Kimi Code console. Leave the base URL blank for Kimi Code's own." }
+        return switch how {
         case "token": "A `claude setup-token` value from a terminal. The router keeps it in the Mac's Keychain."
         case "profile": "A separate Claude Code profile directory on the Mac. You sign in there once with a terminal; the router reads its credential."
         default: "The router runs `claude setup-token` on the Mac and shows you the link to open. Sign in there, and the account appears here."
@@ -267,16 +287,19 @@ struct AddAccountSheet: View {
         working = true
         defer { working = false }
         let name = label.trimmingCharacters(in: .whitespaces)
-        if provider == "anthropic" && source == "signin" {
+        if how == "signin" {
             login = await model.loginStart(label: name)
             if login?.error == nil { polling = true } else { message = login?.error }
             return
         }
-        if let p = await model.add(label: name, source: provider == "anthropic" ? source : "token", token: provider != "anthropic" || source == "token" ? token.trimmingCharacters(in: .whitespaces) : nil, provider: provider == "anthropic" ? nil : provider) {
+        let url = Provider.trimmedBaseURL(baseURL)
+        if let p = await model.add(label: name, source: how, token: how == "token" ? token.trimmingCharacters(in: .whitespaces) : nil,
+                                   provider: provider == "anthropic" ? nil : provider,
+                                   baseURL: provider == "anthropic" || url.isEmpty ? nil : url) {
             message = p
             return
         }
-        if provider == "anthropic" && source == "profile", let acc = model.accounts.first(where: { $0.label == name }), let pr = await model.probe(acc.id), pr.loggedIn == false {
+        if how == "profile", let acc = model.accounts.first(where: { $0.label == name }), let pr = await model.probe(acc.id), pr.loggedIn == false {
             message = "Added, but not signed in yet: \(pr.detail ?? "sign in on the Mac with `claude` in that profile")."
             return
         }

@@ -3,15 +3,21 @@ import SwiftUI
 
 /// The dashboard's model-family colours, one hue per family.
 enum FamilyColor {
-    static let order = ["opus", "sonnet", "haiku", "other"]
+    static let order = ["opus", "sonnet", "haiku", "kimi", "other"]
     static func of(_ family: String) -> Color {
         switch family {
         case "opus": .purple
         case "sonnet": .orange
         case "haiku": .teal
+        case "kimi": kimi
         default: .brown
         }
     }
+
+    /// The console's kimi family colour, one for light and one for dark (ui/src/styles.scss).
+    private static let kimi = Color(UIColor { $0.userInterfaceStyle == .dark
+        ? UIColor(red: 0x5e / 255, green: 0x4b / 255, blue: 0xbc / 255, alpha: 1)
+        : UIColor(red: 0x43 / 255, green: 0x46 / 255, blue: 0x97 / 255, alpha: 1) })
 }
 
 /// Prompt tokens per bucket, stacked by model family — the activity chart.

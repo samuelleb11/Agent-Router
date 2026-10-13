@@ -71,9 +71,14 @@ struct SessionView: View {
                         let opts = feed.options
                         let model = (feed.stats?.model ?? "").replacingOccurrences(of: "claude-", with: "")
                         Menu {
-                            ForEach(opts?.models ?? [], id: \.self) { m in
-                                Button { Task { await feed.setModel(m) } } label: {
-                                    if m == model { Label(m, systemImage: "checkmark") } else { Text(m) }
+                            // Grouped by the provider that serves each, as the console's switcher is.
+                            ForEach(opts?.byProvider ?? []) { group in
+                                Section(group.name) {
+                                    ForEach(group.models) { m in
+                                        Button { Task { await feed.setModel(m.id) } } label: {
+                                            if m.id == model { Label(m.displayName, systemImage: "checkmark") } else { Text(m.displayName) }
+                                        }
+                                    }
                                 }
                             }
                             Button("Other…") { customModel = ""; askModel = true }

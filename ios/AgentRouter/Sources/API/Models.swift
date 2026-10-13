@@ -94,6 +94,8 @@ struct Account: Decodable, Sendable, Identifiable, Hashable {
     let active: Int
     let source: String?
     let provider: String?
+    /// Where a Kimi Code and an OpenAI account's requests go; null for the provider's own.
+    let baseURL: String?
     let ready: Bool?
     let detail: String?
     let expiresAt: Int?
@@ -104,13 +106,16 @@ struct Account: Decodable, Sendable, Identifiable, Hashable {
     var isActive: Bool { active == 1 }
     var title: String { email ?? label }
     var hasUsageKey: Bool { (usageKey ?? 0) == 1 }
-    var providerName: String { provider == "openai" ? "OpenAI" : provider == "kimi" ? "Kimi Code" : "Anthropic" }
+    var providerName: String { Provider.name(provider) }
+    /// The address its requests go to, the provider's own when it names none; nil for Anthropic.
+    var endpoint: String? { baseURL ?? Provider.defaultBaseURL(provider) }
     var isCodexLogin: Bool { source == "codex" }
     var takesUsageKey: Bool { provider == nil || provider == "anthropic" }
     var expiry: Date? { expiresAt.flatMap { $0 > 0 ? Date(timeIntervalSince1970: TimeInterval($0) / 1000) : nil } }
 
     enum CodingKeys: String, CodingKey {
         case id, label, email, active, source, provider, ready, detail
+        case baseURL = "base_url"
         case orgName = "org_name", subscriptionType = "subscription_type"
         case expiresAt = "expires_at", hasToken = "has_token", usageKey = "usage_key", createdAt = "created_at"
     }
@@ -166,14 +171,25 @@ struct Forecast: Decodable, Sendable {
         let seenAt: Int?
         let status: String?
         let pool: Int?
+        /// Null for an account from before providers, which is Anthropic's.
+        let provider: String?
         let fiveHour: Window?
         let sevenDay: Window?
+        /// Kimi Code's second window on its newer plans, where Anthropic's is a week.
+        let month: Window?
 
         var isActive: Bool { active == 1 }
         var title: String { email ?? label }
+        var providerId: String { provider ?? "anthropic" }
+        /// The second window by the name its provider gives it: the month when the account has
+        /// one, else the week (ui/src/screens/Overview/quotaView.ts, `secondOf`).
+        var secondKey: WindowKey { month != nil ? .month : .sevenDay }
+        var second: Window? { month ?? sevenDay }
+        /// The windows to show, the 5-hour first, each by its own name.
+        var windows: [(key: WindowKey, window: Window?)] { [(.fiveHour, fiveHour), (secondKey, second)] }
 
         enum CodingKeys: String, CodingKey {
-            case id, label, email, plan, active, usage, week, status, pool
+            case id, label, email, plan, active, usage, week, status, pool, provider, month
             case seenAt = "seen_at", fiveHour = "five_hour", sevenDay = "seven_day"
         }
     }
@@ -219,6 +235,8 @@ struct Forecast: Decodable, Sendable {
         let readings: Int?
         let seenAt: Int?
         let series: [Point]?
+        /// The provider said this window is spent, before it resets.
+        let spent: Bool?
 
         var isExpired: Bool { expired ?? false }
         var resetDate: Date? { resetAt.map { Date(timeIntervalSince1970: TimeInterval($0)) } }
@@ -230,7 +248,7 @@ struct Forecast: Decodable, Sendable {
         var hasBand: Bool { duty.map { $0.low < $0.high } ?? false }
 
         enum CodingKeys: String, CodingKey {
-            case expired, used, basis, readings, series
+            case expired, used, basis, readings, series, spent
             case resetAt = "reset_at", windowStart = "window_start"
             case burnPerActiveHour = "burn_per_active_hour", activeHoursLeft = "active_hours_left"
             case dutyFraction = "duty_fraction", exhaustsAt = "exhausts_at", resetsFirst = "resets_first"
@@ -297,6 +315,33 @@ struct Forecast: Decodable, Sendable {
         let basis: String
 
         enum CodingKeys: String, CodingKey { case cost, basis, promptTokens = "prompt_tokens" }
+    }
+}
+
+/// A quota window by its key, named as the console names it (ui/src/model/forecast.ts,
+/// `windowName`, `windowLabel`): Kimi Code's month as a month.
+enum WindowKey: String, Sendable, Hashable, CaseIterable {
+    case fiveHour = "five_hour", sevenDay = "seven_day", month
+
+    /// As a sentence says it: "5-hour", "7-day", "month".
+    var name: String {
+        switch self {
+        case .fiveHour: "5-hour"
+        case .sevenDay: "7-day"
+        case .month: "month"
+        }
+    }
+
+    /// As a meter is captioned: "5-hour window", "Month window".
+    var label: String { name.prefix(1).uppercased() + name.dropFirst() + " window" }
+
+    /// As a small gauge is captioned: "5h", "7d", "mo".
+    var short: String {
+        switch self {
+        case .fiveHour: "5h"
+        case .sevenDay: "7d"
+        case .month: "mo"
+        }
     }
 }
 
@@ -1310,7 +1355,16 @@ struct OkReply: Decodable, Sendable {
     var problem: String? { error ?? reason ?? (ok == false ? "refused" : nil) }
 }
 
-struct AddAccountBody: Encodable, Sendable { let label: String; let source: String; let token: String?; let provider: String? }
+struct AddAccountBody: Encodable, Sendable {
+    let label: String
+    let source: String
+    let token: String?
+    let provider: String?
+    /// A Kimi Code and an OpenAI account's own address; absent for the provider's own.
+    var baseURL: String? = nil
+
+    enum CodingKeys: String, CodingKey { case label, source, token, provider, baseURL = "base_url" }
+}
 struct AccountEditBody: Encodable, Sendable { let id: String; let label: String?; let email: String?; let token: String? }
 struct AccountRefBody: Encodable, Sendable { let id: String }
 struct UsageTokenBody: Encodable, Sendable {
@@ -1409,9 +1463,28 @@ struct PushTestReply: Decodable, Sendable {
 /// `GET /api/live/options`: what a session can be switched to.
 struct LiveOptions: Decodable, Sendable {
     let models: [String]
+    /// The same models under the provider that serves each, Anthropic's first, each by the name
+    /// its provider gives it: the picker's sections.
+    let byProvider: [ProviderModels]
     let efforts: [String]
     /// Optional so an older router, which sends no modes, still decodes.
     let modes: [LiveMode]?
+
+    enum CodingKeys: String, CodingKey { case models, efforts, modes, byProvider = "by_provider" }
+}
+
+/// One provider's models in `/api/live/options`.
+struct ProviderModels: Decodable, Sendable, Hashable, Identifiable {
+    let provider: String
+    let name: String
+    let models: [Choice]
+    var id: String { provider }
+
+    struct Choice: Decodable, Sendable, Hashable, Identifiable {
+        let id: String
+        let displayName: String
+        enum CodingKeys: String, CodingKey { case id, displayName = "display_name" }
+    }
 }
 
 /// A permission mode and the wording for it. The label comes from the router so the

@@ -61,8 +61,8 @@ final class AccountsState {
     }
 
     /// A token or profile account. Sign-in goes through `loginStart` instead.
-    func add(label: String, source: String, token: String?, provider: String? = nil) async -> String? {
-        await change { try await $0.post("/api/accounts", AddAccountBody(label: label, source: source, token: token, provider: provider)) }
+    func add(label: String, source: String, token: String?, provider: String? = nil, baseURL: String? = nil) async -> String? {
+        await change { try await $0.post("/api/accounts", AddAccountBody(label: label, source: source, token: token, provider: provider, baseURL: baseURL)) }
     }
 
     func probe(_ id: String) async -> ProbeReply? {

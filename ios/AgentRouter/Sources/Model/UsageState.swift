@@ -43,11 +43,12 @@ struct Bucket: Identifiable, Sendable {
     var id: Double { t }
     var date: Date { Date(timeIntervalSince1970: t / 1000) }
 
-    /// opus | sonnet | haiku | other, from the wire name.
+    /// opus | sonnet | haiku | kimi | other, from the wire name. Kimi Code's models are one
+    /// family: `k3`, `k3-256k` and every `kimi-…` id (ui/src/model/format.ts, `family`).
     static func family(_ model: String?) -> String {
         let m = (model ?? "").lowercased()
         for f in ["opus", "sonnet", "haiku"] where m.contains(f) { return f }
-        return "other"
+        return m.range(of: #"^(?:k3|kimi)\b"#, options: .regularExpression) != nil ? "kimi" : "other"
     }
 
     /// The dashboard's `buckets()`: every slot in the range, empty ones included, so a

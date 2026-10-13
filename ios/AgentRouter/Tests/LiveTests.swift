@@ -576,7 +576,7 @@ final class LiveTests: XCTestCase {
     }
 
     func testSwitchPayloadsDecode() throws {
-        let o = try JSONDecoder().decode(LiveOptions.self, from: Data(#"{"models":["opus","opus[1m]","sonnet"],"efforts":["low","medium","high","xhigh","max"]}"#.utf8))
+        let o = try JSONDecoder().decode(LiveOptions.self, from: Data(#"{"models":["opus","opus[1m]","sonnet"],"by_provider":[{"provider":"anthropic","name":"Anthropic","models":[{"id":"opus","display_name":"opus"},{"id":"opus[1m]","display_name":"opus[1m]"},{"id":"sonnet","display_name":"sonnet"}]}],"efforts":["low","medium","high","xhigh","max"]}"#.utf8))
         XCTAssertEqual(o.efforts.count, 5)
         let ok = try JSONDecoder().decode(SwitchReply.self, from: Data(#"{"ok":true,"model":"opus","notices":["Switched to opus"]}"#.utf8))
         XCTAssertEqual(ok.notices?.first, "Switched to opus")
