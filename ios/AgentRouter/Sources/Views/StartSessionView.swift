@@ -6,7 +6,7 @@ struct StartSessionSheet: View {
     let state: RouterState
     @Environment(RouterStore.self) private var store
     @Environment(\.dismiss) private var dismiss
-    @State private var client = SessionStart.clients[0]
+    @State private var client = SessionStart.firstClient
     @State private var machineRows: [MachineRow] = []
     @State private var catalogue: [CatalogueModel] = []
     @State private var machine = ""
@@ -50,9 +50,8 @@ struct StartSessionSheet: View {
                 } footer: {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(SessionStart.why)
-                        if hosted && machines.isEmpty {
-                            Text("No machine online has \(SessionClient.productName(client)).")
-                        }
+                        if hosted && machines.isEmpty { Text(SessionStart.noMachine(client)) }
+                        if !catalogue.isEmpty && models.isEmpty { Text(SessionStart.noModel(client)) }
                         Text("The directory is its full path on that machine.")
                     }
                 }

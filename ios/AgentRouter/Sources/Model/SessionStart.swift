@@ -37,8 +37,17 @@ enum SessionStart {
     static let title = "Start a session"
     static let why = "The router hosts the session there, so it takes messages, answers and a Stop from here."
 
-    /// The clients a session can be started with, by their names.
-    static let clients = [SessionClient.kimiCode]
+    /// The clients a session can be started with, in the console's order; Kimi Code is chosen
+    /// first.
+    static let clients = [SessionClient.codex, SessionClient.kimiCode]
+    static let firstClient = SessionClient.kimiCode
+
+    /// What the form says when no machine, and no model, can take the client.
+    static func noMachine(_ client: String) -> String { "No machine online has \(SessionClient.productName(client))." }
+    static func noModel(_ client: String) -> String {
+        client == SessionClient.codex ? "No model is available for Codex — configure a provider in Settings."
+            : "No Kimi Code model is in the catalogue — add a Kimi Code account in Settings."
+    }
 
     struct Machine: Identifiable, Equatable, Sendable {
         let id: String
@@ -57,7 +66,7 @@ enum SessionStart {
     }
 
     /// The models a session can be started with: a Kimi Code session's are the catalogue's Kimi
-    /// Code models, in its order, each by its display name.
+    /// Code models, a Codex session's every model in it, in its order, each by its display name.
     static func models(_ rows: [CatalogueModel], client: String) -> [CatalogueModel] {
         rows.filter { client == SessionClient.codex || $0.provider == "kimi" }
     }

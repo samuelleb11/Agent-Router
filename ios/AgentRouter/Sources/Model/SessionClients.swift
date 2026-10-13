@@ -2,7 +2,8 @@
 // decides it (ui/src/model/session.ts, `drives`, `rowClient`, `controlsOf`; ui/src/model/clients.ts):
 // a Claude Code session under the wrapper takes everything; a Kimi Code session only while the
 // router hosts it, and never an effort, a side question or a question's answer; a Codex session
-// is watched from its transcript. Each refusal is in the router's own words.
+// only while the machine's managed Codex backend owns it and is connected, and never a side
+// question. Each refusal is in the router's own words.
 
 import Foundation
 
@@ -34,6 +35,8 @@ enum SessionClient {
     static let kimiNoAside = "A Kimi Code session has no side question to ask from here."
     static let kimiQuestion = "A Kimi Code question is answered in its own window for now."
     static let codexWatched = "This Codex session is watched from its local transcript. Send messages and answer approvals in the terminal or IDE that owns it."
+    static let codexDisconnected = "Managed Codex is disconnected. Reconnect or resume it before sending controls."
+    static let codexNoAside = "Side questions are not available for Codex yet."
 
     /// Kimi Code's permission modes, offered in place of Claude Code's.
     static let kimiModes = [LiveMode(value: "manual", label: "Manual"), LiveMode(value: "auto", label: "Auto"), LiveMode(value: "yolo", label: "YOLO")]
@@ -60,9 +63,10 @@ extension LiveSession {
     var isCodex: Bool { SessionClient.isCodex(sessionId, client: client) }
 
     /// Whether it takes a typed message and a Stop from here: a Kimi Code session when the router
-    /// hosts it, a Claude Code one under the wrapper, a Codex one never (it is watched).
+    /// hosts it, a Claude Code one under the wrapper, a Codex one when the machine's managed
+    /// backend owns it and is connected to it.
     var canControl: Bool {
-        if isCodex { return false }
+        if isCodex { return hosted == true && wrapped }
         return isKimi ? hosted == true : wrapped
     }
 
@@ -80,8 +84,9 @@ extension LiveSession {
 
     var controls: SessionControls {
         if isCodex {
-            return SessionControls(held: SessionClient.codexWatched, effort: SessionClient.codexWatched, aside: SessionClient.codexWatched,
-                                   question: SessionClient.codexWatched, modes: nil, bypass: "bypassPermissions")
+            let held = hosted == true ? (wrapped ? nil : SessionClient.codexDisconnected) : SessionClient.codexWatched
+            return SessionControls(held: held, effort: held, aside: held ?? SessionClient.codexNoAside,
+                                   question: held, modes: nil, bypass: "bypassPermissions")
         }
         guard isKimi else { return .every }
         let held = hosted == true ? nil : SessionClient.kimiWatched
