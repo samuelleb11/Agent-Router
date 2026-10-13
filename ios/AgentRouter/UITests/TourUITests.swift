@@ -93,7 +93,7 @@ final class TourUITests: XCTestCase {
             settings.tap()
             sleep(2)
             shoot(app, "23 settings")
-            for (i, page) in ["models", "access-tokens", "router", "password", "notifications"].enumerated() {
+            for (i, page) in ["models", "access-tokens", "router", "password", "notifications", "clients", "forges", "library"].enumerated() {
                 let link = any.matching(identifier: "settings-\(page)").firstMatch
                 guard link.waitForExistence(timeout: 5) else { continue }
                 link.tap()
