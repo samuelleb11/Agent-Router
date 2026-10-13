@@ -115,7 +115,11 @@ async fn chatgpt_headerless_streams_translate_and_capture_usage() {
             "messages"=>json!({"model":"gpt-test","messages":[{"role":"user","content":"Hello"}],"max_tokens":32,"stream":streaming}),
             _=>json!({"model":"gpt-test","messages":[{"role":"user","content":"Hello"}],"stream":streaming}),
         };
-        let response=native_client_request(&app,"POST",&format!("/v1/{path}"),Some(&token),body).await;
+        // A ChatGPT plan serves Codex alone, so each protocol is asked as Codex asks it.
+        let mut request=Request::post(format!("/v1/{path}")).header("host","localhost").header("content-type","application/json")
+            .header("user-agent","codex_cli_rs/0.162.0").header("authorization",format!("Bearer {token}")).body(Body::from(body.to_string())).unwrap();
+        request.extensions_mut().insert(axum::extract::ConnectInfo(std::net::SocketAddr::from(([127,0,0,1],50_000))));
+        let response=tower::ServiceExt::oneshot(app.clone(),request).await.unwrap();
         assert_eq!(response.status(),StatusCode::OK);
         assert_eq!(response.headers()["content-type"],if streaming {"text/event-stream"}else{"application/json"});
         let bytes=axum::body::to_bytes(response.into_body(),65536).await.unwrap();

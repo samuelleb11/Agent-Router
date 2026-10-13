@@ -35,6 +35,9 @@ pub enum Source {
     Profile,
     /// Codex's own local sign-in, read from its credential store.
     Codex,
+    /// A ChatGPT sign-in pasted from Codex's `auth.json` into the router, kept in its secrets
+    /// file and refreshed by the router itself (`chatgpt`).
+    ChatGpt,
 }
 
 impl Source {
@@ -44,6 +47,7 @@ impl Source {
             Source::Token => "token",
             Source::Profile => "profile",
             Source::Codex => "codex",
+            Source::ChatGpt => "chatgpt",
         }
     }
     pub fn parse(s: &str) -> Result<Self> {
@@ -52,6 +56,7 @@ impl Source {
             "token" => Ok(Source::Token),
             "profile" => Ok(Source::Profile),
             "codex" => Ok(Source::Codex),
+            "chatgpt" => Ok(Source::ChatGpt),
             other => Err(anyhow!("unknown account source {other:?}")),
         }
     }
@@ -309,6 +314,25 @@ pub fn resolve(account: &Account) -> Result<Resolved> {
             let dir = account.profile_dir.as_ref().map(PathBuf::from).map(Ok).unwrap_or_else(codex_home)?;
             parse_codex_credentials(&read_codex_credentials(&dir)?)
         }
+        Source::ChatGpt => {
+            if account.provider != Provider::OpenAI {
+                bail!("a ChatGPT login can only sign for an OpenAI account");
+            }
+            let entry = secrets::get(&account.id);
+            // A refresh OpenAI refused leaves the login unusable until a fresh one is pasted.
+            if let Some(why) = entry.refused {
+                bail!("{why}");
+            }
+            let raw = entry.token.ok_or_else(|| anyhow!("no ChatGPT login is stored for account {} — paste one in the dashboard", account.id))?;
+            let resolved = parse_codex_credentials(&raw)?;
+            if !resolved.openai_chatgpt {
+                bail!("the stored login is not a ChatGPT sign-in — paste a ChatGPT login from Codex");
+            }
+            if resolved.expires_at_ms != 0 && resolved.expires_at_ms <= now_ms() {
+                bail!("this ChatGPT login has expired and was not refreshed — paste a fresh login from a new Codex sign-in");
+            }
+            Ok(resolved)
+        }
     }
 }
 
@@ -391,8 +415,8 @@ pub fn parse_codex_credentials(raw: &str) -> Result<Resolved> {
     let tokens = v.get("tokens").ok_or_else(|| anyhow!("Codex has no saved login — run `codex login` first"))?;
     let access = tokens.get("access_token").and_then(serde_json::Value::as_str)
         .filter(|s| !s.trim().is_empty()).ok_or_else(|| anyhow!("Codex's saved login has no access token"))?;
-    let claims = jwt_claims(access).unwrap_or_default();
-    let id_claims = tokens.get("id_token").and_then(serde_json::Value::as_str).and_then(jwt_claims).unwrap_or_default();
+    let claims = crate::chatgpt::claims(access).unwrap_or_default();
+    let id_claims = tokens.get("id_token").and_then(serde_json::Value::as_str).and_then(crate::chatgpt::claims).unwrap_or_default();
     let text = |v: &serde_json::Value, key: &str| v.get(key).and_then(serde_json::Value::as_str)
         .filter(|s| !s.trim().is_empty()).map(str::to_owned);
     let auth = id_claims.get("https://api.openai.com/auth").or_else(|| claims.get("https://api.openai.com/auth"));
@@ -405,16 +429,6 @@ pub fn parse_codex_credentials(raw: &str) -> Result<Resolved> {
         expires_at_ms: claims.get("exp").and_then(serde_json::Value::as_i64).unwrap_or(0).saturating_mul(1000),
         openai_chatgpt: true, chatgpt_account_id: account_id,
     })
-}
-
-fn jwt_claims(jwt: &str) -> Option<serde_json::Value> {
-    let mut parts = jwt.split('.');
-    let (header, payload, signature) = (parts.next()?, parts.next()?, parts.next()?);
-    if header.is_empty() || payload.is_empty() || signature.is_empty() || parts.next().is_some() {
-        return None;
-    }
-    let bytes = crate::auth::base64_decode(&payload.replace('-', "+").replace('_', "/"))?;
-    serde_json::from_slice(&bytes).ok()
 }
 
 /// Router-owned secrets live in a 0600 file, not the Keychain.
@@ -447,6 +461,9 @@ mod secrets {
         /// A claude.ai session key, used only to read usage.
         #[serde(skip_serializing_if = "Option::is_none", default)]
         pub usage_key: Option<String>,
+        /// Why OpenAI refused to refresh a pasted ChatGPT login, until a fresh one is pasted.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        pub refused: Option<String>,
     }
 
     /// The APNs signing key and its ids — what lets the router tell a phone a session
@@ -581,6 +598,7 @@ mod secrets {
             .and_then(|f| f.accounts.get(account_id).map(|e| Entry {
                 token: e.token.clone(),
                 usage_key: e.usage_key.clone(),
+                refused: e.refused.clone(),
             }))
             .unwrap_or_default()
     }
@@ -621,7 +639,23 @@ pub fn store_fcm_key(key: Option<FcmKey>) -> Result<()> {
 
 pub fn store_token(account_id: &str, token: &str) -> Result<()> {
     let token = token.trim().to_string();
-    secrets::update(account_id, |e| e.token = Some(token))
+    // A credential put in anew is the end of any refusal the old one met.
+    secrets::update(account_id, |e| {
+        e.token = Some(token);
+        e.refused = None;
+    })
+}
+
+/// The stored credential, for a refresh that starts from it.
+pub fn stored_token(account_id: &str) -> Option<String> {
+    secrets::get(account_id).token
+}
+
+/// Keep why OpenAI refused to refresh a pasted ChatGPT login: the account reads as not ready,
+/// in these words, until a fresh login is pasted.
+pub fn refuse_login(account_id: &str, why: &str) -> Result<()> {
+    let why = why.to_string();
+    secrets::update(account_id, |e| e.refused = Some(why))
 }
 
 pub fn forget_token(account_id: &str) -> Result<()> {

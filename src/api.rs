@@ -1925,12 +1925,16 @@ pub async fn accounts_edit(
         // Rotating the credential: replace it in the secrets file, in place, so the
         // account keeps its id and everything recorded against it.
         if let Some(token) = token {
-            // Whose format a credential must have is the account's provider's, so it is
-            // read before the credential is judged.
-            if let Some(why) = account.provider.key_problem(&token) {
-                return Err((StatusCode::BAD_REQUEST, why.to_string()));
+            // Whose format a credential must have is the account's provider's, and a ChatGPT
+            // login's is a sign-in's, so both are read before the credential is judged.
+            let problem = match account.source {
+                Source::ChatGpt => crate::chatgpt::login_problem(&token),
+                _ => account.provider.key_problem(&token).map(str::to_owned),
+            };
+            if let Some(why) = problem {
+                return Err((StatusCode::BAD_REQUEST, why));
             }
-            if account.source != Source::Token {
+            if !matches!(account.source, Source::Token | Source::ChatGpt) {
                 return Err((
                     StatusCode::CONFLICT,
                     format!(
@@ -2113,10 +2117,15 @@ pub async fn accounts_add(
         (Source::Token, None) => {
             return refuse(StatusCode::BAD_REQUEST, "a token is required for this account type")
         }
-        (Source::Token, token) => token,
+        (Source::ChatGpt, None) => {
+            return refuse(StatusCode::BAD_REQUEST, format!("paste the ChatGPT login: {}", crate::chatgpt::EXTRACT))
+        }
+        (Source::Token | Source::ChatGpt, token) => token,
         (Source::Profile, _) => None,
     };
     let provider = match req.provider.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+        // A ChatGPT login is OpenAI's whatever else the body says, and its own when it says nothing.
+        None if source == Source::ChatGpt => Provider::OpenAI,
         None => Provider::Anthropic,
         Some(p) => match Provider::parse(p) {
             Ok(provider) => provider,
@@ -2124,17 +2133,25 @@ pub async fn accounts_add(
         },
     };
     // A Claude Code login and a profile are Anthropic's; every other provider's account is
-    // a key pasted in, kept as a setup-token is.
-    if provider != Provider::Anthropic && source != Source::Token {
+    // a key pasted in, kept as a setup-token is — and OpenAI's may be a ChatGPT login.
+    if source == Source::ChatGpt && provider != Provider::OpenAI {
+        return refuse(StatusCode::BAD_REQUEST, "a ChatGPT login is an OpenAI account");
+    }
+    if provider != Provider::Anthropic && !matches!(source, Source::Token | Source::ChatGpt) {
         return refuse(
             StatusCode::BAD_REQUEST,
             format!("a {} account is added from its key, as a token account", provider.name()),
         );
     }
-    if let Some(why) = token.as_deref().and_then(|t| provider.key_problem(t)) {
+    let problem = match source {
+        Source::ChatGpt => token.as_deref().and_then(crate::chatgpt::login_problem),
+        _ => token.as_deref().and_then(|t| provider.key_problem(t)).map(str::to_owned),
+    };
+    if let Some(why) = problem {
         return refuse(StatusCode::BAD_REQUEST, why);
     }
-    let base_url = match base_url_for(provider, req.base_url.as_deref()) {
+    // A ChatGPT login goes to ChatGPT's own Codex backend, never to an address of its own.
+    let base_url = match base_url_for(provider, req.base_url.as_deref().filter(|_| source != Source::ChatGpt)) {
         Ok(url) => url,
         Err(why) => return refuse(StatusCode::BAD_REQUEST, why),
     };
@@ -2146,10 +2163,16 @@ pub async fn accounts_add(
             Some(token) => {
                 // A long-lived token cannot tell us who it belongs to — the usage
                 // endpoint refuses it — so if the name given is an email address,
-                // take it as the identity. It is the only signal available.
-                let status = crate::accounts::AuthStatus {
-                    email: looks_like_email(&req.label).then(|| req.label.trim().to_string()),
-                    ..Default::default()
+                // take it as the identity. It is the only signal available. A ChatGPT
+                // login says who signed in, and on which plan, in its id token.
+                let status = if source == Source::ChatGpt {
+                    let (email, plan) = crate::chatgpt::identity(&token);
+                    crate::accounts::AuthStatus { email, subscription_type: plan, ..Default::default() }
+                } else {
+                    crate::accounts::AuthStatus {
+                        email: looks_like_email(&req.label).then(|| req.label.trim().to_string()),
+                        ..Default::default()
+                    }
                 };
                 // The token is stored by `add`, and only once the id is known to be free.
                 store.add(&id, &req.label, source, provider, base_url.as_deref(), None, &status, || {

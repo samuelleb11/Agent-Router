@@ -122,11 +122,12 @@ pub fn refuse_profile() -> Response {
     refuse(StatusCode::CONFLICT, NO_PROFILE)
 }
 
-/// `POST /api/accounts`: a pasted `claude setup-token` value, and nothing else. The
-/// other sources are a Claude Code login on the router's own machine. A body that cannot
-/// be read is refused as every other is (`refusal::JsonBody`).
+/// `POST /api/accounts`: a pasted credential — a `claude setup-token` value or a provider's
+/// key, or a ChatGPT login pasted from Codex's `auth.json` — and nothing else. The other
+/// sources are a Claude Code login on the router's own machine. A body that cannot be read is
+/// refused as every other is (`refusal::JsonBody`).
 async fn accounts_add(state: State<Arc<AppState>>, JsonBody(req): JsonBody<crate::api::AddAccount>) -> Response {
-    if req.source != "token" {
+    if req.source != "token" && req.source != "chatgpt" {
         return refuse_profile();
     }
     crate::api::accounts_add(state, JsonBody(req)).await.into_response()

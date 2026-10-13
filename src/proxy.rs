@@ -10,10 +10,10 @@ use std::time::Instant;
 
 use axum::body::Body;
 use axum::extract::State;
-use axum::http::{HeaderMap, HeaderName, HeaderValue, Request, Response, StatusCode, Uri};
+use axum::http::{header, HeaderMap, HeaderName, HeaderValue, Request, Response, StatusCode, Uri};
 use axum::response::IntoResponse;
 use futures_util::StreamExt;
-use http_body_util::BodyStream;
+use http_body_util::{BodyExt, BodyStream};
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
 use tokio::sync::mpsc::Sender;
@@ -184,6 +184,8 @@ pub struct AppState {
     /// The expensive dashboard answers, held for a moment so a room full of clients
     /// polling the same figures costs one computation. See `api::Memo`.
     pub memo: crate::api::Memo,
+    /// Where a pasted ChatGPT login is refreshed (`chatgpt::TOKEN_URL`); a stand-in's under test.
+    pub chatgpt_token_url: String,
     dumps_left: AtomicUsize,
     dropped: AtomicUsize,
 }
@@ -222,6 +224,7 @@ impl AppState {
             capture,
             reads,
             memo,
+            chatgpt_token_url: crate::chatgpt::TOKEN_URL.to_owned(),
             dumps_left,
             dropped: AtomicUsize::new(0),
         }))
@@ -284,14 +287,19 @@ impl AppState {
         {
             let held = self.credentials.read().await;
             if let Some(a) = held.get(account_id).filter(|_| account_id != crate::codex::ACCOUNT_ID) {
+                // A ChatGPT login is refreshed by the router itself, well before its token ends.
+                let within = if a.openai_chatgpt { crate::chatgpt::RENEW_WITHIN_SECS } else { RENEW_WITHIN_SECS };
                 let fresh = a.expires_at_ms == 0
-                    || (a.expires_at_ms - crate::db::now_ms()) / 1000 > RENEW_WITHIN_SECS;
+                    || (a.expires_at_ms - crate::db::now_ms()) / 1000 > within;
                 if fresh {
                     return Ok(a.clone());
                 }
             }
         }
+        // Held across the refresh too: one refresh at a time, so a rotated refresh token is
+        // never spent twice.
         let mut held = self.credentials.write().await;
+        self.refresh_chatgpt_login(account_id).await?;
         let db_path = self.config.db_path.clone();
         let id = account_id.to_string();
         let loaded = tokio::task::spawn_blocking(move || {
@@ -321,6 +329,55 @@ impl AppState {
         );
         held.insert(loaded.account_id.clone(), loaded.clone());
         Ok(loaded)
+    }
+
+    /// Refresh a pasted ChatGPT login whose access token is due, and keep the rotated tokens
+    /// before anything signs with them. A refusal is kept with the account, which reads as not
+    /// ready in its words until a fresh login is pasted; an endpoint that cannot be reached is
+    /// only an error while the old token has not run out.
+    async fn refresh_chatgpt_login(&self, account_id: &str) -> anyhow::Result<()> {
+        let db_path = self.config.db_path.clone();
+        let id = account_id.to_string();
+        let raw = tokio::task::spawn_blocking(move || {
+            let account = accounts::Store::new(db_path).get(&id)?;
+            let pasted = account.is_some_and(|a| a.source == accounts::Source::ChatGpt);
+            Ok::<_, anyhow::Error>(if pasted { accounts::stored_token(&id) } else { None })
+        })
+        .await??;
+        let Some(raw) = raw.filter(|raw| crate::chatgpt::due(raw, crate::db::now_ms())) else { return Ok(()) };
+        let body = crate::chatgpt::refresh_body(&raw)?;
+        let request = Request::post(&self.chatgpt_token_url)
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::ACCEPT, "application/json")
+            .body(Body::from(body.to_string()))?;
+        let answer = match self.client.request(request).await {
+            Ok(response) => {
+                let status = response.status();
+                let bytes = response.into_body().collect().await.map(|b| b.to_bytes()).unwrap_or_default();
+                if status.is_success() {
+                    serde_json::from_slice::<serde_json::Value>(&bytes)?
+                } else {
+                    let why = crate::chatgpt::refusal(status.as_u16(), &bytes);
+                    // A 4xx is OpenAI's answer about this login; a 5xx is OpenAI's own trouble.
+                    if status.is_client_error() {
+                        let (id, kept) = (account_id.to_string(), why.clone());
+                        tokio::task::spawn_blocking(move || accounts::refuse_login(&id, &kept)).await??;
+                        tracing::warn!(account = account_id, %status, "ChatGPT login refresh refused");
+                    }
+                    anyhow::bail!(why);
+                }
+            }
+            Err(e) if crate::chatgpt::expires_at_ms(&raw) > crate::db::now_ms() => {
+                tracing::warn!(account = account_id, "ChatGPT login refresh could not reach OpenAI, signing with the current token: {e}");
+                return Ok(());
+            }
+            Err(e) => anyhow::bail!("OpenAI's token endpoint could not be reached to refresh this ChatGPT login: {e}"),
+        };
+        let next = crate::chatgpt::rotated(&raw, &answer, crate::db::now_ms())?;
+        let id = account_id.to_string();
+        tokio::task::spawn_blocking(move || accounts::store_token(&id, &next)).await??;
+        tracing::info!(account = account_id, "ChatGPT login refreshed");
+        Ok(())
     }
 
     /// What an upstream's answer says about the credential that signed it. A 401 is the
@@ -424,6 +481,12 @@ async fn forward(state: Arc<AppState>, req: Request<Body>) -> anyhow::Result<Res
             return Ok(no_source(&model));
         }
     };
+    // A ChatGPT plan is Codex's: its credential signs Codex's requests and no one else's
+    // (Sam's decision, 2026-10-13, AGEN-0199).
+    if signer.openai_chatgpt && !serves_on_chatgpt(entrypoint.as_deref()) {
+        tracing::warn!(path = %path_and_query, client = entrypoint.as_deref().unwrap_or("-"), "refused: a ChatGPT plan serves Codex only");
+        return Ok(codex_only(client_protocol.unwrap_or(Protocol::Messages), &signer.label));
+    }
     let upstream_protocol = registered.as_ref().map(|(service,_)|service.protocol.bridge()).unwrap_or_else(||provider_protocol(signer.provider));
     if upstream_protocol == Protocol::Responses && path_and_query.split('?').next() == Some("/v1/messages/count_tokens") {
         return Ok((StatusCode::BAD_REQUEST, axum::Json(serde_json::json!({"type":"error","error":{"type":"invalid_request_error","message":"agent-router: Messages token counting is unavailable for OpenAI; send the Messages request to translate it"}}))).into_response());
@@ -742,6 +805,22 @@ fn sign(headers: &mut HeaderMap, signer: &Active) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Whether a client may be served from a ChatGPT plan: Codex, in any of its forms.
+fn serves_on_chatgpt(user_agent: Option<&str>) -> bool {
+    matches!(user_agent.and_then(crate::analyze::client_of), Some("codex-cli" | "codex-vscode" | "codex-managed"))
+}
+
+/// The refusal a non-Codex client meets on a ChatGPT plan, in its own protocol's error shape.
+fn codex_only(protocol: Protocol, account: &str) -> Response<Body> {
+    let message = format!("agent-router: the account {account} is a ChatGPT plan login, which serves Codex only; use an API-key account for this client");
+    let error = serde_json::json!({"type": "permission_error", "message": message});
+    let body = match protocol {
+        Protocol::Messages => serde_json::json!({"type": "error", "error": error}),
+        Protocol::Responses => serde_json::json!({"error": error}),
+    };
+    (StatusCode::FORBIDDEN, axum::Json(body)).into_response()
+}
+
 fn translation_refusal(protocol: Protocol, message: &str) -> Response<Body> {
     let message = message.strip_prefix("agent-router: ").unwrap_or(message);
     let error = serde_json::json!({"type":"invalid_request_error", "message": format!("agent-router: {message}")});
@@ -931,7 +1010,8 @@ mod tests {
         };
         let original_body = body.to_string();
         let path = if client_protocol == Protocol::Messages {"/v1/messages"} else {"/v1/responses"};
-        let response = forward(state, Request::post(path).header("authorization","Bearer CLIENT-TOKEN").header("content-type","application/json")
+        // A ChatGPT plan serves Codex alone, so its case is Codex's.
+        let response = forward(state, Request::post(path).header("user-agent", if chatgpt {"codex_cli_rs/0.162.0"} else {"bridge-test"}).header("authorization","Bearer CLIENT-TOKEN").header("content-type","application/json")
             .header("x-api-key","CLIENT-KEY").header("thread-id","native-session").header("session-id","affinity-key").header("x-agent-router-password","ROUTER-PASSWORD").header("x-agent-router-token","ROUTER-TOKEN").body(Body::from(original_body.clone())).unwrap()).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.headers()["content-type"], if client_streams {"text/event-stream"} else {"application/json"});
@@ -999,6 +1079,140 @@ mod tests {
         }
         // ChatGPT's backend always streams, even for a JSON Messages caller.
         bridge_case(Protocol::Messages, Provider::OpenAI, false, true).await;
+    }
+
+    /// A router whose refreshes go to a stand-in token endpoint, answering `status` with
+    /// `answer`, and what it was sent; and the router's own HTTP client able to reach it.
+    async fn chatgpt_lab(tag: &str, status: u16, answer: Value) -> (Arc<AppState>, tokio::sync::mpsc::Receiver<Value>, tokio::task::JoinHandle<()>) {
+        use axum::routing::post;
+        let (seen, sent) = tokio::sync::mpsc::channel(4);
+        let endpoint = axum::Router::new().route("/oauth/token", post(move |body: axum::Json<Value>| {
+            let (seen, answer) = (seen.clone(), answer.clone());
+            async move {
+                seen.send(body.0).await.unwrap();
+                (StatusCode::from_u16(status).unwrap(), axum::Json(answer)).into_response()
+            }
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/oauth/token", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, endpoint).await.unwrap() });
+        let lab = crate::api_refusals::Lab::hosted(tag).await;
+        let c = &lab.state.config;
+        let config = Config { server: c.server, bind: c.bind, upstream: c.upstream.clone(), db_path: c.db_path.clone(), body_cap: c.body_cap,
+            dump_headers: 0, allow_hosts: vec![], public_url: c.public_url.clone(), push_keys_dir: None, agents_dir: None, drain: c.drain, stop_delay: c.stop_delay };
+        let (capture, captured) = tokio::sync::mpsc::channel(8);
+        std::mem::forget(captured);
+        let mut state = AppState::new(config, capture, crate::network::switch().0).unwrap();
+        let tls = hyper_rustls::HttpsConnectorBuilder::new().with_webpki_roots().https_or_http().enable_http1().build();
+        let s = Arc::get_mut(&mut state).unwrap();
+        s.client = Client::builder(TokioExecutor::new()).build(tls);
+        s.chatgpt_token_url = url;
+        std::mem::forget(lab);
+        (state, sent, server)
+    }
+
+    fn chatgpt_account(state: &AppState, id: &str, login: &str) {
+        let conn = rusqlite::Connection::open(&state.config.db_path).unwrap();
+        conn.execute("INSERT INTO accounts(id,label,source,provider,active,created_at) VALUES(?1,?1,'chatgpt','openai',1,1)", [id]).unwrap();
+        accounts::store_token(id, login).unwrap();
+    }
+
+    #[tokio::test]
+    async fn chatgpt_login_is_added_with_its_email_and_plan_and_refused_when_not_a_sign_in() {
+        let lab = crate::api_refusals::Lab::hosted("chatgpt-add").await;
+        let login = crate::chatgpt::tests::login(1_900_000_000, "rt-add");
+        let add = json!({"label": "plan", "source": "chatgpt", "token": login});
+        let (status, body) = lab.post("/api/accounts", &add.to_string()).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let (_, list) = lab.get("/api/accounts").await;
+        let row = list.as_array().unwrap().iter().find(|a| a["id"] == "plan").expect("listed").clone();
+        assert_eq!((row["provider"].as_str(), row["source"].as_str()), (Some("openai"), Some("chatgpt")), "an OpenAI account");
+        assert_eq!(row["email"], "you@example.com", "who signed in, from the id token");
+        assert_eq!(row["subscription_type"], "pro", "the plan, from the id token");
+        assert_eq!(accounts::stored_token("plan").as_deref(), Some(login.as_str()), "the whole login is kept");
+
+        let key = json!({"label": "key", "source": "chatgpt", "token": r#"{"auth_mode":"apikey","OPENAI_API_KEY":"sk-proj-x"}"#});
+        let (status, body) = lab.post("/api/accounts", &key.to_string()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.to_string().contains("API key"), "{body}");
+        let kimi = json!({"label": "elsewhere", "source": "chatgpt", "provider": "kimi", "token": login});
+        let (status, body) = lab.post("/api/accounts", &kimi.to_string()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.to_string().contains("OpenAI account"), "{body}");
+        let none = json!({"label": "empty", "source": "chatgpt"});
+        let (status, body) = lab.post("/api/accounts", &none.to_string()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.to_string().contains("codex login"), "the steps are said: {body}");
+    }
+
+    #[tokio::test]
+    async fn chatgpt_login_is_refreshed_before_it_expires_and_the_rotation_kept() {
+        let fresh = crate::chatgpt::tests::jwt(json!({"exp": now_ms() / 1000 + 864_000, "client_id": "app_test_client"}));
+        let (state, mut sent, server) = chatgpt_lab("chatgpt-refresh", 200, json!({"access_token": fresh, "refresh_token": "rt-2"})).await;
+        // Ten minutes left: inside the hour the router refreshes in.
+        chatgpt_account(&state, "chatgpt-refresh-plan", &crate::chatgpt::tests::login(now_ms() / 1000 + 600, "rt-1"));
+        let signer = state.signer("chatgpt-refresh-plan").await.unwrap();
+        assert_eq!(signer.token, fresh, "the new access token signs");
+        assert!(signer.openai_chatgpt);
+        assert_eq!(signer.chatgpt_account_id.as_deref(), Some("workspace-test"));
+        assert_eq!(sent.recv().await.unwrap(), json!({"client_id": "app_test_client", "grant_type": "refresh_token", "refresh_token": "rt-1"}),
+            "the token's own client, the refresh token, and no scope");
+        let kept: Value = serde_json::from_str(&accounts::stored_token("chatgpt-refresh-plan").unwrap()).unwrap();
+        assert_eq!(kept["tokens"]["refresh_token"], "rt-2", "the rotated refresh token is kept before anything signs");
+        assert_eq!(kept["tokens"]["access_token"], fresh);
+        // Ten days left: the next request signs with it, and nothing is refreshed again.
+        assert_eq!(state.signer("chatgpt-refresh-plan").await.unwrap().token, fresh);
+        assert!(sent.try_recv().is_err(), "one refresh, not one per request");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn chatgpt_login_refresh_refused_marks_it_not_ready_in_words() {
+        let (state, _sent, server) = chatgpt_lab("chatgpt-refused", 401, json!({"error": {"code": "refresh_token_reused"}})).await;
+        chatgpt_account(&state, "chatgpt-refused-plan", &crate::chatgpt::tests::login(now_ms() / 1000 + 600, "rt-old"));
+        let why = state.signer("chatgpt-refused-plan").await.err().expect("refused").to_string();
+        assert!(why.contains("refresh_token_reused") && why.contains("paste a fresh login"), "{why}");
+        let account = accounts::Store::new(state.config.db_path.clone()).get("chatgpt-refused-plan").unwrap().unwrap();
+        let unready = accounts::resolve(&account).err().expect("not ready").to_string();
+        assert!(unready.contains("paste a fresh login"), "the account says why in the listing: {unready}");
+        // A fresh paste ends it.
+        accounts::store_token("chatgpt-refused-plan", &crate::chatgpt::tests::login(now_ms() / 1000 + 864_000, "rt-new")).unwrap();
+        assert!(accounts::resolve(&account).is_ok());
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn chatgpt_plan_serves_codex_only() {
+        use axum::routing::post;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let reply = "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_codex\",\"object\":\"response\",\"model\":\"gpt-test\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n";
+        let upstream = tokio::spawn(async move {
+            axum::serve(listener, axum::Router::new().route("/v1/responses", post(move || async move {
+                Response::builder().header("content-type", "text/event-stream").body(Body::from(reply)).unwrap()
+            }))).await.unwrap()
+        });
+        let (state, _sent, server) = chatgpt_lab("chatgpt-codex-only", 200, json!({})).await;
+        let conn = rusqlite::Connection::open(&state.config.db_path).unwrap();
+        conn.execute("INSERT INTO accounts(id,label,source,provider,active,created_at) VALUES('plan','plan','chatgpt','openai',1,1)", []).unwrap();
+        state.credentials.write().await.insert("plan".into(), Active {
+            account_id: "plan".into(), label: "plan".into(), identity: None, token: "TEST-PLAN-TOKEN".into(), expires_at_ms: 0,
+            provider: Provider::OpenAI, base_url: Some(base), openai_chatgpt: true, chatgpt_account_id: Some("workspace-test".into()),
+        });
+        let ask = |ua: &'static str| Request::post("/v1/responses").header("user-agent", ua).header("authorization", "Bearer CLIENT")
+            .header("content-type", "application/json")
+            .body(Body::from(json!({"model": "gpt-test", "stream": true, "input": [{"role": "user", "content": [{"type": "input_text", "text": "Hi"}]}]}).to_string())).unwrap();
+        for other in ["claude-cli/2.1.296 (external, cli)", "opencode/1.19.0", "curl/8.7.1"] {
+            let refused = forward(state.clone(), ask(other)).await.unwrap();
+            assert_eq!(refused.status(), StatusCode::FORBIDDEN, "{other}");
+            let words = String::from_utf8(refused.into_body().collect().await.unwrap().to_bytes().to_vec()).unwrap();
+            assert!(words.contains("ChatGPT plan login, which serves Codex only"), "{words}");
+        }
+        for codex in ["codex_cli_rs/0.162.0", "codex_vscode/0.162.0", "agent_router_codex/0.1.0"] {
+            assert_eq!(forward(state.clone(), ask(codex)).await.unwrap().status(), StatusCode::OK, "{codex}");
+        }
+        upstream.abort();
+        server.abort();
     }
 
     /// Not credentials: no key of either provider looks like these.

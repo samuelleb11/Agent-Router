@@ -1150,10 +1150,13 @@ mod tests {
             lab.state.credentials.read().await["subscription-key"].clone(),
         );
         let app = crate::app(state);
+        // Asked as Codex: a subscription route serves Codex alone, and its own refusal is the
+        // bounded route's, not the client's.
         let send = |body: Value, path: &str| {
             let app = app.clone();
             let mut request = Request::post(path)
                 .header("host", "127.0.0.1")
+                .header("user-agent", "codex_cli_rs/0.162.0")
                 .header("authorization", "Bearer LOCAL-CLIENT")
                 .header("content-type", "application/json")
                 .body(Body::from(body.to_string()))

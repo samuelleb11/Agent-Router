@@ -18,6 +18,7 @@ mod apns;
 mod auth;
 mod capture;
 mod chat_completions;
+mod chatgpt;
 mod clients;
 mod client_setup;
 mod config;
