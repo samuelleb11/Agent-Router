@@ -1,36 +1,47 @@
 import SwiftUI
 
-/// The dashboard's settings modal, minus accounts (which have their own screen): how
-/// Claude Code on the Mac reaches the router, the wrapper, the password, the router.
+/// A router's Settings: the console's pages for the router's mode, each its own screen. A hosted
+/// router has no Claude Code and no Network page, and alone has Forges and Library.
 struct RouterSettingsView: View {
+    let state: RouterState
+
+    var body: some View {
+        List {
+            Section {
+                ForEach(SettingsPages.pages(hosted: state.auth?.isHosted)) { page in
+                    NavigationLink(value: SettingsPageRoute(routerId: state.router.id, page: page)) {
+                        Label(page.title, systemImage: page.icon)
+                            .accessibilityIdentifier("settings-\(page.rawValue)")
+                    }
+                }
+            } footer: {
+                if state.auth == nil { Text("The rest of the pages appear once the router has said what it is.") }
+            }
+        }
+        .navigationTitle("Settings")
+        .refreshable { await state.refresh(includeAccounts: false) }
+    }
+}
+
+/// Settings → Claude Code, on a local router: how Claude Code on the Mac reaches the router, and
+/// the wrapper that lets its sessions take messages and stops.
+struct ClaudeCodeSettingsView: View {
     let state: RouterState
     @State private var model: SettingsState?
     @State private var project = ""
-    @State private var confirmRemovePassword = false
 
     var body: some View {
         List {
             if let f = model?.failure { Section { Label(f, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange) } }
             if let m = model?.message { Section { Text(m).font(.footnote) } }
-            Section {
-                NavigationLink(value: SettingsPageRoute(routerId: state.router.id, page: .models)) {
-                    Label("Models", systemImage: "cpu").accessibilityIdentifier("settings-models")
-                }
-                NavigationLink(value: SettingsPageRoute(routerId: state.router.id, page: .accessTokens)) {
-                    Label("Access tokens", systemImage: "key").accessibilityIdentifier("settings-access-tokens")
-                }
-            }
             if let model {
                 setupSection(model)
                 wrapperSection(model)
-                NotificationsSection(model: model, state: state)
-                PasswordSection(model: model, confirmRemove: $confirmRemovePassword)
-                routerSection(model)
             } else {
                 Section { HStack { ProgressView(); Text("Reading…").foregroundStyle(.secondary) } }
             }
         }
-        .navigationTitle("Settings")
+        .navigationTitle("Claude Code")
         .refreshable { await model?.load() }
         .task {
             let m = SettingsState(router: state)
@@ -146,21 +157,137 @@ struct RouterSettingsView: View {
         }
     }
 
-    @ViewBuilder private func routerSection(_ model: SettingsState) -> some View {
-        Section {
-            LabeledContent("Address", value: state.router.address)
-            if let h = state.health { LabeledContent("Version", value: "\(h.version) · pid \(h.pid)") }
-            if let s = model.setup {
-                LabeledContent("Dashboard", value: s.url)
-                if let url = state.router.baseURL {
-                    Link(destination: url) { Label("Open the dashboard in Safari", systemImage: "safari") }
-                }
-            }
-        } header: {
-            Text("Router")
-        } footer: {
-            Text("Everything above is stored on the Mac. The router's own settings (port, database, upstream, body cap) are environment variables read at startup.")
+}
+
+/// Settings → Password.
+struct PasswordSettingsView: View {
+    let state: RouterState
+    @State private var model: SettingsState?
+    @State private var confirmRemove = false
+
+    var body: some View {
+        List {
+            if let f = model?.failure { Section { Label(f, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange) } }
+            if let m = model?.message { Section { Text(m).font(.footnote) } }
+            if let model { PasswordSection(model: model, confirmRemove: $confirmRemove) }
         }
+        .navigationTitle("Password")
+        .task {
+            let m = SettingsState(router: state)
+            model = m
+            await m.load()
+        }
+    }
+}
+
+/// Settings → Notifications.
+struct NotificationSettingsView: View {
+    let state: RouterState
+    @State private var model: SettingsState?
+
+    var body: some View {
+        List {
+            if let f = model?.failure { Section { Label(f, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange) } }
+            if let m = model?.message { Section { Text(m).font(.footnote) } }
+            if let model { NotificationsSection(model: model, state: state) }
+        }
+        .navigationTitle("Notifications")
+        .task {
+            let m = SettingsState(router: state)
+            model = m
+            await m.load()
+        }
+    }
+}
+
+/// Settings → Router: what this router is, and what a Claude Code is pointed at it with.
+struct RouterInfoView: View {
+    let state: RouterState
+    @State private var copied = false
+
+    var body: some View {
+        let hosted = state.auth?.isHosted == true
+        let snippet = SettingsPages.connectSnippet(origin: state.router.origin, hosted: hosted, fromLoopback: state.auth?.fromLoopback)
+        List {
+            Section {
+                LabeledContent("Address", value: state.router.address)
+                if let h = state.health {
+                    LabeledContent("Version", value: h.version)
+                    if !hosted { LabeledContent("Process", value: String(h.pid)) }
+                }
+                if let url = state.router.baseURL {
+                    Link(destination: url) { Label("Open the console in Safari", systemImage: "safari") }
+                }
+            } header: {
+                Text("Router")
+            } footer: {
+                Text(SettingsPages.storeNote(hosted: hosted))
+            }
+            Section {
+                Text(snippet).font(.caption.monospaced()).textSelection(.enabled)
+                Button(copied ? "Copied" : "Copy the snippet", systemImage: "doc.on.doc") {
+                    UIPasteboard.general.string = snippet
+                    copied = true
+                }
+            } header: {
+                Text("Point Claude Code here")
+            } footer: {
+                Text("Add this to a project’s .claude/settings.local.json. For another machine, use a Client access token; the existing router password also works. Set up Claude Code, Codex or OpenCode from Clients.")
+            }
+        }
+        .navigationTitle("Router")
+    }
+}
+
+/// Settings → Network, on a local router: whether it listens beyond this Mac.
+struct NetworkSettingsView: View {
+    let state: RouterState
+    @State private var model: SettingsState?
+    @State private var confirmOff = false
+
+    var body: some View {
+        let auth = model?.auth ?? state.auth
+        let on = auth?.remoteBind == true
+        List {
+            if let f = model?.failure { Section { Label(f, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange) } }
+            if let m = model?.message { Section { Text(m).font(.footnote) } }
+            Section {
+                Toggle("Listen on your network", isOn: Binding(get: { on }, set: { next in
+                    if next { Task { await model?.network(enable: true) } } else { confirmOff = true }
+                }))
+                // Off is always offered; on, only once a credential is set.
+                .disabled(model?.busy != nil || (!on && auth?.hasCredentials != true))
+                .accessibilityIdentifier("network-toggle")
+                if on, let lan = auth?.lanURL { LabeledContent("Reachable at", value: lan).textSelection(.enabled) }
+                if auth?.envOverride == true {
+                    Text("An environment variable sets where this router listens, so this switch does not move it.").foregroundStyle(.orange)
+                }
+            } header: {
+                Text(on ? "On" : "This Mac only")
+            } footer: {
+                Text(SettingsPages.networkExplain)
+            }
+        }
+        .navigationTitle("Network")
+        .confirmationDialog("Stop listening on your network?", isPresented: $confirmOff, titleVisibility: .visible) {
+            Button("Turn off", role: .destructive) { Task { await model?.network(enable: false) } }
+        } message: {
+            Text(SettingsPages.networkOff)
+        }
+        .task {
+            let m = SettingsState(router: state)
+            model = m
+            await m.load()
+        }
+    }
+}
+
+/// A page whose screen comes with a later change in this series.
+struct PendingSettingsPage: View {
+    let page: SettingsPage
+    var body: some View {
+        ContentUnavailableView(page.title, systemImage: page.icon, description: Text("Set this up from the console for now."))
+            .navigationTitle(page.title)
     }
 }
 
@@ -200,7 +327,7 @@ struct PasswordSection: View {
         } header: {
             Text("Password")
         } footer: {
-            Text("Changing the password affects devices using that password. Access tokens remain valid. If this phone uses the password, enter its replacement under Edit. Manage tokens in the web dashboard’s Settings → Access tokens.")
+            Text("Changing the password affects devices using that password. Access tokens remain valid. If this phone uses the password, enter its replacement under Edit. Manage tokens under Settings → Access tokens.")
         }
         .confirmationDialog("Remove the password?", isPresented: $confirmRemove, titleVisibility: .visible) {
             Button("Remove", role: .destructive) { Task { await model.password(nil, clear: true) } }

@@ -136,10 +136,7 @@ struct SettingsPageRoute: Hashable {
     let page: SettingsPage
 }
 
-enum SettingsPage: String, Hashable, Sendable {
-    case models
-    case accessTokens = "access-tokens"
-}
+
 /// A session named only by id — what a notification carries; the view looks it up.
 struct SessionByIdRoute: Hashable {
     let routerId: UUID

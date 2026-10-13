@@ -102,16 +102,24 @@ final class SettingsState {
 
     func load() async {
         guard let client else { return }
-        async let a: SetupStatus = client.get("/api/setup")
-        async let b: ShimStatus = client.get("/api/setup/shim")
         async let c: AuthStatus = client.get("/api/auth")
         async let d: PushStatus = client.get("/api/push")
         var problems: [String] = []
-        do { setup = try await a } catch { problems.append(LiveFeed.describe(error)) }
-        do { shim = try await b } catch { problems.append(LiveFeed.describe(error)) }
         do { auth = try await c } catch { problems.append(LiveFeed.describe(error)) }
         do { push = try await d } catch { problems.append(LiveFeed.describe(error)) }
+        // A hosted router refuses the Mac's setup, and one that has not said which it is is not
+        // asked: the Claude Code page is a local router's alone.
+        if SettingsPages.readsSetup(hosted: (auth ?? router.auth)?.isHosted) {
+            async let a: SetupStatus = client.get("/api/setup")
+            async let b: ShimStatus = client.get("/api/setup/shim")
+            do { setup = try await a } catch { problems.append(LiveFeed.describe(error)) }
+            do { shim = try await b } catch { problems.append(LiveFeed.describe(error)) }
+        }
         failure = problems.first
+    }
+
+    func network(enable: Bool) async {
+        await change("network") { try await $0.post("/api/network", NetworkBody(enable: enable)) }
     }
 
     private func change(_ what: String, _ op: (RouterClient) async throws -> OkReply) async {

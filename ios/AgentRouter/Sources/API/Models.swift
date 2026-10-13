@@ -53,6 +53,10 @@ struct AuthStatus: Decodable, Sendable {
     /// Hosted: run by a deployment, with no Mac of its own; its sessions come from the
     /// machines that run the Agent Router agent.
     var isHosted: Bool { mode == "server" }
+    /// Where a local router listening beyond loopback is reached on the network, and whether an
+    /// environment variable fixes where it listens.
+    let lanURL: String?
+    let envOverride: Bool?
     var hasCredentials: Bool { configured || accessTokens > 0 }
     var credentialStatus: String {
         if accessTokens > 0 { return configured ? "password and access tokens" : "access tokens" }
@@ -62,7 +66,7 @@ struct AuthStatus: Decodable, Sendable {
     enum CodingKeys: String, CodingKey {
         case configured, updatedAt = "updated_at", remoteBind = "remote_bind", fromLoopback = "from_loopback"
         case mode, passwordPinned = "password_pinned", publicURL = "public_url"
-        case accessTokens = "access_tokens"
+        case accessTokens = "access_tokens", lanURL = "lan_url", envOverride = "env_override"
     }
 }
 
@@ -80,6 +84,8 @@ extension AuthStatus {
         mode = c.lenient(String.self, .mode)
         passwordPinned = c.lenient(Bool.self, .passwordPinned)
         publicURL = c.lenient(String.self, .publicURL)
+        lanURL = c.lenient(String.self, .lanURL)
+        envOverride = c.lenient(Bool.self, .envOverride)
     }
 }
 

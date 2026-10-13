@@ -7,8 +7,15 @@ struct SettingsPageView: View {
 
     var body: some View {
         switch page {
+        case .accounts: AccountsView(state: state)
         case .models: ModelsView(state: state)
+        case .claudeCode: ClaudeCodeSettingsView(state: state)
+        case .network: NetworkSettingsView(state: state)
         case .accessTokens: AccessTokensView(state: state)
+        case .password: PasswordSettingsView(state: state)
+        case .notifications: NotificationSettingsView(state: state)
+        case .router: RouterInfoView(state: state)
+        case .clients, .forges, .library: PendingSettingsPage(page: page)
         }
     }
 }

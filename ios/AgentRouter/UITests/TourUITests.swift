@@ -64,6 +64,47 @@ final class TourUITests: XCTestCase {
             app.navigationBars.buttons.firstMatch.tap()
         }
 
+        // The Library and an item of it.
+        let library = any.matching(identifier: "library").firstMatch
+        if library.waitForExistence(timeout: 5) {
+            library.tap()
+            sleep(5)
+            shoot(app, "20 library")
+            // The item the router builds in, there on every hosted router.
+            let item = app.staticTexts["agent-router"].firstMatch
+            if item.waitForExistence(timeout: 5) {
+                item.tap()
+                if app.staticTexts["Versions"].waitForExistence(timeout: 10) {
+                    sleep(3)
+                    shoot(app, "21 a library item")
+                    app.swipeUp()
+                    shoot(app, "22 a library item, further down")
+                    app.navigationBars.buttons.firstMatch.tap()
+                }
+            }
+            app.navigationBars.buttons.firstMatch.tap()
+        }
+
+        // Settings, and each of its pages.
+        let settings = any.matching(identifier: "settings").firstMatch
+        XCTAssertTrue(any.matching(identifier: "live-sessions").firstMatch.waitForExistence(timeout: 10), "back on the router page")
+        for _ in 0..<10 where !settings.isHittable { app.swipeUp() }
+        if settings.isHittable {
+            settings.tap()
+            sleep(2)
+            shoot(app, "23 settings")
+            for (i, page) in ["models", "access-tokens", "router", "password", "notifications"].enumerated() {
+                let link = any.matching(identifier: "settings-\(page)").firstMatch
+                guard link.waitForExistence(timeout: 5) else { continue }
+                link.tap()
+                sleep(4)
+                shoot(app, String(format: "%02d settings %@", 24 + i, page))
+                app.navigationBars.buttons.firstMatch.tap()
+            }
+            app.navigationBars.buttons.firstMatch.tap()
+        }
+        for _ in 0..<8 { app.swipeDown() }
+
         let usage = any.matching(identifier: "usage").firstMatch
         for _ in 0..<6 where !usage.isHittable { app.swipeDown() }
         usage.tap()
