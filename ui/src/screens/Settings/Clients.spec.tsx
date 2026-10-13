@@ -214,7 +214,8 @@ describe('Clients setup', () => {
       });
       show();
       const machine = await screen.findByLabelText('Machine');
-      expect(within(machine).getByRole('option', { name: 'laptop · linux · offline' })).toBeDisabled();
+      // The choice is drawn before the machines are read; they join it once they are.
+      expect(await within(machine).findByRole('option', { name: 'laptop · linux · offline' })).toBeDisabled();
       expect(screen.getAllByText('Check on your client’s machine')).toHaveLength(3);
       fireEvent.change(machine, { target: { value: 'm-1' } });
       expect(await screen.findByText('/Users/me/claude-code.conf')).toBeInTheDocument();
@@ -243,13 +244,15 @@ describe('Clients setup', () => {
         '/api/machines': ok([...MACHINES.slice(0, 1), { ...MACHINES[1]!, online: true }]),
       });
       show();
-      fireEvent.change(await screen.findByLabelText('Machine'), { target: { value: 'm-1' } });
+      const machine = await screen.findByLabelText('Machine');
+      await within(machine).findByRole('option', { name: 'studio · macos' });
+      fireEvent.change(machine, { target: { value: 'm-1' } });
       await press(await screen.findByRole('button', { name: 'Configure OpenCode' }));
       await press(screen.getByRole('button', { name: 'Preview configuration' }));
       await screen.findByLabelText('OpenCode configuration preview');
       expect(router.said()).toContain('POST /api/clients/opencode/preview');
       expect(screen.queryByRole('button', { name: 'Apply configuration' })).toBeNull();
-      fireEvent.change(screen.getByLabelText('Machine'), { target: { value: 'm-2' } });
+      fireEvent.change(machine, { target: { value: 'm-2' } });
       expect(await screen.findByText('laptop’s agent predates setting up its clients from here: run the installer on it again', { exact: false })).toBeInTheDocument();
       expect(screen.queryByRole('button', { name: 'Configure Codex' })).toBeNull();
     });
