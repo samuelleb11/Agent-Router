@@ -41,6 +41,7 @@ struct ModelsView: View {
             } footer: {
                 Text("A model given no account of its own goes to its provider’s active account.")
             }
+            RegistrySections(state: state)
         }
         .navigationTitle("Models")
         .overlay { if model?.models == nil, model?.failure == nil { ProgressView() } }
