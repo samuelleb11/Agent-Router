@@ -145,13 +145,26 @@ next logon.
   - the `live` routes;
   - two for the notifier, `GET /agent/waiting` and `GET /agent/still-waiting`;
   - one for the Library, `POST /agent/library/sync`
-    ([library.md](library.md#push)). It syncs now and answers with its report.
+    ([library.md](library.md#push)). It syncs now and answers with its report;
+  - three for client setup (AGEN-0200), each a `POST`: `/agent/clients`,
+    `/agent/clients/{client}/apply` and `/agent/clients/{client}/restore`.
 
-  That last route is the one through which a router can cause a write on a machine. It
-  carries nothing: the agent pulls the manifest and blobs over HTTPS and checks every
-  digest. So all it can place in `~/.claude` is what the router's Library lists. A machine
-  installed with `--no-library` answers it 409. Nothing else is reachable through the
-  tunnel: no setup, no shim install, no files.
+  Two kinds of route let a router cause a write on a machine.
+  - **The Library sync** carries nothing: the agent pulls the manifest and blobs over HTTPS
+    and checks every digest. So all it can place in `~/.claude` is what the router's Library
+    lists. A machine installed with `--no-library` answers it 409.
+  - **Client setup** is what the hosted router's Clients page does with a machine chosen
+    (`?machine=<id>` on `/api/clients` and its preview, check, apply and restore). It reaches
+    Claude Code's `~/.claude/settings.json` and Codex's `config.toml`, nothing else.
+    - The router decides the model, URL, Client token and catalogue.
+    - The agent reads its own file and answers its path and revision.
+    - On Apply, it merges the router's settings in only if the file is still at the revision
+      the reader reviewed, and only if the URL is the server it connects to.
+    - It keeps the same ownership ledger as a local Apply, beside its store, so Restore puts
+      back what was replaced and keeps the reader's own edits.
+
+  An agent installed before these routes answers 404, and the router says it predates them.
+  Nothing else is reachable through the tunnel: no shim install, no other file.
 - **Housekeeping.** The wrapper janitor runs every 60 s, as the router does locally today.
 - **Clock.** It derives activity on its own clock. Rows carry `as_of_ms` and the router
   never re-derives them, because a few seconds of clock skew would misread turn

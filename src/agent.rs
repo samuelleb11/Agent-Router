@@ -299,13 +299,16 @@ impl Target {
     }
 }
 
-/// The routes a router may ask an agent for: the live view, what the notifier needs, and
-/// one sync of the Library (`library::push`). That one is the only route that writes here,
-/// and it carries nothing: the agent pulls the manifest and the blobs itself and checks every
-/// digest, so all a router can have a machine place in `~/.claude` is what its Library
-/// lists. Nothing else is served — no setup, no shim, no files. `library` is `None` on a
-/// machine installed with `--no-library`, whose answer to a sync says so.
-fn routes(library: Option<Library>) -> Router {
+/// The routes a router may ask an agent for: the live view, what the notifier needs, one sync
+/// of the Library (`library::push`), and its Claude Code and Codex settings
+/// (`client_setup::machine_routes`). A sync carries nothing: the agent pulls the manifest and
+/// the blobs itself and checks every digest, so all a router can have a machine place in
+/// `~/.claude` is what its Library lists. Client setup writes only the settings a router
+/// manages in those two clients' global configuration, from a plan the reader reviewed, for
+/// `server` alone, and keeps what it replaced to restore. Nothing else is served — no shim, no
+/// other file. `library` is `None` on a machine installed with `--no-library`, whose answer
+/// to a sync says so.
+fn routes(library: Option<Library>, server: &str) -> Router {
     use crate::live;
     Router::new()
         .route("/api/live/sessions", get(live::sessions))
@@ -327,6 +330,7 @@ fn routes(library: Option<Library>) -> Router {
         .route("/agent/waiting", get(waiting))
         .route("/agent/still-waiting", get(still_waiting))
         .route(crate::library::push::PATH, post(move || library_sync(library.clone())))
+        .merge(crate::client_setup::machine_routes().layer(axum::Extension(crate::client_setup::OnMachine::here(server))))
 }
 
 /// What the agent syncs the Library with: where on this machine, from which router, and
@@ -1209,7 +1213,7 @@ async fn work(args: RunArgs, dir: PathBuf, stopping: crate::lifecycle::Stopping)
         });
     }
 
-    let router = routes(library);
+    let router = routes(library, &server);
     let mut backoff = Duration::from_secs(1);
     loop {
         let started = Instant::now();
@@ -2150,8 +2154,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// The tunnel's one new route syncs the Library and answers its report; a machine that
-    /// opted out says so; and everything else the router might try is still not there.
+    /// The tunnel's route syncs the Library and answers its report; a machine that opted out
+    /// says so; client setup is there for a router to post to; and everything else the router
+    /// might try is still not there.
     #[tokio::test]
     async fn the_tunnel_serves_library_sync_and_nothing_else_new() {
         use crate::library::store::{self, Provenance};
@@ -2179,7 +2184,7 @@ mod tests {
             axum::http::Request::builder().method(method).uri(path).body(Body::empty()).unwrap()
         };
 
-        let synced = routes(Some(library.clone())).oneshot(ask("POST", "/agent/library/sync")).await.unwrap();
+        let synced = routes(Some(library.clone()), "https://router.invalid").oneshot(ask("POST", "/agent/library/sync")).await.unwrap();
         assert_eq!(synced.status(), 200);
         let report: crate::library::sync::Report =
             serde_json::from_slice(&axum::body::to_bytes(synced.into_body(), 1 << 20).await.unwrap()).unwrap();
@@ -2187,20 +2192,24 @@ mod tests {
         assert_eq!(report.items[0].outcome, crate::library::sync::Outcome::Placed);
         assert_eq!(std::fs::read_to_string(root.join("claude/skills/bench/SKILL.md")).unwrap(), text);
 
-        let refused = routes(None).oneshot(ask("POST", "/agent/library/sync")).await.unwrap();
+        let refused = routes(None, "https://router.invalid").oneshot(ask("POST", "/agent/library/sync")).await.unwrap();
         assert_eq!(refused.status(), 409);
         let words: Value = serde_json::from_slice(&axum::body::to_bytes(refused.into_body(), 1 << 20).await.unwrap()).unwrap();
         assert!(words["error"].as_str().unwrap().contains("--no-library"), "{words}");
 
-        assert_eq!(routes(Some(library.clone())).oneshot(ask("GET", "/agent/library/sync")).await.unwrap().status(), 405);
+        assert_eq!(routes(Some(library.clone()), "https://router.invalid").oneshot(ask("GET", "/agent/library/sync")).await.unwrap().status(), 405);
+        // Asked for by a router with a POST alone, which reads this machine's files.
+        assert_eq!(routes(None, "https://router.invalid").oneshot(ask("GET", "/agent/clients")).await.unwrap().status(), 405);
         for (method, path) in [
             ("POST", "/agent/library/publish"),
             ("GET", "/api/library/manifest"),
             ("POST", "/api/setup/shim"),
             ("POST", "/api/setup/config"),
             ("GET", "/agent/install.sh"),
+            ("POST", "/agent/clients/codex/files"),
+            ("POST", "/agent/files"),
         ] {
-            let answer = routes(Some(library.clone())).oneshot(ask(method, path)).await.unwrap();
+            let answer = routes(Some(library.clone()), "https://router.invalid").oneshot(ask(method, path)).await.unwrap();
             assert_eq!(answer.status(), 404, "{method} {path}");
         }
         let _ = std::fs::remove_dir_all(&root);
@@ -2210,9 +2219,9 @@ mod tests {
     #[tokio::test]
     async fn only_the_live_routes_are_served() {
         let options = axum::http::Request::builder().uri("/api/setup").body(Body::empty()).unwrap();
-        assert_eq!(routes(None).oneshot(options).await.unwrap().status(), 404);
+        assert_eq!(routes(None, "https://router.invalid").oneshot(options).await.unwrap().status(), 404);
         let setup = axum::http::Request::builder().method("POST").uri("/api/setup/shim").body(Body::empty()).unwrap();
-        assert_eq!(routes(None).oneshot(setup).await.unwrap().status(), 404);
+        assert_eq!(routes(None, "https://router.invalid").oneshot(setup).await.unwrap().status(), 404);
     }
 
     #[test]

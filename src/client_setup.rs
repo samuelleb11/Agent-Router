@@ -1,11 +1,18 @@
 //! Reversible setup for clients that speak Messages or Responses.
+//!
+//! A local router sets up the clients on its own machine. A hosted router exports their
+//! configuration, and sets up Claude Code and Codex on a connected machine through its agent
+//! (AGEN-0200): the router decides the model, the URL, the credential and the catalogue — an
+//! `Intent` — and the machine's agent reads, merges and writes its own file against the
+//! revision the reader reviewed, keeping the same ownership ledger a local Apply keeps.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
-use axum::extract::{Path as Params, State};
-use axum::http::{header, StatusCode};
+use axum::extract::{Path as Params, Query, State};
+use axum::http::{header, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use ring::rand::SecureRandom;
@@ -20,6 +27,10 @@ use crate::refusal::{failed, refuse, JsonBody};
 
 const PLACEHOLDER: &str = "<AGENT_ROUTER_CLIENT_TOKEN>";
 const IDS: [&str; 3] = ["claude-code", "codex", "opencode"];
+/// The clients a hosted router may set up on a machine, in their global configuration.
+const ON_A_MACHINE: [&str; 2] = ["claude-code", "codex"];
+/// How long a machine's agent is given to read or write its client settings.
+const MACHINE_WAIT: Duration = Duration::from_secs(30);
 static WRITES: Mutex<()> = Mutex::new(());
 
 /// Internal dependency injection for fixture homes. No HTTP parameter selects a home.
@@ -113,6 +124,56 @@ pub struct Restore {
     project: Option<String>,
 }
 
+/// What a router decided for one client: everything a plan needs but the file itself, which is
+/// what a hosted router sends a machine's agent to render against the file it holds.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Intent {
+    client: String,
+    model: String,
+    url: String,
+    token: String,
+    capabilities: crate::provider_registry::Capabilities,
+    catalogue: Option<crate::models::ClientCatalogue>,
+}
+
+/// A machine's client file as its agent read it: where it is, and its revision.
+struct Remote {
+    path: PathBuf,
+    revision: String,
+}
+
+/// Which machine a hosted router's Clients page is about, when it is about one.
+#[derive(Deserialize)]
+pub struct Which {
+    #[serde(default)]
+    machine: Option<String>,
+}
+
+/// What a machine's agent sets its clients up against: the router it connects to, and where
+/// its clients and its ledger are — its own home and data directory, or a test's.
+#[derive(Clone)]
+pub(crate) struct OnMachine {
+    server: String,
+    roots: Option<Roots>,
+    ledger: Option<PathBuf>,
+}
+
+impl OnMachine {
+    pub(crate) fn here(server: &str) -> Self {
+        Self { server: server.trim_end_matches('/').to_string(), roots: None, ledger: None }
+    }
+
+    fn roots(&self) -> Result<Roots> {
+        self.roots.clone().map(Ok).unwrap_or_else(Roots::here)
+    }
+
+    /// The agent's ledger sits beside its store, as a local router's does.
+    fn db(&self) -> Result<PathBuf> {
+        self.ledger.clone().map(Ok).unwrap_or_else(crate::config::db_path)
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 struct Saved {
     client: String,
@@ -136,6 +197,16 @@ fn digest(bytes: impl AsRef<[u8]>) -> String {
 
 fn kept(state: &AppState, client: &str, path: &Path) -> PathBuf {
     kept_at(&state.config.db_path, client, path)
+}
+
+/// The file a plan writes: what the router decided, merged into the file as it is now, with
+/// Codex's catalogue beside it when there is a file to put it beside.
+fn rendered(path: Option<&Path>, before: &str, intent: &Intent) -> Result<(String, Vec<Vec<String>>)> {
+    let (mut after, owned) = render(&intent.client, before, &intent.model, &intent.url, &intent.token, &intent.capabilities)?;
+    if let (Some(path), Some(metadata)) = (path, &intent.catalogue) {
+        after = crate::codex::catalogue::prepare(path, before, &after, metadata)?.after;
+    }
+    Ok((after, owned))
 }
 
 fn kept_at(db: &Path, client: &str, path: &Path) -> PathBuf {
@@ -528,8 +599,10 @@ async fn legacy_credential(state: &AppState, credential: &str) -> bool {
 
 pub async fn status(
     State(state): State<Arc<AppState>>,
+    Query(which): Query<Which>,
     roots: Option<Extension<Roots>>,
 ) -> Response {
+    let asking = state.clone();
     let result = tokio::task::spawn_blocking(move || -> Result<Value> {
         let conn=state.reads.get()?;
         let mut models=Vec::new();
@@ -552,9 +625,205 @@ pub async fn status(
         }).collect::<Vec<_>>();
         Ok(json!({"mode":if state.config.server{"server"}else{"local"},"url":router_url(&state),"clients":clients,"models":models}))
     }).await;
-    match result {
+    let body = match result {
+        Ok(Ok(body)) => body,
+        Ok(Err(e)) => return failed(e),
+        Err(e) => return failed(e),
+    };
+    let Some(id) = which.machine else { return success(body) };
+    match ask_machine(&asking, &id, "/agent/clients", json!({})).await {
+        Ok(found) => success(overlaid(body, &id, &found)),
+        Err((status, why)) => refuse(status, why),
+    }
+}
+
+/// The Clients page for one machine: this router's catalogue, and that machine's Claude Code and
+/// Codex as its agent read them. OpenCode stays an export.
+fn overlaid(mut body: Value, id: &str, found: &Value) -> Value {
+    if let Some(rows) = body["clients"].as_array_mut() {
+        for row in rows {
+            let Some(theirs) = found["clients"].as_array().and_then(|f| f.iter().find(|c| c["id"] == row["id"])) else { continue };
+            for key in ["installed", "version", "configured", "managed", "config_path"] {
+                row[key] = theirs[key].clone();
+            }
+            row["can_apply"] = json!(true);
+        }
+    }
+    body["machine"] = json!(id);
+    body
+}
+
+fn on_a_machine(client: &str) -> Result<()> {
+    valid_client(client)?;
+    if !ON_A_MACHINE.contains(&client) {
+        bail!("a router sets up Claude Code and Codex on a machine; export OpenCode's configuration instead");
+    }
+    Ok(())
+}
+
+/// A refusal in this router's words, with its status.
+type Refused = (StatusCode, String);
+
+fn offline(label: &str) -> String {
+    format!("{label} is offline: its clients can be set up once its agent connects again")
+}
+
+/// Ask a machine's agent about its clients: its answer, or this router's words for why there
+/// is none — not hosted, no such machine, offline, an agent that predates these routes, or the
+/// agent's own refusal.
+async fn ask_machine(state: &AppState, id: &str, path: &str, body: Value) -> Result<Value, Refused> {
+    use crate::machines::Relay;
+    if !state.config.server {
+        return Err((StatusCode::BAD_REQUEST, "a local router sets up the clients on its own machine; omit machine".into()));
+    }
+    let Some(machine) = state.machines.online(id) else {
+        return Err(match state.machines.seen().into_iter().find(|s| s.id == id) {
+            Some(seen) => (StatusCode::SERVICE_UNAVAILABLE, offline(&seen.label)),
+            None => (StatusCode::NOT_FOUND, format!("no machine {id} has connected to this router")),
+        });
+    };
+    let label = machine.hello.label.clone();
+    let headers = vec![("content-type".to_string(), "application/json".to_string())];
+    let response = match machine.request(&Method::POST, path, headers, body.to_string().as_bytes(), MACHINE_WAIT).await {
+        Ok(response) => response,
+        Err(Relay::Offline(_)) => return Err((StatusCode::SERVICE_UNAVAILABLE, offline(&label))),
+        Err(Relay::Failed(why)) => return Err((StatusCode::BAD_GATEWAY, why)),
+        Err(Relay::Unknown) => return Err((StatusCode::BAD_GATEWAY, format!("{label} did not answer"))),
+    };
+    let status = response.status();
+    let Ok(Ok(bytes)) = tokio::time::timeout(MACHINE_WAIT, axum::body::to_bytes(response.into_body(), 1 << 20)).await else {
+        return Err((StatusCode::BAD_GATEWAY, format!("{label} did not finish answering")));
+    };
+    let said: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    if status.is_success() {
+        return Ok(said);
+    }
+    // An agent installed before these routes has none of them.
+    if matches!(status, StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED) {
+        return Err((StatusCode::CONFLICT, format!("{label}'s agent predates setting up its clients from here: run the installer on it again")));
+    }
+    let words = said["error"].as_str().map(str::to_owned).unwrap_or_else(|| String::from_utf8_lossy(&bytes).trim().to_string());
+    Err((if status.is_client_error() { status } else { StatusCode::BAD_GATEWAY }, format!("{label} refused: {words}")))
+}
+
+/// Where a machine keeps a client's configuration, and its revision now, as its agent reads it.
+async fn machine_file(state: &AppState, id: &str, client: &str) -> Result<Remote, Refused> {
+    on_a_machine(client).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    let found = ask_machine(state, id, "/agent/clients", json!({})).await?;
+    let row = found["clients"].as_array().and_then(|rows| rows.iter().find(|c| c["id"] == client));
+    match row.and_then(|r| Some((r["config_path"].as_str()?, r["revision"].as_str()?))) {
+        Some((path, revision)) => Ok(Remote { path: path.into(), revision: revision.into() }),
+        None => Err((StatusCode::BAD_GATEWAY, format!("the machine did not say where {client}'s configuration is"))),
+    }
+}
+
+/// Apply on a machine: this router decides the plan again, as for its own Apply, and the
+/// machine's agent writes it only if its file is still at the revision that was reviewed.
+async fn apply_on_machine(state: &AppState, id: &str, client: &str, req: &Setup) -> Response {
+    let remote = match machine_file(state, id, client).await {
+        Ok(remote) => remote,
+        Err((status, why)) => return refuse(status, why),
+    };
+    let Some(revision) = req.revision.clone() else {
+        return refuse(StatusCode::CONFLICT, "client settings changed or have not been previewed; preview again before applying");
+    };
+    let plan = match plan(state, None, client, req, true, Some(&remote)).await {
+        Ok(plan) => plan,
+        Err(e) => return refuse(StatusCode::BAD_REQUEST, e.to_string()),
+    };
+    let reviewed = json!({ "intent": plan.intent, "revision": revision });
+    match ask_machine(state, id, &format!("/agent/clients/{client}/apply"), reviewed).await {
+        Ok(mut applied) => {
+            applied["warnings"] = plan.body["warnings"].clone();
+            success(applied)
+        }
+        Err((status, why)) => refuse(status, why),
+    }
+}
+
+/// The routes a machine's agent sets its clients up with, for the router it connects to: its
+/// Claude Code and Codex, read, applied from a reviewed plan, and restored. Nothing else of a
+/// machine's files is served.
+pub(crate) fn machine_routes() -> axum::Router {
+    use axum::routing::post;
+    axum::Router::new()
+        .route("/agent/clients", post(machine_status))
+        .route("/agent/clients/{client}/apply", post(machine_apply))
+        .route("/agent/clients/{client}/restore", post(machine_restore))
+}
+
+/// What a router sends a machine to apply: its decision, and the revision the reader reviewed.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Reviewed {
+    intent: Intent,
+    revision: String,
+}
+
+/// On a machine's agent: its Claude Code and Codex, read for the router it connects to, with
+/// each file's revision for a plan to be reviewed against.
+async fn machine_status(Extension(on): Extension<OnMachine>) -> Response {
+    let read_all = tokio::task::spawn_blocking(move || -> Result<Value> {
+        let roots = on.roots()?;
+        let db = on.db()?;
+        let found = if roots.home == crate::setup::home_dir().unwrap_or_default() { crate::clients::here() } else { Vec::new() };
+        let clients = ON_A_MACHINE
+            .into_iter()
+            .map(|id| -> Result<Value> {
+                let path = roots.path(id, None)?;
+                let body = read(&path)?;
+                let found = found.iter().find(|c| c.client == id);
+                Ok(json!({"id":id,"installed":found.is_some() || path.exists(),
+                    "version":found.and_then(|c| c.cli.as_ref()).and_then(|c| c.version.as_ref()),
+                    "configured":configured(id, &body, &on.server),"managed":kept_at(&db, id, &path).exists(),
+                    "config_path":path.display().to_string(),"revision":digest(&body)}))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(json!({ "clients": clients }))
+    })
+    .await;
+    match read_all {
         Ok(Ok(body)) => success(body),
-        Ok(Err(e)) => failed(e),
+        Ok(Err(e)) => refuse(StatusCode::CONFLICT, e.to_string()),
+        Err(e) => failed(e),
+    }
+}
+
+/// On a machine's agent: the router's plan merged into this machine's file, with the same
+/// revision check and ledger as a local Apply, and only for the router this agent connects to.
+async fn machine_apply(Extension(on): Extension<OnMachine>, Params(client): Params<String>, JsonBody(req): JsonBody<Reviewed>) -> Response {
+    let applied = tokio::task::spawn_blocking(move || -> Result<Value> {
+        on_a_machine(&client)?;
+        if req.intent.client != client {
+            bail!("that plan is for another client");
+        }
+        if req.intent.url.trim_end_matches('/') != on.server {
+            bail!("this machine's agent connects to {}; it sets its clients up for that router alone", on.server);
+        }
+        let path = on.roots()?.path(&client, None)?;
+        let before = read(&path)?;
+        let (after, owned) = rendered(Some(&path), &before, &req.intent)?;
+        let plan = Plan { body: json!({ "warnings": [] }), path: Some(path), before, after, owned, credential: None, catalogue: req.intent.catalogue.clone(), intent: req.intent };
+        apply_plan(&on.db()?, &client, Some(req.revision.as_str()), plan)
+    })
+    .await;
+    match applied {
+        Ok(Ok(body)) => success(body),
+        Ok(Err(e)) => refuse(StatusCode::CONFLICT, e.to_string()),
+        Err(e) => failed(e),
+    }
+}
+
+/// On a machine's agent: put back what an Apply from the router replaced, as a local Restore does.
+async fn machine_restore(Extension(on): Extension<OnMachine>, Params(client): Params<String>) -> Response {
+    let restored = tokio::task::spawn_blocking(move || -> Result<Value> {
+        on_a_machine(&client)?;
+        restore_saved(&on.db()?, on.roots()?, &client, None)
+    })
+    .await;
+    match restored {
+        Ok(Ok(body)) => success(body),
+        Ok(Err(e)) => refuse(StatusCode::CONFLICT, e.to_string()),
         Err(e) => failed(e),
     }
 }
@@ -567,14 +836,18 @@ struct Plan {
     owned: Vec<Vec<String>>,
     credential: Option<(PathBuf, String)>,
     catalogue: Option<crate::models::ClientCatalogue>,
+    intent: Intent,
 }
 
+/// A client's plan on this router: its own machine's file locally, an export when hosted, and
+/// with `remote` a connected machine's file, which its agent renders and writes.
 async fn plan(
     state: &AppState,
     roots: Option<Roots>,
     client: &str,
     req: &Setup,
     applying: bool,
+    remote: Option<&Remote>,
 ) -> Result<Plan> {
     valid_client(client)?;
     let url = selected_url(state, req.url.as_deref())?;
@@ -623,7 +896,7 @@ async fn plan(
         if applying && state.config.server {
             bail!("a hosted client needs a router access token");
         }
-        checks.push(json!({"id":"router_auth","label":"Router credential","status":"warning","detail":if state.config.server{"Replace the exported placeholder with a Client access token"}else{"Loopback requests are trusted; create a Client token for access from other machines"}}));
+        checks.push(json!({"id":"router_auth","label":"Router credential","status":"warning","detail":if remote.is_some(){"Give a Client access token: Apply writes it into this machine's configuration"}else if state.config.server{"Replace the exported placeholder with a Client access token"}else{"Loopback requests are trusted; create a Client token for access from other machines"}}));
     }
     let mut subscription = false;
     let selected_signer = match crate::provider_registry::resolve(state, &model.id).await {
@@ -677,7 +950,12 @@ async fn plan(
     if subscription {
         warnings.push("This account uses a native subscription login. Protocol support does not establish that the provider permits this client; validate its entitlement separately.".into());
     }
-    let path = if state.config.server {
+    let path = if let Some(remote) = remote {
+        if req.project.is_some() {
+            bail!("a machine's clients are set up in their global configuration; omit project");
+        }
+        Some(remote.path.clone())
+    } else if state.config.server {
         if req.project.is_some() {
             bail!("hosted exports do not accept a server project path");
         }
@@ -690,7 +968,8 @@ async fn plan(
                 .path(client, req.project.as_deref())?,
         )
     };
-    let before = path.as_deref().map(read).transpose()?.unwrap_or_default();
+    // A machine's file is read, and rendered, by its own agent.
+    let before = if remote.is_some() { String::new() } else { path.as_deref().map(read).transpose()?.unwrap_or_default() };
     let supplied = credential.unwrap_or(if applying {
         "agent-router"
     } else {
@@ -723,14 +1002,12 @@ async fn plan(
         warnings.push("Apply creates the private credential file outside the project. Copying or downloading this configuration alone does not create that file; create it privately on the client machine before using the file reference.".into());
     }
     let supplied = reference.as_deref().unwrap_or(supplied);
-    let (mut after, owned) = render(client, &before, &model.id, &url, supplied, &capabilities)?;
     // Export only our fragment. An existing config may contain other providers' keys.
     let mut content = render(client, "", &model.id, &url, supplied, &capabilities)?.0;
     let catalogue = if client == "codex" {
         if !capabilities.tools {bail!("Codex requires a model route with tools enabled");}
         let metadata = {let conn=state.reads.get()?;crate::models::client_catalogue(&conn)?};
         if let Some(path) = &path {
-            after = crate::codex::catalogue::prepare(path,&before,&after,&metadata)?.after;
             let mut fragment = toml_config(&content)?;
             fragment["model_catalog_json"] = value(path.parent().unwrap().join(crate::codex::catalogue::FILE).to_string_lossy().as_ref());
             content = fragment.to_string();
@@ -738,10 +1015,12 @@ async fn plan(
         warnings.push("Model changes apply when Codex starts. Refresh with `agent-router codex models refresh`; finish active turns, then resume the same CLI session or reload the Codex editor window. Refresh does not stop running clients.".into());
         Some(metadata)
     } else {None};
+    let intent = Intent { client: client.into(), model: model.id.clone(), url: url.clone(), token: supplied.into(), capabilities: capabilities.clone(), catalogue: catalogue.clone() };
+    let (after, owned) = if remote.is_some() { (String::new(), Vec::new()) } else { rendered(path.as_deref(), &before, &intent)? };
     let body = json!({"ok":true,"client":client,"model":model.id,"provider":model.provider.as_str(),"account_id":account,
-        "protocol":protocol,"translated":translated,"can_apply":!state.config.server,
+        "protocol":protocol,"translated":translated,"can_apply":!state.config.server || remote.is_some(),
         "path":path.as_ref().map(|p|p.display().to_string()),"format":if client=="codex"{"toml"}else{"json"},
-        "content":content,"revision":digest(&before),"warnings":warnings,"checks":checks,"connection_tested":false,"service_id":service.id,"native_protocol":service.protocol,"capabilities":capabilities,
+        "content":content,"revision":remote.map_or_else(|| digest(&before), |r| r.revision.clone()),"warnings":warnings,"checks":checks,"connection_tested":false,"service_id":service.id,"native_protocol":service.protocol,"capabilities":capabilities,
         "credential_path":private_credential.as_ref().map(|(p,_)|p.display().to_string()),
         "catalogue_content":catalogue.as_ref().map(crate::codex::catalogue::native).transpose()?.map(|v|serde_json::to_string_pretty(&v)).transpose()?,
         "catalogue_path":if client=="codex" {path.as_ref().map(|p|p.parent().unwrap().join(crate::codex::catalogue::FILE).display().to_string())} else {None},
@@ -754,16 +1033,25 @@ async fn plan(
         owned,
         credential: private_credential,
         catalogue,
+        intent,
     })
 }
 
 pub async fn preview(
     State(state): State<Arc<AppState>>,
     Params(client): Params<String>,
+    Query(which): Query<Which>,
     roots: Option<Extension<Roots>>,
     JsonBody(req): JsonBody<Setup>,
 ) -> Response {
-    match plan(&state, roots.map(|r| r.0), &client, &req, false).await {
+    let remote = match which.machine.as_deref().map(|id| machine_file(&state, id, &client)) {
+        Some(asked) => match asked.await {
+            Ok(remote) => Some(remote),
+            Err((status, why)) => return refuse(status, why),
+        },
+        None => None,
+    };
+    match plan(&state, roots.map(|r| r.0), &client, &req, false, remote.as_ref()).await {
         Ok(plan) => success(plan.body),
         Err(e) => refuse(StatusCode::BAD_REQUEST, e.to_string()),
     }
@@ -773,10 +1061,18 @@ pub async fn preview(
 pub async fn check(
     State(state): State<Arc<AppState>>,
     Params(client): Params<String>,
+    Query(which): Query<Which>,
     roots: Option<Extension<Roots>>,
     JsonBody(req): JsonBody<Setup>,
 ) -> Response {
-    match plan(&state, roots.map(|r| r.0), &client, &req, false).await {
+    let remote = match which.machine.as_deref().map(|id| machine_file(&state, id, &client)) {
+        Some(asked) => match asked.await {
+            Ok(remote) => Some(remote),
+            Err((status, why)) => return refuse(status, why),
+        },
+        None => None,
+    };
+    match plan(&state, roots.map(|r| r.0), &client, &req, false, remote.as_ref()).await {
         Ok(mut plan) => {
             plan.body.as_object_mut().unwrap().remove("content");
             plan.body.as_object_mut().unwrap().remove("catalogue_content");
@@ -824,7 +1120,9 @@ fn ensure_provider_owned(
     Ok(())
 }
 
-fn apply_plan(state: &AppState, client: &str, req: &Setup, plan: Plan) -> Result<Value> {
+/// Write a reviewed plan, keeping in the ledger beside `db` what it owns and what was there
+/// before: a local router's own Apply, and a machine's agent's.
+fn apply_plan(db: &Path, client: &str, revision: Option<&str>, plan: Plan) -> Result<Value> {
     let _lock = WRITES
         .lock()
         .map_err(|_| anyhow!("client configuration lock is unavailable"))?;
@@ -832,11 +1130,11 @@ fn apply_plan(state: &AppState, client: &str, req: &Setup, plan: Plan) -> Result
         .path
         .context("hosted configuration can only be exported")?;
     let _catalogue_lock = if client=="codex" {Some(crate::codex::catalogue::WRITES.lock().map_err(|_|anyhow!("Codex catalogue lock unavailable"))?)} else {None};
-    if req.revision.as_deref() != Some(digest(&plan.before).as_str()) || read(&path)? != plan.before
+    if revision != Some(digest(&plan.before).as_str()) || read(&path)? != plan.before
     {
         bail!("client settings changed or have not been previewed; preview again before applying");
     }
-    let kept = kept(state, client, &path);
+    let kept = kept_at(db, client, &path);
     let previous = if kept.exists() {
         Some(load_saved(&kept)?)
     } else {
@@ -848,8 +1146,7 @@ fn apply_plan(state: &AppState, client: &str, req: &Setup, plan: Plan) -> Result
     {
         bail!("saved client settings belong to another configuration");
     }
-    let url = selected_url(state, req.url.as_deref())?;
-    ensure_provider_owned(client, &path, &plan.before, &url, previous.as_ref())?;
+    ensure_provider_owned(client, &path, &plan.before, &plan.intent.url, previous.as_ref())?;
     let catalogue = plan.catalogue.as_ref().map(|metadata|crate::codex::catalogue::prepare(&path,&plan.before,&plan.after,metadata)).transpose()?;
     let mut owned = previous
         .as_ref()
@@ -938,20 +1235,25 @@ fn apply_plan(state: &AppState, client: &str, req: &Setup, plan: Plan) -> Result
 pub async fn apply(
     State(state): State<Arc<AppState>>,
     Params(client): Params<String>,
+    Query(which): Query<Which>,
     roots: Option<Extension<Roots>>,
     JsonBody(req): JsonBody<Setup>,
 ) -> Response {
+    if let Some(id) = which.machine.as_deref() {
+        return apply_on_machine(&state, id, &client, &req).await;
+    }
     if state.config.server {
         return refuse(
             StatusCode::CONFLICT,
-            "hosted routers export client configuration; apply it on the client machine",
+            "hosted routers export client configuration; apply it on the client machine, or choose a connected machine",
         );
     }
-    let plan = match plan(&state, roots.map(|r| r.0), &client, &req, true).await {
+    let plan = match plan(&state, roots.map(|r| r.0), &client, &req, true, None).await {
         Ok(plan) => plan,
         Err(e) => return refuse(StatusCode::BAD_REQUEST, e.to_string()),
     };
-    let result = tokio::task::spawn_blocking(move || apply_plan(&state, &client, &req, plan)).await;
+    let db = state.config.db_path.clone();
+    let result = tokio::task::spawn_blocking(move || apply_plan(&db, &client, req.revision.as_deref(), plan)).await;
     match result {
         Ok(Ok(body)) => success(body),
         Ok(Err(e)) => refuse(StatusCode::CONFLICT, e.to_string()),
@@ -960,7 +1262,7 @@ pub async fn apply(
 }
 
 fn restore_saved(
-    state: &AppState,
+    db: &Path,
     roots: Roots,
     client: &str,
     project: Option<&str>,
@@ -970,7 +1272,7 @@ fn restore_saved(
         .lock()
         .map_err(|_| anyhow!("client configuration lock is unavailable"))?;
     let path = roots.path(client, project)?;
-    let kept = kept(state, client, &path);
+    let kept = kept_at(db, client, &path);
     if !kept.exists() {
         return Ok(
             json!({"ok":true,"client":client,"path":path.display().to_string(),"changed":false,"preserved_edits":false}),
@@ -1055,21 +1357,35 @@ fn restore_saved(
 pub async fn restore(
     State(state): State<Arc<AppState>>,
     Params(client): Params<String>,
+    Query(which): Query<Which>,
     roots: Option<Extension<Roots>>,
     JsonBody(req): JsonBody<Restore>,
 ) -> Response {
+    if let Some(id) = which.machine.as_deref() {
+        if let Err(e) = on_a_machine(&client) {
+            return refuse(StatusCode::BAD_REQUEST, e.to_string());
+        }
+        if req.project.is_some() {
+            return refuse(StatusCode::BAD_REQUEST, "a machine's clients are set up in their global configuration; omit project");
+        }
+        return match ask_machine(&state, id, &format!("/agent/clients/{client}/restore"), json!({})).await {
+            Ok(restored) => success(restored),
+            Err((status, why)) => refuse(status, why),
+        };
+    }
     if state.config.server {
         return refuse(
             StatusCode::CONFLICT,
-            "hosted routers do not modify client files; restore them on the client machine",
+            "hosted routers do not modify client files; restore them on the client machine, or choose a connected machine",
         );
     }
     let roots = match roots.map(|r| r.0).map(Ok).unwrap_or_else(Roots::here) {
         Ok(roots) => roots,
         Err(e) => return failed(e),
     };
+    let db = state.config.db_path.clone();
     let result = tokio::task::spawn_blocking(move || {
-        restore_saved(&state, roots, &client, req.project.as_deref())
+        restore_saved(&db, roots, &client, req.project.as_deref())
     })
     .await;
     match result {
@@ -1694,5 +2010,192 @@ mod tests {
             assert_eq!(read(&path).unwrap(), malformed);
             assert!(!kept(&lab.state, client, &path).exists());
         }
+    }
+
+    /// A machine connected to this hosted router as `agent run` connects one, serving its client
+    /// setup over a fixture home and a ledger of its own — or, `predates`, an agent installed
+    /// before those routes, which serves none of them. Answers the task serving its connection.
+    async fn connect(lab: &Lab, roots: Option<Roots>, id: &str) -> tokio::task::JoinHandle<()> {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = lab.app.clone().into_make_service_with_connect_info::<std::net::SocketAddr>();
+        tokio::spawn(async move { axum::serve(listener, app).await });
+        let machine = match roots {
+            Some(roots) => machine_routes().layer(Extension(OnMachine {
+                server: "https://router.invalid".into(),
+                roots: Some(roots),
+                ledger: Some(machine_db(lab)),
+            })),
+            None => axum::Router::new(),
+        };
+        let mut request = format!("ws://{addr}{}", crate::tunnel::PATH).into_client_request().unwrap();
+        request.headers_mut().insert(header::AUTHORIZATION, format!("Bearer {}", lab.password.unwrap()).parse().unwrap());
+        let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let (socket, _) = tokio_tungstenite::client_async(request, tcp).await.unwrap();
+        let hello = crate::tunnel::Hello {
+            machine: id.into(),
+            label: format!("the test's {id}"),
+            platform: std::env::consts::OS.into(),
+            version: "test".into(),
+            build: "test".into(),
+        };
+        let serving = tokio::spawn(async move {
+            let _ = crate::agent::serve(socket, &hello, machine).await;
+        });
+        let online = async {
+            while lab.state.machines.online(id).is_none() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(10), online).await.expect("the machine comes online");
+        serving
+    }
+
+    /// Where the stand-in machine's agent keeps its store, and so its ledger.
+    fn machine_db(lab: &Lab) -> PathBuf {
+        lab.state.config.db_path.parent().unwrap().join("machine-store").join("agent-router.db")
+    }
+
+    fn row<'a>(status: &'a Value, client: &str) -> &'a Value {
+        status["clients"].as_array().unwrap().iter().find(|c| c["id"] == client).unwrap()
+    }
+
+    #[tokio::test]
+    async fn remote_client_setup_reads_applies_and_restores_a_machines_claude_code_and_codex() {
+        let mut lab = Lab::hosted("remote-client-setup").await;
+        let roots = fixtures(&mut lab).await;
+        let credential = token(&lab, "client").await;
+        let _machine = connect(&lab, Some(roots.clone()), "m-new").await;
+        for client in ON_A_MACHINE {
+            let path = roots.path(client, None).unwrap();
+            let original = if client == "codex" { "# Mine\nmodel = \"before\"\n".to_string() } else { json!({"theme": "dark"}).to_string() };
+            write_private(&path, &original).unwrap();
+
+            // The page reads the machine's file, not the router's.
+            let (status, page) = lab.get("/api/clients?machine=m-new").await;
+            assert_eq!(status, StatusCode::OK, "{page}");
+            assert_eq!(page["mode"], "server");
+            assert_eq!(page["machine"], "m-new");
+            assert_eq!(row(&page, client)["config_path"], path.display().to_string());
+            assert_eq!((row(&page, client)["installed"].clone(), row(&page, client)["configured"].clone()), (json!(true), json!(false)));
+            assert_eq!(row(&page, client)["can_apply"], true);
+            assert_eq!(row(&page, "opencode")["can_apply"], false, "OpenCode stays an export");
+
+            let ask = |revision: Option<&Value>| {
+                let mut body = json!({"model": "k3", "token": credential});
+                if let Some(r) = revision {
+                    body["revision"] = r.clone();
+                }
+                body.to_string()
+            };
+            let (status, preview) = lab.post(&format!("/api/clients/{client}/preview?machine=m-new"), &ask(None)).await;
+            assert_eq!(status, StatusCode::OK, "{preview}");
+            assert_eq!(preview["path"], path.display().to_string());
+            assert_eq!(preview["revision"], digest(&original), "the machine's file is what was reviewed");
+            assert_eq!(preview["can_apply"], true);
+
+            // A file edited after the review is not written over.
+            write_private(&path, format!("{original}\n")).unwrap();
+            let (status, stale) = lab.post(&format!("/api/clients/{client}/apply?machine=m-new"), &ask(Some(&preview["revision"]))).await;
+            assert_eq!(status, StatusCode::CONFLICT, "{stale}");
+            assert!(stale["error"].as_str().unwrap().contains("preview again"), "{stale}");
+            assert_eq!(read(&path).unwrap(), format!("{original}\n"));
+
+            let (_, preview) = lab.post(&format!("/api/clients/{client}/preview?machine=m-new"), &ask(None)).await;
+            let (status, applied) = lab.post(&format!("/api/clients/{client}/apply?machine=m-new"), &ask(Some(&preview["revision"]))).await;
+            assert_eq!(status, StatusCode::OK, "{applied}");
+            assert_eq!(applied["changed"], true);
+            assert!(applied["warnings"].as_array().is_some_and(|w| !w.is_empty()), "the router's warnings: {applied}");
+            let installed = read(&path).unwrap();
+            assert!(installed.contains(&credential), "the Client token given is written");
+            assert!(configured(client, &installed, "https://router.invalid"), "{installed}");
+            if client == "codex" {
+                assert!(installed.contains("# Mine"), "the reader's own lines are kept: {installed}");
+            } else {
+                assert_eq!(json_config(&installed).unwrap()["theme"], "dark");
+            }
+            // The machine keeps the ledger; the router keeps nothing of the machine's file.
+            assert!(kept_at(&machine_db(&lab), client, &path).exists());
+            assert!(!kept(&lab.state, client, &path).exists());
+            let (_, page) = lab.get("/api/clients?machine=m-new").await;
+            assert_eq!((row(&page, client)["configured"].clone(), row(&page, client)["managed"].clone()), (json!(true), json!(true)));
+
+            let (status, restored) = lab.post(&format!("/api/clients/{client}/restore?machine=m-new"), "{}").await;
+            assert_eq!(status, StatusCode::OK, "{restored}");
+            assert_eq!(restored["changed"], true);
+            let back = read(&path).unwrap();
+            assert!(!back.contains(&credential), "{back}");
+            assert!(!kept_at(&machine_db(&lab), client, &path).exists());
+            if client == "codex" {
+                assert_eq!(toml_config(&back).unwrap()["model"].as_str(), Some("before"));
+            } else {
+                assert_eq!(json_config(&back).unwrap(), json!({"theme": "dark"}));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn remote_client_setup_refuses_offline_machines_old_agents_and_other_clients_in_words() {
+        let mut lab = Lab::hosted("remote-client-setup-refusals").await;
+        let roots = fixtures(&mut lab).await;
+        let credential = token(&lab, "client").await;
+        let setup = json!({"model": "k3", "token": credential}).to_string();
+
+        let (status, body) = lab.get("/api/clients?machine=nobody").await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+        assert!(body["error"].as_str().unwrap().contains("no machine nobody"), "{body}");
+
+        let _old = connect(&lab, None, "m-old").await;
+        let (status, body) = lab.get("/api/clients?machine=m-old").await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert!(body["error"].as_str().unwrap().contains("predates"), "{body}");
+        let (status, body) = lab.post("/api/clients/codex/restore?machine=m-old", "{}").await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert!(body["error"].as_str().unwrap().contains("run the installer on it again"), "{body}");
+
+        let gone = connect(&lab, Some(roots.clone()), "m-gone").await;
+        let (status, body) = lab.post("/api/clients/opencode/preview?machine=m-gone", &setup).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(body["error"].as_str().unwrap().contains("Claude Code and Codex"), "{body}");
+        let (status, body) = lab.post("/api/clients/codex/apply?machine=m-gone", &json!({"model": "k3", "revision": digest("")}).to_string()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(body["error"].as_str().unwrap().contains("access token"), "a machine is given a Client token: {body}");
+        let (status, body) = lab.post("/api/clients/codex/apply?machine=m-gone", &setup).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert!(body["error"].as_str().unwrap().contains("preview again"), "no review, no write: {body}");
+        assert!(!roots.path("codex", None).unwrap().exists());
+
+        gone.abort();
+        let offline = async {
+            while lab.state.machines.online("m-gone").is_some() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(10), offline).await.expect("the machine goes offline");
+        let (status, body) = lab.post("/api/clients/codex/preview?machine=m-gone", &setup).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+        assert!(body["error"].as_str().unwrap().contains("the test's m-gone is offline"), "{body}");
+
+        let local = Lab::local("remote-client-setup-local");
+        let (status, body) = local.get("/api/clients?machine=m-new").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(body["error"].as_str().unwrap().contains("omit machine"), "{body}");
+    }
+
+    /// A machine's agent writes for the router it connects to alone, whatever a router sends.
+    #[tokio::test]
+    async fn remote_client_setup_is_refused_by_an_agent_for_another_router() {
+        use tower::ServiceExt;
+        let routes = machine_routes().layer(Extension(OnMachine::here("https://router.invalid/")));
+        let intent = json!({"client": "codex", "model": "k3", "url": "https://elsewhere.invalid", "token": "arr_x", "capabilities": {}, "catalogue": null});
+        let request = axum::http::Request::post("/agent/clients/codex/apply")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(axum::body::Body::from(json!({"intent": intent, "revision": digest("")}).to_string()))
+            .unwrap();
+        let answer = routes.oneshot(request).await.unwrap();
+        assert_eq!(answer.status(), StatusCode::CONFLICT);
+        let words: Value = serde_json::from_slice(&axum::body::to_bytes(answer.into_body(), 1 << 16).await.unwrap()).unwrap();
+        assert!(words["error"].as_str().unwrap().contains("connects to https://router.invalid"), "{words}");
     }
 }
