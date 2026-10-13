@@ -1,0 +1,92 @@
+{
+ "mode": "local",
+ "url": "http://127.0.0.1:8787",
+ "clients": [
+  {
+   "id": "claude-code",
+   "name": "Claude Code",
+   "protocol": "messages",
+   "installed": true,
+   "version": "2.1.267",
+   "configured": true,
+   "managed": true,
+   "config_path": "/Users/you/.claude/settings.json",
+   "can_apply": true
+  },
+  {
+   "id": "codex",
+   "name": "Codex",
+   "protocol": "responses",
+   "installed": true,
+   "version": "0.162.0-alpha.17.2",
+   "configured": false,
+   "managed": false,
+   "config_path": "/Users/you/.codex/config.toml",
+   "can_apply": true
+  },
+  {
+   "id": "opencode",
+   "name": "OpenCode",
+   "protocol": "messages",
+   "installed": false,
+   "version": null,
+   "configured": false,
+   "managed": false,
+   "config_path": null,
+   "can_apply": false
+  }
+ ],
+ "models": [
+  {
+   "id": "claude-opus-5-5",
+   "provider": "anthropic",
+   "display_name": "claude-opus-5-5",
+   "account_id": "work",
+   "available": true,
+   "service_id": "anthropic",
+   "native_protocol": "messages",
+   "capabilities": {
+    "tools": true,
+    "images": true,
+    "reasoning": true,
+    "compaction": false,
+    "context_tokens": null,
+    "output_tokens": null
+   }
+  },
+  {
+   "id": "k3",
+   "provider": "kimi",
+   "display_name": "Kimi K3",
+   "account_id": "kimi-main",
+   "available": true,
+   "service_id": "kimi",
+   "native_protocol": "messages",
+   "capabilities": {
+    "tools": true,
+    "images": true,
+    "reasoning": true,
+    "compaction": false,
+    "context_tokens": null,
+    "output_tokens": null
+   }
+  },
+  {
+   "id": "gpt-5.1-codex",
+   "provider": "openai",
+   "display_name": "GPT-5.1 Codex",
+   "account_id": null,
+   "available": false,
+   "service_id": "openai",
+   "native_protocol": "responses",
+   "capabilities": {
+    "tools": true,
+    "images": true,
+    "reasoning": true,
+    "compaction": true,
+    "context_tokens": null,
+    "output_tokens": null
+   }
+  }
+ ]
+}

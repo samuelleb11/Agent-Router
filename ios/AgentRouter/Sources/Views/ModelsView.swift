@@ -15,7 +15,8 @@ struct SettingsPageView: View {
         case .password: PasswordSettingsView(state: state)
         case .notifications: NotificationSettingsView(state: state)
         case .router: RouterInfoView(state: state)
-        case .clients, .forges, .library: PendingSettingsPage(page: page)
+        case .clients: ClientsView(state: state)
+        case .forges, .library: PendingSettingsPage(page: page)
         }
     }
 }
