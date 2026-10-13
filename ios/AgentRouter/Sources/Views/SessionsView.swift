@@ -97,6 +97,8 @@ struct SessionsView: View {
             }
         }
         .navigationTitle("Sessions")
+        // Inline: a large title over the pinned machine tabs left a tall empty band above them.
+        .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button(SessionStart.title, systemImage: "plus") { starting = true }

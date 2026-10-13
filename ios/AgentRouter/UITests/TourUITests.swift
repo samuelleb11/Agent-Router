@@ -132,6 +132,28 @@ final class TourUITests: XCTestCase {
         }
     }
 
+    /// The live sessions screen alone, for a quick look at its header.
+    func testSessionsHeader() throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let base = env["ROUTER_BASE"], let password = env["ROUTER_PASSWORD"] else {
+            throw XCTSkip("set TEST_RUNNER_ROUTER_BASE and TEST_RUNNER_ROUTER_PASSWORD to tour a router")
+        }
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-test-router"]
+        app.launchEnvironment = ["UI_TEST_ROUTER_BASE": base, "UI_TEST_ROUTER_PASSWORD": password]
+        app.launch()
+        let any = app.descendants(matching: .any)
+        let row = any.matching(identifier: "router-row").firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 10), "no router row")
+        row.tap()
+        let live = any.matching(identifier: "live-sessions").firstMatch
+        XCTAssertTrue(live.waitForExistence(timeout: 20), "the router page did not load")
+        live.tap()
+        XCTAssertTrue(any.matching(identifier: "session-row").firstMatch.waitForExistence(timeout: 20), "no session listed")
+        sleep(2)
+        shoot(app, "sessions header")
+    }
+
     private func shoot(_ app: XCUIApplication, _ name: String) {
         let a = XCTAttachment(screenshot: app.screenshot())
         a.name = name
