@@ -31,6 +31,8 @@ export interface ClientSetup {
   readonly url: string;
   readonly clients: readonly SetupClient[];
   readonly models: readonly SetupModel[];
+  /// The machine whose clients these are, when a hosted router read them through its agent.
+  readonly machine?: string;
 }
 
 export interface ClientSetupInput {

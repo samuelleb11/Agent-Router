@@ -194,6 +194,67 @@ describe('Clients setup', () => {
     expect(router.asked.some((r) => /\/(apply|restore)$/.test(r.path))).toBe(false);
   });
 
+  describe('on a chosen machine (AGEN-0196)', () => {
+    const hosted: ClientSetup = { ...SETUP, mode: 'server', url: 'https://router.example', clients: SETUP.clients.map((c) => ({ ...c, installed: false, version: null, configured: false, managed: false, config_path: null, can_apply: false })) };
+    const there: ClientSetup = {
+      ...hosted,
+      machine: 'm-1',
+      clients: hosted.clients.map((c) => (c.id === 'opencode' ? c : { ...c, installed: true, version: '2.1.0', config_path: `/Users/me/${c.id}.conf`, can_apply: true, managed: c.id === 'claude-code' })),
+    };
+    const MACHINES = [
+      { id: 'm-1', label: 'studio', platform: 'macos', version: 'test', build: 'tree:a', online: true, since_ms: 1 },
+      { id: 'm-2', label: 'laptop', platform: 'linux', version: 'test', build: 'tree:b', online: false, since_ms: 1 },
+    ];
+
+    it('reads, previews, applies and restores a machine’s Claude Code there, after a confirmation', async () => {
+      const router = answer(hosted, {
+        '/api/clients': ({ query }) => json(query.get('machine') === 'm-1' ? there : hosted),
+        '/api/machines': ok(MACHINES),
+        'POST /api/clients/claude-code/preview': ({ body, query }) => json({ ...preview('claude-code', body, there), can_apply: query.get('machine') === 'm-1', path: '/Users/me/claude-code.conf' }),
+      });
+      show();
+      const machine = await screen.findByLabelText('Machine');
+      expect(within(machine).getByRole('option', { name: 'laptop · linux · offline' })).toBeDisabled();
+      expect(screen.getAllByText('Check on your client’s machine')).toHaveLength(3);
+      fireEvent.change(machine, { target: { value: 'm-1' } });
+      expect(await screen.findByText('/Users/me/claude-code.conf')).toBeInTheDocument();
+      expect(screen.getAllByText('2.1.0')).toHaveLength(2);
+      field('Client access token', SECRET);
+      await press(screen.getByRole('button', { name: 'Preview configuration' }));
+      await screen.findByLabelText('Claude Code configuration preview');
+      await press(screen.getByRole('button', { name: 'Apply configuration' }));
+      expect(router.posts('/api/clients/claude-code/apply')).toEqual([]);
+      const dialog = screen.getByRole('dialog');
+      expect(dialog).toHaveTextContent('on studio');
+      await press(within(dialog).getByRole('button', { name: 'Apply configuration' }));
+      expect(await screen.findByText('Saved Claude Code configuration on studio. Start a new client session to use it.')).toBeInTheDocument();
+      expect(router.said()).toContain('POST /api/clients/claude-code/apply?machine=m-1');
+      expect(router.posts('/api/clients/claude-code/apply')).toEqual([{ model: 'claude-sonnet-4-6', url: hosted.url, token: SECRET, revision: 'file-revision-1' }]);
+      await press(screen.getByRole('button', { name: 'Restore previous configuration' }));
+      await press(within(screen.getByRole('dialog')).getByRole('button', { name: 'Restore configuration' }));
+      expect(await screen.findByText(/Restored unchanged settings/)).toBeInTheDocument();
+      expect(router.said()).toContain('POST /api/clients/claude-code/restore?machine=m-1');
+    });
+
+    it('exports OpenCode with a machine chosen, and says in the router’s words why a machine cannot be read', async () => {
+      const router = answer(hosted, {
+        '/api/clients': ({ query }) =>
+          query.get('machine') === 'm-1' ? json(there) : query.get('machine') ? refusal('laptop’s agent predates setting up its clients from here: run the installer on it again', 409) : json(hosted),
+        '/api/machines': ok([...MACHINES.slice(0, 1), { ...MACHINES[1]!, online: true }]),
+      });
+      show();
+      fireEvent.change(await screen.findByLabelText('Machine'), { target: { value: 'm-1' } });
+      await press(await screen.findByRole('button', { name: 'Configure OpenCode' }));
+      await press(screen.getByRole('button', { name: 'Preview configuration' }));
+      await screen.findByLabelText('OpenCode configuration preview');
+      expect(router.said()).toContain('POST /api/clients/opencode/preview');
+      expect(screen.queryByRole('button', { name: 'Apply configuration' })).toBeNull();
+      fireEvent.change(screen.getByLabelText('Machine'), { target: { value: 'm-2' } });
+      expect(await screen.findByText('laptop’s agent predates setting up its clients from here: run the installer on it again', { exact: false })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Configure Codex' })).toBeNull();
+    });
+  });
+
   it('checks the configured route and credentials without claiming a live model request succeeded', async () => {
     const router = answer(SETUP, { 'POST /api/clients/claude-code/check': ({ body }) => json({ ...preview('claude-code', body), checks: [{ id: 'provider', label: 'Provider credential', status: 'fail', detail: 'Add a working provider credential.' }], warnings: ['Token expires tomorrow.'] }) });
     show();
