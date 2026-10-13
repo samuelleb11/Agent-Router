@@ -106,6 +106,21 @@ struct RouterClient: Sendable {
         try await send(request(path, method: "PUT", body: try JSONEncoder().encode(body)))
     }
 
+    /// A file as text, the way a Library version's files are served.
+    func text(_ path: String) async throws -> String {
+        let req = try request(path, method: "GET", body: nil)
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await calls.data(for: req)
+        } catch {
+            throw Failure.unreachable(error.localizedDescription)
+        }
+        guard let http = response as? HTTPURLResponse else { throw Failure.unreachable("not HTTP") }
+        guard (200..<300).contains(http.statusCode) else { throw Self.failure(status: http.statusCode, body: data) }
+        return String(decoding: data, as: UTF8.self)
+    }
+
     func delete<T: Decodable>(_ path: String) async throws -> T {
         try await send(request(path, method: "DELETE", body: nil))
     }

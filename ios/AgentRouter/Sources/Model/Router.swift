@@ -124,6 +124,12 @@ struct AccountsRoute: Hashable { let routerId: UUID }
 /// for a view across several.
 struct SearchRoute: Hashable { let routerId: UUID }
 struct SettingsRoute: Hashable { let routerId: UUID }
+struct LibraryRoute: Hashable { let routerId: UUID }
+struct LibraryItemRoute: Hashable {
+    let routerId: UUID
+    let kind: String
+    let name: String
+}
 /// One page of a router's Settings, as the console names its pages.
 struct SettingsPageRoute: Hashable {
     let routerId: UUID

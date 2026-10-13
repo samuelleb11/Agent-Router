@@ -54,6 +54,12 @@ struct RoutersListView: View {
             .navigationDestination(for: SettingsRoute.self) { route in
                 if let state = store.state(id: route.routerId) { RouterSettingsView(state: state) }
             }
+            .navigationDestination(for: LibraryRoute.self) { route in
+                if let state = store.state(id: route.routerId) { LibraryView(state: state) }
+            }
+            .navigationDestination(for: LibraryItemRoute.self) { route in
+                if let state = store.state(id: route.routerId) { LibraryItemView(state: state, kind: route.kind, name: route.name) }
+            }
             .navigationDestination(for: SettingsPageRoute.self) { route in
                 if let state = store.state(id: route.routerId) { SettingsPageView(state: state, page: route.page) }
             }

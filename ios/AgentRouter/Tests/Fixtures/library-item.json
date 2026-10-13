@@ -1,0 +1,67 @@
+{
+ "kind": "subagent",
+ "name": "tester",
+ "description": "Runs the tests.",
+ "source": null,
+ "created_at": 1791400000000,
+ "archived_at": null,
+ "versions": [
+  {
+   "number": 3,
+   "digest": "abababababababababababababababababababababababababababababababab",
+   "size": 6144,
+   "state": "pending",
+   "provenance": {
+    "from": "machine",
+    "machine": "m-mac-0000-1111",
+    "label": "studio-mac",
+    "session": "11111111-2222-3333-4444-555555555555"
+   },
+   "created_at": 1791484998592,
+   "kind": "subagent",
+   "name": "tester",
+   "description": "Runs the tests.",
+   "decided_at": null
+  },
+  {
+   "number": 2,
+   "digest": "abababababababababababababababababababababababababababababababab",
+   "size": 6144,
+   "state": "live",
+   "provenance": {
+    "from": "upload"
+   },
+   "created_at": 1791484998592,
+   "kind": "subagent",
+   "name": "tester",
+   "description": "Runs the tests.",
+   "decided_at": 1791500000000
+  },
+  {
+   "number": 1,
+   "digest": "abababababababababababababababababababababababababababababababab",
+   "size": 6144,
+   "state": "superseded",
+   "provenance": {
+    "from": "mystery"
+   },
+   "created_at": 1791484998592,
+   "kind": "subagent",
+   "name": "tester",
+   "description": "Runs the tests.",
+   "decided_at": 1791400000000
+  }
+ ],
+ "files": [
+  {
+   "path": "tester.md",
+   "size": 812,
+   "executable": false
+  },
+  {
+   "path": "scripts/run.sh",
+   "size": 120,
+   "executable": true
+  }
+ ]
+}

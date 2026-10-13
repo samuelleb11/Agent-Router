@@ -78,6 +78,10 @@ struct RouterDetailView: View {
                     Label("Machines", systemImage: "desktopcomputer")
                         .accessibilityIdentifier("machines")
                 }
+                NavigationLink(value: LibraryRoute(routerId: state.router.id)) {
+                    Label("Library", systemImage: "books.vertical")
+                        .accessibilityIdentifier("library")
+                }
             }
             NavigationLink(value: UsageRoute(routerId: state.router.id, scope: UsageScope())) {
                 LabeledContent {

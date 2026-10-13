@@ -1,0 +1,139 @@
+{
+ "items": [
+  {
+   "kind": "subagent",
+   "name": "tester",
+   "description": "Runs the tests.",
+   "source": null,
+   "created_at": 1791400000000,
+   "archived_at": null,
+   "live": {
+    "number": 1,
+    "digest": "abababababababababababababababababababababababababababababababab",
+    "size": 6144,
+    "state": "live",
+    "provenance": {
+     "from": "upload"
+    },
+    "created_at": 1791484998592
+   },
+   "newest": {
+    "number": 2,
+    "digest": "abababababababababababababababababababababababababababababababab",
+    "size": 6144,
+    "state": "pending",
+    "provenance": {
+     "from": "machine",
+     "machine": "m-mac-0000-1111",
+     "label": "studio-mac",
+     "session": "11111111-2222-3333-4444-555555555555"
+    },
+    "created_at": 1791484998592
+   },
+   "pending": 1,
+   "versions": 2,
+   "uses_30d": 0,
+   "last_used_at": null
+  },
+  {
+   "kind": "skill",
+   "name": "review",
+   "description": "Reviews a change.",
+   "source": "source:team-skills",
+   "created_at": 1791400000000,
+   "archived_at": null,
+   "live": {
+    "number": 3,
+    "digest": "abababababababababababababababababababababababababababababababab",
+    "size": 6144,
+    "state": "live",
+    "provenance": {
+     "from": "forge",
+     "source": "team-skills",
+     "forge": "gitlab",
+     "repository": "gitlab.example.com/team/skills",
+     "commit": "0123456789abcdef",
+     "path": "skills/review"
+    },
+    "created_at": 1791484998592
+   },
+   "newest": {
+    "number": 3,
+    "digest": "abababababababababababababababababababababababababababababababab",
+    "size": 6144,
+    "state": "live",
+    "provenance": {
+     "from": "forge",
+     "source": "team-skills",
+     "forge": "gitlab",
+     "repository": "gitlab.example.com/team/skills",
+     "commit": "0123456789abcdef",
+     "path": "skills/review"
+    },
+    "created_at": 1791484998592
+   },
+   "pending": 0,
+   "versions": 3,
+   "uses_30d": 12,
+   "last_used_at": 1791850000000
+  },
+  {
+   "kind": "command",
+   "name": "deploy",
+   "description": "",
+   "source": null,
+   "created_at": 1791400000000,
+   "archived_at": 1791500000000,
+   "live": null,
+   "newest": {
+    "number": 1,
+    "digest": "abababababababababababababababababababababababababababababababab",
+    "size": 6144,
+    "state": "rejected",
+    "provenance": {
+     "from": "token",
+     "token": "ci-publisher"
+    },
+    "created_at": 1791484998592
+   },
+   "pending": 0,
+   "versions": 1,
+   "uses_30d": 1,
+   "last_used_at": 1791700000000
+  },
+  {
+   "kind": "skill",
+   "name": "agent-router",
+   "description": "Work with the router.",
+   "source": "router",
+   "created_at": 1791484998592,
+   "archived_at": null,
+   "live": {
+    "number": 1,
+    "digest": "abababababababababababababababababababababababababababababababab",
+    "size": 6144,
+    "state": "live",
+    "provenance": {
+     "from": "router",
+     "build": "tree:cfa7dfcc"
+    },
+    "created_at": 1791484998592
+   },
+   "newest": {
+    "number": 1,
+    "digest": "abababababababababababababababababababababababababababababababab",
+    "size": 6144,
+    "state": "live",
+    "provenance": {
+     "from": "router",
+     "build": "tree:cfa7dfcc"
+    },
+    "created_at": 1791484998592
+   },
+   "pending": 0,
+   "versions": 1,
+   "uses_30d": 0,
+   "last_used_at": null
+  }
+ ]
+}
