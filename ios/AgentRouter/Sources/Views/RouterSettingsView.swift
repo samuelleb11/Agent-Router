@@ -16,6 +16,9 @@ struct RouterSettingsView: View {
                 NavigationLink(value: SettingsPageRoute(routerId: state.router.id, page: .models)) {
                     Label("Models", systemImage: "cpu").accessibilityIdentifier("settings-models")
                 }
+                NavigationLink(value: SettingsPageRoute(routerId: state.router.id, page: .accessTokens)) {
+                    Label("Access tokens", systemImage: "key").accessibilityIdentifier("settings-access-tokens")
+                }
             }
             if let model {
                 setupSection(model)

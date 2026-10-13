@@ -8,6 +8,7 @@ struct SettingsPageView: View {
     var body: some View {
         switch page {
         case .models: ModelsView(state: state)
+        case .accessTokens: AccessTokensView(state: state)
         }
     }
 }

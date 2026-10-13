@@ -102,6 +102,19 @@ struct RouterClient: Sendable {
         try await send(request(path, method: "POST", body: try JSONEncoder().encode(body)))
     }
 
+    func put<T: Decodable, B: Encodable & Sendable>(_ path: String, _ body: B) async throws -> T {
+        try await send(request(path, method: "PUT", body: try JSONEncoder().encode(body)))
+    }
+
+    func delete<T: Decodable>(_ path: String) async throws -> T {
+        try await send(request(path, method: "DELETE", body: nil))
+    }
+
+    /// One segment of a path — an id, a name — encoded so it stays one segment.
+    static func segment(_ value: String) -> String {
+        value.addingPercentEncoding(withAllowedCharacters: componentAllowed) ?? value
+    }
+
     private func request(_ path: String, method: String, body: Data?) throws -> URLRequest {
         guard let url = URL(string: path, relativeTo: baseURL)?.absoluteURL else {
             throw Failure.unreachable("bad address")
