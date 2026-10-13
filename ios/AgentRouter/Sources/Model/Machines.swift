@@ -26,10 +26,50 @@ struct MachineRow: Decodable, Sendable, Identifiable, Hashable {
     /// The clients its agent reported, Claude Code first; empty when it has not said
     /// (src/clients.rs, `Client`).
     let clients: [MachineClient]
+    /// Where its Library stands; nil from a router that keeps none.
+    let library: LibraryStanding?
 
     enum CodingKeys: String, CodingKey {
-        case id, label, platform, version, build, online, clients, sinceMs = "since_ms"
+        case id, label, platform, version, build, online, clients, library, sinceMs = "since_ms"
     }
+}
+
+/// Where a machine's Library stands (src/library/push.rs, `Standing`). Its own fields are Claude
+/// Code's; each other client's standing is under its name in `clients`.
+struct LibraryStanding: Decodable, Sendable, Hashable {
+    /// `in_step`, `behind`, `failed`, `replaced`, `predates`, `opted_out`, `not_yet`.
+    let state: String
+    let behind: Int?
+    let failed: Int?
+    let replaced: [String]?
+    let atMs: Int?
+    let clients: [String: LibraryStanding]?
+    enum CodingKeys: String, CodingKey { case state, behind, failed, replaced, clients, atMs = "at_ms" }
+}
+
+/// What one machine said when told to sync (src/library/push.rs, `Told`).
+struct LibraryTold: Decodable, Sendable, Hashable {
+    let machine: String
+    let label: String
+    /// `synced`, `predates`, `opted_out`, `offline`, `failed`.
+    let outcome: String
+    let report: Report?
+    let why: String?
+
+    struct Report: Decodable, Sendable, Hashable {
+        let items: [Item]
+        struct Item: Decodable, Sendable, Hashable { let outcome: String }
+    }
+}
+
+/// `POST /api/library/sync`: each machine told, and what it said.
+struct LibrarySyncReply: Decodable, Sendable {
+    let machines: [LibraryTold]
+}
+
+/// Which machine to tell; none tells every one.
+struct LibrarySyncBody: Encodable, Sendable, Equatable {
+    var machine: String? = nil
 }
 
 /// One client a machine's agent reported: its command line, its extension in each editor that
@@ -68,6 +108,7 @@ extension MachineRow {
         online = c.lenient(Bool.self, .online) ?? false
         sinceMs = c.lenient(Int.self, .sinceMs)
         clients = c.lenient([MachineClient].self, .clients) ?? []
+        library = c.lenient(LibraryStanding.self, .library)
     }
 }
 
@@ -80,7 +121,7 @@ enum Machines {
 
     /// The router serves the installer without a password; it installs the agent and asks
     /// there for the router's password (MA-C2).
-    static let connectHow = "Run this on a machine to connect it — it asks for this router’s password."
+    static let connectHow = "Run this on a machine to connect it — paste a Machine access token from this router into its password field. The existing router password also works."
 
     /// What else the installer does where VS Code is (MA-C2). The console's sentence, without
     /// its "and from the phone", which on the phone is "here".
@@ -142,6 +183,11 @@ enum Machines {
         let build: Build?
         /// Its clients, one line each, in the order its agent reported them (MA-C8).
         let clients: [ClientItem]
+        /// Where its Library stands, and whether that is something to act on; nil where its
+        /// Claude Code line says it instead (MA-C9), and on a router that keeps none.
+        let library: Standing?
+        /// Whether it offers a sync of its Library now: online, on a router that keeps one.
+        let syncs: Bool
 
         /// Online is drawn as a session at work is, offline as one that has ended.
         var look: StateLook {
@@ -164,9 +210,43 @@ enum Machines {
         let name: String
         /// Its command line's version, each editor's extension, and whether its home folder is there.
         let parts: [String]
+        /// Where its own copy of the Library stands; nil when it has none of its own (MA-C9).
+        let library: Standing?
         var id: String { client }
-        /// "Claude Code: CLI 2.1.267 · VS Code 2.1.296 · home folder".
-        var line: String { "\(name): " + parts.joined(separator: " · ") }
+        /// "Claude Code: CLI 2.1.267 · VS Code 2.1.296 · home folder, Library in step".
+        var line: String { "\(name): " + parts.joined(separator: " · ") + (library.map { ", \($0.text)" } ?? "") }
+    }
+
+    /// A Library standing in words, and whether it is something to act on (LB-C11).
+    struct Standing: Equatable, Sendable {
+        let text: String
+        let needs: Bool
+    }
+
+    static func standing(_ s: LibraryStanding) -> Standing {
+        let n = { (v: Int?) in v ?? 0 }
+        switch s.state {
+        case "in_step": return Standing(text: "Library in step", needs: false)
+        case "behind": return Standing(text: "Library behind on \(n(s.behind)) item\(n(s.behind) == 1 ? "" : "s")", needs: true)
+        case "failed": return Standing(text: "Library: \(n(s.failed)) item\(n(s.failed) == 1 ? "" : "s") could not be placed", needs: true)
+        case "replaced": return Standing(text: "Library in step; it put back \((s.replaced ?? []).joined(separator: ", ")) over a copy changed there", needs: false)
+        case "predates": return Standing(text: "Its agent predates the Library — run the installer on it again", needs: true)
+        case "opted_out": return Standing(text: "Takes no part in the Library", needs: false)
+        default: return Standing(text: "Nothing heard of its Library yet", needs: false)
+        }
+    }
+
+    /// A machine's answer to "sync now", in words (LB-C10, LB-C12).
+    static func told(_ t: LibraryTold) -> String {
+        switch t.outcome {
+        case "synced":
+            let changed = (t.report?.items ?? []).filter { $0.outcome != "in_step" }.count
+            return changed > 0 ? "\(t.label): synced, \(changed) changed" : "\(t.label): synced, already in step"
+        case "predates": return "\(t.label): its agent predates the Library — run the installer on it again"
+        case "opted_out": return "\(t.label): takes no part in the Library"
+        case "offline": return "\(t.label): offline — it syncs when it connects again"
+        default: return "\(t.label): failed" + (t.why.map { " — \($0)" } ?? "")
+        }
     }
 
     /// What a machine that reported no client says (MA-C10).
@@ -189,8 +269,13 @@ enum Machines {
         return [cli] + (extensions.isEmpty ? ["no editor extension"] : extensions) + [c.home != nil ? "home folder" : "no home folder"]
     }
 
+    /// A machine's clients, each ending with where its own copy of the Library stands: Claude
+    /// Code's is the machine's standing, every other client's is under its name (MA-C8, MA-C9).
     static func clientItems(_ m: MachineRow) -> [ClientItem] {
-        m.clients.map { ClientItem(client: $0.client, name: SessionClient.productName($0.client), parts: clientParts($0)) }
+        m.clients.map { c in
+            let own = c.client == "claude-code" ? m.library : m.library?.clients?[c.client]
+            return ClientItem(client: c.client, name: SessionClient.productName(c.client), parts: clientParts(c), library: own.map(standing))
+        }
     }
 
     /// A platform in the reader's words — macOS, Linux, Windows — and one this build does
@@ -229,13 +314,17 @@ enum Machines {
         rows.map { m in
             let label = m.label.trimmingCharacters(in: .whitespacesAndNewlines)
             let id = m.id.trimmingCharacters(in: .whitespacesAndNewlines)
+            let clients = clientItems(m)
             return Item(id: m.id,
                         label: !label.isEmpty ? label : !id.isEmpty ? String(id.prefix(8)) : SessionGroups.unnamedMachine,
                         platform: platform(m.platform),
                         online: m.online,
                         presence: presence(online: m.online, sinceMs: m.sinceMs, now: now),
                         build: build(m.build, router: routerBuild),
-                        clients: clientItems(m))
+                        clients: clients,
+                        // Claude Code's line says the machine's own standing, so it is not said twice.
+                        library: m.library != nil && !clients.contains { $0.client == "claude-code" && $0.library != nil } ? m.library.map(standing) : nil,
+                        syncs: m.online && m.library != nil)
         }
         .sorted { a, b in
             if a.online != b.online { return a.online }

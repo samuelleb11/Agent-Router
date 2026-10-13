@@ -37,7 +37,11 @@ struct MachinesView: View {
                         Text(Machines.agentless)
                             .foregroundStyle(.secondary)
                     }
-                    ForEach(items) { MachineRowView(item: $0) }
+                    ForEach(items) { item in
+                        MachineRowView(item: item, told: model?.told[item.id], syncing: model?.syncing == item.id) {
+                            Task { await model?.sync(item.id) }
+                        }
+                    }
                 } else if let why = model?.failure {
                     // A read that never succeeded is not an empty list (MA-C6).
                     Label {
@@ -125,8 +129,30 @@ struct MachinesView: View {
 /// how long, and whether it runs the router's own build — quietly when it does (MA-C3, MA-C4).
 private struct MachineRowView: View {
     let item: Machines.Item
+    /// What its last sync came to, in words.
+    let told: String?
+    let syncing: Bool
+    let sync: () -> Void
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            facts
+            if item.syncs {
+                Button(action: sync) {
+                    if syncing { ProgressView() } else { Label("Sync its Library now", systemImage: "arrow.triangle.2.circlepath") }
+                }
+                .buttonStyle(.borderless)
+                .font(.caption)
+                .disabled(syncing)
+                .accessibilityIdentifier("machine-sync")
+            }
+            if let told {
+                Text(told).font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var facts: some View {
         HStack(spacing: 10) {
             // Its words are beside it, so the dot is not said twice.
             StateDot(look: item.look)
@@ -156,8 +182,13 @@ private struct MachineRowView: View {
                     ForEach(item.clients) { c in
                         Text(c.line)
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(c.library?.needs == true ? Color.orange : Color.secondary)
                     }
+                }
+                if let lib = item.library {
+                    Text(lib.text)
+                        .font(.caption)
+                        .foregroundStyle(lib.needs ? Color.orange : Color.secondary)
                 }
             }
         }

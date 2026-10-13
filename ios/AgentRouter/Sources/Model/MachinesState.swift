@@ -41,6 +41,27 @@ final class MachinesState {
         if let read = try? await h { health = read }
     }
 
+    /// What the last sync the screen asked for came to, by machine, in words.
+    var told: [String: String] = [:]
+    /// The machine being told to sync now, for its row to show it.
+    var syncing: String?
+
+    /// Tells one machine to sync its Library now, through the tunnel its agent holds open, and
+    /// says what it answered; a refusal in the router's words.
+    func sync(_ machine: String) async {
+        guard let client else { return }
+        syncing = machine
+        defer { syncing = nil }
+        do {
+            let reply: LibrarySyncReply = try await client.post("/api/library/sync", LibrarySyncBody(machine: machine))
+            for t in reply.machines { told[t.machine] = Machines.told(t) }
+            if reply.machines.isEmpty { told[machine] = "The router told no machine." }
+        } catch {
+            told[machine] = LiveFeed.describe(error)
+        }
+        await load()
+    }
+
     /// Every five seconds, as the session list is read, until the screen goes away. Each
     /// read draws the list again, so every "online for" is measured anew with it.
     func poll(every seconds: Double = 5) async {

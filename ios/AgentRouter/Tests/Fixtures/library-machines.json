@@ -1,0 +1,151 @@
+[
+ {
+  "id": "m-mac",
+  "label": "studio-mac",
+  "platform": "macos",
+  "online": true,
+  "since_ms": 1791800000000,
+  "clients": [
+   {
+    "client": "claude-code",
+    "cli": {
+     "path": "/Users/you/.local/bin/claude",
+     "version": "2.1.267"
+    },
+    "extensions": [
+     {
+      "editor": "vscode",
+      "version": "2.1.296"
+     }
+    ],
+    "home": "/Users/you/.claude"
+   },
+   {
+    "client": "kimi-code",
+    "cli": {
+     "path": "/Users/you/.kimi-code/bin/kimi",
+     "version": "2.1.1"
+    },
+    "extensions": [],
+    "home": "/Users/you/.kimi-code"
+   }
+  ],
+  "library": {
+   "state": "in_step",
+   "behind": 0,
+   "failed": 0,
+   "replaced": [],
+   "at_ms": 1791860005603,
+   "clients": {
+    "kimi-code": {
+     "state": "behind",
+     "behind": 2,
+     "failed": 0,
+     "replaced": [],
+     "at_ms": 1791860005603
+    }
+   }
+  }
+ },
+ {
+  "id": "m-win",
+  "label": "desk-pc",
+  "platform": "windows",
+  "online": true,
+  "since_ms": 1791800000000,
+  "clients": [],
+  "library": {
+   "state": "failed",
+   "behind": 0,
+   "failed": 1,
+   "replaced": [],
+   "at_ms": 1791860005603
+  }
+ },
+ {
+  "id": "m-lin",
+  "label": "build-box",
+  "platform": "linux",
+  "online": true,
+  "since_ms": 1791800000000,
+  "clients": [
+   {
+    "client": "claude-code",
+    "cli": {
+     "path": "/Users/you/.local/bin/claude",
+     "version": "2.1.267"
+    },
+    "extensions": [
+     {
+      "editor": "vscode",
+      "version": "2.1.296"
+     }
+    ],
+    "home": "/Users/you/.claude"
+   }
+  ],
+  "library": {
+   "state": "replaced",
+   "behind": 0,
+   "failed": 0,
+   "replaced": [
+    "agent-router",
+    "review"
+   ],
+   "at_ms": 1791860005603
+  }
+ },
+ {
+  "id": "m-old",
+  "label": "old-laptop",
+  "platform": "linux",
+  "online": false,
+  "since_ms": 1791700000000,
+  "clients": [],
+  "library": {
+   "state": "predates",
+   "behind": 0,
+   "failed": 0,
+   "replaced": [],
+   "at_ms": 1791860005603
+  }
+ },
+ {
+  "id": "m-off",
+  "label": "kiosk",
+  "platform": "linux",
+  "online": true,
+  "since_ms": 1791700000000,
+  "clients": [],
+  "library": {
+   "state": "opted_out",
+   "behind": 0,
+   "failed": 0,
+   "replaced": [],
+   "at_ms": 1791860005603
+  }
+ },
+ {
+  "id": "m-new",
+  "label": "fresh",
+  "platform": "linux",
+  "online": true,
+  "since_ms": 1791700000000,
+  "clients": [],
+  "library": {
+   "state": "not_yet",
+   "behind": 0,
+   "failed": 0,
+   "replaced": [],
+   "at_ms": 1791860005603
+  }
+ },
+ {
+  "id": "m-none",
+  "label": "local-only",
+  "platform": "macos",
+  "online": true,
+  "since_ms": 1791700000000,
+  "clients": []
+ }
+]
