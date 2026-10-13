@@ -62,6 +62,8 @@ private struct ModelCard: View {
             }
             Text("Served by: \(ModelChoices.servedBy(row, accounts: model.accounts))")
                 .font(.caption).foregroundStyle(.secondary)
+            // Its label hidden, so the choice — "Anthropic’s active account (…)" — has the
+            // row's width rather than half of it.
             Picker("Account", selection: Binding(
                 get: { row.assigned ?? "" },
                 set: { id in
@@ -70,6 +72,8 @@ private struct ModelCard: View {
             )) {
                 ForEach(choices) { Text($0.label).tag($0.id) }
             }
+            .labelsHidden()
+            .frame(maxWidth: .infinity, alignment: .leading)
             .disabled(model.busy != nil)
             .accessibilityIdentifier("model-account-\(row.id)")
             if let n = model.notice[row.id] {
