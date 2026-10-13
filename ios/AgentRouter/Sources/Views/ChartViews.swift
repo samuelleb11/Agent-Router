@@ -14,6 +14,16 @@ enum FamilyColor {
         }
     }
 
+    /// A provider's colour in a split, as the console's `providerColour`: Anthropic slate, Kimi
+    /// Code its family's colour, any other provider the colour of other.
+    static func provider(_ id: String?) -> Color {
+        switch id {
+        case nil, "anthropic": Color(.systemGray)
+        case "kimi": kimi
+        default: .brown
+        }
+    }
+
     /// The console's kimi family colour, one for light and one for dark (ui/src/styles.scss).
     private static let kimi = Color(UIColor { $0.userInterfaceStyle == .dark
         ? UIColor(red: 0x5e / 255, green: 0x4b / 255, blue: 0xbc / 255, alpha: 1)
@@ -193,7 +203,8 @@ struct StatTile<Extra: View>: View {
                 .font(.title3.weight(.semibold))
                 .monospacedDigit()
                 .foregroundStyle(bad ? Color.red : Color.primary)
-                .lineLimit(1)
+                // Two lines for a marked sum, "$50,229 + 636 unpriced", rather than cut short.
+                .lineLimit(2)
                 .minimumScaleFactor(0.7)
             Text(sub).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
             extra()

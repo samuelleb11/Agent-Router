@@ -13,8 +13,17 @@ struct AccountsView: View {
         List {
             if let f = model?.failure { Section { Label(f, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange) } }
             if let notice { Section { Text(notice).font(.footnote).foregroundStyle(.red) } }
-            Section {
-                ForEach(model?.accounts ?? []) { a in
+            ForEach(ProviderAccounts.group(model?.accounts ?? [])) { group in Section {
+                // Each provider has its own account serving it, as the console's "Requests go to".
+                Picker("Requests go to", selection: Binding(
+                    get: { group.active?.id ?? "" },
+                    set: { id in Task { notice = await model?.activate(id) } }
+                )) {
+                    if group.active == nil { Text("none").tag("") }
+                    ForEach(group.accounts) { Text($0.title).tag($0.id) }
+                }
+                .accessibilityIdentifier("requests-go-to-\(group.provider)")
+                ForEach(group.accounts) { a in
                     Button { editing = a } label: { AccountRowView(account: a) }
                         .buttonStyle(.plain)
                         .swipeActions(edge: .leading) {
@@ -30,9 +39,13 @@ struct AccountsView: View {
                                 .disabled(a.isActive || (a.isCodexLogin && state.auth?.mode != "server"))
                         }
                 }
+            } header: {
+                ProviderMark(provider: group.provider)
             } footer: {
-                Text("Tap an account to rename it, say who it is, rotate its credential or store a claude.ai session key. Swipe right to serve with it, left to remove it. The serving account cannot be removed.")
-            }
+                if group.provider == ProviderAccounts.group(model?.accounts ?? []).last?.provider {
+                    Text("Tap an account to rename it, say who it is, rotate its credential or store a claude.ai session key. Swipe right to serve its provider's requests with it, left to remove it. An account serving its provider cannot be removed.")
+                }
+            } }
         }
         .navigationTitle("Accounts")
         .toolbar {
@@ -69,13 +82,16 @@ struct AccountRowView: View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 6) {
                 Text(account.title).font(.body)
-                if account.isActive { Text("serving").font(.caption2).foregroundStyle(.green) }
+                if account.isActive { Text("active for \(account.providerName)").font(.caption2).foregroundStyle(.green) }
                 Spacer()
                 Circle().fill(account.ready == false ? Color.red : Color.green).frame(width: 8, height: 8)
                     .accessibilityLabel(account.ready == false ? "credential unavailable" : "ready")
             }
             Text([account.providerName, account.subscriptionType, account.orgName, account.source.map { $0 == "codex" ? "Codex login" : "via \($0)" }].compactMap { $0 }.joined(separator: " · "))
                 .font(.caption).foregroundStyle(.secondary)
+            if let url = account.endpoint {
+                Text(url).font(.caption2.monospaced()).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+            }
             HStack(spacing: 6) {
                 Text(account.detail ?? "—").lineLimit(1)
                 if let e = account.expiry { Text("· expires \(Fmt.relative(e))") }
@@ -267,7 +283,7 @@ struct AddAccountSheet: View {
         if provider == "openai" { return "An API key from your OpenAI project. A local router also discovers the Codex login automatically. Leave the base URL blank for OpenAI's own." }
         if provider == "kimi" { return "A key from the Kimi Code console. Leave the base URL blank for Kimi Code's own." }
         return switch how {
-        case "token": "A `claude setup-token` value from a terminal. The router keeps it in the Mac's Keychain."
+        case "token": hosted ? "A `claude setup-token` value from a terminal. The router keeps it with its own secrets." : "A `claude setup-token` value from a terminal. The router keeps it in the Mac's Keychain."
         case "profile": "A separate Claude Code profile directory on the Mac. You sign in there once with a terminal; the router reads its credential."
         default: "The router runs `claude setup-token` on the Mac and shows you the link to open. Sign in there, and the account appears here."
         }

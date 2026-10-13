@@ -16,6 +16,17 @@ struct UsageView: View {
                 .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
                 .listRowBackground(Color.clear)
                 .accessibilityIdentifier("usage-range")
+                // The provider every figure follows, as the console's scope offers it: shown
+                // only while there are two to choose between.
+                if let choices = usage.providerChoices {
+                    Picker("Provider", selection: Bindable(usage).provider) {
+                        ForEach(choices, id: \.self) { p in Text(p.map(Provider.name) ?? "All providers").tag(p) }
+                    }
+                    .pickerStyle(.segmented)
+                    .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
+                    .listRowBackground(Color.clear)
+                    .accessibilityIdentifier("usage-provider")
+                }
             }
             if let f = usage.failure {
                 Section { Label(f, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange) }
@@ -28,14 +39,14 @@ struct UsageView: View {
                             .listRowInsets(EdgeInsets(top: 10, leading: 12, bottom: 10, trailing: 12))
                     }
                 }
-                if !s.quotaHistory.isEmpty {
+                ForEach(s.providers.filter { !$0.history.isEmpty }) { block in
                     Section {
-                        QuotaHistoryChart(points: s.quotaHistory)
+                        QuotaHistoryChart(block: block)
                             .listRowInsets(EdgeInsets(top: 10, leading: 12, bottom: 10, trailing: 12))
                     } header: {
-                        Text("Quota over this range")
+                        ProviderMark(provider: block.provider, form: .words("\(Provider.name(block.provider)) quota over this range"))
                     } footer: {
-                        Text("Percent of each window used, for the account serving now.")
+                        Text("Percent of each window used, for \(Provider.name(block.provider))'s account serving now.")
                     }
                 }
                 readSection(s)
@@ -60,26 +71,37 @@ struct UsageView: View {
         let t = s.totals
         let b = usage.buckets
         let hit = t.promptTokens > 0 ? t.cacheReadTokens / t.promptTokens : 0
+        let spend = Fmt.costSum(t.cost, unpriced: t.unpriced, estimated: t.estimated)
+        let split = { (total: ProviderSplit.Total) in ProviderSplit.parts(t.byProvider, total) }
         Section {
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
                 StatTile("Prompt tokens read", Fmt.compact(t.promptTokens),
                          t.firstSeen != nil ? "\(Fmt.when(Fmt.date(ms: t.firstSeen)!)) → \(Fmt.when(Fmt.date(ms: t.lastSeen)!))" : "nothing recorded in this range") {
                     if b.count > 1 { Sparkline(values: b.map(\.prompt)) }
+                    if let parts = split(.prompt) { ProviderSplitView(parts: parts) }
                 }
-                StatTile("Spend", Fmt.usd(t.cost),
-                         t.cost > 0 ? "\(Fmt.compact(t.cacheReadTokens)) cached reads · \(Fmt.compact(t.outputTokens)) out" : "nothing priced in scope")
+                StatTile("Spend", t.cost > 0 || (t.unpriced ?? 0) > 0 ? spend.text : "—",
+                         t.cost > 0 ? "\(Fmt.compact(t.cacheReadTokens)) cached reads · \(Fmt.compact(t.outputTokens)) out" : "nothing priced in scope") {
+                    if let parts = split(.spend) { ProviderSplitView(parts: parts) }
+                }
                 StatTile("Requests", Fmt.count(t.requests),
-                         "\(Fmt.count(t.sessions)) sessions · \(Fmt.count(t.projects)) projects · \(Fmt.count(t.subagentRequests)) by subagents")
+                         "\(Fmt.count(t.sessions)) sessions · \(Fmt.count(t.projects)) projects · \(Fmt.count(t.subagentRequests)) by subagents") {
+                    if let parts = split(.requests) { ProviderSplitView(parts: parts) }
+                }
                 StatTile("Output tokens", Fmt.compact(t.outputTokens), "\(Fmt.compact(t.thinkingTokens)) of it thinking") {
                     if b.count > 1 { Sparkline(values: b.map(\.output)) }
+                    if let parts = split(.output) { ProviderSplitView(parts: parts) }
                 }
                 StatTile("Served from cache", Fmt.share(hit), "cache reads ÷ everything read") {
                     Gauge(value: hit, in: 0...1) { EmptyView() }
                         .gaugeStyle(.accessoryLinearCapacity)
                         .tint(.teal)
+                    if let parts = split(.cache) { ProviderSplitView(parts: parts) }
                 }
                 StatTile("Cache writes", Fmt.compact(t.cacheWriteTokens),
-                         "\(Fmt.compact(t.cacheWrite5mTokens)) for 5 min · \(Fmt.compact(t.cacheWrite1hTokens)) for an hour")
+                         "\(Fmt.compact(t.cacheWrite5mTokens)) for 5 min · \(Fmt.compact(t.cacheWrite1hTokens)) for an hour") {
+                    if let parts = split(.writes) { ProviderSplitView(parts: parts) }
+                }
                 StatTile("Time to first token", Fmt.ms(s.latency?.ttfbP50),
                          "p95 \(Fmt.ms(s.latency?.ttfbP95)) · slowest turn \(Fmt.ms(s.latency?.durationMax))")
                 StatTile("Errors", Fmt.count(t.errors),
@@ -89,6 +111,8 @@ struct UsageView: View {
             .listRowBackground(Color.clear)
         } header: {
             Text("Totals in scope")
+        } footer: {
+            if let note = Fmt.costNote([spend]) { Text(note) }
         }
     }
 
@@ -140,13 +164,21 @@ struct UsageView: View {
     @ViewBuilder private func modelsSection(_ s: Summary) -> some View {
         if !s.models.isEmpty {
             let max = s.models.map(\.promptTokens).max() ?? 1
-            Section("By model") {
-                ForEach(s.models) { m in
+            let costs = s.models.map { Fmt.costSum($0.cost, unpriced: $0.unpriced, estimated: $0.estimated) }
+            Section {
+                ForEach(Array(s.models.enumerated()), id: \.element.id) { i, m in
                     BarRow(value: m.promptTokens, max: max, color: FamilyColor.of(Bucket.family(m.model)),
-                           text: "\(Fmt.usd(m.cost)) · \(Fmt.count(m.requests)) req · \(Fmt.compact(m.outputTokens)) out") {
-                        Text(Fmt.shortModel(m.model)).font(.subheadline)
+                           text: "\(costs[i].text) · \(Fmt.count(m.requests)) req · \(Fmt.compact(m.outputTokens)) out") {
+                        HStack(spacing: 6) {
+                            ProviderMark(provider: m.provider, form: .alone).font(.caption2).foregroundStyle(.secondary)
+                            Text(Fmt.shortModel(m.model)).font(.subheadline)
+                        }
                     }
                 }
+            } header: {
+                Text("By model")
+            } footer: {
+                if let note = Fmt.costNote(costs) { Text(note) }
             }
         }
     }
@@ -157,7 +189,7 @@ struct UsageView: View {
             Section {
                 ForEach(s.threads) { t in
                     BarRow(value: t.promptTokens, max: max, color: t.thread == "subagent" ? .pink : .accentColor,
-                           text: "\(Fmt.usd(t.cost)) · \(Fmt.count(t.requests)) req" + (t.thread == "subagent" ? " · \(Fmt.count(t.agents)) agents" : "")) {
+                           text: "\(Fmt.costSum(t.cost, unpriced: t.unpriced, estimated: t.estimated).text) · \(Fmt.count(t.requests)) req" + (t.thread == "subagent" ? " · \(Fmt.count(t.agents)) agents" : "")) {
                         Label(t.thread == "subagent" ? "Subagents" : "Main thread",
                               systemImage: t.thread == "subagent" ? "person.2" : "person")
                             .font(.subheadline)
@@ -176,12 +208,13 @@ struct UsageView: View {
             let max = s.byAccount.map(\.promptTokens).max() ?? 1
             Section {
                 ForEach(s.byAccount) { a in
-                    NavigationLink(value: UsageRoute(routerId: usage.router.router.id, scope: UsageScope(account: a.id))) {
+                    NavigationLink(value: UsageRoute(routerId: usage.router.router.id, scope: usage.narrowed(account: a.id))) {
                         BarRow(value: a.promptTokens, max: max, color: .accentColor,
-                               text: "\(Fmt.usd(a.cost)) · \(Fmt.count(a.requests)) req · \(Fmt.count(a.sessions)) sessions") {
+                               text: "\(Fmt.costSum(a.cost, unpriced: a.unpriced, estimated: a.estimated).text) · \(Fmt.count(a.requests)) req · \(Fmt.count(a.sessions)) sessions") {
                             HStack(spacing: 6) {
+                                ProviderMark(provider: a.provider, form: .alone).font(.caption2).foregroundStyle(.secondary)
                                 Text(a.label).font(.subheadline)
-                                if a.active == 1 { Text("active").font(.caption2).foregroundStyle(.green) }
+                                if a.active == 1 { Text("active for \(Provider.name(a.provider))").font(.caption2).foregroundStyle(.green) }
                             }
                         }
                     }
@@ -214,19 +247,27 @@ struct UsageView: View {
     }
 }
 
-/// The two windows over the range, on the activity chart's axis.
+/// One provider's two windows over the range, each by its own name, on the activity chart's
+/// axis: a bucket with no reading for a window is left off that window's line, never 0%.
 struct QuotaHistoryChart: View {
-    let points: [Summary.QuotaPoint]
+    let block: ProviderQuota
+
+    /// The block's second window, by the name its provider gives it.
+    private var second: WindowKey {
+        block.windows.keys.contains("month") || block.history.contains(where: { $0.month != nil }) ? .month : .sevenDay
+    }
+
     var body: some View {
+        let second = second
         VStack(alignment: .leading, spacing: 6) {
             Chart {
-                ForEach(Array(points.enumerated()), id: \.offset) { _, p in
-                    if let v = p.rl5h {
-                        LineMark(x: .value("Time", p.date), y: .value("Used", v), series: .value("Window", "5-hour"))
+                ForEach(block.history, id: \.t) { p in
+                    if let v = p.fiveHour {
+                        LineMark(x: .value("Time", p.date), y: .value("Used", min(1, v)), series: .value("Window", WindowKey.fiveHour.name))
                             .foregroundStyle(Color.accentColor)
                     }
-                    if let v = p.rl7d {
-                        LineMark(x: .value("Time", p.date), y: .value("Used", v), series: .value("Window", "7-day"))
+                    if let v = p.value(second) {
+                        LineMark(x: .value("Time", p.date), y: .value("Used", min(1, v)), series: .value("Window", second.name))
                             .foregroundStyle(Color.secondary)
                     }
                 }
@@ -237,11 +278,42 @@ struct QuotaHistoryChart: View {
             .chartXAxis { AxisMarks(values: .automatic(desiredCount: 3)) { _ in AxisGridLine(); AxisValueLabel(format: .dateTime.month(.abbreviated).day().hour()) } }
             .frame(height: 90)
             HStack(spacing: 12) {
-                Label("5-hour", systemImage: "minus").foregroundStyle(Color.accentColor)
-                Label("7-day", systemImage: "minus").foregroundStyle(.secondary)
+                Label(WindowKey.fiveHour.name, systemImage: "minus").foregroundStyle(Color.accentColor)
+                Label(second.name, systemImage: "minus").foregroundStyle(.secondary)
             }
             .font(.caption2)
         }
-        .accessibilityLabel("Quota over this range")
+        .accessibilityLabel("\(Provider.name(block.provider)) quota over this range")
+    }
+}
+
+/// A total's parts by provider, under its tile: a thin bar of the shares, then each provider's
+/// mark, its figure and its share.
+struct ProviderSplitView: View {
+    let parts: [ProviderPart]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            GeometryReader { g in
+                HStack(spacing: 1) {
+                    ForEach(parts) { p in
+                        Rectangle().fill(FamilyColor.provider(p.provider))
+                            .frame(width: max(0, g.size.width * (p.share ?? 0) - 1))
+                    }
+                }
+            }
+            .frame(height: 3)
+            ForEach(parts) { p in
+                HStack(spacing: 4) {
+                    ProviderMark(provider: p.provider, form: .alone)
+                    Text(p.figure).lineLimit(1).minimumScaleFactor(0.8)
+                    Spacer(minLength: 2)
+                    if let share = p.share { Text(Fmt.share(share)).foregroundStyle(.secondary) }
+                }
+                .font(.caption2)
+            }
+        }
+        .padding(.top, 2)
+        .accessibilityElement(children: .combine)
     }
 }

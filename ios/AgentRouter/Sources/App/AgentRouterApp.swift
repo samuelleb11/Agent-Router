@@ -43,11 +43,23 @@ struct AgentRouterApp: App {
 /// `--ui-test-notify <session id>` schedules a local notification carrying the same
 /// payload a router's push does, so a UI test can tap it: nothing can deliver an APNs
 /// push to the simulator. `--ui-test-bogus-router` names a router the phone does not
-/// know, to exercise the only-router fallback. Debug builds only; nothing else uses it.
+/// know, to exercise the only-router fallback. `--ui-test-router` adds, once, the router at
+/// the launch environment's `UI_TEST_ROUTER_BASE` (an https:// address) with
+/// `UI_TEST_ROUTER_PASSWORD`, for a UI test to tour a real router without typing a credential.
+/// Debug builds only; nothing else uses them.
 enum UITestHooks {
     @MainActor
     static func run(store: RouterStore) async {
         let args = ProcessInfo.processInfo.arguments
+        let env = ProcessInfo.processInfo.environment
+        if args.contains("--ui-test-router"), store.routers.isEmpty,
+           let base = env["UI_TEST_ROUTER_BASE"].flatMap(URL.init(string:)), let host = base.host,
+           let password = env["UI_TEST_ROUTER_PASSWORD"], !password.isEmpty {
+            var router = Router(name: "Tour", host: host)
+            router.scheme = .https
+            router.port = base.port ?? 443
+            store.add(router, password: password)
+        }
         guard let i = args.firstIndex(of: "--ui-test-notify"), i + 1 < args.count else { return }
         let session = args[i + 1]
         let ref = args.contains("--ui-test-bogus-router") ? UUID().uuidString : (store.routers.first?.id.uuidString ?? "")

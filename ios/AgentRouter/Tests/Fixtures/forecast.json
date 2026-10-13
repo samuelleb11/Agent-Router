@@ -377,6 +377,18 @@
     "in_ms": 333870956
    }
   },
+  "providers": {
+   "anthropic": {
+    "active_hours_left": 3.247111236383442,
+    "pools": 1,
+    "first_to_exhaust": {
+     "account_id": "secondary",
+     "window": "seven_day",
+     "at": 1789744498781,
+     "in_ms": 333870956
+    }
+   }
+  },
   "pace_30d": {
    "cost": 14357.650556999999,
    "prompt_tokens": 20672377517.142857,

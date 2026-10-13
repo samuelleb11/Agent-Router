@@ -145,10 +145,12 @@ struct Quota: Decodable, Sendable {
     let source: String?
     let accountId: String?
     let seenAt: Int?
+    /// How old a live usage reading was when it was answered.
+    let ageMs: Int?
 
     enum CodingKeys: String, CodingKey {
         case severity, source
-        case fiveHour = "five_hour", sevenDay = "seven_day", accountId = "account_id", seenAt = "seen_at"
+        case fiveHour = "five_hour", sevenDay = "seven_day", accountId = "account_id", seenAt = "seen_at", ageMs = "age_ms"
     }
 }
 
@@ -199,10 +201,12 @@ struct Forecast: Decodable, Sendable {
         let promptTokens: Double?
         let outputTokens: Double?
         let cost: Double?
+        let unpriced: Double?
+        let estimated: Double?
         let lastSeen: Int?
 
         enum CodingKeys: String, CodingKey {
-            case requests, cost
+            case requests, cost, unpriced, estimated
             case promptTokens = "prompt_tokens", outputTokens = "output_tokens", lastSeen = "last_seen"
         }
     }
@@ -280,13 +284,14 @@ struct Forecast: Decodable, Sendable {
         let outputTokens: Double
         let cost: Double
         let accounts: Int
-        let combinedHeadroom: Headroom
+        /// Each provider's own headroom, counted over its own windows, never against another's.
+        let providers: [String: Headroom]
         let pace30d: Pace
 
         enum CodingKeys: String, CodingKey {
-            case requests, cost, accounts
+            case requests, cost, accounts, providers
             case promptTokens = "prompt_tokens", outputTokens = "output_tokens"
-            case combinedHeadroom = "combined_headroom", pace30d = "pace_30d"
+            case pace30d = "pace_30d"
         }
     }
 
@@ -311,10 +316,12 @@ struct Forecast: Decodable, Sendable {
 
     struct Pace: Decodable, Sendable {
         let cost: Double
+        let unpriced: Double?
+        let estimated: Double?
         let promptTokens: Double
         let basis: String
 
-        enum CodingKeys: String, CodingKey { case cost, basis, promptTokens = "prompt_tokens" }
+        enum CodingKeys: String, CodingKey { case cost, basis, unpriced, estimated, promptTokens = "prompt_tokens" }
     }
 }
 
@@ -332,8 +339,11 @@ enum WindowKey: String, Sendable, Hashable, CaseIterable {
         }
     }
 
+    /// As a caption starts: "5-hour", "Month".
+    var title: String { name.prefix(1).uppercased() + name.dropFirst() }
+
     /// As a meter is captioned: "5-hour window", "Month window".
-    var label: String { name.prefix(1).uppercased() + name.dropFirst() + " window" }
+    var label: String { title + " window" }
 
     /// As a small gauge is captioned: "5h", "7d", "mo".
     var short: String {
@@ -908,11 +918,13 @@ struct Summary: Decodable, Sendable {
     let stopReasons: [StopReason]
     let byAccount: [AccountSplitRow]
     let timeline: Timeline
-    let quotaHistory: [QuotaPoint]
+    /// One block per provider with an account, Anthropic's first: its serving account, its
+    /// windows and their history over the timeline's buckets.
+    let providers: [ProviderQuota]
 
     enum CodingKeys: String, CodingKey {
-        case totals, context, models, threads, latency, timeline
-        case stopReasons = "stop_reasons", byAccount = "by_account", quotaHistory = "quota_history"
+        case totals, context, models, threads, latency, timeline, providers
+        case stopReasons = "stop_reasons", byAccount = "by_account"
     }
 
     struct Totals: Decodable, Sendable {
@@ -932,9 +944,16 @@ struct Summary: Decodable, Sendable {
         let projects: Double
         let firstSeen: Int?
         let lastSeen: Int?
+        /// Requests with usage the router could not price, which add nothing to `cost`.
+        let unpriced: Double?
+        /// Requests whose tokens the router estimated rather than read.
+        let estimated: Double?
+        /// Each provider's part of these totals, Anthropic's first.
+        let byProvider: [ProviderTotals]
 
         enum CodingKeys: String, CodingKey {
-            case requests, cost, errors, sessions, projects
+            case requests, cost, errors, sessions, projects, unpriced, estimated
+            case byProvider = "by_provider"
             case promptTokens = "prompt_tokens", inputTokens = "input_tokens", outputTokens = "output_tokens"
             case thinkingTokens = "thinking_tokens", cacheReadTokens = "cache_read_tokens"
             case cacheWrite5mTokens = "cache_write_5m_tokens", cacheWrite1hTokens = "cache_write_1h_tokens"
@@ -965,9 +984,12 @@ struct Summary: Decodable, Sendable {
         let cacheReadTokens: Double
         let errors: Double
         let subagentRequests: Double
+        let provider: String?
+        let unpriced: Double?
+        let estimated: Double?
         var id: String { model ?? "?" }
         enum CodingKeys: String, CodingKey {
-            case model, requests, cost, errors
+            case model, requests, cost, errors, provider, unpriced, estimated
             case promptTokens = "prompt_tokens", outputTokens = "output_tokens", thinkingTokens = "thinking_tokens"
             case cacheReadTokens = "cache_read_tokens", subagentRequests = "subagent_requests"
         }
@@ -981,9 +1003,11 @@ struct Summary: Decodable, Sendable {
         let outputTokens: Double
         let cacheReadTokens: Double
         let agents: Double
+        let unpriced: Double?
+        let estimated: Double?
         var id: String { thread }
         enum CodingKeys: String, CodingKey {
-            case thread, requests, cost, agents
+            case thread, requests, cost, agents, unpriced, estimated
             case promptTokens = "prompt_tokens", outputTokens = "output_tokens", cacheReadTokens = "cache_read_tokens"
         }
     }
@@ -1017,8 +1041,11 @@ struct Summary: Decodable, Sendable {
         let outputTokens: Double
         let sessions: Double
         let lastSeen: Int?
+        let provider: String?
+        let unpriced: Double?
+        let estimated: Double?
         enum CodingKeys: String, CodingKey {
-            case id, label, active, requests, cost, sessions
+            case id, label, active, requests, cost, sessions, provider, unpriced, estimated
             case promptTokens = "prompt_tokens", outputTokens = "output_tokens", lastSeen = "last_seen"
         }
     }
@@ -1048,13 +1075,79 @@ struct Summary: Decodable, Sendable {
         }
     }
 
-    struct QuotaPoint: Decodable, Sendable {
-        let t: Double
-        let rl5h: Double?
-        let rl7d: Double?
-        enum CodingKeys: String, CodingKey { case t, rl5h = "rl_5h", rl7d = "rl_7d" }
-        var date: Date { Date(timeIntervalSince1970: t / 1000) }
+}
+
+/// One provider's part of the summary's totals (src/api.rs, `summary_of`, `by_provider`).
+struct ProviderTotals: Decodable, Sendable, Hashable, Identifiable {
+    let provider: String
+    let requests: Double?
+    let promptTokens: Double?
+    let cost: Double?
+    let unpriced: Double?
+    let estimated: Double?
+    let outputTokens: Double?
+    let cacheReadTokens: Double?
+    let cacheWriteTokens: Double?
+    var id: String { provider }
+    enum CodingKeys: String, CodingKey {
+        case provider, requests, cost, unpriced, estimated
+        case promptTokens = "prompt_tokens", outputTokens = "output_tokens"
+        case cacheReadTokens = "cache_read_tokens", cacheWriteTokens = "cache_write_tokens"
     }
+}
+
+/// One entry of the summary's `providers` (src/api.rs, `providers_quota`): a provider with an
+/// account, its serving account, that account's windows — Anthropic's 5-hour and 7-day from
+/// the rate-limit headers its requests carry, Kimi Code's 5-hour and its second by its own
+/// name from its usage API — their status, when they were read, and their history.
+struct ProviderQuota: Decodable, Sendable, Identifiable {
+    let provider: String
+    let account: ServingAccount
+    /// Keyed `five_hour`, `seven_day`, `month`. Utilisation is a fraction, 1 for a window the
+    /// provider said is spent; a reset is epoch seconds.
+    let windows: [String: BlockWindow?]
+    /// Anthropic's header's own word, Kimi Code's `allowed` or `rejected`.
+    let status: String?
+    /// Epoch milliseconds of the reading.
+    let at: Int?
+    let history: [HistoryRow]
+    var id: String { provider }
+
+    struct ServingAccount: Decodable, Sendable, Hashable {
+        let id: String
+        let label: String?
+        let email: String?
+        let plan: String?
+    }
+
+    struct BlockWindow: Decodable, Sendable, Hashable {
+        let utilization: Double?
+        let resetsAt: Double?
+        enum CodingKeys: String, CodingKey { case utilization, resetsAt = "resets_at" }
+    }
+
+    struct HistoryRow: Decodable, Sendable, Hashable {
+        let t: Double
+        let fiveHour: Double?
+        let sevenDay: Double?
+        let month: Double?
+        enum CodingKeys: String, CodingKey { case t, month, fiveHour = "five_hour", sevenDay = "seven_day" }
+        var date: Date { Date(timeIntervalSince1970: t / 1000) }
+        func value(_ key: WindowKey) -> Double? {
+            switch key {
+            case .fiveHour: fiveHour
+            case .sevenDay: sevenDay
+            case .month: month
+            }
+        }
+    }
+
+    func window(_ key: WindowKey) -> BlockWindow? { windows[key.rawValue] ?? nil }
+}
+
+/// `GET /api/summary?parts=providers`: the quota blocks alone, for the router's own page.
+struct ProvidersPart: Decodable, Sendable {
+    let providers: [ProviderQuota]
 }
 
 struct ProjectRow: Decodable, Sendable, Identifiable, Hashable {
@@ -1078,6 +1171,8 @@ struct ProjectRow: Decodable, Sendable, Identifiable, Hashable {
     /// Where the project's sessions ran: each directory, the machine it is on, and its remotes.
     /// Absent from an older router.
     let directories: [ProjectDirectory]?
+    let unpriced: Double?
+    let estimated: Double?
     /// The row's key, and what narrows the page to it: its repository or path, or for the row
     /// without one the router's `(unresolved)`, which no real key can be
     /// (`ProjectPath.unresolved`).
@@ -1086,7 +1181,7 @@ struct ProjectRow: Decodable, Sendable, Identifiable, Hashable {
     /// included — and "—" for the row without a directory (`ProjectPath`).
     var name: String { ProjectPath.name(project) }
     enum CodingKeys: String, CodingKey {
-        case project, sessions, requests, cost, errors, models, repository, directories
+        case project, sessions, requests, cost, errors, models, repository, directories, unpriced, estimated
         case promptTokens = "prompt_tokens", outputTokens = "output_tokens", cacheReadTokens = "cache_read_tokens"
         case subagentTokens = "subagent_tokens", firstSeen = "first_seen", lastSeen = "last_seen"
     }
@@ -1111,6 +1206,8 @@ extension ProjectRow {
         lastSeen = try c.decodeIfPresent(Int.self, forKey: .lastSeen)
         repository = c.lenient(String.self, .repository)
         directories = c.lenient([ProjectDirectory].self, .directories)
+        unpriced = c.lenient(Double.self, .unpriced)
+        estimated = c.lenient(Double.self, .estimated)
     }
 }
 
@@ -1168,6 +1265,10 @@ struct ProxySessionRow: Decodable, Sendable, Identifiable, Hashable {
     let cwd: String?
     let repository: String?
     let machine: MachineRef?
+    /// The providers its requests went to, Anthropic's first.
+    let providers: [String]
+    let unpriced: Double?
+    let estimated: Double?
     var shortId: String {
         let prefix = id.hasPrefix("opencode:ses_") ? 13 : id.hasPrefix("codex:") ? 6 : 0
         return String(id.dropFirst(prefix).prefix(8))
@@ -1178,6 +1279,7 @@ struct ProxySessionRow: Decodable, Sendable, Identifiable, Hashable {
         switch clientId {
         case "codex-cli": return "Codex CLI"
         case "codex-vscode": return "Codex VS Code"
+        case "codex-managed": return "Codex managed"
         case "opencode": return "OpenCode"
         case "kimi-code-cli": return "Kimi Code CLI"
         case "kimi-code-vscode": return "Kimi Code VS Code"
@@ -1188,13 +1290,14 @@ struct ProxySessionRow: Decodable, Sendable, Identifiable, Hashable {
         }
         guard let e = entrypoint else { return "" }
         if e.hasPrefix("opencode/") { return "OpenCode" }
+        if e.hasPrefix("agent_router_codex/") { return "Codex managed" }
         if e.contains("codex_vscode") || e.contains("codex-vscode") { return "Codex VS Code" }
         if e.contains("codex_cli") || e.contains("codex-cli") { return "Codex CLI" }
         return e.contains("vscode") ? "VS Code" : e.contains("claude-cli") ? "CLI" : String(e.prefix(20))
     }
     enum CodingKeys: String, CodingKey {
         case id, project, entrypoint, requests, cost, errors, subagents, models
-        case cwd, repository, machine
+        case cwd, repository, machine, providers, unpriced, estimated
         case clientId = "client"
         case gitBranch = "git_branch", startedAt = "started_at", lastSeenAt = "last_seen_at"
         case promptTokens = "prompt_tokens", outputTokens = "output_tokens"
@@ -1225,6 +1328,9 @@ extension ProxySessionRow {
         cwd = c.lenient(String.self, .cwd)
         repository = c.lenient(String.self, .repository)
         machine = c.lenient(MachineRef.self, .machine)
+        providers = c.lenient([String].self, .providers) ?? []
+        unpriced = c.lenient(Double.self, .unpriced)
+        estimated = c.lenient(Double.self, .estimated)
     }
 }
 
@@ -1255,6 +1361,9 @@ struct RequestRow: Decodable, Sendable, Identifiable, Hashable {
     let tools: String?
     /// `component:est_tokens` pairs, comma-separated.
     let context: String?
+    /// The provider that served it, and the account that signed it.
+    let provider: String?
+    let accountId: String?
 
     var isError: Bool { (status ?? 0) >= 400 || error != nil }
     var isSubagent: Bool { isSidechain == 1 }
@@ -1267,8 +1376,8 @@ struct RequestRow: Decodable, Sendable, Identifiable, Hashable {
         }
     }
     enum CodingKeys: String, CodingKey {
-        case id, project, model, status, error, tools, context, cost
-        case requestId = "request_id", sessionId = "session_id", ttfbMs = "ttfb_ms", durationMs = "duration_ms"
+        case id, project, model, status, error, tools, context, cost, provider
+        case accountId = "account_id", requestId = "request_id", sessionId = "session_id", ttfbMs = "ttfb_ms", durationMs = "duration_ms"
         case stopReason = "stop_reason", isSidechain = "is_sidechain", agentId = "agent_id", startedAt = "started_at"
         case promptTokens = "prompt_tokens", inputTokens = "input_tokens", outputTokens = "output_tokens"
         case thinkingTokens = "thinking_tokens", cacheReadTokens = "cache_read_tokens"

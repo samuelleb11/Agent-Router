@@ -1,28 +1,32 @@
 import Charts
 import SwiftUI
 
-/// A window as a filled bar with what it means underneath.
+/// A window as a filled bar with what it means underneath: the reading's own figure, and the
+/// forecast's projection for the same window.
 struct QuotaRow: View {
-    let title: String
-    let window: Forecast.Window?
+    let meter: QuotaMeter
 
     var body: some View {
-        let live = window.map { !$0.isExpired } ?? false
-        let used = live ? (window?.used ?? 0) : 0
+        let live = meter.used != nil
+        let used = meter.used ?? 0
         VStack(alignment: .leading, spacing: 6) {
-            Gauge(value: used, in: 0...1) {
-                Text(title)
+            Gauge(value: min(1, max(0, used)), in: 0...1) {
+                Text(meter.label)
             } currentValueLabel: {
                 Text(live ? Fmt.percent(used) : "—")
             }
             .gaugeStyle(.linearCapacity)
             .tint(QuotaColor.tint(used, live: live))
-            if live, let reset = window?.resetDate {
+            if let expired = meter.expired {
+                Text(expired)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if let reset = meter.resetsAt {
                 Text("resets \(Fmt.relative(reset)) · \(Fmt.when(reset))")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            if let p = Projection.describe(window) {
+            if meter.expired == nil, let p = Projection.describe(meter.forecast) {
                 Label {
                     Text(p.text)
                 } icon: {
@@ -35,10 +39,6 @@ struct QuotaRow: View {
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
-            } else if window == nil {
-                Text("No rate-limit reading yet")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
         }
         .padding(.vertical, 4)

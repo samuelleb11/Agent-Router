@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// One router: what it is serving with, how much of the quota is left and when it
-/// runs out, every account it holds, and the switch between them.
+/// One router: each provider's quota block — its serving account, how much is left and when it
+/// runs out — every account it holds by provider, and the switch between them.
 struct RouterDetailView: View {
     let state: RouterState
     @Environment(RouterStore.self) private var store
@@ -19,23 +19,11 @@ struct RouterDetailView: View {
                     }
                 }
             }
-            activeSection
+            // The links first, as before the blocks came: a thumb reaches the sessions without
+            // scrolling past every provider's quota.
             sessionsSection
-            if let a = state.activeAccount {
-                Section {
-                    ForEach(a.windows, id: \.key) { w in QuotaRow(title: w.key.label, window: w.window) }
-                } header: {
-                    Text("Quota — \(a.title)")
-                } footer: {
-                    if let q = state.quota, let at = Fmt.date(ms: q.seenAt) {
-                        // Say where the number came from: a response header is only as fresh as
-                        // the last request; the usage endpoint is current even on an idle Mac.
-                        Text(q.source == "response-headers" ? "From the last request, \(Fmt.ago(at))." : "Checked \(Fmt.ago(at)).")
-                    }
-                }
-                burnDownSection(a)
-            }
-            accountsSection
+            quotaSections
+            accountsSections
             totalsSection
             routerSection
         }
@@ -53,21 +41,23 @@ struct RouterDetailView: View {
 
     // MARK: sections
 
-    @ViewBuilder private var activeSection: some View {
-        Section("Serving with") {
-            if let a = state.activeAccount {
-                LabeledContent {
-                    Text(a.plan ?? "")
-                        .foregroundStyle(.secondary)
-                } label: {
-                    Label(a.title, systemImage: "person.crop.circle.fill")
+    /// One block per provider with an account, stacked, as the console shows them at phone
+    /// width; none, and where to add one, when the router holds no account.
+    @ViewBuilder private var quotaSections: some View {
+        let blocks = state.blocks
+        if blocks.isEmpty {
+            Section("Quota headroom") {
+                if state.forecast == nil {
+                    Text(state.failure == nil ? "Connecting…" : "No data").foregroundStyle(.secondary)
+                } else {
+                    NavigationLink(value: AccountsRoute(routerId: state.router.id)) {
+                        Text("No account yet — add one in Accounts.")
+                    }
                 }
-            } else if state.forecast == nil {
-                Text(state.failure == nil ? "Connecting…" : "No data")
-                    .foregroundStyle(.secondary)
-            } else {
-                Text("No active account").foregroundStyle(.secondary)
             }
+        }
+        ForEach(blocks) { block in
+            QuotaBlockSection(block: block, routerId: state.router.id)
         }
     }
 
@@ -110,31 +100,13 @@ struct RouterDetailView: View {
         return state.liveSummary.map { "\($0) · \(n) this week" } ?? "\(n) this week"
     }
 
-    @ViewBuilder private func burnDownSection(_ a: Forecast.ForecastAccount) -> some View {
-        let windows: [(String, Forecast.Window)] = a.windows
-            .compactMap { k, w in w.flatMap { $0.isExpired || $0.windowStart == nil ? nil : (k.name, $0) } }
-        if !windows.isEmpty {
+    /// The accounts by provider, each provider with its own serving account: a tap serves that
+    /// provider's requests with it, and leaves the others' as they are.
+    @ViewBuilder private var accountsSections: some View {
+        let groups = state.accountsByProvider
+        ForEach(groups, id: \.provider) { group in
             Section {
-                ForEach(windows, id: \.0) { name, w in
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("\(name) burn-down")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        BurnDownChart(window: w)
-                    }
-                    .padding(.vertical, 4)
-                }
-            } footer: {
-                Text("Solid is what has been used; dashed is where the current rate of work leads. Burn is measured per hour of work, not per hour on the clock.")
-            }
-        }
-    }
-
-    @ViewBuilder private var accountsSection: some View {
-        let list = state.switchable
-        if !list.isEmpty {
-            Section {
-                ForEach(list) { a in
+                ForEach(group.accounts) { a in
                     Button {
                         Task { await state.activate(a.id) }
                     } label: {
@@ -143,41 +115,43 @@ struct RouterDetailView: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(a.isActive || state.switching != nil)
-                    .accessibilityHint(a.isActive ? "Serving now" : "Switch the router to this account")
+                    .accessibilityHint(a.isActive ? "Serving now" : "Serve \(Provider.name(group.provider))'s requests with this account")
                 }
-                NavigationLink(value: AccountsRoute(routerId: state.router.id)) {
-                    Label("Manage accounts", systemImage: "person.crop.circle.badge.plus")
-                        .accessibilityIdentifier("manage-accounts")
+                if group.provider == groups.last?.provider {
+                    NavigationLink(value: AccountsRoute(routerId: state.router.id)) {
+                        Label("Manage accounts", systemImage: "person.crop.circle.badge.plus")
+                            .accessibilityIdentifier("manage-accounts")
+                    }
                 }
             } header: {
-                Text("Accounts")
+                ProviderMark(provider: group.provider, form: .words("\(Provider.name(group.provider)) accounts"))
             } footer: {
-                Text("Tap an account to serve with it. The switch takes effect on the next request, mid-session.")
+                if group.provider == groups.last?.provider {
+                    Text("Tap an account to serve its provider's requests with it. Each provider has its own; the switch takes effect on the next request, mid-session.")
+                }
             }
         }
     }
 
     @ViewBuilder private var totalsSection: some View {
-        if let g = state.forecast?.global {
+        if let f = state.forecast {
+            let g = f.global
+            let spend = Fmt.costSum(g.cost, unpriced: f.accounts.compactMap(\.usage.unpriced).reduce(0, +),
+                                    estimated: f.accounts.compactMap(\.usage.estimated).reduce(0, +))
+            let pace = Fmt.costSum(g.pace30d.cost, unpriced: g.pace30d.unpriced, estimated: g.pace30d.estimated)
             Section {
-                LabeledContent("Spend", value: Fmt.usd(g.cost))
+                LabeledContent {
+                    VStack(alignment: .trailing) {
+                        Text(spend.text)
+                        Text("across \(g.accounts) account\(g.accounts == 1 ? "" : "s"), at API rates")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                } label: { Text("Spend, every account") }
                 LabeledContent("Tokens read", value: Fmt.compact(g.promptTokens))
                 LabeledContent("Requests", value: Fmt.count(g.requests))
                 LabeledContent {
                     VStack(alignment: .trailing) {
-                        Text(Fmt.hours(g.combinedHeadroom.activeHoursLeft))
-                        if let f = g.combinedHeadroom.firstToExhaust, let at = Fmt.date(ms: f.at) {
-                            Text("first to go: \(f.accountId) \(Fmt.relative(at))")
-                                .font(.caption)
-                                .foregroundStyle(.red)
-                        }
-                    }
-                } label: {
-                    Text("Headroom")
-                }
-                LabeledContent {
-                    VStack(alignment: .trailing) {
-                        Text(Fmt.usd(g.pace30d.cost))
+                        Text(pace.text)
                         Text(Fmt.compact(g.pace30d.promptTokens) + " tokens")
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -188,7 +162,8 @@ struct RouterDetailView: View {
             } header: {
                 Text("All accounts")
             } footer: {
-                Text("Spend, tokens and requests add up across accounts. Quota does not — each percentage is of its own limit — so headroom is hours of work left. Pace is from the last 7 days of recorded spend.")
+                Text(["Spend, tokens and requests add up across accounts. Quota does not — each percentage is of its own limit — so each provider's headroom is in its own block. Pace is from \(g.pace30d.basis).",
+                      Fmt.costNote([spend, pace])].compactMap { $0 }.joined(separator: " "))
             }
         }
     }
@@ -214,20 +189,111 @@ struct RouterDetailView: View {
 
     // MARK: toolbar
 
+    /// The switch, a picker per provider: choosing one serves that provider alone.
     private var accountMenu: some View {
         Menu {
-            Picker("Account", selection: Binding(
-                get: { state.activeAccount?.id ?? "" },
-                set: { id in Task { await state.activate(id) } }
-            )) {
-                ForEach(state.switchable) { a in
-                    Text(a.title).tag(a.id)
+            ForEach(state.accountsByProvider, id: \.provider) { group in
+                Picker(Provider.name(group.provider), selection: Binding(
+                    get: { group.accounts.first(where: \.isActive)?.id ?? "" },
+                    set: { id in Task { await state.activate(id) } }
+                )) {
+                    ForEach(group.accounts) { a in
+                        Text(a.title).tag(a.id)
+                    }
                 }
+                .pickerStyle(.inline)
             }
         } label: {
             Label("Switch account", systemImage: "person.2.circle")
         }
-        .disabled(state.switchable.isEmpty)
+        .disabled(state.accountsByProvider.isEmpty)
+    }
+}
+
+/// One provider's quota block: its mark, the account serving it, its own headroom and first to
+/// run out, its windows by their own names, where the reading came from, and its burn-downs.
+private struct QuotaBlockSection: View {
+    let block: QuotaBlock
+    let routerId: UUID
+
+    var body: some View {
+        Section {
+            NavigationLink(value: AccountsRoute(routerId: routerId)) {
+                LabeledContent("Serving now", value: block.serving)
+            }
+            if let room = block.room {
+                VStack(alignment: .leading, spacing: 4) {
+                    LabeledContent("Headroom left", value: room.value)
+                    Text(room.sub)
+                        .font(.caption)
+                        .foregroundStyle(room.tone == .bad ? .red : room.tone == .warn ? .orange : .secondary)
+                    if let first = room.first {
+                        Text(first).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            if let meters = block.meters {
+                ForEach(meters) { QuotaRow(meter: $0) }
+                HStack(spacing: 8) {
+                    Text("Status")
+                    if let st = block.status { StatusTag(status: st) } else { Text("—") }
+                    Spacer()
+                    if let source = block.source {
+                        Text(source).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            } else {
+                Text("No quota reading yet for \(block.name)'s serving account.")
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(burnDowns, id: \.0) { name, w in
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("\(name) burn-down")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    BurnDownChart(window: w)
+                }
+                .padding(.vertical, 4)
+            }
+        } header: {
+            ProviderMark(provider: block.provider)
+        } footer: {
+            if !burnDowns.isEmpty {
+                Text("Solid is what has been used; dashed is where the current rate of work leads. Burn is measured per hour of work, not per hour on the clock.")
+            }
+        }
+    }
+
+    private var burnDowns: [(String, Forecast.Window)] {
+        (block.forecast?.windows ?? [])
+            .compactMap { k, w in w.flatMap { $0.isExpired || $0.windowStart == nil ? nil : (k.title, $0) } }
+    }
+}
+
+/// A block's status, in the word its provider gave and the colour that word means.
+private struct StatusTag: View {
+    let status: QuotaStatus
+
+    var body: some View {
+        Label {
+            Text(status.word)
+        } icon: {
+            if status.tone == .bad { Image(systemName: "exclamationmark.octagon.fill") }
+        }
+        .font(.caption.weight(.medium))
+        .padding(.horizontal, 8)
+        .padding(.vertical, 2)
+        .background(color.opacity(0.15), in: Capsule())
+        .foregroundStyle(color)
+    }
+
+    private var color: Color {
+        switch status.tone {
+        case .ok: .green
+        case .warn: .orange
+        case .bad: .red
+        case .neutral: .secondary
+        }
     }
 }
 
@@ -237,6 +303,7 @@ private struct AccountRow: View {
     let switching: Bool
 
     var body: some View {
+        let cost = Fmt.costSum(account.week.cost, unpriced: account.week.unpriced, estimated: account.week.estimated)
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 3) {
                 Text(account.title)
@@ -244,13 +311,18 @@ private struct AccountRow: View {
                     .foregroundStyle(.primary)
                 HStack(spacing: 6) {
                     if let plan = account.plan { Text(plan) }
-                    Text(Fmt.usd(account.week.cost) + " this week")
+                    Text(cost.text + " this week")
                     if let w = account.second, !w.isExpired, let used = w.used {
                         Text(account.secondKey.short + " " + Fmt.percent(used))
                     }
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                if account.second?.spent == true {
+                    Text("its \(account.secondKey.name) window is spent until it resets")
+                        .font(.caption2)
+                        .foregroundStyle(.red)
+                }
                 if let c = credential, c.ready == false {
                     Label(c.detail ?? "credential unavailable", systemImage: "exclamationmark.triangle")
                         .font(.caption2)
@@ -264,7 +336,7 @@ private struct AccountRow: View {
                 Image(systemName: "checkmark")
                     .foregroundStyle(.tint)
                     .fontWeight(.semibold)
-                    .accessibilityLabel("Active")
+                    .accessibilityLabel("Serving \(Provider.name(account.providerId))")
             }
         }
         .contentShape(Rectangle())

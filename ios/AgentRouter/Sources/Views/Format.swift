@@ -117,4 +117,46 @@ enum Fmt {
     static func date(ms: Int?) -> Date? {
         ms.map { Date(timeIntervalSince1970: TimeInterval($0) / 1000) }
     }
+
+    // MARK: costs, as the console sums them (ui/src/model/format.ts, `costSum`)
+
+    /// Why a sum leaves requests out.
+    static let unpricedWhy = "no rate for their model in the pricing table, so the sum leaves them out"
+    /// Why a request's tokens are an estimate.
+    static let estimatedWhy = "tokens estimated rather than read from the stored response, for Kimi Code requests from before cache reads were counted once whose responses were no longer kept"
+
+    /// A cost as written, and which marks it carries.
+    struct CostFigure: Equatable, Sendable {
+        /// "$3.10", "$3.10 + 4 unpriced", "≈$3.10", "not priced", "$0", "—".
+        let text: String
+        let unpriced: Bool
+        let estimated: Bool
+    }
+
+    /// A sum of costs, one rule wherever a cost is summed: the priced part, marked "+ N
+    /// unpriced" when it leaves requests out, "not priced" when nothing in it was priced —
+    /// never "$0", which stands only for a zero the router measured — and "≈" before it when
+    /// the dollars rest on estimated tokens. A cost the router did not give is "—".
+    static func costSum(_ cost: Double?, unpriced: Double? = nil, estimated: Double? = nil) -> CostFigure {
+        let left = whole(unpriced), guessed = whole(estimated)
+        let priced = (cost ?? 0) > 0
+        let dollars = left > 0 ? (priced ? "\(usd(cost)) + \(count(Double(left))) unpriced" : "not priced") : usd(cost)
+        return CostFigure(text: guessed > 0 && priced ? "≈" + dollars : dollars, unpriced: left > 0, estimated: guessed > 0 && priced)
+    }
+
+    /// One request's cost: "not priced" for a request with usage and no cost, never "$0"; "—"
+    /// for one with no usage to price.
+    static func requestCost(_ cost: Double?, promptTokens: Double?, outputTokens: Double?) -> CostFigure {
+        if cost == nil, promptTokens != nil || outputTokens != nil { return CostFigure(text: "not priced", unpriced: true, estimated: false) }
+        return costSum(cost)
+    }
+
+    /// What the marks on a list's costs mean, said once under it. Nil when none is marked.
+    static func costNote(_ figures: [CostFigure]) -> String? {
+        let said = [figures.contains(where: \.unpriced) ? "Unpriced: \(unpricedWhy)." : nil,
+                    figures.contains(where: \.estimated) ? "≈ estimated: \(estimatedWhy)." : nil].compactMap { $0 }
+        return said.isEmpty ? nil : said.joined(separator: " ")
+    }
+
+    private static func whole(_ v: Double?) -> Int { v.map { $0 > 0 && $0.isFinite ? Int($0.rounded()) : 0 } ?? 0 }
 }

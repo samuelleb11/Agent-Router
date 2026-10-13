@@ -15,6 +15,11 @@ The VS Code extension ships the same files in `vscode/media/providers/`, for its
 tooltip (AGEN-0138), and one more: `anthropic-dark.svg`, the same path filled white for a dark
 editor theme, as the console draws Anthropic's mark in the text colour.
 
+The iPhone app ships the same three files, unmodified, in
+`ios/AgentRouter/Sources/Assets.xcassets/` (AGEN-0143): `ProviderAnthropic` renders as a
+template in the text colour, and `ProviderKimi` holds the light file with the dark one as its
+dark appearance.
+
 SHA-256, as copied on 2026-10-10:
 - `anthropic.svg`: `1cc599f6ebce2016dc388cf84e54a52c6b13487655c7e243554d654c7bce1882`
 - `kimi-code.svg`: `937616746780d0c7c4bda92820db39f503f6a3e9b7cfebe438a5fb61b62d3991`

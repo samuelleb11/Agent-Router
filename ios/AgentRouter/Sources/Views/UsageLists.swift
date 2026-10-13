@@ -6,13 +6,13 @@ struct ProjectsView: View {
     let usage: UsageState
     var body: some View {
         List(usage.projects) { p in
-            NavigationLink(value: UsageRoute(routerId: usage.router.router.id, scope: UsageScope(account: usage.scope.account, project: p.id))) {
+            NavigationLink(value: UsageRoute(routerId: usage.router.router.id, scope: usage.narrowed(account: usage.scope.account, project: p.id))) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(p.name).font(.headline)
                     if let path = p.project {
                         Text(path).font(.caption2).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.head)
                     }
-                    Text("\(Fmt.count(p.sessions)) sessions · \(Fmt.count(p.requests)) req · \(Fmt.compact(p.promptTokens)) read · \(Fmt.usd(p.cost))")
+                    Text("\(Fmt.count(p.sessions)) sessions · \(Fmt.count(p.requests)) req · \(Fmt.compact(p.promptTokens)) read · \(Fmt.costSum(p.cost, unpriced: p.unpriced, estimated: p.estimated).text)")
                         .font(.caption).foregroundStyle(.secondary)
                     HStack(spacing: 6) {
                         ForEach((p.models ?? "").split(separator: ",").map(String.init), id: \.self) { m in
@@ -39,17 +39,18 @@ struct ProxySessionsView: View {
     let usage: UsageState
     var body: some View {
         List(usage.sessions) { s in
-            NavigationLink(value: UsageRoute(routerId: usage.router.router.id, scope: UsageScope(account: usage.scope.account, project: usage.scope.project, session: s.id))) {
+            NavigationLink(value: UsageRoute(routerId: usage.router.router.id, scope: usage.narrowed(account: usage.scope.account, project: usage.scope.project, session: s.id))) {
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 6) {
                         Text(s.shortId).monospaced().font(.subheadline.weight(.medium))
                         if let b = s.gitBranch { Label(b, systemImage: "arrow.triangle.branch").font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+                        ForEach(s.providers, id: \.self) { ProviderMark(provider: $0, form: .alone).font(.caption2).foregroundStyle(.secondary) }
                         if !s.client.isEmpty { Text(s.client).font(.caption2).foregroundStyle(.tertiary) }
                         Spacer()
                         Text(Fmt.ago(Date(timeIntervalSince1970: TimeInterval(s.lastSeenAt) / 1000))).font(.caption2).foregroundStyle(.secondary)
                     }
                     Text(s.projectName).font(.caption).foregroundStyle(.secondary)
-                    Text("\(Fmt.count(s.requests)) req · \(Fmt.compact(s.promptTokens)) read · \(Fmt.compact(s.outputTokens)) out · \(Fmt.usd(s.cost))"
+                    Text("\(Fmt.count(s.requests)) req · \(Fmt.compact(s.promptTokens)) read · \(Fmt.compact(s.outputTokens)) out · \(Fmt.costSum(s.cost, unpriced: s.unpriced, estimated: s.estimated).text)"
                          + (s.subagents > 0 ? " · \(Fmt.count(s.subagents)) subagents" : "")
                          + (s.errors > 0 ? " · \(Fmt.count(s.errors)) errors" : ""))
                         .font(.caption).foregroundStyle(.secondary)
@@ -125,6 +126,7 @@ struct RequestRowView: View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 6) {
                 Text(Fmt.hm(Date(timeIntervalSince1970: TimeInterval(r.startedAt) / 1000))).monospacedDigit()
+                ProviderMark(provider: r.provider, form: .alone).font(.caption2).foregroundStyle(.secondary)
                 Text(Fmt.shortModel(r.model)).foregroundStyle(.secondary)
                 if r.isSubagent { Text("subagent").font(.caption2).foregroundStyle(.pink) }
                 Spacer()
@@ -135,7 +137,7 @@ struct RequestRowView: View {
                 }
             }
             .font(.subheadline)
-            Text("\(Fmt.compact(r.promptTokens)) read · \(Fmt.compact(r.outputTokens)) out · \(Fmt.usd(r.cost)) · ttfb \(Fmt.ms(r.ttfbMs.map(Double.init))) · \(Fmt.ms(r.durationMs.map(Double.init)))")
+            Text("\(Fmt.compact(r.promptTokens)) read · \(Fmt.compact(r.outputTokens)) out · \(Fmt.requestCost(r.cost, promptTokens: r.promptTokens, outputTokens: r.outputTokens).text) · ttfb \(Fmt.ms(r.ttfbMs.map(Double.init))) · \(Fmt.ms(r.durationMs.map(Double.init)))")
                 .font(.caption).foregroundStyle(.secondary)
             if !r.toolList.isEmpty {
                 Text(r.toolList.joined(separator: ", ")).font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
@@ -148,11 +150,15 @@ struct RequestRowView: View {
 /// One request in full — the dashboard's expanded row.
 struct RequestDetailView: View {
     let r: RequestRow
+    /// The router's accounts, to name the one that signed it.
+    var accounts: [Account] = []
     var body: some View {
         List {
             Section {
                 LabeledContent("When", value: Fmt.when(Date(timeIntervalSince1970: TimeInterval(r.startedAt) / 1000)))
                 LabeledContent("Model", value: r.model ?? "—")
+                LabeledContent("Provider") { ProviderMark(provider: r.provider) }
+                if let who = r.accountWords(accounts) { LabeledContent("Account", value: who) }
                 LabeledContent("Status", value: r.status.map(String.init) ?? "—")
                 if let e = r.error { LabeledContent("Error") { Text(e).foregroundStyle(.red) } }
                 LabeledContent("Stop reason", value: r.stopReason ?? "—")
@@ -167,7 +173,7 @@ struct RequestDetailView: View {
                 LabeledContent("Cache writes", value: "\(Fmt.compact(r.cacheWrite5mTokens)) for 5 min · \(Fmt.compact(r.cacheWrite1hTokens)) for an hour")
                 LabeledContent("Output", value: Fmt.compact(r.outputTokens))
                 LabeledContent("Thinking", value: Fmt.compact(r.thinkingTokens))
-                LabeledContent("Cost", value: Fmt.usd(r.cost))
+                LabeledContent("Cost", value: Fmt.requestCost(r.cost, promptTokens: r.promptTokens, outputTokens: r.outputTokens).text)
             }
             if !r.contextSplit.isEmpty {
                 Section("Context window (estimate)") {

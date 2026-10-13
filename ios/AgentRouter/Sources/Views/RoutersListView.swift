@@ -43,7 +43,7 @@ struct RoutersListView: View {
                 }
             }
             .navigationDestination(for: RequestRoute.self) { route in
-                RequestDetailView(r: route.request)
+                RequestDetailView(r: route.request, accounts: store.state(id: route.routerId)?.accounts ?? [])
             }
             .navigationDestination(for: SearchRoute.self) { route in
                 if let state = store.state(id: route.routerId) { SearchView(state: state) }
@@ -139,13 +139,20 @@ private struct RouterRow: View {
                     .font(.caption)
                     .foregroundStyle(.red)
                     .lineLimit(2)
-            } else if let a = state.activeAccount {
-                Text(a.title)
+            } else if !state.activeAccounts.isEmpty {
+                // Each provider's serving account, by its mark, with its own two windows.
+                ForEach(state.activeAccounts) { a in
+                    HStack(spacing: 6) {
+                        ProviderMark(provider: a.providerId, form: .alone)
+                        Text(a.title)
+                            .lineLimit(1)
+                    }
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
-                HStack(spacing: 12) {
-                    MiniGauge(label: WindowKey.fiveHour.short, used: a.fiveHour)
-                    MiniGauge(label: a.secondKey.short, used: a.second)
+                    HStack(spacing: 12) {
+                        MiniGauge(label: WindowKey.fiveHour.short, used: a.fiveHour)
+                        MiniGauge(label: a.secondKey.short, used: a.second)
+                    }
                 }
                 if let c = state.sessionCounts {
                     // Waiting on you is the one worth colouring: it is the one that needs

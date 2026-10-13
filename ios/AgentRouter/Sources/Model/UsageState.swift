@@ -21,16 +21,19 @@ enum UsageRange: String, CaseIterable, Identifiable, Sendable {
 
 /// What the page is narrowed to. Empty means the whole router.
 struct UsageScope: Hashable, Sendable {
+    /// The provider the page opened on; its own choice may move from there (`UsageState.provider`).
+    var provider: String? = nil
     var account: String? = nil
     var project: String? = nil
     var session: String? = nil
-    var isEmpty: Bool { account == nil && project == nil && session == nil }
+    var isEmpty: Bool { provider == nil && account == nil && project == nil && session == nil }
     var title: String {
         if let session { return "Session \(session.prefix(8))" }
         // The sessions with no directory are narrowed to by the router's key for them, and
         // named as their row is.
         if let project { return ProjectPath.name(project == ProjectPath.unresolved ? nil : project) }
         if let account { return account }
+        if let provider { return Provider.name(provider) }
         return "Usage"
     }
 }
@@ -84,6 +87,10 @@ final class UsageState {
     var range: UsageRange = .all {
         didSet { if range != oldValue { Task { await refresh() } } }
     }
+    /// The provider every figure follows, nil for all of them. Chosen on the page, as the range is.
+    var provider: String? {
+        didSet { if provider != oldValue { Task { await refresh() } } }
+    }
     var summary: Summary?
     var projects: [ProjectRow] = []
     var sessions: [ProxySessionRow] = []
@@ -96,6 +103,19 @@ final class UsageState {
     init(router: RouterState, scope: UsageScope) {
         self.router = router
         self.scope = scope
+        provider = scope.provider
+    }
+
+    /// The scope a list or a narrower page pushed from here opens on: this one, at the provider
+    /// chosen now.
+    func narrowed(account: String? = nil, project: String? = nil, session: String? = nil) -> UsageScope {
+        UsageScope(provider: provider, account: account, project: project, session: session)
+    }
+
+    /// The provider choice, while the page is not narrowed to one account, whose provider it is:
+    /// nil when there is nothing to choose between.
+    var providerChoices: [String?]? {
+        scope.account != nil ? nil : ProviderSplit.choices(withAccount: router.accounts.map { $0.provider ?? "anthropic" }, chosen: provider)
     }
 
     var buckets: [Bucket] { summary.map { Bucket.build($0.timeline) } ?? [] }
@@ -107,10 +127,10 @@ final class UsageState {
         refreshing = true
         defer { refreshing = false }
         let tz = String(TimeZone.current.secondsFromGMT() / 60)
-        let base: [String: String?] = ["account": scope.account, "project": scope.project, "session": scope.session, "since": since]
+        let base: [String: String?] = ["provider": provider, "account": scope.account, "project": scope.project, "session": scope.session, "since": since]
         async let s: Summary = client.get("/api/summary", query: base.merging(["tz": tz]) { $1 })
-        async let p: [ProjectRow] = client.get("/api/projects", query: ["account": scope.account, "since": since])
-        async let ss: [ProxySessionRow] = client.get("/api/sessions", query: ["account": scope.account, "project": scope.project, "since": since])
+        async let p: [ProjectRow] = client.get("/api/projects", query: ["provider": provider, "account": scope.account, "since": since])
+        async let ss: [ProxySessionRow] = client.get("/api/sessions", query: ["provider": provider, "account": scope.account, "project": scope.project, "since": since])
         async let t: ToolsPayload = client.get("/api/tools", query: base)
         async let r: [RequestRow] = client.get("/api/requests", query: base)
         // Each child awaited on its own: a tuple `try await` that throws leaves the rest

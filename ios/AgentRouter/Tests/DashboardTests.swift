@@ -4,7 +4,7 @@ import XCTest
 /// The dashboard's payloads decode, and the buckets fill in the way the web view fills them.
 final class DashboardTests: XCTestCase {
     private let summary = #"""
-    {"totals":{"requests":12,"prompt_tokens":1200000,"cost":3.5,"input_tokens":1000,"output_tokens":9000,"thinking_tokens":2000,"cache_read_tokens":1150000,"cache_write_5m_tokens":40000,"cache_write_1h_tokens":9000,"cache_write_tokens":49000,"errors":1,"subagent_requests":3,"sessions":2,"projects":1,"first_seen":1789200000000,"last_seen":1789203600000},
+    {"totals":{"requests":12,"prompt_tokens":1200000,"cost":3.5,"input_tokens":1000,"output_tokens":9000,"thinking_tokens":2000,"cache_read_tokens":1150000,"cache_write_5m_tokens":40000,"cache_write_1h_tokens":9000,"cache_write_tokens":49000,"errors":1,"subagent_requests":3,"sessions":2,"projects":1,"first_seen":1789200000000,"last_seen":1789203600000,"unpriced":0,"estimated":0,"by_provider":[{"provider":"anthropic","requests":12,"prompt_tokens":1200000,"cost":3.5,"unpriced":0,"estimated":0,"output_tokens":9000,"cache_read_tokens":1150000,"cache_write_tokens":49000}]},
      "quota":{"rl_status":"allowed","rl_5h_utilization":0.1,"rl_7d_utilization":0.2,"rl_5h_reset":1,"rl_7d_reset":2,"started_at":3},
      "account":{"id":"a","label":"A","email":null,"org_name":null,"subscription_type":null},
      "context":[{"component":"tools","est_tokens":500000,"chars":2000000,"est_cost_once":2.5,"requests":12},{"component":"history","est_tokens":300000,"chars":1200000,"est_cost_once":1.5,"requests":12}],
@@ -14,7 +14,7 @@ final class DashboardTests: XCTestCase {
      "stop_reasons":[{"stop_reason":"end_turn","requests":8},{"stop_reason":"tool_use","requests":4}],
      "by_account":[{"id":"a","label":"A","active":1,"requests":12,"prompt_tokens":1200000,"cost":3.5,"output_tokens":9000,"sessions":2,"last_seen":1789203600000}],
      "timeline":{"start":1789200000000,"end":1789203600000,"bucket_ms":900000,"rows":[{"t":1789200000000,"model":"claude-opus-5","requests":5,"prompt_tokens":500000,"cost":1.5,"output_tokens":4000,"cache_read_tokens":480000,"subagent_tokens":0,"errors":0},{"t":1789200000000,"model":"claude-haiku-4-5","requests":2,"prompt_tokens":100000,"cost":0.3,"output_tokens":1000,"cache_read_tokens":100000,"subagent_tokens":0,"errors":0},{"t":1789202700000,"model":"claude-opus-5","requests":5,"prompt_tokens":600000,"cost":1.7,"output_tokens":4000,"cache_read_tokens":570000,"subagent_tokens":300000,"errors":1}]},
-     "quota_history":[{"t":1789200000000,"rl_5h":0.05,"rl_7d":0.2},{"t":1789202700000,"rl_5h":0.1,"rl_7d":0.21}]}
+     "providers":[{"provider":"anthropic","account":{"id":"a","label":"A","email":null,"org_name":null,"plan":null},"windows":{"five_hour":{"utilization":0.1,"resets_at":1789210000},"seven_day":{"utilization":0.21,"resets_at":1789700000}},"status":"allowed","at":1789203600000,"history":[{"t":1789200000000,"five_hour":0.05,"seven_day":0.2},{"t":1789202700000,"five_hour":0.1,"seven_day":0.21}]}]}
     """#
 
     func testSummaryDecodesAndBucketsFillTheRange() throws {
@@ -26,7 +26,7 @@ final class DashboardTests: XCTestCase {
         XCTAssertEqual(s.latency?.ttfbP50, 812)
         XCTAssertEqual(s.stopReasons.first?.stopReason, "end_turn")
         XCTAssertEqual(s.byAccount.first?.active, 1)
-        XCTAssertEqual(s.quotaHistory.count, 2)
+        XCTAssertEqual(s.providers.first?.history.count, 2)
 
         let b = Bucket.build(s.timeline, tz: TimeZone(secondsFromGMT: 0)!)
         // One hour at 15 minutes is five slots inclusive; the empty ones are still there.

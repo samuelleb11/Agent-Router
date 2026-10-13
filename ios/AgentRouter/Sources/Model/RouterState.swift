@@ -17,6 +17,10 @@ final class RouterState {
     var accounts: [Account] = []
     var forecast: Forecast?
     var quota: Quota?
+    /// When `quota` was read, which a live reading's age counts back from.
+    var quotaAt: Date?
+    /// One quota block per provider with an account, from the summary's `providers`.
+    var providers: [ProviderQuota] = []
     var sessions: [LiveSession] = []
     /// Why the last listing failed, when it did — the page must say so rather than
     /// show an empty week.
@@ -44,9 +48,18 @@ final class RouterState {
     }
 
     var isReachable: Bool { health?.ok == true && failure == nil }
-    var activeAccount: Forecast.ForecastAccount? { forecast?.accounts.first(where: \.isActive) }
-    /// Accounts to offer in the switcher: everything the router lists, in its order.
-    var switchable: [Forecast.ForecastAccount] { forecast?.accounts ?? [] }
+    /// Each provider's serving account, Anthropic's first: one active account per provider.
+    var activeAccounts: [Forecast.ForecastAccount] {
+        (forecast?.accounts ?? []).filter(\.isActive).sorted { Provider.rank($0.providerId) < Provider.rank($1.providerId) }
+    }
+    /// The forecast's accounts by provider, Anthropic's first, for the switch between them.
+    var accountsByProvider: [(provider: String, accounts: [Forecast.ForecastAccount])] {
+        Dictionary(grouping: forecast?.accounts ?? [], by: \.providerId)
+            .map { ($0.key, $0.value) }
+            .sorted { (Provider.rank($0.provider), $0.provider) < (Provider.rank($1.provider), $1.provider) }
+    }
+    /// The quota blocks as the page shows them.
+    var blocks: [QuotaBlock] { providers.map { QuotaBlock.make($0, live: quota, liveAt: quotaAt, forecast: forecast) } }
 
     func credential(for id: String) -> Account? { accounts.first { $0.id == id } }
     var activeSessions: Int { sessions.filter(\.active).count }
@@ -73,12 +86,18 @@ final class RouterState {
         async let a: AuthStatus = client.get("/api/auth")
         async let f: Forecast = client.get("/api/forecast")
         async let q: Quota = client.get("/api/quota")
+        // The blocks alone, over the last hour: their history is the Usage page's.
+        async let p: ProvidersPart = client.get("/api/summary", query: [
+            "parts": "providers", "since": String(Int(Date().timeIntervalSince1970 * 1000) - 3_600_000),
+            "tz": String(TimeZone.current.secondsFromGMT() / 60),
+        ])
         async let s: [LiveSession] = client.get("/api/live/sessions")
         var first: (any Error)?
         do { health = try await h } catch { first = first ?? error }
         do { auth = try await a } catch { first = first ?? error }
         do { forecast = try await f } catch { first = first ?? error }
-        do { quota = try await q } catch { first = first ?? error }
+        do { quota = try await q; quotaAt = .now } catch { first = first ?? error }
+        do { providers = try await p.providers } catch { first = first ?? error }
         // Its own failure: a slow or refused listing must not blank the page.
         do { sessions = try await s; sessionsFailure = nil } catch { sessionsFailure = LiveFeed.describe(error) }
         if first == nil, includeAccounts || accounts.isEmpty {
@@ -93,8 +112,9 @@ final class RouterState {
         }
     }
 
+    /// Serves its provider's requests with this account; the other providers keep theirs.
     func activate(_ id: String) async {
-        guard let client, id != activeAccount?.id else { return }
+        guard let client, forecast?.accounts.first(where: { $0.id == id })?.isActive != true else { return }
         switching = id
         defer { switching = nil }
         do {
