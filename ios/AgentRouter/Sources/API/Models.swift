@@ -116,6 +116,17 @@ struct Account: Decodable, Sendable, Identifiable, Hashable {
     /// The address its requests go to, the provider's own when it names none; nil for Anthropic.
     var endpoint: String? { baseURL ?? Provider.defaultBaseURL(provider) }
     var isCodexLogin: Bool { source == "codex" }
+    /// A ChatGPT login pasted into the router, which it serves to Codex alone.
+    var isChatGPTLogin: Bool { source == ChatGPTLogin.source }
+    /// Where its credential comes from, in words.
+    var sourceWords: String? {
+        switch source {
+        case "codex": "Codex login"
+        case ChatGPTLogin.source: "ChatGPT login · \(ChatGPTLogin.servesCodexOnly)"
+        case let s?: "via \(s)"
+        case nil: nil
+        }
+    }
     var takesUsageKey: Bool { provider == nil || provider == "anthropic" }
     var expiry: Date? { expiresAt.flatMap { $0 > 0 ? Date(timeIntervalSince1970: TimeInterval($0) / 1000) : nil } }
 

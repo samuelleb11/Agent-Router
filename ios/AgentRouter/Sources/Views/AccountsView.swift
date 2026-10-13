@@ -87,7 +87,7 @@ struct AccountRowView: View {
                 Circle().fill(account.ready == false ? Color.red : Color.green).frame(width: 8, height: 8)
                     .accessibilityLabel(account.ready == false ? "credential unavailable" : "ready")
             }
-            Text([account.providerName, account.subscriptionType, account.orgName, account.source.map { $0 == "codex" ? "Codex login" : "via \($0)" }].compactMap { $0 }.joined(separator: " · "))
+            Text([account.providerName, account.subscriptionType, account.orgName, account.sourceWords].compactMap { $0 }.joined(separator: " · "))
                 .font(.caption).foregroundStyle(.secondary)
             if let url = account.endpoint {
                 Text(url).font(.caption2.monospaced()).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
@@ -128,7 +128,20 @@ struct AccountEditSheet: View {
                 } footer: {
                     Text("The id and the stored credential stay the same, so history keyed to this account stays intact.")
                 }
-                if account.source == "token" {
+                if account.isChatGPTLogin {
+                    // A fresh paste is what mends a login OpenAI refused to refresh.
+                    Section {
+                        TextEditor(text: $token)
+                            .font(.caption.monospaced())
+                            .textInputAutocapitalization(.never).autocorrectionDisabled()
+                            .frame(minHeight: 100)
+                    } header: { Text("New login") } footer: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(ChatGPTLogin.steps.joined(separator: "\n"))
+                            if let p = ChatGPTLogin.problem(token) { Text(p).foregroundStyle(.red) }
+                        }
+                    }
+                } else if account.source == "token" {
                     Section {
                         SecureField("New credential", text: $token, prompt: Text(account.provider == "openai" ? "sk-proj-…" : account.provider == "kimi" ? "Kimi Code key" : "sk-ant-oat01-…"))
                     } header: { Text("Credential") } footer: {
@@ -156,7 +169,7 @@ struct AccountEditSheet: View {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") { Task { await save() } }
-                        .disabled(saving || Provider.keyProblem(account.provider ?? "anthropic", token) != nil)
+                        .disabled(saving || (account.isChatGPTLogin ? ChatGPTLogin.problem(token) : Provider.keyProblem(account.provider ?? "anthropic", token)) != nil)
                 }
             }
             .onAppear { label = account.label; email = account.email ?? "" }
@@ -189,6 +202,8 @@ struct AddAccountSheet: View {
     @State private var provider = "anthropic"
     @State private var token = ""
     @State private var baseURL = ""
+    /// An OpenAI account is a pasted API key or a ChatGPT login (Codex).
+    @State private var openaiWay = "token"
     @State private var working = false
     @State private var login: LoginStatus?
     @State private var polling = false
@@ -197,12 +212,18 @@ struct AddAccountSheet: View {
     /// A hosted router has no Mac to sign in on or keep a profile: an Anthropic account is a
     /// pasted token there, as the console offers it.
     private var hosted: Bool { model.router.auth?.isHosted == true }
-    private var how: String { provider == "anthropic" && !hosted ? source : "token" }
-    private var keyProblem: String? { how == "token" ? Provider.keyProblem(provider, token) : nil }
-    private var urlProblem: String? { provider == "anthropic" ? nil : Provider.baseURLProblem(baseURL) }
+    private var how: String {
+        if provider == "openai" { return openaiWay }
+        return provider == "anthropic" && !hosted ? source : "token"
+    }
+    private var pasted: Bool { how == "token" || how == ChatGPTLogin.source }
+    private var keyProblem: String? {
+        how == ChatGPTLogin.source ? ChatGPTLogin.problem(token) : how == "token" ? Provider.keyProblem(provider, token) : nil
+    }
+    private var urlProblem: String? { provider == "anthropic" || how == ChatGPTLogin.source ? nil : Provider.baseURLProblem(baseURL) }
 
     private var valid: Bool {
-        !label.trimmingCharacters(in: .whitespaces).isEmpty && (how != "token" || !token.trimmingCharacters(in: .whitespaces).isEmpty)
+        !label.trimmingCharacters(in: .whitespaces).isEmpty && (!pasted || !token.trimmingCharacters(in: .whitespaces).isEmpty)
             && keyProblem == nil && urlProblem == nil
     }
 
@@ -221,10 +242,24 @@ struct AddAccountSheet: View {
                         Text("Paste a token").tag("token")
                         Text("Separate profile").tag("profile")
                     } }
-                    if how == "token" {
+                    if provider == "openai" {
+                        Picker("How", selection: $openaiWay) {
+                            Text("API key").tag("token")
+                            Text("ChatGPT login (Codex)").tag(ChatGPTLogin.source)
+                        }
+                        .onChange(of: openaiWay) { _, _ in token = "" }
+                    }
+                    if how == ChatGPTLogin.source {
+                        // The whole auth.json, which is several lines: an editor, not a field.
+                        TextEditor(text: $token)
+                            .font(.caption.monospaced())
+                            .textInputAutocapitalization(.never).autocorrectionDisabled()
+                            .frame(minHeight: 120)
+                            .accessibilityIdentifier("chatgpt-login")
+                    } else if how == "token" {
                         SecureField(provider == "openai" ? "OpenAI API key" : provider == "kimi" ? "Kimi Code key" : "Token", text: $token, prompt: Text(provider == "openai" ? "sk-proj-…" : provider == "kimi" ? "Kimi Code key" : "sk-ant-oat01-…"))
                     }
-                    if provider != "anthropic" {
+                    if provider != "anthropic" && how != ChatGPTLogin.source {
                         TextField("Base URL", text: $baseURL, prompt: Text(Provider.defaultBaseURL(provider) ?? ""))
                             .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
                     }
@@ -280,6 +315,9 @@ struct AddAccountSheet: View {
     }
 
     private var help: String {
+        if how == ChatGPTLogin.source {
+            return ChatGPTLogin.steps.joined(separator: "\n") + "\nThe router keeps this login of its own, refreshes it, and serves it to Codex only."
+        }
         if provider == "openai" { return "An API key from your OpenAI project. A local router also discovers the Codex login automatically. Leave the base URL blank for OpenAI's own." }
         if provider == "kimi" { return "A key from the Kimi Code console. Leave the base URL blank for Kimi Code's own." }
         return switch how {
@@ -309,9 +347,9 @@ struct AddAccountSheet: View {
             return
         }
         let url = Provider.trimmedBaseURL(baseURL)
-        if let p = await model.add(label: name, source: how, token: how == "token" ? token.trimmingCharacters(in: .whitespaces) : nil,
+        if let p = await model.add(label: name, source: how, token: pasted ? token.trimmingCharacters(in: .whitespacesAndNewlines) : nil,
                                    provider: provider == "anthropic" ? nil : provider,
-                                   baseURL: provider == "anthropic" || url.isEmpty ? nil : url) {
+                                   baseURL: provider == "anthropic" || how == ChatGPTLogin.source || url.isEmpty ? nil : url) {
             message = p
             return
         }
