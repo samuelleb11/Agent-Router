@@ -48,6 +48,12 @@ The catalogue combines OpenAI's model listing, Codex's visible model cache, obse
 models and explicit assignments. Prices are configurable; a model with no rate stays
 unpriced. OpenAI subscription quota is currently unavailable in the dashboard.
 
+The router refreshes OpenAI model names when an account is added, at server startup,
+and hourly. ChatGPT accounts use the native Codex model endpoint and its visible models;
+hosted discovery does not require a local Codex installation or cache. Failed refreshes
+preserve previously discovered names. Finish active turns and refresh/reload Codex to
+load a changed client catalogue.
+
 Claude Code's picker gets the router's catalogue through the existing installer sync.
 In any client, select the exact model ID from Settings → Models. Model assignments
 remain within a provider; changing the client does not change an account assignment.

@@ -72,20 +72,31 @@ pub fn discover_account(db_path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Refresh an API-key account's model catalogue. A local ChatGPT account's
-/// catalogue is read from Codex's own model cache instead.
+/// Ask the account's own upstream, including the native Codex catalogue for
+/// ChatGPT logins. Hosted routers have no local Codex cache to discover from.
 pub async fn refresh_models(
     state: &std::sync::Arc<crate::proxy::AppState>,
     account: &str,
 ) -> Result<()> {
     let signer = state.signer(account).await?;
-    if signer.provider != crate::accounts::Provider::OpenAI || signer.openai_chatgpt {
+    if signer.provider != crate::accounts::Provider::OpenAI {
         return Ok(());
     }
-    let request = axum::http::Request::builder()
-        .uri(signer.upstream(&state.config.upstream, "/v1/models"))
+    let path = if signer.openai_chatgpt {
+        format!("/v1/models?client_version={}", catalogue::QUALIFIED_VERSION)
+    } else {
+        "/v1/models".into()
+    };
+    let mut request = axum::http::Request::builder()
+        .uri(signer.upstream(&state.config.upstream, &path))
         .header("authorization", format!("Bearer {}", signer.token))
         .header("accept", "application/json")
+        .header("user-agent", concat!("AgentRouter/", env!("CARGO_PKG_VERSION")))
+        .header("originator", "agent_router");
+    if let Some(id) = &signer.chatgpt_account_id {
+        request = request.header("chatgpt-account-id", id);
+    }
+    let request = request
         .body(axum::body::Body::empty())?;
     let body = tokio::time::timeout(std::time::Duration::from_secs(10), async {
         let response = state.client.request(request).await?;
@@ -99,12 +110,46 @@ pub async fn refresh_models(
     })
     .await??;
     let models: serde_json::Value = serde_json::from_slice(&body)?;
+    if !["data", "models"].iter().any(|key| models.get(key).is_some_and(serde_json::Value::is_array)) {
+        bail!("OpenAI model listing returned no model array");
+    }
     let db = state.config.db_path.clone();
     tokio::task::spawn_blocking(move || {
         let conn = rusqlite::Connection::open(db)?;
         crate::models::record_openai_models(&conn, &models)
     })
     .await??;
+    Ok(())
+}
+
+/// Refresh existing accounts at startup and periodically. Discovery failures
+/// leave saved model names intact and never block serving requests.
+pub fn keep_models(state: std::sync::Arc<crate::proxy::AppState>) {
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(60 * 60));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tick.tick().await;
+            if let Err(e) = refresh_all_models(&state).await {
+                tracing::warn!("OpenAI model catalogue maintenance failed: {e:#}");
+            }
+        }
+    });
+}
+
+async fn refresh_all_models(state: &std::sync::Arc<crate::proxy::AppState>) -> Result<()> {
+    let db = state.config.db_path.clone();
+    let ids = tokio::task::spawn_blocking(move || -> Result<Vec<String>> {
+        let conn = rusqlite::Connection::open(db)?;
+        let mut stmt = conn.prepare("SELECT id FROM accounts WHERE provider = 'openai'")?;
+        let ids = stmt.query_map([], |row| row.get(0))?.collect::<rusqlite::Result<Vec<String>>>()?;
+        Ok(ids)
+    }).await??;
+    for id in ids {
+        if let Err(e) = refresh_models(state, &id).await {
+            tracing::warn!(account = id, "OpenAI model catalogue could not be refreshed: {e:#}");
+        }
+    }
     Ok(())
 }
 
@@ -355,13 +400,26 @@ mod tests {
 
     #[tokio::test]
     async fn hosted_chatgpt_catalogue_discovers_visible_models_without_local_cache() {
-        use axum::{body::Body, http::{Request, StatusCode}, routing::get, Json, Router};
+        use axum::{body::Body, http::{Request, StatusCode}, response::IntoResponse, routing::get, Json, Router};
         use serde_json::json;
         use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
         use tower::ServiceExt;
 
         let lab = crate::api_refusals::Lab::hosted("chatgpt-catalogue").await;
+        let config = crate::config::Config {
+            server: true, bind: ([127, 0, 0, 1], 0).into(),
+            upstream: "https://unused.invalid".into(), db_path: lab.state.config.db_path.clone(),
+            body_cap: 65536, dump_headers: 0, allow_hosts: vec![], public_url: None,
+            push_keys_dir: None, agents_dir: None,
+            drain: std::time::Duration::from_secs(1), stop_delay: std::time::Duration::ZERO,
+        };
+        let (capture, _captured) = tokio::sync::mpsc::channel(1);
+        let (network, _) = crate::network::switch();
+        let mut state = crate::proxy::AppState::new(config, capture, network).unwrap();
+        let tls = hyper_rustls::HttpsConnectorBuilder::new().with_webpki_roots().https_or_http().enable_http1().build();
+        Arc::get_mut(&mut state).unwrap().client = hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new()).build(tls);
         let conn = rusqlite::Connection::open(&lab.state.config.db_path).unwrap();
+        crate::pricing::ensure_table(&conn).unwrap();
         conn.execute("INSERT INTO accounts(id,label,source,provider,active,created_at) VALUES('plan','Plan','token','openai',1,1)", []).unwrap();
         let calls = Arc::new(AtomicUsize::new(0));
         let observed = calls.clone();
@@ -371,26 +429,28 @@ mod tests {
                 assert_eq!(req.headers()["authorization"], "Bearer TEST-PLAN-TOKEN");
                 assert_eq!(req.headers()["chatgpt-account-id"], "test-workspace");
                 assert_eq!(req.headers()["originator"], "agent_router");
-                assert_eq!(req.uri().query(), Some(concat!("client_version=", "0.162.0-alpha.17.2")));
-                observed.fetch_add(1, Ordering::SeqCst);
+                assert_eq!(req.uri().query(), Some(format!("client_version={}", catalogue::QUALIFIED_VERSION).as_str()));
+                if observed.fetch_add(1, Ordering::SeqCst) >= 2 {
+                    return Json(json!({"error":"catalogue unavailable"})).into_response();
+                }
                 Json(json!({"models":[
                     {"slug":"gpt-hosted-fixture","display_name":"Hosted fixture","visibility":"list","base_instructions":"PRIVATE-MODEL-PROMPT"},
                     {"slug":"gpt-hidden-fixture","visibility":"hide"},
                     {"slug":"gpt-image-fixture","visibility":"list"},
                     {"slug":"not-a-coding-model","visibility":"list"}
-                ]}))
+                ]})).into_response()
             }
         }));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
-        lab.state.credentials.write().await.insert("plan".into(), crate::proxy::Active {
+        state.credentials.write().await.insert("plan".into(), crate::proxy::Active {
             account_id: "plan".into(), label: "Plan".into(), identity: None,
             token: "TEST-PLAN-TOKEN".into(), expires_at_ms: i64::MAX,
             provider: crate::accounts::Provider::OpenAI, base_url: Some(format!("http://{address}")),
             openai_chatgpt: true, chatgpt_account_id: Some("test-workspace".into()),
         });
-        refresh_models(&lab.state, "plan").await.unwrap();
+        refresh_models(&state, "plan").await.unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 1, "ChatGPT accounts must fetch their own catalogue even on a hosted server");
         let (status, token) = lab.post("/api/auth/tokens", &json!({"name":"catalogue-test","scope":"client"}).to_string()).await;
         assert_eq!(status, StatusCode::CREATED);
@@ -407,6 +467,11 @@ mod tests {
         for private in ["TEST-PLAN-TOKEN", "test-workspace", "PRIVATE-MODEL-PROMPT", "gpt-hidden-fixture", "gpt-image-fixture"] {
             assert!(!text.contains(private), "scoped catalogue leaked {private}");
         }
+        // Startup maintenance finds the existing account without adding it again.
+        refresh_all_models(&state).await.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert!(refresh_models(&state, "plan").await.unwrap_err().to_string().contains("no model array"));
+        assert!(crate::models::client_catalogue(&conn).unwrap().models.iter().any(|m| m.id == "gpt-hosted-fixture"));
         server.abort();
     }
 

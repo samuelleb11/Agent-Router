@@ -528,6 +528,7 @@ async fn serve_here(args: config::ServeArgs) -> anyhow::Result<()> {
     tokio::spawn(state.push.clone().watch());
     // Kimi Code accounts' windows, read from Kimi Code's usage API every five minutes.
     quota::keep_kimi_readings(state.clone());
+    codex::keep_models(state.clone());
     // Wraps every Claude Code extension VSCode adds, when the switch is on. A hosted
     // router has no editor to watch.
     if !server {

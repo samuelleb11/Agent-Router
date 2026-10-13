@@ -151,7 +151,9 @@ fn cached_codex_models(raw: &[u8]) -> Vec<(String, String)> {
 pub fn record_openai_models(conn: &Connection, response: &Value) -> rusqlite::Result<usize> {
     let mut count = 0;
     for id in response.get("data").and_then(Value::as_array).into_iter().flatten()
-        .filter_map(|m| m.get("id").and_then(Value::as_str))
+        .chain(response.get("models").and_then(Value::as_array).into_iter().flatten())
+        .filter(|m| !m.get("visibility").and_then(Value::as_str).is_some_and(|v| v != "list"))
+        .filter_map(|m| m.get("id").or_else(|| m.get("slug")).and_then(Value::as_str))
     {
         let model = normal(id);
         if provider_of(&model) != Some(Provider::OpenAI)
