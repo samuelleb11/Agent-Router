@@ -2272,12 +2272,13 @@ pub async fn accounts_activate(
     let id = req.id.clone();
     let server = state.config.server;
     let done = tokio::task::spawn_blocking(move || -> Result<(), Unmade> {
-        // A hosted router can only sign with a pasted token. Switching to a Claude Code
-        // login that came with a copied store would leave every request with nothing to
-        // sign with. 409: that account is what stands in the way.
+        // A hosted router can only sign with what was pasted into it: a token, or a ChatGPT
+        // login it keeps and refreshes itself. Switching to a Claude Code login that came
+        // with a copied store would leave every request with nothing to sign with. 409:
+        // that account is what stands in the way.
         if server {
             match store.get(&id).map_err(failure)? {
-                Some(account) if account.source != Source::Token => {
+                Some(account) if !matches!(account.source, Source::Token | Source::ChatGpt) => {
                     return Err((StatusCode::CONFLICT, crate::accounts::NOT_ON_A_SERVER.to_string()));
                 }
                 _ => {}

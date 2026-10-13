@@ -823,3 +823,26 @@ async fn accounts_bad_input_refusal_on_a_hosted_router_names_the_login_it_cannot
     let refused = lab.post("/api/accounts/activate", r#"{"id":"nobody"}"#).await;
     assert_eq!(words(refused, StatusCode::CONFLICT), r#"no account with id "nobody""#);
 }
+
+/// A pasted ChatGPT login is kept in the router's own secrets and signs on a hosted router, so it
+/// can be OpenAI's active account there; a machine's Codex login still cannot (AGEN-0201).
+#[tokio::test]
+async fn chatgpt_login_is_activated_on_a_hosted_router() {
+    let lab = Lab::hosted("accounts-hosted-chatgpt").await;
+    let key = json!({"label": "key", "source": "token", "provider": "openai", "token": "sk-proj-hosted"});
+    let (status, body) = lab.post("/api/accounts", &key.to_string()).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let login = json!({"label": "plan", "source": "chatgpt", "token": crate::chatgpt::tests::login(1_900_000_000, "rt-hosted")});
+    let (status, body) = lab.post("/api/accounts", &login.to_string()).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = lab.post("/api/accounts/activate", r#"{"id":"plan"}"#).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (_, list) = lab.get("/api/accounts").await;
+    let active = |id: &str| list.as_array().unwrap().iter().find(|a| a["id"] == id).is_some_and(|a| a["active"] == json!(1) || a["active"] == json!(true));
+    assert!(active("plan") && !active("key"), "the ChatGPT login is OpenAI's active account: {list}");
+
+    let conn = rusqlite::Connection::open(&lab.state.config.db_path).unwrap();
+    conn.execute("INSERT INTO accounts (id, label, source, provider, active, created_at) VALUES ('codex', 'Codex login', 'codex', 'openai', 0, 1)", []).unwrap();
+    let refused = lab.post("/api/accounts/activate", r#"{"id":"codex"}"#).await;
+    assert_eq!(words(refused, StatusCode::CONFLICT), crate::accounts::NOT_ON_A_SERVER);
+}
