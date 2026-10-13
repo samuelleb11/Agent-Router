@@ -124,6 +124,15 @@ struct AccountsRoute: Hashable { let routerId: UUID }
 /// for a view across several.
 struct SearchRoute: Hashable { let routerId: UUID }
 struct SettingsRoute: Hashable { let routerId: UUID }
+/// One page of a router's Settings, as the console names its pages.
+struct SettingsPageRoute: Hashable {
+    let routerId: UUID
+    let page: SettingsPage
+}
+
+enum SettingsPage: String, Hashable, Sendable {
+    case models
+}
 /// A session named only by id — what a notification carries; the view looks it up.
 struct SessionByIdRoute: Hashable {
     let routerId: UUID

@@ -12,6 +12,11 @@ struct RouterSettingsView: View {
         List {
             if let f = model?.failure { Section { Label(f, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange) } }
             if let m = model?.message { Section { Text(m).font(.footnote) } }
+            Section {
+                NavigationLink(value: SettingsPageRoute(routerId: state.router.id, page: .models)) {
+                    Label("Models", systemImage: "cpu").accessibilityIdentifier("settings-models")
+                }
+            }
             if let model {
                 setupSection(model)
                 wrapperSection(model)
