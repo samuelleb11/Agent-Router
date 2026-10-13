@@ -282,15 +282,6 @@ struct NetworkSettingsView: View {
     }
 }
 
-/// A page whose screen comes with a later change in this series.
-struct PendingSettingsPage: View {
-    let page: SettingsPage
-    var body: some View {
-        ContentUnavailableView(page.title, systemImage: page.icon, description: Text("Set this up from the console for now."))
-            .navigationTitle(page.title)
-    }
-}
-
 /// Set, change or remove the router password from the phone — allowed because this
 /// phone already presented it.
 struct PasswordSection: View {
