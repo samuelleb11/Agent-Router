@@ -1,0 +1,91 @@
+[
+ {
+  "id": "m-mac",
+  "label": "studio-mac",
+  "platform": "macos",
+  "version": "0.1.0",
+  "build": "tree:abc",
+  "online": true,
+  "since_ms": 1791800000000,
+  "clients": [
+   {
+    "client": "claude-code",
+    "cli": {
+     "path": "/Users/you/.local/bin/claude",
+     "version": "2.1.267"
+    },
+    "extensions": [
+     {
+      "editor": "vscode",
+      "version": "2.1.296"
+     }
+    ],
+    "home": "/Users/you/.claude"
+   },
+   {
+    "client": "kimi-code",
+    "cli": {
+     "path": "/Users/you/.kimi-code/bin/kimi",
+     "version": "2.1.1"
+    },
+    "extensions": [
+     {
+      "editor": "vscode",
+      "version": "0.8.1"
+     }
+    ],
+    "home": "/Users/you/.kimi-code"
+   },
+   {
+    "client": "codex",
+    "cli": null,
+    "extensions": [
+     {
+      "editor": "cursor",
+      "version": "26.1007.21434"
+     }
+    ],
+    "home": "/Users/you/.codex"
+   },
+   {
+    "client": "opencode",
+    "cli": {
+     "path": "/usr/local/bin/opencode",
+     "version": null
+    },
+    "extensions": [],
+    "home": null
+   }
+  ]
+ },
+ {
+  "id": "m-win",
+  "label": "desk-pc",
+  "platform": "windows",
+  "version": "0.1.0",
+  "build": "tree:abc",
+  "online": true,
+  "since_ms": 1791800000000,
+  "clients": []
+ },
+ {
+  "id": "m-old",
+  "label": "old-laptop",
+  "platform": "linux",
+  "version": "0.1.0",
+  "build": "tree:abc",
+  "online": false,
+  "since_ms": 1791700000000,
+  "clients": [
+   {
+    "client": "kimi-code",
+    "cli": {
+     "path": "/home/you/.kimi-code/bin/kimi",
+     "version": "2.1.0"
+    },
+    "extensions": [],
+    "home": "/home/you/.kimi-code"
+   }
+  ]
+ }
+]

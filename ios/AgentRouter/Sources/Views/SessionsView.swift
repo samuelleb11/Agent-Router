@@ -11,6 +11,7 @@ struct SessionsView: View {
     @State private var notice: String?
     /// Said when the chosen machine left the list and the list went back to All.
     @State private var tabNotice: String?
+    @State private var starting = false
 
     var body: some View {
         let all = SessionGroups.byMachine(state.sessions)
@@ -96,6 +97,13 @@ struct SessionsView: View {
             }
         }
         .navigationTitle("Sessions")
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button(SessionStart.title, systemImage: "plus") { starting = true }
+                    .accessibilityIdentifier("start-session")
+            }
+        }
+        .sheet(isPresented: $starting) { StartSessionSheet(state: state) }
         .overlay {
             if state.sessions.isEmpty {
                 if let why = state.sessionsFailure {
@@ -268,7 +276,10 @@ struct SessionRowView: View {
                 Text(session.label)
                     .lineLimit(2)
                 HStack(spacing: 5) {
-                    if let name = session.clientName { Text(name); Text("·") }
+                    if let name = session.clientName {
+                        if let p = session.markProvider { ProviderMark(provider: p, form: .words(name)) } else { Text(name) }
+                        Text("·")
+                    }
                     Text(session.shortId).monospaced()
                     if let b = session.gitBranch { Text("·"); Text(b) }
                     Text("·")

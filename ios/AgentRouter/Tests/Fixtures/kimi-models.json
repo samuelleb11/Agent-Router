@@ -1,0 +1,30 @@
+[
+ {
+  "id": "claude-opus-5-5",
+  "provider": "anthropic",
+  "display_name": "claude-opus-5-5",
+  "assigned": null,
+  "serving": "work"
+ },
+ {
+  "id": "k3",
+  "provider": "kimi",
+  "display_name": "Kimi K3",
+  "assigned": null,
+  "serving": "kimi-main"
+ },
+ {
+  "id": "kimi-for-coding",
+  "provider": "kimi",
+  "display_name": "Kimi for Coding",
+  "assigned": "kimi-main",
+  "serving": "kimi-main"
+ },
+ {
+  "id": "gpt-5.1-codex",
+  "provider": "openai",
+  "display_name": "GPT-5.1 Codex",
+  "assigned": null,
+  "serving": "openai-proj"
+ }
+]

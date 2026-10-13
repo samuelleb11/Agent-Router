@@ -23,9 +23,34 @@ struct MachineRow: Decodable, Sendable, Identifiable, Hashable {
     /// When it connected, while it is online, and when it went away once it is not: epoch
     /// milliseconds on the router's clock.
     let sinceMs: Int?
+    /// The clients its agent reported, Claude Code first; empty when it has not said
+    /// (src/clients.rs, `Client`).
+    let clients: [MachineClient]
 
     enum CodingKeys: String, CodingKey {
-        case id, label, platform, version, build, online, sinceMs = "since_ms"
+        case id, label, platform, version, build, online, clients, sinceMs = "since_ms"
+    }
+}
+
+/// One client a machine's agent reported: its command line, its extension in each editor that
+/// has it, and its home folder.
+struct MachineClient: Decodable, Sendable, Hashable {
+    /// `claude-code`, `kimi-code`, `codex`, `opencode`.
+    let client: String
+    let cli: CLI?
+    let extensions: [Extension]?
+    let home: String?
+
+    struct CLI: Decodable, Sendable, Hashable {
+        let path: String?
+        /// Nil when it did not answer in time.
+        let version: String?
+    }
+
+    struct Extension: Decodable, Sendable, Hashable {
+        /// The editor's folder name: `vscode`, `cursor`…
+        let editor: String?
+        let version: String?
     }
 }
 
@@ -42,6 +67,7 @@ extension MachineRow {
         build = c.lenient(String.self, .build)
         online = c.lenient(Bool.self, .online) ?? false
         sinceMs = c.lenient(Int.self, .sinceMs)
+        clients = c.lenient([MachineClient].self, .clients) ?? []
     }
 }
 
@@ -114,6 +140,8 @@ enum Machines {
         /// Whether it runs the router's own build, and the words for it; nil until the
         /// router's build is known, or when the machine did not say its own (MA-C4).
         let build: Build?
+        /// Its clients, one line each, in the order its agent reported them (MA-C8).
+        let clients: [ClientItem]
 
         /// Online is drawn as a session at work is, offline as one that has ended.
         var look: StateLook {
@@ -126,6 +154,43 @@ enum Machines {
     struct Build: Equatable, Sendable {
         let same: Bool
         let text: String
+    }
+
+    /// One client of a machine, as the screen lists it (MA-C8).
+    struct ClientItem: Equatable, Sendable, Identifiable {
+        /// Its id as the agent sent it: `claude-code`, `kimi-code`.
+        let client: String
+        /// "Claude Code", "Kimi Code".
+        let name: String
+        /// Its command line's version, each editor's extension, and whether its home folder is there.
+        let parts: [String]
+        var id: String { client }
+        /// "Claude Code: CLI 2.1.267 · VS Code 2.1.296 · home folder".
+        var line: String { "\(name): " + parts.joined(separator: " · ") }
+    }
+
+    /// What a machine that reported no client says (MA-C10).
+    static let noClients = "Its agent has reported no Claude Code, Kimi Code or Codex."
+
+    /// An editor by its name, from the folder name the agent sends (src/clients.rs, `EDITORS`);
+    /// one the console does not know, as sent (MA-C8).
+    static func editorName(_ editor: String?) -> String {
+        let e = editor?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return ["vscode": "VS Code", "vscode-insiders": "VS Code Insiders", "vscode-server": "VS Code Server",
+                "cursor": "Cursor", "windsurf": "Windsurf", "vscodium": "VSCodium"][e] ?? e
+    }
+
+    /// A client's parts in words: "CLI 2.1.267", "CLI, version not read" or "no CLI"; each
+    /// editor's extension, "VS Code 2.1.296", or "no editor extension"; "home folder" or
+    /// "no home folder" (MA-C8).
+    static func clientParts(_ c: MachineClient) -> [String] {
+        let cli = c.cli.map { $0.version.map { "CLI \($0)" } ?? "CLI, version not read" } ?? "no CLI"
+        let extensions = (c.extensions ?? []).map { x in [editorName(x.editor), x.version ?? ""].filter { !$0.isEmpty }.joined(separator: " ") }
+        return [cli] + (extensions.isEmpty ? ["no editor extension"] : extensions) + [c.home != nil ? "home folder" : "no home folder"]
+    }
+
+    static func clientItems(_ m: MachineRow) -> [ClientItem] {
+        m.clients.map { ClientItem(client: $0.client, name: SessionClient.productName($0.client), parts: clientParts($0)) }
     }
 
     /// A platform in the reader's words — macOS, Linux, Windows — and one this build does
@@ -169,7 +234,8 @@ enum Machines {
                         platform: platform(m.platform),
                         online: m.online,
                         presence: presence(online: m.online, sinceMs: m.sinceMs, now: now),
-                        build: build(m.build, router: routerBuild))
+                        build: build(m.build, router: routerBuild),
+                        clients: clientItems(m))
         }
         .sorted { a, b in
             if a.online != b.online { return a.online }

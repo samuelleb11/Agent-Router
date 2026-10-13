@@ -239,7 +239,7 @@ final class LiveFeed {
     /// — the choices are still worth sending as a message, and saying so beats losing what
     /// was picked.
     func answer(_ answers: [String: String], questions: [String], fallback: [String], row id: UUID) async {
-        if let why = session.watchedReason { notice = Notice(text: why, ok: false); return }
+        if let why = session.controls.question { notice = Notice(text: why, ok: false); return }
         guard let client else { return }
         // What is waiting now, not what the last poll saw up to two seconds ago: a form
         // stays on screen after its question was answered in the editor, and the model may
@@ -316,7 +316,7 @@ final class LiveFeed {
     /// side question and never as queued. A refusal leaves it as it was asked, with no answer
     /// under it; the router's words are the notice.
     func aside(_ raw: String) async {
-        if let why = session.watchedReason { notice = Notice(text: why, ok: false); return }
+        if let why = session.controls.aside { notice = Notice(text: why, ok: false); return }
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, let client else { return }
         switching = true
@@ -403,7 +403,7 @@ final class LiveFeed {
     }
 
     func setEffort(_ level: String) async {
-        if let why = session.watchedReason { notice = Notice(text: why, ok: false); return }
+        if let why = session.controls.effort { notice = Notice(text: why, ok: false); return }
         guard let client else { return }
         switching = true
         defer { switching = false }

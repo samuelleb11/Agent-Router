@@ -450,18 +450,6 @@ struct LiveSession: Decodable, Sendable, Identifiable, Hashable {
 
     var id: String { sessionId }
     var shortId: String { String((sessionId.hasPrefix("codex:") ? String(sessionId.dropFirst(6)) : sessionId).prefix(8)) }
-    var isCodex: Bool { client == "codex" || sessionId.hasPrefix("codex:") }
-    var canControl: Bool { !isCodex && wrapped }
-    var canSend: Bool { !isCodex }
-    var canAskAside: Bool { !isCodex }
-    var clientName: String? {
-        if isCodex { return "Codex" }
-        if client == "kimi-code" { return "Kimi Code" }
-        return nil
-    }
-    var watchedReason: String? {
-        isCodex ? "This Codex session is watched from its local transcript. Send messages and answer approvals in the terminal or IDE that owns it." : nil
-    }
     /// The repository's last segment when the row names one, so a repository's clones and
     /// worktrees on one machine are one project; else the last segment of the working
     /// directory, a Windows path's included; else the router's own name for the project

@@ -148,6 +148,17 @@ private struct MachineRowView: View {
                         .font(.caption)
                         .foregroundStyle(b.same ? Color.secondary : Color.orange)
                 }
+                if item.clients.isEmpty {
+                    Text(Machines.noClients)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(item.clients) { c in
+                        Text(c.line)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
         }
         .padding(.vertical, 2)

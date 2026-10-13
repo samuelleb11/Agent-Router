@@ -33,6 +33,37 @@ final class TourUITests: XCTestCase {
             shoot(app, String(format: "%02d router, further down", i))
         }
 
+        // The live sessions, a Kimi Code one when the list has one, and the start form.
+        let live = any.matching(identifier: "live-sessions").firstMatch
+        for _ in 0..<6 where !live.isHittable { app.swipeDown() }
+        live.tap()
+        XCTAssertTrue(any.matching(identifier: "session-row").firstMatch.waitForExistence(timeout: 20), "no session listed")
+        shoot(app, "15 sessions")
+        let kimi = app.buttons.matching(NSPredicate(format: "label CONTAINS 'Kimi Code'")).firstMatch
+        if kimi.waitForExistence(timeout: 3) {
+            kimi.tap()
+            sleep(4)
+            shoot(app, "16 a Kimi Code session")
+            app.navigationBars.buttons.firstMatch.tap()
+        }
+        let start = any.matching(identifier: "start-session").firstMatch
+        if start.waitForExistence(timeout: 5) {
+            start.tap()
+            sleep(4)
+            shoot(app, "17 start a session")
+            app.buttons["Cancel"].firstMatch.tap()
+        }
+        app.navigationBars.buttons.firstMatch.tap()
+        let machines = any.matching(identifier: "machines").firstMatch
+        if machines.waitForExistence(timeout: 5) {
+            machines.tap()
+            sleep(4)
+            shoot(app, "18 machines")
+            app.swipeUp()
+            shoot(app, "19 machines, further down")
+            app.navigationBars.buttons.firstMatch.tap()
+        }
+
         let usage = any.matching(identifier: "usage").firstMatch
         for _ in 0..<6 where !usage.isHittable { app.swipeDown() }
         usage.tap()

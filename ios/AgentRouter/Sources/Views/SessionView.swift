@@ -95,13 +95,14 @@ struct SessionView: View {
                         } label: {
                             Label("Effort" + (feed.stats?.effort.map { " · \($0)" } ?? ""), systemImage: "gauge.with.needle")
                         }
-                        .disabled(!session.canControl || feed.switching)
+                        .disabled(!session.canControl || session.controls.effort != nil || feed.switching)
                         Menu {
-                            ForEach(opts?.modes ?? [], id: \.self) { m in
+                            // A Kimi Code session's own modes in place of Claude Code's.
+                            ForEach(session.controls.modes ?? opts?.modes ?? [], id: \.self) { m in
                                 Button {
                                     // One tap would otherwise stop this session asking
                                     // about anything, on a Mac nobody may be sitting at.
-                                    if m.isBypass { confirmBypass = true } else { Task { await feed.setMode(m.value) } }
+                                    if m.value == session.controls.bypass { confirmBypass = true } else { Task { await feed.setMode(m.value) } }
                                 } label: {
                                     if m.value == feed.stats?.mode { Label(m.label, systemImage: "checkmark") } else { Text(m.label) }
                                 }
@@ -112,6 +113,9 @@ struct SessionView: View {
                         .disabled(!session.canControl || feed.switching)
                         if !session.canControl {
                             Text(session.watchedReason ?? "Read-only session: model, effort and mode cannot be changed from here.")
+                        } else {
+                            // What this client never takes from here, in the router's words.
+                            ForEach([session.controls.effort, session.controls.aside].compactMap { $0 }, id: \.self) { Text($0) }
                         }
                         Button("Ask on the side…", systemImage: "text.bubble") { asideText = draft; askAside = true }
                             .disabled(!session.canAskAside || feed.switching)
@@ -165,9 +169,12 @@ struct SessionView: View {
             _ = await prompts
             _ = await list
         }
-        .alert("Bypass permissions?", isPresented: $confirmBypass) {
+        .alert(session.controls.bypass == SessionClient.kimiYolo ? "Turn on YOLO?" : "Bypass permissions?", isPresented: $confirmBypass) {
             Button("Cancel", role: .cancel) {}
-            Button("Bypass", role: .destructive) { Task { await feed?.setMode("bypassPermissions") } }
+            Button(session.controls.bypass == SessionClient.kimiYolo ? "YOLO" : "Bypass", role: .destructive) {
+                let mode = session.controls.bypass
+                Task { await feed?.setMode(mode) }
+            }
         } message: {
             Text("This session will stop asking before it runs commands or edits files.")
         }
@@ -197,7 +204,7 @@ struct SessionView: View {
     /// The mode in force, in the router's wording rather than the CLI's identifier.
     private var modeLabel: String? {
         guard let value = feed?.stats?.mode else { return nil }
-        return feed?.options?.modes?.first(where: { $0.value == value })?.label ?? value
+        return (session.controls.modes ?? feed?.options?.modes)?.first(where: { $0.value == value })?.label ?? value
     }
 
     /// Every session of this project that is current, plus this one — creation order,
@@ -225,7 +232,10 @@ struct SessionView: View {
     @ViewBuilder private func content(_ feed: LiveFeed) -> some View {
         VStack(spacing: 0) {
             if let client = session.clientName {
-                Text(client).font(.caption).foregroundStyle(.secondary).padding(.top, 6)
+                Group {
+                    if let p = session.markProvider { ProviderMark(provider: p, form: .words(client)) } else { Text(client) }
+                }
+                .font(.caption).foregroundStyle(.secondary).padding(.top, 6)
             }
             if let why = session.watchedReason {
                 Text(why).font(.caption).foregroundStyle(.secondary).padding(8)
@@ -258,7 +268,7 @@ struct SessionView: View {
                 .background(.bar)
                 .accessibilityLabel("Sessions in this project")
             }
-            if let t = feed.stats { FactsStrip(stats: t, project: feed.project, modes: feed.options?.modes) }
+            if let t = feed.stats { FactsStrip(stats: t, project: feed.project, modes: session.controls.modes ?? feed.options?.modes) }
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 10) {
