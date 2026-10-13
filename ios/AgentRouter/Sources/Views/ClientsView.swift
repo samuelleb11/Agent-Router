@@ -1,7 +1,8 @@
 import SwiftUI
 
 /// Settings → Clients: each coding client this router can configure, and the form that previews,
-/// checks, applies or restores its configuration, or shares it to install elsewhere.
+/// checks, applies or restores its configuration, or shares it to install elsewhere. On a hosted
+/// router, a connected machine can be chosen, whose Claude Code and Codex are set up there.
 struct ClientsView: View {
     let state: RouterState
     @State private var model: ClientSetupState?
@@ -15,42 +16,66 @@ struct ClientsView: View {
             }
             .font(.footnote)
             if let f = model?.failure { Section { Label(f, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange) } }
-            if let setup = model?.setup, let model {
+            if let model, model.setup?.mode == "server" {
+                Section {
+                    Picker("Machine", selection: Binding(get: { model.machine }, set: { id in Task { await model.choose(id) } })) {
+                        Text("None — export").tag(String?.none)
+                        ForEach(model.machines) { Text("\($0.label) · \($0.platform)").tag(Optional($0.id)) }
+                    }
+                    if let f = model.thereFailure { Label(f, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange).font(.footnote) }
+                } footer: {
+                    Text(model.machines.isEmpty ? "No machine is connected to this router now." : ClientSetup.machineNote)
+                }
+            }
+            if let model, let setup = shown(model) {
                 if setup.clients.isEmpty {
                     Section { Text("No supported clients were reported by this router.").foregroundStyle(.secondary) }
                 } else {
                     let client = setup.clients.first { $0.id == chosen } ?? setup.clients[0]
+                    let label = model.machine.map(model.label)
                     Section {
                         Picker("Client", selection: Binding(get: { client.id }, set: { chosen = $0 })) {
                             ForEach(setup.clients) { Text($0.name).tag($0.id) }
                         }
                         .pickerStyle(.segmented)
                         LabeledContent("Status", value: ClientSetup.status(client))
-                        LabeledContent("Installation", value: ClientSetup.installation(client, hosted: setup.mode == "server"))
+                        LabeledContent("Installation", value: ClientSetup.installation(client, hosted: setup.mode == "server", machine: label))
                         if let p = client.configPath { LabeledContent("Configuration", value: p).font(.caption) }
                     }
-                    ConfigureClientSections(model: model, setup: setup, client: client)
-                        .id(client.id)
+                    ConfigureClientSections(model: model, setup: setup, client: client,
+                                            machine: client.canApply ? model.machine.map { (id: $0, label: model.label($0)) } : nil)
+                        .id("\(client.id):\(model.machine ?? "")")
                 }
+            } else if model?.machine != nil, model?.thereFailure == nil {
+                Section { ProgressView("Reading the machine’s clients…") }
             }
         }
         .navigationTitle("Clients")
         .overlay { if model?.setup == nil, model?.failure == nil { ProgressView() } }
         .refreshable { await model?.load() }
+        .animation(.default, value: model?.machine)
         .task {
             let m = ClientSetupState(router: state)
             model = m
             await m.load()
         }
     }
+
+    /// What the page is about: the router's own reading, else the chosen machine's once it is in.
+    private func shown(_ model: ClientSetupState) -> ClientSetupReply? {
+        guard let id = model.machine else { return model.setup }
+        return model.there?.machine == id ? model.there : nil
+    }
 }
 
 /// The form for one client. Its token and the files it makes stay in this view's state only:
-/// leaving the page or choosing another client clears them.
+/// leaving the page or choosing another client clears them. With `machine`, every request names
+/// the hosted router's chosen machine, whose agent reads and writes this client's settings.
 private struct ConfigureClientSections: View {
     let model: ClientSetupState
     let setup: ClientSetupReply
     let client: SetupClient
+    let machine: (id: String, label: String)?
     @State private var chosenModel = ""
     @State private var url = ""
     @State private var token = ""
@@ -62,6 +87,8 @@ private struct ConfigureClientSections: View {
     @State private var confirm: String?
 
     private var local: Bool { setup.mode == "local" }
+    /// Where Apply and Restore write: this router's machine, else the chosen one.
+    private var writes: Bool { local || machine != nil }
     private var selected: SetupModel? { setup.models.first { $0.id == chosenModel } }
     private var ready: Bool { selected?.available == true && !url.trimmingCharacters(in: .whitespaces).isEmpty }
     private var input: ClientInput { ClientSetup.input(model: chosenModel, url: url, token: token, project: project) }
@@ -102,14 +129,14 @@ private struct ConfigureClientSections: View {
         Section {
             Button("Preview configuration") { Task { await run("preview") } }.disabled(busy || !ready)
             Button("Check connection") { Task { await run("check") } }.disabled(busy || !ready)
-            if ClientSetup.offersRestore(local: local, client: client, project: project) {
+            if ClientSetup.offersRestore(writes: writes, client: client, project: project) {
                 Button("Restore previous configuration", role: .destructive) { confirm = "restore" }.disabled(busy)
             }
             if let message { Text(message.text).font(.footnote).foregroundStyle(message.ok ? Color.secondary : Color.red) }
         } footer: {
             Text(ClientSetup.checkNote)
         }
-        .confirmationDialog(confirm == "apply" ? "Apply \(client.name) configuration?" : "Restore \(client.name) configuration?",
+        .confirmationDialog(confirm == "apply" ? "Apply \(client.name) configuration\(at)?" : "Restore \(client.name) configuration\(at)?",
                             isPresented: Binding(get: { confirm != nil }, set: { if !$0 { confirm = nil } }), titleVisibility: .visible) {
             Button(confirm == "apply" ? "Apply configuration" : "Restore configuration") {
                 let act = confirm
@@ -137,14 +164,14 @@ private struct ConfigureClientSections: View {
                 if let catalogue = preview.catalogueContent, let file = Self.file(ClientSetup.catalogueFilename, catalogue) {
                     ShareLink(item: file) { Label("Share the Codex model catalogue", systemImage: "square.and.arrow.up") }
                 }
-                if ClientSetup.offersApply(local: local, client: client, preview: preview) {
+                if ClientSetup.offersApply(writes: writes, client: client, preview: preview) {
                     Button("Apply configuration") { confirm = "apply" }.disabled(busy)
                 }
                 Button("Clear preview and token") { self.preview = nil; token = "" }
             } header: {
                 Text("Configuration")
             } footer: {
-                Text((preview.path.map { "Settings to add to \($0). Applying merges them into your existing configuration. " } ?? "Merge these settings into \(client.name)’s configuration on the machine running the client. ")
+                Text((preview.path.map { "Settings to add to \($0)\(at). Applying merges them into your existing configuration. " } ?? "Merge these settings into \(client.name)’s configuration on the machine running the client. ")
                      + (token.isEmpty ? "If this client runs on another machine, replace the token placeholder with a Client access token." : "This configuration contains your router access token. Save it as a private client configuration."))
             }
         }
@@ -152,11 +179,14 @@ private struct ConfigureClientSections: View {
 
     private func reset() { preview = nil; checks = nil; message = nil }
 
+    /// " on studio", for a chosen machine.
+    private var at: String { machine.map { " on \($0.label)" } ?? "" }
+
     private func run(_ act: String) async {
         busy = true
         defer { busy = false }
         message = nil
-        switch await model.run(act, client: client.id, input: input) {
+        switch await model.run(act, client: client.id, input: input, machine: machine?.id) {
         case .success(let p):
             checks = p.checks
             if act == "preview" { preview = p }
@@ -169,8 +199,8 @@ private struct ConfigureClientSections: View {
         guard let preview else { return }
         busy = true
         defer { busy = false }
-        switch await model.apply(client: client.id, input: ClientSetup.input(model: chosenModel, url: url, token: token, project: project, revision: preview.revision)) {
-        case .success(let a): message = (ClientSetup.appliedWords(a, name: client.name), true); await model.load()
+        switch await model.apply(client: client.id, input: ClientSetup.input(model: chosenModel, url: url, token: token, project: project, revision: preview.revision), machine: machine?.id) {
+        case .success(let a): message = (ClientSetup.appliedWords(a, name: client.name, machine: machine?.label), true); await model.load()
         case .failure(let e): message = (e.errorDescription ?? "Refused", false)
         }
     }
@@ -178,7 +208,7 @@ private struct ConfigureClientSections: View {
     private func restore() async {
         busy = true
         defer { busy = false }
-        switch await model.restore(client: client.id, project: project) {
+        switch await model.restore(client: client.id, project: project, machine: machine?.id) {
         case .success(let r): message = (ClientSetup.restoredWords(r), true); self.preview = nil; await model.load()
         case .failure(let e): message = (e.errorDescription ?? "Refused", false)
         }
