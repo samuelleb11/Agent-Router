@@ -353,6 +353,7 @@ export function identityNote(account: Pick<Account, 'source'>, auth: Auth | null
   if (account.source === 'codex') return isHosted(auth)
     ? 'Codex’s own login, from the machine this store was copied from. A hosted router cannot sign with it.'
     : 'Identity is read from the Codex login on this machine, so it cannot be set by hand.';
+  if (account.source === 'chatgpt') return 'The email the ChatGPT login signed in with, read from it when it was added.';
   if (account.source !== 'keychain') {
     return 'A long-lived token cannot report which account it belongs to, so setting the identity here is what labels this account’s traffic in the charts.';
   }

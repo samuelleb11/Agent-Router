@@ -9,12 +9,15 @@ enum ChatGPTLogin {
     static let source = "chatgpt"
 
     /// How to extract a login of the router's own, so it never shares a session with the
-    /// machine's Codex.
+    /// machine's Codex. `CODEX_HOME` is exported, so the shell still names the folder when the
+    /// login is printed and deleted.
+    static let signIn = #"export CODEX_HOME=$(mktemp -d) && codex login -c cli_auth_credentials_store=file && cat "$CODEX_HOME/auth.json""#
+    static let cleanUp = #"rm -rf "$CODEX_HOME" && unset CODEX_HOME"#
     static let steps = [
-        "On a machine with Codex, run:",
-        "CODEX_HOME=$(mktemp -d) codex login -c cli_auth_credentials_store=file",
-        "Sign in with ChatGPT, then paste the contents of $CODEX_HOME/auth.json here.",
-        "Delete that folder afterwards.",
+        "On a machine with Codex, run this and sign in with ChatGPT:",
+        signIn,
+        "Paste what it prints — that folder’s auth.json — here, then delete the folder:",
+        cleanUp,
     ]
 
     /// What the row says of an account added this way.

@@ -193,13 +193,17 @@ export type NewAccount =
   | { readonly source: 'token'; readonly token: string }
   | { readonly source: 'kimi'; readonly token: string; readonly base_url?: string }
   | { readonly source: 'openai'; readonly token: string; readonly base_url?: string }
+  | { readonly source: 'chatgpt'; readonly token: string }
   | { readonly source: 'profile' };
 
 /// An Anthropic token goes as it always did, naming no provider; a Kimi Code key is a token account
-/// of the provider `kimi`, its base URL sent only when one was typed (ST-C117).
+/// of the provider `kimi`, its base URL sent only when one was typed (ST-C117). A ChatGPT login is an
+/// OpenAI account whose credential is Codex's whole auth.json, trimmed, and which goes to ChatGPT's
+/// own backend, so it carries no base URL.
 export function addAccount(label: string, how: NewAccount) {
   if (how.source === 'profile') return postJson<Added>('/api/accounts', { label, source: 'profile' });
   if (how.source === 'token') return postJson<Added>('/api/accounts', { label, source: 'token', token: how.token });
+  if (how.source === 'chatgpt') return postJson<Added>('/api/accounts', { label, source: 'chatgpt', provider: 'openai', token: how.token.trim() });
   const baseUrl = how.base_url?.trim();
   return postJson<Added>('/api/accounts', { label, source: 'token', provider: how.source, token: how.token, ...(baseUrl ? { base_url: baseUrl } : {}) });
 }

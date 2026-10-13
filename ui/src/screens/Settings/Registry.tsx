@@ -166,7 +166,7 @@ function ModelEditor({ initial, registry, accounts, hosted, onClose, onSaved }: 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const service = registry.services.find((s) => s.id === serviceId);
-  const eligible = accounts.filter((a) => providerOf(a) === service?.provider && ((!hosted && service?.builtin) || a.source === 'token'));
+  const eligible = accounts.filter((a) => providerOf(a) === service?.provider && ((service?.builtin && (!hosted || a.source === 'chatgpt')) || a.source === 'token'));
   const nameValid = (value: string) => /^[a-zA-Z0-9_.:/-]{1,200}$/.test(value);
   const duplicate = !initial && registry.models.some((m) => m.alias === alias);
   const ready = !!service && nameValid(alias) && !duplicate && nameValid(upstream) && eligible.some((a) => a.id === accountId) && (!overrides || validCapabilities(capabilities));

@@ -4,9 +4,10 @@
 // choice that carries its explanation, or, when the router offers one way only, that way's field
 // with its explanation; Kimi Code goes straight to its key. The sign-in link and the profile command
 // sit in code snippets with a copy button that says when copying failed; nothing opens a window by
-// itself.
+// itself. OpenAI offers its API key, and a ChatGPT login (Codex) pasted whole, with the written steps
+// that extract one of the router's own (AGEN-0193).
 import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
-import { Button, CodeSnippet, Form, InlineLoading, PasswordInput, RadioTile, TextInput, Tile, TileGroup } from '@carbon/react';
+import { Button, CodeSnippet, Form, InlineLoading, ListItem, OrderedList, PasswordInput, RadioTile, TextArea, TextInput, Tile, TileGroup } from '@carbon/react';
 import { keys } from '~/app/query';
 import { CopyButton } from '~/components/CopyButton';
 import { ProviderMark } from '~/components/ProviderMark';
@@ -15,7 +16,12 @@ import { accountSources, ADD_PROVIDERS, addForm, KIMI_BASE_URL, OPENAI_BASE_URL,
 import {
   accountId,
   baseUrlProblem,
+  CHATGPT_CLEAN_UP,
+  CHATGPT_REFRESHED,
+  CHATGPT_SIGN_IN,
+  chatgptLoginProblem,
   keyProblem,
+  LOGIN_NEEDED,
   looksLikeEmail,
   nameProblem,
   PROFILE_POLL_MS,
@@ -37,7 +43,17 @@ type Parts = readonly (string | { readonly code: string } | { readonly b: string
 const PROVIDER: Readonly<Record<AddProvider, Parts>> = {
   anthropic: ['Claude’s models, signed by an Anthropic API key or a Claude subscription.'],
   kimi: ['Kimi’s models (', { code: 'k3' }, ', ', { code: 'kimi-for-coding' }, '), signed by a key from the Kimi Code console.'],
-  openai: ['OpenAI’s models, signed by an OpenAI API key. On a local router, the Codex login is discovered automatically.'],
+  openai: ['OpenAI’s models, signed by an OpenAI API key, or by a ChatGPT login that serves Codex only. On a local router, the Codex login is discovered automatically.'],
+};
+
+/// OpenAI's ways in: its API key, or a ChatGPT plan's login pasted from a Codex sign-in.
+type OpenaiWay = 'key' | 'chatgpt';
+const OPENAI_WAY: Readonly<Record<OpenaiWay, { readonly title: string; readonly body: Parts }>> = {
+  key: { title: 'API key', body: ['A key made in your OpenAI API project, ', { code: 'sk-proj-…' }, ', billed by the request. It signs every client.'] },
+  chatgpt: {
+    title: 'ChatGPT login (Codex)',
+    body: ['A ChatGPT plan’s sign-in, made in Codex for the router and pasted here. It ', { b: 'serves Codex only' }, ', and the router keeps it refreshed.'],
+  },
 };
 
 /// Each of Anthropic's ways in, as its choice says it (ST-C40, ST-C43).
@@ -151,6 +167,10 @@ export function AddAccount({ auth, accounts, onDone, onClose }: { auth: Auth | n
   const [provider, setProvider] = useState<AddProvider>(ADD_PROVIDERS[0]);
   const kimi = provider === 'kimi';
   const keyed = provider !== 'anthropic';
+  const [openaiWay, setOpenaiWay] = useState<OpenaiWay>('key');
+  // A ChatGPT login is its own field: a key typed for OpenAI is not one.
+  const chatgpt = provider === 'openai' && openaiWay === 'chatgpt';
+  const [login, setLogin] = useState('');
   const defaultBase = kimi ? KIMI_BASE_URL : OPENAI_BASE_URL;
   const sources = accountSources(auth);
   const offered = sources.join(',');
@@ -181,8 +201,11 @@ export function AddAccount({ auth, accounts, onDone, onClose }: { auth: Auth | n
   const showName = (label.trim() !== '' || tried) && !!nameIssue;
   // Each provider's key by its own rule: `sk-ant-` is Anthropic's alone (ST-C118).
   const tokenIssue = way === 'token' ? (token.trim() === '' ? TOKEN_NEEDED : tokenProblem(token)) : null;
-  const keyIssue = keyed ? (key.trim() === '' ? TOKEN_NEEDED : keyProblem(provider, key)) : null;
-  const urlIssue = keyed ? baseUrlProblem(baseUrl) : null;
+  const keyIssue = keyed && !chatgpt ? (key.trim() === '' ? TOKEN_NEEDED : keyProblem(provider, key)) : null;
+  // The paste is checked as a ChatGPT sign-in before it is sent, by the router's own rule.
+  const loginIssue = chatgpt ? (login.trim() === '' ? LOGIN_NEEDED : chatgptLoginProblem(login)) : null;
+  // A ChatGPT login goes to ChatGPT's own backend, so it has no base URL.
+  const urlIssue = keyed && !chatgpt ? baseUrlProblem(baseUrl) : null;
   const id = accountId(label);
 
   const finish = (said: string) => {
@@ -203,11 +226,15 @@ export function AddAccount({ auth, accounts, onDone, onClose }: { auth: Auth | n
   const submit = async (e?: FormEvent) => {
     e?.preventDefault();
     setTried(true);
-    if (busy || nameIssue || tokenIssue || keyIssue || urlIssue) return;
+    if (busy || nameIssue || tokenIssue || keyIssue || loginIssue || urlIssue) return;
     setBusy(true);
     setError(null);
     try {
-      if (way === null) {
+      if (chatgpt) {
+        await addAccount(label, { source: 'chatgpt', token: login });
+        setLogin('');
+        finish(`Added ${label.trim()}.`);
+      } else if (way === null) {
         // Sent as it always was (ST-C117).
         await addAccount(label, { source: kimi ? 'kimi' : 'openai', token: key, base_url: baseUrl });
         setKey('');
@@ -276,6 +303,19 @@ export function AddAccount({ auth, accounts, onDone, onClose }: { auth: Auth | n
           </TileGroup>
         ) : null}
 
+        {provider === 'openai' ? (
+          <TileGroup legend="How to add it" name={`${groupName}-openai-way`} valueSelected={openaiWay} onChange={(v) => setOpenaiWay(v as OpenaiWay)} className={styles.choices}>
+            {(['key', 'chatgpt'] as const).map((w) => (
+              <RadioTile key={w} id={`${groupName}-openai-way-${w}`} value={w} className={styles.choice}>
+                <span className={styles.choiceTitle}>{OPENAI_WAY[w].title}</span>
+                <span className={styles.choiceBody}>
+                  <Body parts={OPENAI_WAY[w].body} />
+                </span>
+              </RadioTile>
+            ))}
+          </TileGroup>
+        ) : null}
+
         <TextInput
           id={`${groupName}-name-field`}
           labelText="Name"
@@ -286,7 +326,9 @@ export function AddAccount({ auth, accounts, onDone, onClose }: { auth: Auth | n
           invalid={showName}
           invalidText={nameIssue ?? undefined}
           helperText={
-            (keyed || way === 'token') && looksLikeEmail(label)
+            chatgpt
+              ? `${id ? `Its id will be “${id}”. ` : ''}Its identity is the email the login signed in with.`
+              : (keyed || way === 'token') && looksLikeEmail(label)
               ? 'This name is an email address, so it becomes the account’s identity: a long-lived token cannot report which account it belongs to.'
               : id
                 ? `Its id will be “${id}”.`
@@ -310,7 +352,27 @@ export function AddAccount({ auth, accounts, onDone, onClose }: { auth: Auth | n
           />
         ) : null}
 
-        {keyed ? (
+        {chatgpt ? (
+          <>
+            <ChatGPTSteps />
+            <TextArea
+              id={`${groupName}-login-field`}
+              labelText="ChatGPT login (Codex’s auth.json)"
+              rows={6}
+              spellCheck={false}
+              autoComplete="off"
+              className={styles.secretBox}
+              placeholder='{"auth_mode": "chatgpt", "tokens": { … } }'
+              value={login}
+              onChange={(e) => setLogin(e.target.value)}
+              invalid={(tried || login.trim() !== '') && !!loginIssue}
+              invalidText={loginIssue ?? undefined}
+              helperText={CHATGPT_REFRESHED}
+            />
+          </>
+        ) : null}
+
+        {keyed && !chatgpt ? (
           <>
             <PasswordInput
               id={`${groupName}-key-field`}
@@ -357,7 +419,7 @@ export function AddAccount({ auth, accounts, onDone, onClose }: { auth: Auth | n
         <div className={styles.actions}>
           {!signing && !profile ? (
             <Button type="submit" kind="primary" size="md" disabled={busy}>
-              {kimi ? 'Add account' : form.save}
+              {kimi || chatgpt ? 'Add account' : form.save}
             </Button>
           ) : null}
           <Button kind="secondary" size="md" onClick={onClose} disabled={busy}>
@@ -367,6 +429,45 @@ export function AddAccount({ auth, accounts, onDone, onClose }: { auth: Auth | n
         <Outcome busy={busy} busyText={way === 'signin' ? 'Starting…' : 'Adding…'} error={error} />
       </Form>
     </Tile>
+  );
+}
+
+/// How to extract a ChatGPT login for the router, each command whole with a copy button: a sign-in
+/// of the router's own, so it never shares a session with the machine's Codex.
+export function ChatGPTSteps() {
+  return (
+    <OrderedList aria-label="How to extract a ChatGPT login">
+      <ListItem>
+        <div className={styles.flow}>
+          <Explain>
+            On any machine with Codex, run this in a terminal and sign in with ChatGPT. It is a sign-in of its own, in a folder of its own, so the router
+            never shares a session with that machine’s Codex:
+          </Explain>
+          <CodeSnippet type="multi" wrapText hideCopyButton className={styles.snippet} aria-label="The command that signs in">
+            {CHATGPT_SIGN_IN}
+          </CodeSnippet>
+          <div className={styles.actions}>
+            <CopyButton text={CHATGPT_SIGN_IN} label="Copy sign-in command" what="the command" />
+          </div>
+        </div>
+      </ListItem>
+      <ListItem>
+        <Explain>
+          Paste what it printed — that folder’s <code>auth.json</code> — below.
+        </Explain>
+      </ListItem>
+      <ListItem>
+        <div className={styles.flow}>
+          <Explain>Then delete the folder, which holds the login too:</Explain>
+          <CodeSnippet type="multi" wrapText hideCopyButton className={styles.snippet} aria-label="The command that deletes the folder">
+            {CHATGPT_CLEAN_UP}
+          </CodeSnippet>
+          <div className={styles.actions}>
+            <CopyButton text={CHATGPT_CLEAN_UP} label="Copy clean-up command" what="the command" />
+          </div>
+        </div>
+      </ListItem>
+    </OrderedList>
   );
 }
 

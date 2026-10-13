@@ -17,8 +17,9 @@ pub const TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
 /// days; an hour leaves room for a router that was not asked anything for a while.
 pub const RENEW_WITHIN_SECS: i64 = 3600;
 
-/// The steps the dashboard and the phones show to extract a login for the router.
-pub const EXTRACT: &str = "On a machine with Codex, run `CODEX_HOME=$(mktemp -d) codex login -c cli_auth_credentials_store=file`, sign in with ChatGPT, paste the contents of `$CODEX_HOME/auth.json`, then delete that folder.";
+/// The steps the dashboard and the phones show to extract a login for the router. `CODEX_HOME` is
+/// exported, so the shell still names the folder when the login is printed and deleted.
+pub const EXTRACT: &str = "On a machine with Codex, run `export CODEX_HOME=$(mktemp -d) && codex login -c cli_auth_credentials_store=file && cat \"$CODEX_HOME/auth.json\"`, sign in with ChatGPT and paste what it prints, then delete the folder with `rm -rf \"$CODEX_HOME\" && unset CODEX_HOME`.";
 
 /// Why a pasted text is not a ChatGPT sign-in the router can keep, in words; `None` when it is.
 pub fn login_problem(raw: &str) -> Option<String> {

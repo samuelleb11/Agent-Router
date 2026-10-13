@@ -2,10 +2,11 @@
 // actions at rest — Edit, Remove — with the editor opening inside it (assets/index.html,
 // `renderAccounts`, `openEdit`, `wireEditForm`; ST-C19 to ST-C38). It names its provider, and Org,
 // Plan and the claude.ai session key are Anthropic's alone (ST-C119, ST-C120). Which account signs
-// is chosen in its provider's section, above the cards (ST-C125).
+// is chosen in its provider's section, above the cards (ST-C125). A ChatGPT login says its plan, that it
+// serves Codex only, and takes a fresh paste from Edit (AGEN-0193).
 import { useState, type FormEvent, type KeyboardEvent } from 'react';
 import { useMutation } from '@tanstack/react-query';
-import { Button, Form, PasswordInput, Tag, TextInput, Tile } from '@carbon/react';
+import { Button, Form, PasswordInput, Tag, TextArea, TextInput, Tile } from '@carbon/react';
 import { keys } from '~/app/query';
 import { clearSessionKey, editAccount, removeAccount, setSessionKey, useReread, type AccountEdit, type AccountRow } from '~/data/settings';
 import { identityNote, KIMI_BASE_URL, OPENAI_BASE_URL, notes, providerName, providerOf, removable, type Auth } from '~/model/settings';
@@ -13,6 +14,9 @@ import {
   accountName,
   activeWords,
   BUILT_IN,
+  CHATGPT_REFRESHED,
+  CHATGPT_SERVES,
+  chatgptLoginProblem,
   CODEX_BUILT_IN,
   CODEX_NOT_ON_A_SERVER,
   credential,
@@ -28,6 +32,7 @@ import {
   usable,
   USAGE_KEY,
 } from './rules';
+import { ChatGPTSteps } from './AddAccount';
 import { Confirm, Explain, Fact, Facts, Outcome, Words } from './parts';
 import styles from './Settings.module.scss';
 
@@ -40,6 +45,7 @@ export function AccountCard({ account, accounts, auth, hosted }: { account: Acco
   const cred = credential(account);
   const builtIn = (account.source === 'keychain' || account.source === 'codex') && !hosted;
   const anthropic = providerOf(account) === 'anthropic';
+  const chatgpt = account.source === 'chatgpt';
 
   // Remove re-reads the list whatever the router said, and a refusal stays on this card in the
   // router's words (ST-C25).
@@ -70,12 +76,15 @@ export function AccountCard({ account, accounts, auth, hosted }: { account: Acco
         </Fact>
         <Fact term="Provider">{providerName(providerOf(account))}</Fact>
         {/* Org and plan are what Anthropic reports of a login; a Kimi Code key reports neither,
-            and says where its requests go instead (ST-C119). */}
+            and says where its requests go instead (ST-C119). A ChatGPT login says its plan, and
+            goes to ChatGPT's own backend. */}
         {anthropic ? (
           <>
             <Fact term="Org">{account.org_name || '—'}</Fact>
             <Fact term="Plan">{account.subscription_type || '—'}</Fact>
           </>
+        ) : chatgpt ? (
+          <Fact term="Plan">{account.subscription_type || '—'}</Fact>
         ) : account.source !== 'codex' ? (
           <Fact term="Base URL" mono>
             {account.base_url || (providerOf(account) === 'kimi' ? KIMI_BASE_URL : providerOf(account) === 'openai' ? OPENAI_BASE_URL : '—')}
@@ -86,6 +95,11 @@ export function AccountCard({ account, accounts, auth, hosted }: { account: Acco
             <Tag type="gray" size="sm">
               {sourceWord(account.source)}
             </Tag>
+            {chatgpt ? (
+              <Tag type="purple" size="sm">
+                {CHATGPT_SERVES}
+              </Tag>
+            ) : null}
             {flag(account.usage_key) ? (
               <Tag type="blue" size="sm">
                 usage key
@@ -99,10 +113,12 @@ export function AccountCard({ account, accounts, auth, hosted }: { account: Acco
             {cred.text}
           </span>
         </Fact>
-        <Fact term="Expires">{expiry(account)}</Fact>
+        {/* A ChatGPT login lasts past its access token, which the router refreshes. */}
+        <Fact term={chatgpt ? 'Access token expires' : 'Expires'}>{expiry(account)}</Fact>
       </Facts>
 
       {active ? <Explain>{activeWords(account)}</Explain> : null}
+      {chatgpt ? <Explain>{CHATGPT_REFRESHED}</Explain> : null}
       {!usable(account, hosted) ? (
         <Explain className={styles.bad}>
           It cannot sign on this router: {cred.kind === 'failed' ? cred.text : account.source === 'codex' ? CODEX_NOT_ON_A_SERVER : NOT_ON_A_SERVER}
@@ -184,7 +200,8 @@ function AccountEditor({ account, auth, onClose }: { account: AccountRow; auth: 
   });
 
   const builtIn = account.source === 'keychain' || account.source === 'codex';
-  const ownsToken = account.source === 'token';
+  const chatgptLogin = account.source === 'chatgpt';
+  const ownsToken = account.source === 'token' || chatgptLogin;
   const provider = providerOf(account);
   const kimi = provider === 'kimi';
   // A claude.ai session key reads Anthropic's usage; a Kimi Code account has none to read (ST-C120).
@@ -200,7 +217,7 @@ function AccountEditor({ account, auth, onClose }: { account: AccountRow; auth: 
   const problems = {
     email: builtIn || email === undefined ? null : identityProblem(email),
     // By the account's own provider's rule: a Kimi Code key is never `sk-ant-` (ST-C118, ST-C120).
-    token: ownsToken ? keyProblem(provider, token) : null,
+    token: chatgptLogin ? chatgptLoginProblem(token) : ownsToken ? keyProblem(provider, token) : null,
     key: takesSessionKey ? sessionKeyProblem(key) : null,
   };
   const nothing = Object.keys(edit).length === 0 && newKey === '';
@@ -283,7 +300,25 @@ function AccountEditor({ account, auth, onClose }: { account: AccountRow; auth: 
           helperText={identityNote(account, auth)}
         />
       </div>
-      {ownsToken ? (
+      {chatgptLogin ? (
+        <div className={styles.field}>
+          <ChatGPTSteps />
+          <TextArea
+            id={`${id}-login`}
+            labelText="New ChatGPT login"
+            rows={4}
+            spellCheck={false}
+            autoComplete="off"
+            className={styles.secretBox}
+            placeholder={flag(account.has_token) ? HELD : '{"auth_mode": "chatgpt", "tokens": { … } }'}
+            value={token}
+            onChange={(e) => setToken(e.target.value)}
+            invalid={(tried || token.trim() !== '') && !!problems.token}
+            invalidText={problems.token ?? undefined}
+            helperText={`${tokenState} A login from a new Codex sign-in replaces the stored one, which is what mends a login OpenAI refused to refresh. The account keeps its id, so everything already recorded against it stays intact.`}
+          />
+        </div>
+      ) : ownsToken ? (
         <PasswordInput
           id={`${id}-token`}
           labelText="Credential"

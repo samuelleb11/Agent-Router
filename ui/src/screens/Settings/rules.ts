@@ -80,6 +80,58 @@ export function openaiKeyProblem(key: string): string | null {
 
 export const keyProblem = (provider: Provider, key: string): string | null => provider === 'kimi' ? kimiKeyProblem(key) : provider === 'openai' ? openaiKeyProblem(key) : tokenProblem(key);
 
+/// How a ChatGPT login of the router's own is extracted (src/chatgpt.rs, `EXTRACT`): a sign-in made
+/// for the router in a folder of its own, so the router never shares a session with a machine's
+/// Codex — refresh tokens rotate, and a reused one logs the other holder out. The first command
+/// prints the login to paste; the second deletes the folder.
+export const CHATGPT_SIGN_IN = 'export CODEX_HOME=$(mktemp -d) && codex login -c cli_auth_credentials_store=file && cat "$CODEX_HOME/auth.json"';
+export const CHATGPT_CLEAN_UP = 'rm -rf "$CODEX_HOME" && unset CODEX_HOME';
+
+/// What a ChatGPT login's card says of it: the router refreshes it, and Codex alone is served.
+export const CHATGPT_SERVES = 'serves Codex only';
+export const CHATGPT_REFRESHED = 'The router refreshes it an hour before its access token expires, and serves it to Codex alone; any other client is refused in words.';
+
+/// A JWT's claims, unverified, as the router reads them (src/chatgpt.rs, `claims`).
+function jwtClaims(jwt: string): Record<string, unknown> | null {
+  const parts = jwt.split('.');
+  if (parts.length !== 3 || parts.some((p) => p === '')) return null;
+  try {
+    const b64 = parts[1]!.replace(/-/g, '+').replace(/_/g, '/');
+    const claims: unknown = JSON.parse(atob(b64.padEnd(Math.ceil(b64.length / 4) * 4, '=')));
+    return claims && typeof claims === 'object' ? (claims as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+/// The router's rule for a pasted ChatGPT login (src/chatgpt.rs, `login_problem`): Codex's whole
+/// auth.json, holding a ChatGPT sign-in and not an API key. Blank is the form's to ask for.
+export function chatgptLoginProblem(raw: string): string | null {
+  const text = raw.trim();
+  if (text === '') return null;
+  let v: unknown;
+  try {
+    v = JSON.parse(text);
+  } catch {
+    v = null;
+  }
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return 'that is not Codex’s auth.json: paste the whole file, which is JSON';
+  const login = v as { auth_mode?: unknown; OPENAI_API_KEY?: unknown; tokens?: Record<string, unknown> | null };
+  if (login.auth_mode === 'apikey' || (typeof login.OPENAI_API_KEY === 'string' && login.OPENAI_API_KEY.trim() !== '')) {
+    return 'that login is an OpenAI API key, not a ChatGPT sign-in — add the key as an API-key account instead';
+  }
+  const token = (key: string) => {
+    const t = login.tokens && typeof login.tokens === 'object' ? login.tokens[key] : undefined;
+    return typeof t === 'string' && t.trim() !== '' ? t : null;
+  };
+  const access = token('access_token');
+  if (!access || !token('refresh_token') || !token('id_token')) return 'that auth.json holds no ChatGPT sign-in: sign in with ChatGPT in Codex first, then paste the file';
+  return jwtClaims(access) ? null : 'that auth.json’s access token cannot be read';
+}
+
+/// What the form asks for when a ChatGPT login is added with nothing pasted.
+export const LOGIN_NEEDED = 'paste the ChatGPT login: what the first command printed';
+
 /// What the router answers a token account added with no token (src/api.rs, `accounts_add`), a Kimi
 /// Code account's key included.
 export const TOKEN_NEEDED = 'a token is required for this account type';
@@ -144,6 +196,7 @@ export const accountName = (a: Pick<Account, 'id' | 'label' | 'email'>): string 
 export function sourceWord(source: string | null | undefined): string {
   if (source === 'keychain') return 'Claude Code login';
   if (source === 'codex') return 'Codex login';
+  if (source === 'chatgpt') return 'ChatGPT login';
   if (source === 'profile') return 'Claude Code profile';
   if (source === 'token') return 'token';
   return source || DASH;
@@ -215,8 +268,8 @@ export const NOT_ON_A_SERVER =
   "this account is a Claude Code login on a developer's machine, which a hosted router cannot read — add an account with a `claude setup-token` value in the dashboard";
 
 /// Whether an account can be made the one that signs from here: anything locally, and only a
-/// pasted token on a hosted router, which refuses the rest (ST-C27).
-export const usable = (a: Pick<Account, 'source'>, hosted: boolean): boolean => !hosted || a.source === 'token';
+/// pasted token or a pasted ChatGPT login on a hosted router, which refuses the rest (ST-C27).
+export const usable = (a: Pick<Account, 'source'>, hosted: boolean): boolean => !hosted || a.source === 'token' || a.source === 'chatgpt';
 
 /// One choice of a provider's "Requests go to" list box: one of that provider's accounts.
 export interface ActiveChoice {

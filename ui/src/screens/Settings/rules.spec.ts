@@ -9,6 +9,7 @@ import {
   activeWords,
   assignedWords,
   baseUrlProblem,
+  chatgptLoginProblem,
   credential,
   deviceRow,
   expiry,
@@ -18,6 +19,8 @@ import {
   looksLikeEmail,
   modelChoices,
   nameProblem,
+  sourceWord,
+  usable,
   networkWhere,
   nextSigner,
   projectRoot,
@@ -225,5 +228,26 @@ describe('Settings rules', () => {
     const status = { phase: 'awaiting_sign_in', url: 'https://claude.ai/oauth/x', label: 'work', tail } as Parameters<typeof signin>[0];
     expect(JSON.stringify(signin(status))).not.toContain(tail);
     expect(JSON.stringify(signin({ ...status, phase: 'failed', error: 'no' }))).not.toContain(tail);
+  });
+});
+
+describe('a ChatGPT login (AGEN-0193)', () => {
+  const jwt = (claims: object) => [{ alg: 'RS256' }, claims].map((p) => btoa(JSON.stringify(p)).replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_')).join('.') + '.sig';
+  const tokens = { id_token: jwt({ email: 'you@example.com' }), access_token: jwt({ exp: 1_900_000_000, client_id: 'app_test_client' }), refresh_token: 'rt-test' };
+
+  it('is checked by the router’s rule: the whole auth.json, holding a ChatGPT sign-in and no API key', () => {
+    expect(chatgptLoginProblem(JSON.stringify({ auth_mode: 'chatgpt', OPENAI_API_KEY: null, tokens }))).toBeNull();
+    expect(chatgptLoginProblem('   ')).toBeNull();
+    expect(chatgptLoginProblem('sk-proj-abc')).toBe('that is not Codex’s auth.json: paste the whole file, which is JSON');
+    expect(chatgptLoginProblem('{"auth_mode":"apikey","OPENAI_API_KEY":"sk-x"}')).toContain('API key');
+    expect(chatgptLoginProblem(JSON.stringify({ OPENAI_API_KEY: 'sk-x', tokens }))).toContain('API key');
+    expect(chatgptLoginProblem('{"auth_mode":"chatgpt","tokens":{"access_token":"a.b.c"}}')).toContain('no ChatGPT sign-in');
+    expect(chatgptLoginProblem(JSON.stringify({ tokens: { ...tokens, access_token: 'not-a-jwt' } }))).toContain('cannot be read');
+  });
+
+  it('is named, and signs on a hosted router as a pasted token does', () => {
+    expect(sourceWord('chatgpt')).toBe('ChatGPT login');
+    expect(usable({ source: 'chatgpt' }, true)).toBe(true);
+    expect(usable({ source: 'codex' }, true)).toBe(false);
   });
 });

@@ -32,6 +32,21 @@ function show({ auth = LOCAL, accounts = ACCOUNTS, more = {} }: { auth?: typeof 
   return { ...router, ...view, setRows: (next: AccountRow[]) => (rows = next) };
 }
 
+/// An unsigned JWT with these claims, as the router reads one (src/chatgpt.rs).
+const jwt = (claims: object) => [{ alg: 'RS256' }, claims].map((p) => btoa(JSON.stringify(p)).replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_')).join('.') + '.not-a-signature';
+
+/// A ChatGPT sign-in as Codex writes its auth.json, with made-up tokens.
+const CHATGPT_LOGIN = JSON.stringify({
+  auth_mode: 'chatgpt',
+  OPENAI_API_KEY: null,
+  tokens: {
+    id_token: jwt({ email: 'you@example.com', 'https://api.openai.com/auth': { chatgpt_plan_type: 'pro' } }),
+    access_token: jwt({ exp: 1_900_000_000, client_id: 'app_test_client' }),
+    refresh_token: 'rt-test',
+    account_id: 'workspace-test',
+  },
+});
+
 /// A Kimi Code account as `probe=1` answers it: a key the router holds, at Kimi Code's own address.
 const KIMI: AccountRow = {
   id: 'kimi',
@@ -540,7 +555,8 @@ describe('Accounts: adding', () => {
     const r = show({ auth: HOSTED, more: { 'POST /api/accounts': ok({ id: 'openai-work', ready: true }) } });
     const form = await open();
     choose(form, /^OpenAI/);
-    expect(within(form).queryByRole('group', { name: 'How to add it' })).toBeNull();
+    // Its API key is the way chosen as OpenAI is picked; a ChatGPT login is the other.
+    expect(within(within(form).getByRole('group', { name: 'How to add it' })).getByRole('radio', { name: /^API key/ })).toBeChecked();
     fireEvent.change(within(form).getByLabelText('Name'), { target: { value: 'openai-work' } });
     const key = within(form).getByLabelText('OpenAI API key');
     fireEvent.change(key, { target: { value: 'sk-ant-oat01-wrong' } });
@@ -550,6 +566,53 @@ describe('Accounts: adding', () => {
     fireEvent.change(key, { target: { value: 'sk-proj-example' } });
     fireEvent.submit(form);
     await waitFor(() => expect(r.posts('/api/accounts')).toEqual([{ label: 'openai-work', source: 'token', provider: 'openai', token: 'sk-proj-example' }]));
+  });
+
+  it('AGEN-0193: an OpenAI ChatGPT login is pasted whole under the steps that extract one, and checked as a sign-in before it is sent', async () => {
+    const r = show({ auth: HOSTED, more: { 'POST /api/accounts': ok({ id: 'plan', ready: true }) } });
+    const form = await open();
+    choose(form, /^OpenAI/);
+    choose(form, /^ChatGPT login \(Codex\)/);
+    const steps = within(form).getByRole('list', { name: 'How to extract a ChatGPT login' });
+    expect(steps).toHaveTextContent('export CODEX_HOME=$(mktemp -d) && codex login -c cli_auth_credentials_store=file && cat "$CODEX_HOME/auth.json"');
+    expect(steps).toHaveTextContent('rm -rf "$CODEX_HOME" && unset CODEX_HOME');
+    expect(within(steps).getByRole('button', { name: 'Copy sign-in command' })).toBeInTheDocument();
+    // A ChatGPT login goes to ChatGPT's own backend: no key, no base URL.
+    expect(within(form).queryByLabelText('OpenAI API key')).toBeNull();
+    expect(within(form).queryByLabelText('Base URL (optional)')).toBeNull();
+    fireEvent.change(within(form).getByLabelText('Name'), { target: { value: 'plan' } });
+    const login = within(form).getByLabelText('ChatGPT login (Codex’s auth.json)');
+    fireEvent.change(login, { target: { value: '{"auth_mode":"apikey","OPENAI_API_KEY":"sk-x"}' } });
+    fireEvent.submit(form);
+    expect(await within(form).findByText(/that login is an OpenAI API key, not a ChatGPT sign-in/)).toBeInTheDocument();
+    fireEvent.change(login, { target: { value: '{"auth_mode":"chatgpt","tokens":{"access_token":"a.b.c"}}' } });
+    expect(await within(form).findByText(/holds no ChatGPT sign-in/)).toBeInTheDocument();
+    expect(r.posts('/api/accounts')).toEqual([]);
+    fireEvent.change(login, { target: { value: `  ${CHATGPT_LOGIN}\n` } });
+    fireEvent.submit(form);
+    await waitFor(() => expect(r.posts('/api/accounts')).toEqual([{ label: 'plan', source: 'chatgpt', provider: 'openai', token: CHATGPT_LOGIN }]));
+  });
+
+  it('AGEN-0193: a ChatGPT login says its plan and that it serves Codex only, signs on a hosted router, and takes a fresh paste from Edit', async () => {
+    const a: AccountRow = {
+      id: 'plan', label: 'plan', email: 'you@example.com', subscription_type: 'pro', source: 'chatgpt', provider: 'openai',
+      active: 1, ready: true, detail: 'Codex ChatGPT login', expires_at: 1_900_000_000_000, has_token: true,
+    };
+    const r = show({ auth: HOSTED, accounts: [a], more: { 'POST /api/accounts/edit': ok({ ok: true, id: 'plan' }) } });
+    const c = await cardOf('you@example.com');
+    for (const text of ['pro', 'ChatGPT login', 'serves Codex only', 'Access token expires']) expect(within(c).getByText(text)).toBeInTheDocument();
+    expect(c).toHaveTextContent('The router refreshes it an hour before its access token expires');
+    expect(c).not.toHaveTextContent('It cannot sign on this router');
+    expect(c).not.toHaveTextContent('Base URL');
+    fireEvent.click(within(c).getByRole('button', { name: 'Edit' }));
+    const edit = within(c).getByRole('form', { name: 'Edit you@example.com' });
+    expect(within(edit).queryByLabelText('claude.ai session key')).toBeNull();
+    const fresh = within(edit).getByLabelText('New ChatGPT login');
+    fireEvent.change(fresh, { target: { value: 'sk-proj-abc' } });
+    expect(await within(edit).findByText('that is not Codex’s auth.json: paste the whole file, which is JSON')).toBeInTheDocument();
+    fireEvent.change(fresh, { target: { value: CHATGPT_LOGIN } });
+    fireEvent.submit(edit);
+    await waitFor(() => expect(r.posts('/api/accounts/edit')).toEqual([{ id: 'plan', token: CHATGPT_LOGIN }]));
   });
 
   it('keeps a local Codex login built in and edits no credential or Claude session key', async () => {

@@ -41,9 +41,9 @@ final class ChatGPTLoginTests: XCTestCase {
 
     func testTheStepsMakeALoginOfTheRoutersOwn() {
         let steps = ChatGPTLogin.steps.joined(separator: "\n")
-        XCTAssertTrue(steps.contains("CODEX_HOME=$(mktemp -d) codex login -c cli_auth_credentials_store=file"), "a sign-in of its own, kept in a file")
-        XCTAssertTrue(steps.contains("$CODEX_HOME/auth.json"))
-        XCTAssertTrue(steps.contains("Delete that folder"))
+        XCTAssertTrue(steps.contains("export CODEX_HOME=$(mktemp -d) && codex login -c cli_auth_credentials_store=file"), "a sign-in of its own, kept in a file")
+        XCTAssertTrue(steps.contains(#"cat "$CODEX_HOME/auth.json""#), "the folder is still named when the login is printed")
+        XCTAssertTrue(steps.contains(#"rm -rf "$CODEX_HOME" && unset CODEX_HOME"#))
     }
 
     func testTheLoginAndItsAccountSayWhoSignedInAndOnWhichPlan() throws {
